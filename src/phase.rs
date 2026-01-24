@@ -2,6 +2,7 @@
 //!
 //! This module provides:
 //! - `Phase` struct representing a single implementation phase
+//! - `SubPhase` struct for dynamically spawned child phases
 //! - `PhasesFile` struct representing the full phases.json format
 //! - Loading functions for JSON-based phase configuration
 //! - Default IdCheck phases as a fallback
@@ -39,6 +40,124 @@ pub struct Phase {
     /// - Readonly: Planning/research phases, no file modifications
     #[serde(default)]
     pub permission_mode: PermissionMode,
+    /// Parent phase number for sub-phases (e.g., "05" for sub-phase "05.1")
+    /// None for top-level phases, Some("05") for sub-phases of phase 05
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_phase: Option<String>,
+    /// Sub-phases spawned from this phase during execution
+    /// These are populated dynamically during orchestration
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sub_phases: Vec<SubPhase>,
+}
+
+/// Represents a sub-phase that is dynamically spawned from a parent phase.
+/// Sub-phases are created when a phase discovers its scope is larger than expected.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SubPhase {
+    /// Sub-phase number (e.g., "05.1", "05.2")
+    pub number: String,
+    /// Human-readable name of the sub-phase
+    pub name: String,
+    /// Promise tag that indicates sub-phase completion
+    pub promise: String,
+    /// Budget carved from parent's remaining budget
+    pub budget: u32,
+    /// Reasoning for why this sub-phase was spawned
+    #[serde(default)]
+    pub reasoning: String,
+    /// Parent phase number (e.g., "05")
+    pub parent_phase: String,
+    /// Order within parent's sub-phases (1, 2, 3, ...)
+    pub order: u32,
+    /// List of skill names to load for this sub-phase (inherits from parent by default)
+    #[serde(default)]
+    pub skills: Vec<String>,
+    /// Permission mode (inherits from parent by default)
+    #[serde(default)]
+    pub permission_mode: PermissionMode,
+    /// Status of the sub-phase
+    #[serde(default)]
+    pub status: SubPhaseStatus,
+}
+
+/// Status of a sub-phase in the execution lifecycle.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SubPhaseStatus {
+    /// Sub-phase is waiting to be executed
+    #[default]
+    Pending,
+    /// Sub-phase is currently being executed
+    InProgress,
+    /// Sub-phase completed successfully
+    Completed,
+    /// Sub-phase failed (max iterations reached or error)
+    Failed,
+    /// Sub-phase was skipped
+    Skipped,
+}
+
+impl SubPhase {
+    /// Create a new sub-phase with the given parameters.
+    pub fn new(
+        parent_phase: &str,
+        order: u32,
+        name: &str,
+        promise: &str,
+        budget: u32,
+        reasoning: &str,
+    ) -> Self {
+        Self {
+            number: format!("{}.{}", parent_phase, order),
+            name: name.to_string(),
+            promise: promise.to_string(),
+            budget,
+            reasoning: reasoning.to_string(),
+            parent_phase: parent_phase.to_string(),
+            order,
+            skills: Vec::new(),
+            permission_mode: PermissionMode::default(),
+            status: SubPhaseStatus::Pending,
+        }
+    }
+
+    /// Convert this sub-phase to a full Phase for execution.
+    /// The resulting Phase inherits parent properties where applicable.
+    pub fn to_phase(&self, parent: &Phase) -> Phase {
+        Phase {
+            number: self.number.clone(),
+            name: self.name.clone(),
+            promise: self.promise.clone(),
+            budget: self.budget,
+            reasoning: self.reasoning.clone(),
+            depends_on: vec![parent.number.clone()],
+            skills: if self.skills.is_empty() {
+                parent.skills.clone()
+            } else {
+                self.skills.clone()
+            },
+            permission_mode: if self.permission_mode == PermissionMode::default() {
+                parent.permission_mode
+            } else {
+                self.permission_mode
+            },
+            parent_phase: Some(parent.number.clone()),
+            sub_phases: Vec::new(),
+        }
+    }
+
+    /// Check if this sub-phase is pending execution.
+    pub fn is_pending(&self) -> bool {
+        self.status == SubPhaseStatus::Pending
+    }
+
+    /// Check if this sub-phase is complete (success or failure).
+    pub fn is_complete(&self) -> bool {
+        matches!(
+            self.status,
+            SubPhaseStatus::Completed | SubPhaseStatus::Failed | SubPhaseStatus::Skipped
+        )
+    }
 }
 
 impl Phase {
@@ -60,6 +179,8 @@ impl Phase {
             depends_on,
             skills: Vec::new(),
             permission_mode: PermissionMode::default(),
+            parent_phase: None,
+            sub_phases: Vec::new(),
         }
     }
 
@@ -82,6 +203,8 @@ impl Phase {
             depends_on,
             skills,
             permission_mode: PermissionMode::default(),
+            parent_phase: None,
+            sub_phases: Vec::new(),
         }
     }
 
@@ -104,6 +227,8 @@ impl Phase {
             depends_on,
             skills: Vec::new(),
             permission_mode,
+            parent_phase: None,
+            sub_phases: Vec::new(),
         }
     }
 
@@ -117,6 +242,102 @@ impl Phase {
     #[inline]
     pub fn description(&self) -> &str {
         &self.name
+    }
+
+    /// Check if this phase is a sub-phase (has a parent).
+    #[inline]
+    pub fn is_sub_phase(&self) -> bool {
+        self.parent_phase.is_some()
+    }
+
+    /// Check if this phase has any sub-phases.
+    #[inline]
+    pub fn has_sub_phases(&self) -> bool {
+        !self.sub_phases.is_empty()
+    }
+
+    /// Get pending sub-phases that haven't been executed yet.
+    pub fn pending_sub_phases(&self) -> Vec<&SubPhase> {
+        self.sub_phases.iter().filter(|sp| sp.is_pending()).collect()
+    }
+
+    /// Get all sub-phases that are not yet complete.
+    pub fn incomplete_sub_phases(&self) -> Vec<&SubPhase> {
+        self.sub_phases.iter().filter(|sp| !sp.is_complete()).collect()
+    }
+
+    /// Add a new sub-phase to this phase.
+    /// Returns the sub-phase number that was assigned.
+    pub fn add_sub_phase(
+        &mut self,
+        name: &str,
+        promise: &str,
+        budget: u32,
+        reasoning: &str,
+    ) -> String {
+        let order = self.sub_phases.len() as u32 + 1;
+        let sub_phase = SubPhase::new(&self.number, order, name, promise, budget, reasoning);
+        let number = sub_phase.number.clone();
+        self.sub_phases.push(sub_phase);
+        number
+    }
+
+    /// Add a sub-phase with specific skills.
+    pub fn add_sub_phase_with_skills(
+        &mut self,
+        name: &str,
+        promise: &str,
+        budget: u32,
+        reasoning: &str,
+        skills: Vec<String>,
+    ) -> String {
+        let order = self.sub_phases.len() as u32 + 1;
+        let mut sub_phase = SubPhase::new(&self.number, order, name, promise, budget, reasoning);
+        sub_phase.skills = skills;
+        let number = sub_phase.number.clone();
+        self.sub_phases.push(sub_phase);
+        number
+    }
+
+    /// Get a mutable reference to a sub-phase by number.
+    pub fn get_sub_phase_mut(&mut self, number: &str) -> Option<&mut SubPhase> {
+        self.sub_phases.iter_mut().find(|sp| sp.number == number)
+    }
+
+    /// Get an immutable reference to a sub-phase by number.
+    pub fn get_sub_phase(&self, number: &str) -> Option<&SubPhase> {
+        self.sub_phases.iter().find(|sp| sp.number == number)
+    }
+
+    /// Update a sub-phase's status.
+    pub fn update_sub_phase_status(&mut self, number: &str, status: SubPhaseStatus) -> bool {
+        if let Some(sp) = self.get_sub_phase_mut(number) {
+            sp.status = status;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Calculate remaining budget after accounting for sub-phase allocations.
+    pub fn remaining_budget(&self) -> u32 {
+        let allocated: u32 = self.sub_phases.iter().map(|sp| sp.budget).sum();
+        self.budget.saturating_sub(allocated)
+    }
+
+    /// Check if all sub-phases are complete.
+    pub fn all_sub_phases_complete(&self) -> bool {
+        self.sub_phases.is_empty() || self.sub_phases.iter().all(|sp| sp.is_complete())
+    }
+
+    /// Get the next sub-phase to execute.
+    pub fn next_sub_phase(&self) -> Option<&SubPhase> {
+        self.sub_phases.iter().find(|sp| sp.is_pending())
+    }
+
+    /// Convert all sub-phases to executable Phase objects.
+    pub fn sub_phases_as_phases(&self) -> Vec<Phase> {
+        self.sub_phases.iter().map(|sp| sp.to_phase(self)).collect()
     }
 }
 
@@ -164,12 +385,91 @@ impl PhasesFile {
         self.phases.iter().find(|p| p.number == number)
     }
 
+    /// Get a mutable reference to a specific phase by number.
+    pub fn get_phase_mut(&mut self, number: &str) -> Option<&mut Phase> {
+        self.phases.iter_mut().find(|p| p.number == number)
+    }
+
     /// Get phases starting from a given phase number.
     pub fn get_phases_from(&self, start: &str) -> Vec<&Phase> {
         self.phases
             .iter()
             .filter(|p| p.number.as_str() >= start)
             .collect()
+    }
+
+    /// Get a sub-phase by its full number (e.g., "05.1").
+    pub fn get_sub_phase(&self, number: &str) -> Option<(&Phase, &SubPhase)> {
+        // Parse parent phase number from sub-phase number
+        if let Some(dot_pos) = number.find('.') {
+            let parent_number = &number[..dot_pos];
+            if let Some(parent) = self.get_phase(parent_number) {
+                if let Some(sub_phase) = parent.get_sub_phase(number) {
+                    return Some((parent, sub_phase));
+                }
+            }
+        }
+        None
+    }
+
+    /// Get a mutable reference to a sub-phase by its full number.
+    pub fn get_sub_phase_mut(&mut self, number: &str) -> Option<&mut SubPhase> {
+        if let Some(dot_pos) = number.find('.') {
+            let parent_number = &number[..dot_pos];
+            if let Some(parent) = self.get_phase_mut(parent_number) {
+                return parent.get_sub_phase_mut(number);
+            }
+        }
+        None
+    }
+
+    /// Add sub-phases to a parent phase.
+    /// Returns the sub-phase numbers that were assigned.
+    pub fn add_sub_phases_to_phase(
+        &mut self,
+        parent_number: &str,
+        sub_phases: Vec<(String, String, u32, String)>, // (name, promise, budget, reasoning)
+    ) -> Result<Vec<String>> {
+        let parent = self
+            .get_phase_mut(parent_number)
+            .ok_or_else(|| anyhow::anyhow!("Parent phase {} not found", parent_number))?;
+
+        let numbers: Vec<String> = sub_phases
+            .into_iter()
+            .map(|(name, promise, budget, reasoning)| {
+                parent.add_sub_phase(&name, &promise, budget, &reasoning)
+            })
+            .collect();
+
+        Ok(numbers)
+    }
+
+    /// Update a sub-phase's status.
+    pub fn update_sub_phase_status(&mut self, number: &str, status: SubPhaseStatus) -> bool {
+        if let Some(sub_phase) = self.get_sub_phase_mut(number) {
+            sub_phase.status = status;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get all phases including sub-phases as Phase objects.
+    /// This flattens the hierarchy for execution purposes.
+    pub fn get_all_phases_flattened(&self) -> Vec<Phase> {
+        let mut result = Vec::new();
+        for phase in &self.phases {
+            result.push(phase.clone());
+            for sub_phase in &phase.sub_phases {
+                result.push(sub_phase.to_phase(phase));
+            }
+        }
+        result
+    }
+
+    /// Count total phases including sub-phases.
+    pub fn total_phase_count(&self) -> usize {
+        self.phases.len() + self.phases.iter().map(|p| p.sub_phases.len()).sum::<usize>()
     }
 }
 
@@ -763,5 +1063,267 @@ mod tests {
         let phase = get_phase("01").unwrap();
         assert_eq!(phase.budget, 12);
         assert_eq!(phase.max_iterations(), 12);
+    }
+
+    // =========================================
+    // Sub-phase tests
+    // =========================================
+
+    #[test]
+    fn test_sub_phase_new() {
+        let sub = SubPhase::new("05", 1, "OAuth setup", "OAUTH DONE", 5, "OAuth is complex");
+
+        assert_eq!(sub.number, "05.1");
+        assert_eq!(sub.name, "OAuth setup");
+        assert_eq!(sub.promise, "OAUTH DONE");
+        assert_eq!(sub.budget, 5);
+        assert_eq!(sub.parent_phase, "05");
+        assert_eq!(sub.order, 1);
+        assert_eq!(sub.status, SubPhaseStatus::Pending);
+    }
+
+    #[test]
+    fn test_sub_phase_to_phase() {
+        let parent = Phase::new(
+            "05",
+            "Authentication",
+            "AUTH COMPLETE",
+            20,
+            "Implement auth",
+            vec![],
+        );
+        let sub = SubPhase::new("05", 1, "OAuth setup", "OAUTH DONE", 5, "OAuth is complex");
+
+        let phase = sub.to_phase(&parent);
+
+        assert_eq!(phase.number, "05.1");
+        assert_eq!(phase.name, "OAuth setup");
+        assert_eq!(phase.promise, "OAUTH DONE");
+        assert_eq!(phase.budget, 5);
+        assert_eq!(phase.parent_phase, Some("05".to_string()));
+        assert!(phase.is_sub_phase());
+    }
+
+    #[test]
+    fn test_sub_phase_status_lifecycle() {
+        let sub = SubPhase::new("05", 1, "Task", "DONE", 3, "reason");
+
+        assert!(sub.is_pending());
+        assert!(!sub.is_complete());
+
+        // Test all terminal states
+        let mut completed = sub.clone();
+        completed.status = SubPhaseStatus::Completed;
+        assert!(completed.is_complete());
+
+        let mut failed = sub.clone();
+        failed.status = SubPhaseStatus::Failed;
+        assert!(failed.is_complete());
+
+        let mut skipped = sub.clone();
+        skipped.status = SubPhaseStatus::Skipped;
+        assert!(skipped.is_complete());
+
+        let mut in_progress = sub.clone();
+        in_progress.status = SubPhaseStatus::InProgress;
+        assert!(!in_progress.is_pending());
+        assert!(!in_progress.is_complete());
+    }
+
+    #[test]
+    fn test_phase_add_sub_phase() {
+        let mut phase = Phase::new("05", "Auth", "AUTH DONE", 20, "reason", vec![]);
+
+        let num1 = phase.add_sub_phase("OAuth", "OAUTH DONE", 5, "OAuth setup");
+        let num2 = phase.add_sub_phase("JWT", "JWT DONE", 4, "JWT handling");
+
+        assert_eq!(num1, "05.1");
+        assert_eq!(num2, "05.2");
+        assert_eq!(phase.sub_phases.len(), 2);
+        assert!(phase.has_sub_phases());
+    }
+
+    #[test]
+    fn test_phase_remaining_budget() {
+        let mut phase = Phase::new("05", "Auth", "AUTH DONE", 20, "reason", vec![]);
+
+        assert_eq!(phase.remaining_budget(), 20);
+
+        phase.add_sub_phase("OAuth", "OAUTH DONE", 5, "reason");
+        assert_eq!(phase.remaining_budget(), 15);
+
+        phase.add_sub_phase("JWT", "JWT DONE", 8, "reason");
+        assert_eq!(phase.remaining_budget(), 7);
+    }
+
+    #[test]
+    fn test_phase_sub_phase_completion() {
+        let mut phase = Phase::new("05", "Auth", "AUTH DONE", 20, "reason", vec![]);
+
+        // No sub-phases = all complete
+        assert!(phase.all_sub_phases_complete());
+
+        phase.add_sub_phase("OAuth", "OAUTH DONE", 5, "reason");
+        phase.add_sub_phase("JWT", "JWT DONE", 4, "reason");
+
+        // Has pending sub-phases = not complete
+        assert!(!phase.all_sub_phases_complete());
+
+        // Complete first sub-phase
+        phase.update_sub_phase_status("05.1", SubPhaseStatus::Completed);
+        assert!(!phase.all_sub_phases_complete());
+
+        // Complete second sub-phase
+        phase.update_sub_phase_status("05.2", SubPhaseStatus::Completed);
+        assert!(phase.all_sub_phases_complete());
+    }
+
+    #[test]
+    fn test_phase_get_sub_phase() {
+        let mut phase = Phase::new("05", "Auth", "AUTH DONE", 20, "reason", vec![]);
+        phase.add_sub_phase("OAuth", "OAUTH DONE", 5, "reason");
+
+        let sub = phase.get_sub_phase("05.1");
+        assert!(sub.is_some());
+        assert_eq!(sub.unwrap().name, "OAuth");
+
+        let missing = phase.get_sub_phase("05.99");
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn test_phase_next_sub_phase() {
+        let mut phase = Phase::new("05", "Auth", "AUTH DONE", 20, "reason", vec![]);
+
+        // No sub-phases
+        assert!(phase.next_sub_phase().is_none());
+
+        phase.add_sub_phase("First", "FIRST DONE", 3, "reason");
+        phase.add_sub_phase("Second", "SECOND DONE", 4, "reason");
+
+        // First pending is returned
+        let next = phase.next_sub_phase();
+        assert!(next.is_some());
+        assert_eq!(next.unwrap().name, "First");
+
+        // Mark first as complete
+        phase.update_sub_phase_status("05.1", SubPhaseStatus::Completed);
+
+        // Now second is next
+        let next = phase.next_sub_phase();
+        assert!(next.is_some());
+        assert_eq!(next.unwrap().name, "Second");
+
+        // Mark second as complete
+        phase.update_sub_phase_status("05.2", SubPhaseStatus::Completed);
+
+        // No more pending
+        assert!(phase.next_sub_phase().is_none());
+    }
+
+    #[test]
+    fn test_phase_sub_phases_as_phases() {
+        let mut parent = Phase::with_skills(
+            "05",
+            "Auth",
+            "AUTH DONE",
+            20,
+            "reason",
+            vec![],
+            vec!["rust-conventions".to_string()],
+        );
+        parent.add_sub_phase("OAuth", "OAUTH DONE", 5, "reason");
+        parent.add_sub_phase("JWT", "JWT DONE", 4, "reason");
+
+        let phases = parent.sub_phases_as_phases();
+
+        assert_eq!(phases.len(), 2);
+        assert_eq!(phases[0].number, "05.1");
+        assert_eq!(phases[1].number, "05.2");
+
+        // Skills are inherited
+        assert_eq!(phases[0].skills, vec!["rust-conventions"]);
+    }
+
+    #[test]
+    fn test_phases_file_sub_phase_support() {
+        let mut pf = PhasesFile {
+            spec_hash: "test".to_string(),
+            generated_at: "2026-01-24".to_string(),
+            phases: vec![Phase::new("05", "Auth", "AUTH DONE", 20, "reason", vec![])],
+        };
+
+        // Add sub-phases
+        let numbers = pf
+            .add_sub_phases_to_phase(
+                "05",
+                vec![
+                    ("OAuth".to_string(), "OAUTH DONE".to_string(), 5, "reason".to_string()),
+                    ("JWT".to_string(), "JWT DONE".to_string(), 4, "reason".to_string()),
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(numbers, vec!["05.1", "05.2"]);
+
+        // Get sub-phase
+        let (parent, sub) = pf.get_sub_phase("05.1").unwrap();
+        assert_eq!(parent.number, "05");
+        assert_eq!(sub.name, "OAuth");
+
+        // Update status
+        assert!(pf.update_sub_phase_status("05.1", SubPhaseStatus::Completed));
+        let (_, sub) = pf.get_sub_phase("05.1").unwrap();
+        assert_eq!(sub.status, SubPhaseStatus::Completed);
+
+        // Total count
+        assert_eq!(pf.total_phase_count(), 3); // 1 parent + 2 sub-phases
+    }
+
+    #[test]
+    fn test_phases_file_flattened() {
+        let mut pf = PhasesFile {
+            spec_hash: "test".to_string(),
+            generated_at: "2026-01-24".to_string(),
+            phases: vec![
+                Phase::new("01", "First", "FIRST DONE", 10, "reason", vec![]),
+                Phase::new("02", "Second", "SECOND DONE", 15, "reason", vec![]),
+            ],
+        };
+
+        pf.add_sub_phases_to_phase("01", vec![
+            ("Sub A".to_string(), "A DONE".to_string(), 3, "reason".to_string()),
+        ]).unwrap();
+
+        let flattened = pf.get_all_phases_flattened();
+
+        assert_eq!(flattened.len(), 3);
+        assert_eq!(flattened[0].number, "01");
+        assert_eq!(flattened[1].number, "01.1");
+        assert_eq!(flattened[2].number, "02");
+    }
+
+    #[test]
+    fn test_sub_phase_serialization() {
+        let sub = SubPhase::new("05", 1, "OAuth", "OAUTH DONE", 5, "OAuth is complex");
+
+        let json = serde_json::to_string(&sub).unwrap();
+        let parsed: SubPhase = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(sub.number, parsed.number);
+        assert_eq!(sub.name, parsed.name);
+        assert_eq!(sub.status, parsed.status);
+    }
+
+    #[test]
+    fn test_phase_with_sub_phases_serialization() {
+        let mut phase = Phase::new("05", "Auth", "AUTH DONE", 20, "reason", vec![]);
+        phase.add_sub_phase("OAuth", "OAUTH DONE", 5, "reason");
+
+        let json = serde_json::to_string(&phase).unwrap();
+        let parsed: Phase = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.sub_phases.len(), 1);
+        assert_eq!(parsed.sub_phases[0].number, "05.1");
     }
 }

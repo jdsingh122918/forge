@@ -1,6 +1,7 @@
 use crate::audit::FileChangeSummary;
 use crate::forge_config::PermissionMode;
-use crate::phase::Phase;
+use crate::phase::{Phase, SubPhase};
+use crate::signals::SubPhaseSpawnSignal;
 use crate::ui::OrchestratorUI;
 use anyhow::Result;
 use dialoguer::{Select, theme::ColorfulTheme};
@@ -319,6 +320,145 @@ impl ApprovalGate {
             _ => unreachable!(),
         }
     }
+
+    /// Check whether a sub-phase spawn should proceed.
+    /// Returns the decision and optionally modified signal parameters.
+    pub fn check_sub_phase_spawn(
+        &mut self,
+        _parent: &Phase,
+        spawn_signal: &SubPhaseSpawnSignal,
+        remaining_budget: u32,
+    ) -> Result<SubPhaseSpawnDecision> {
+        // If --yes flag, auto-approve
+        if self.skip_all {
+            return Ok(SubPhaseSpawnDecision::Approved);
+        }
+
+        // Show sub-phase spawn request
+        println!();
+        println!(
+            "  {} Sub-phase spawn requested:",
+            console::style("🔀").cyan()
+        );
+        println!("    Name: {}", spawn_signal.name);
+        println!("    Promise: {}", spawn_signal.promise);
+        println!(
+            "    Budget: {} (parent has {} remaining)",
+            spawn_signal.budget, remaining_budget
+        );
+        if !spawn_signal.reasoning.is_empty() {
+            println!("    Reason: {}", spawn_signal.reasoning);
+        }
+        println!();
+
+        // Validate budget
+        if spawn_signal.budget > remaining_budget {
+            println!(
+                "  {} Requested budget ({}) exceeds remaining ({})",
+                console::style("⚠").yellow(),
+                spawn_signal.budget,
+                remaining_budget
+            );
+        }
+
+        self.prompt_sub_phase_spawn()
+    }
+
+    /// Prompt for sub-phase spawn approval.
+    fn prompt_sub_phase_spawn(&mut self) -> Result<SubPhaseSpawnDecision> {
+        let options = &[
+            "Approve this sub-phase",
+            "Skip this sub-phase",
+            "Reject all pending spawns",
+        ];
+
+        let selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Approve sub-phase spawn?")
+            .items(options)
+            .default(0)
+            .interact()?;
+
+        match selection {
+            0 => Ok(SubPhaseSpawnDecision::Approved),
+            1 => Ok(SubPhaseSpawnDecision::Skipped),
+            2 => Ok(SubPhaseSpawnDecision::RejectAll),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Check whether a sub-phase should proceed to execution.
+    pub fn check_sub_phase(
+        &mut self,
+        sub_phase: &SubPhase,
+        parent: &Phase,
+        ui: &OrchestratorUI,
+    ) -> Result<GateDecision> {
+        // Display sub-phase header
+        ui.print_sub_phase_header(
+            &sub_phase.number,
+            &sub_phase.name,
+            &sub_phase.promise,
+            sub_phase.budget,
+            &parent.number,
+        );
+
+        // If --yes flag, auto-approve
+        if self.skip_all {
+            println!(
+                "  {} (--yes flag)",
+                console::style("Auto-approved").dim()
+            );
+            return Ok(GateDecision::Approved);
+        }
+
+        // Use parent's permission mode for sub-phase approval logic
+        match parent.permission_mode {
+            PermissionMode::Autonomous => {
+                println!(
+                    "  {} (autonomous mode)",
+                    console::style("Auto-approved").dim()
+                );
+                Ok(GateDecision::Approved)
+            }
+            _ => {
+                // Prompt for sub-phase execution
+                self.prompt_sub_phase_execution()
+            }
+        }
+    }
+
+    /// Prompt for sub-phase execution approval.
+    fn prompt_sub_phase_execution(&mut self) -> Result<GateDecision> {
+        let options = &[
+            "Yes, execute this sub-phase",
+            "Skip this sub-phase",
+            "Stop parent phase",
+        ];
+
+        let selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Proceed with sub-phase?")
+            .items(options)
+            .default(0)
+            .interact()?;
+
+        match selection {
+            0 => Ok(GateDecision::Approved),
+            1 => Ok(GateDecision::Rejected),
+            2 => Ok(GateDecision::Aborted),
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// Decision result from a sub-phase spawn gate check.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SubPhaseSpawnDecision {
+    /// Sub-phase spawn is approved
+    Approved,
+    /// Skip this particular sub-phase spawn
+    Skipped,
+    /// Reject all pending sub-phase spawns for this iteration
+    RejectAll,
 }
 
 #[cfg(test)]

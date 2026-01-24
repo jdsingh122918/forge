@@ -693,21 +693,46 @@ fn cmd_list(project_dir: &PathBuf) -> Result<()> {
     println!("Spec hash: {}", pf.spec_hash);
     println!();
     println!(
-        "{:<6} {:<25} {:<8} {}",
-        "Phase", "Promise", "MaxIter", "Description"
+        "{:<8} {:<25} {:<8} {}",
+        "Phase", "Promise", "Budget", "Description"
     );
     println!(
-        "{:<6} {:<25} {:<8} {}",
-        "-----", "-------------------------", "-------", "-----------"
+        "{:<8} {:<25} {:<8} {}",
+        "--------", "-------------------------", "------", "-----------"
     );
 
     for phase in &pf.phases {
+        // Print the main phase
         println!(
-            "{:<6} {:<25} {:<8} {}",
+            "{:<8} {:<25} {:<8} {}",
             phase.number, phase.promise, phase.budget, phase.name
         );
+
+        // Print any sub-phases
+        for sub_phase in &phase.sub_phases {
+            println!(
+                "  {:<6} {:<25} {:<8} {} ({})",
+                sub_phase.number,
+                sub_phase.promise,
+                sub_phase.budget,
+                sub_phase.name,
+                console::style(format!("{:?}", sub_phase.status)).dim()
+            );
+        }
     }
     println!();
+
+    // Show total count including sub-phases
+    let total = pf.total_phase_count();
+    if total > pf.phases.len() {
+        println!(
+            "{} phases ({} top-level, {} sub-phases)",
+            total,
+            pf.phases.len(),
+            total - pf.phases.len()
+        );
+        println!();
+    }
     Ok(())
 }
 
@@ -753,7 +778,17 @@ fn cmd_status(project_dir: &PathBuf) -> Result<()> {
     let phases_file = forge_dir.join("phases.json");
     if phases_file.exists() {
         if let Ok(pf) = PhasesFile::load(&phases_file) {
-            println!("         {} phases defined", pf.phases.len());
+            let total = pf.total_phase_count();
+            if total > pf.phases.len() {
+                println!(
+                    "         {} phases ({} top-level, {} sub-phases)",
+                    total,
+                    pf.phases.len(),
+                    total - pf.phases.len()
+                );
+            } else {
+                println!("         {} phases defined", pf.phases.len());
+            }
         }
     }
 
@@ -764,26 +799,45 @@ fn cmd_status(project_dir: &PathBuf) -> Result<()> {
     println!();
     match state.get_entries() {
         Ok(entries) if !entries.is_empty() => {
-            // Count completed phases
+            // Count completed phases (top-level only)
             let completed: std::collections::HashSet<_> = entries
                 .iter()
-                .filter(|e| e.status == "completed")
+                .filter(|e| e.status == "completed" && !e.is_sub_phase())
                 .map(|e| &e.phase)
+                .collect();
+
+            // Count completed sub-phases
+            let completed_sub_phases: Vec<_> = entries
+                .iter()
+                .filter(|e| e.status == "completed" && e.is_sub_phase())
                 .collect();
 
             println!("Execution Progress:");
             println!("  Phases completed: {}", completed.len());
+            if !completed_sub_phases.is_empty() {
+                println!("  Sub-phases completed: {}", completed_sub_phases.len());
+            }
 
             if let Some(last) = state.get_last_completed_phase() {
-                println!("  Last completed:   Phase {}", last);
+                println!("  Last completed phase: {}", last);
+            }
+            if let Some(last_any) = state.get_last_completed_any() {
+                if last_any.contains('.') {
+                    println!("  Last completed (any): {}", last_any);
+                }
             }
 
             println!();
             println!("Recent activity:");
             for entry in entries.iter().rev().take(5) {
+                let phase_display = if let Some(ref sub) = entry.sub_phase {
+                    format!("{} (sub-phase of {})", sub, entry.phase)
+                } else {
+                    format!("Phase {}", entry.phase)
+                };
                 println!(
-                    "  Phase {}: {} at iteration {} ({})",
-                    entry.phase,
+                    "  {}: {} at iteration {} ({})",
+                    phase_display,
                     entry.status,
                     entry.iteration,
                     entry.timestamp.format("%Y-%m-%d %H:%M:%S")

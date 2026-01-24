@@ -88,6 +88,72 @@ impl PivotSignal {
     }
 }
 
+/// A sub-phase spawn signal indicating scope discovery.
+///
+/// Claude outputs `<spawn-subphase>JSON</spawn-subphase>` to request
+/// spawning a sub-phase when discovering larger scope than expected.
+///
+/// Example:
+/// ```text
+/// <spawn-subphase>
+/// {
+///   "name": "Set up OAuth provider",
+///   "promise": "OAUTH SETUP COMPLETE",
+///   "budget": 5,
+///   "reasoning": "OAuth setup is complex enough to warrant its own sub-phase"
+/// }
+/// </spawn-subphase>
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubPhaseSpawnSignal {
+    /// Name of the sub-phase to spawn
+    pub name: String,
+    /// Promise tag for completion
+    pub promise: String,
+    /// Budget to allocate (carved from parent's remaining)
+    pub budget: u32,
+    /// Reasoning for why this sub-phase is needed
+    #[serde(default)]
+    pub reasoning: String,
+    /// When this signal was detected
+    #[serde(skip)]
+    pub timestamp: DateTime<Utc>,
+    /// Skills to use (optional, inherits from parent if empty)
+    #[serde(default)]
+    pub skills: Vec<String>,
+}
+
+impl SubPhaseSpawnSignal {
+    /// Create a new sub-phase spawn signal.
+    pub fn new(name: impl Into<String>, promise: impl Into<String>, budget: u32) -> Self {
+        Self {
+            name: name.into(),
+            promise: promise.into(),
+            budget,
+            reasoning: String::new(),
+            timestamp: Utc::now(),
+            skills: Vec::new(),
+        }
+    }
+
+    /// Create with reasoning.
+    pub fn with_reasoning(
+        name: impl Into<String>,
+        promise: impl Into<String>,
+        budget: u32,
+        reasoning: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            promise: promise.into(),
+            budget,
+            reasoning: reasoning.into(),
+            timestamp: Utc::now(),
+            skills: Vec::new(),
+        }
+    }
+}
+
 /// Collection of all signals extracted from an iteration.
 ///
 /// An iteration may contain multiple signals of each type.
@@ -99,6 +165,9 @@ pub struct IterationSignals {
     pub blockers: Vec<BlockerSignal>,
     /// All pivot signals found in order
     pub pivots: Vec<PivotSignal>,
+    /// All sub-phase spawn requests found in order
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sub_phase_spawns: Vec<SubPhaseSpawnSignal>,
 }
 
 impl IterationSignals {
@@ -109,7 +178,10 @@ impl IterationSignals {
 
     /// Check if any signals were detected.
     pub fn has_signals(&self) -> bool {
-        !self.progress.is_empty() || !self.blockers.is_empty() || !self.pivots.is_empty()
+        !self.progress.is_empty()
+            || !self.blockers.is_empty()
+            || !self.pivots.is_empty()
+            || !self.sub_phase_spawns.is_empty()
     }
 
     /// Get the latest progress percentage, if any.
@@ -139,11 +211,22 @@ impl IterationSignals {
         self.pivots.last()
     }
 
+    /// Check if there are any sub-phase spawn requests.
+    pub fn has_sub_phase_spawns(&self) -> bool {
+        !self.sub_phase_spawns.is_empty()
+    }
+
+    /// Get all sub-phase spawn requests.
+    pub fn get_sub_phase_spawns(&self) -> &[SubPhaseSpawnSignal] {
+        &self.sub_phase_spawns
+    }
+
     /// Merge signals from another iteration.
     pub fn merge(&mut self, other: IterationSignals) {
         self.progress.extend(other.progress);
         self.blockers.extend(other.blockers);
         self.pivots.extend(other.pivots);
+        self.sub_phase_spawns.extend(other.sub_phase_spawns);
     }
 
     /// Get a summary string for logging.
@@ -169,6 +252,15 @@ impl IterationSignals {
                 "{} pivot{}",
                 pivot_count,
                 if pivot_count == 1 { "" } else { "s" }
+            ));
+        }
+
+        let spawn_count = self.sub_phase_spawns.len();
+        if spawn_count > 0 {
+            parts.push(format!(
+                "{} sub-phase spawn{}",
+                spawn_count,
+                if spawn_count == 1 { "" } else { "s" }
             ));
         }
 
@@ -261,5 +353,60 @@ mod tests {
         assert_eq!(signals1.progress.len(), 2);
         assert_eq!(signals1.blockers.len(), 1);
         assert_eq!(signals1.latest_progress(), Some(50));
+    }
+
+    #[test]
+    fn test_sub_phase_spawn_signal_new() {
+        let signal = SubPhaseSpawnSignal::new("OAuth setup", "OAUTH DONE", 5);
+        assert_eq!(signal.name, "OAuth setup");
+        assert_eq!(signal.promise, "OAUTH DONE");
+        assert_eq!(signal.budget, 5);
+        assert!(signal.reasoning.is_empty());
+        assert!(signal.skills.is_empty());
+    }
+
+    #[test]
+    fn test_sub_phase_spawn_signal_with_reasoning() {
+        let signal = SubPhaseSpawnSignal::with_reasoning(
+            "OAuth setup",
+            "OAUTH DONE",
+            5,
+            "OAuth integration is complex",
+        );
+        assert_eq!(signal.name, "OAuth setup");
+        assert_eq!(signal.reasoning, "OAuth integration is complex");
+    }
+
+    #[test]
+    fn test_iteration_signals_with_sub_phase_spawns() {
+        let mut signals = IterationSignals::new();
+        signals
+            .sub_phase_spawns
+            .push(SubPhaseSpawnSignal::new("Task1", "TASK1 DONE", 3));
+        signals
+            .sub_phase_spawns
+            .push(SubPhaseSpawnSignal::new("Task2", "TASK2 DONE", 4));
+
+        assert!(signals.has_signals());
+        assert!(signals.has_sub_phase_spawns());
+        assert_eq!(signals.get_sub_phase_spawns().len(), 2);
+        assert!(signals.summary().contains("2 sub-phase spawns"));
+    }
+
+    #[test]
+    fn test_iteration_signals_merge_with_spawns() {
+        let mut signals1 = IterationSignals::new();
+        signals1
+            .sub_phase_spawns
+            .push(SubPhaseSpawnSignal::new("Task1", "TASK1 DONE", 3));
+
+        let mut signals2 = IterationSignals::new();
+        signals2
+            .sub_phase_spawns
+            .push(SubPhaseSpawnSignal::new("Task2", "TASK2 DONE", 4));
+
+        signals1.merge(signals2);
+
+        assert_eq!(signals1.sub_phase_spawns.len(), 2);
     }
 }

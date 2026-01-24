@@ -51,6 +51,39 @@ pub struct PhaseAudit {
     /// Compaction events that occurred during this phase.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compaction_events: Vec<CompactionEvent>,
+    /// Parent phase number if this is a sub-phase audit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_phase: Option<String>,
+    /// Sub-phase audits for phases that spawned sub-phases.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sub_phase_audits: Vec<SubPhaseAudit>,
+}
+
+/// Audit record for a sub-phase.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubPhaseAudit {
+    /// Sub-phase number (e.g., "05.1")
+    pub sub_phase_number: String,
+    /// Parent phase number
+    pub parent_phase: String,
+    /// Description of the sub-phase
+    pub description: String,
+    /// Promise tag for completion
+    pub promise: String,
+    /// When the sub-phase started
+    pub started_at: DateTime<Utc>,
+    /// When the sub-phase ended
+    pub ended_at: Option<DateTime<Utc>>,
+    /// Iteration audits within this sub-phase
+    pub iterations: Vec<IterationAudit>,
+    /// Final outcome
+    pub outcome: PhaseOutcome,
+    /// File changes made during sub-phase
+    pub file_changes: FileChangeSummary,
+    /// Budget allocated to this sub-phase
+    pub budget: u32,
+    /// Iterations used before completion or failure
+    pub iterations_used: u32,
 }
 
 /// Record of a context compaction event.
@@ -80,6 +113,30 @@ impl PhaseAudit {
             outcome: PhaseOutcome::InProgress,
             file_changes: FileChangeSummary::default(),
             compaction_events: Vec::new(),
+            parent_phase: None,
+            sub_phase_audits: Vec::new(),
+        }
+    }
+
+    /// Create a new PhaseAudit for a sub-phase with parent reference.
+    pub fn new_sub_phase(
+        phase_number: &str,
+        parent_phase: &str,
+        description: &str,
+        promise: &str,
+    ) -> Self {
+        Self {
+            phase_number: phase_number.to_string(),
+            description: description.to_string(),
+            promise: promise.to_string(),
+            started_at: Utc::now(),
+            ended_at: None,
+            iterations: Vec::new(),
+            outcome: PhaseOutcome::InProgress,
+            file_changes: FileChangeSummary::default(),
+            compaction_events: Vec::new(),
+            parent_phase: Some(parent_phase.to_string()),
+            sub_phase_audits: Vec::new(),
         }
     }
 
@@ -109,6 +166,117 @@ impl PhaseAudit {
             summary_chars,
             compression_ratio,
         });
+    }
+
+    /// Check if this is a sub-phase audit.
+    pub fn is_sub_phase(&self) -> bool {
+        self.parent_phase.is_some()
+    }
+
+    /// Check if this phase has any sub-phase audits.
+    pub fn has_sub_phases(&self) -> bool {
+        !self.sub_phase_audits.is_empty()
+    }
+
+    /// Add a sub-phase audit to this phase.
+    pub fn add_sub_phase_audit(&mut self, sub_audit: SubPhaseAudit) {
+        self.sub_phase_audits.push(sub_audit);
+    }
+
+    /// Get a sub-phase audit by number.
+    pub fn get_sub_phase_audit(&self, number: &str) -> Option<&SubPhaseAudit> {
+        self.sub_phase_audits
+            .iter()
+            .find(|spa| spa.sub_phase_number == number)
+    }
+
+    /// Get a mutable sub-phase audit by number.
+    pub fn get_sub_phase_audit_mut(&mut self, number: &str) -> Option<&mut SubPhaseAudit> {
+        self.sub_phase_audits
+            .iter_mut()
+            .find(|spa| spa.sub_phase_number == number)
+    }
+
+    /// Count total iterations including sub-phase iterations.
+    pub fn total_iterations(&self) -> usize {
+        self.iterations.len()
+            + self
+                .sub_phase_audits
+                .iter()
+                .map(|spa| spa.iterations.len())
+                .sum::<usize>()
+    }
+
+    /// Get aggregate file changes including sub-phases.
+    pub fn total_file_changes(&self) -> FileChangeSummary {
+        let mut summary = self.file_changes.clone();
+        for spa in &self.sub_phase_audits {
+            summary.files_added.extend(spa.file_changes.files_added.clone());
+            summary.files_modified.extend(spa.file_changes.files_modified.clone());
+            summary.files_deleted.extend(spa.file_changes.files_deleted.clone());
+            summary.total_lines_added += spa.file_changes.total_lines_added;
+            summary.total_lines_removed += spa.file_changes.total_lines_removed;
+        }
+        summary
+    }
+
+    /// Check if all sub-phases completed successfully.
+    pub fn all_sub_phases_completed(&self) -> bool {
+        self.sub_phase_audits.is_empty()
+            || self
+                .sub_phase_audits
+                .iter()
+                .all(|spa| matches!(spa.outcome, PhaseOutcome::Completed { .. }))
+    }
+}
+
+impl SubPhaseAudit {
+    /// Create a new sub-phase audit.
+    pub fn new(
+        sub_phase_number: &str,
+        parent_phase: &str,
+        description: &str,
+        promise: &str,
+        budget: u32,
+    ) -> Self {
+        Self {
+            sub_phase_number: sub_phase_number.to_string(),
+            parent_phase: parent_phase.to_string(),
+            description: description.to_string(),
+            promise: promise.to_string(),
+            started_at: Utc::now(),
+            ended_at: None,
+            iterations: Vec::new(),
+            outcome: PhaseOutcome::InProgress,
+            file_changes: FileChangeSummary::default(),
+            budget,
+            iterations_used: 0,
+        }
+    }
+
+    /// Finish the sub-phase audit with final outcome.
+    pub fn finish(&mut self, outcome: PhaseOutcome, changes: FileChangeSummary) {
+        self.ended_at = Some(Utc::now());
+        self.outcome = outcome;
+        self.file_changes = changes;
+        self.iterations_used = self.iterations.len() as u32;
+    }
+
+    /// Add an iteration audit to this sub-phase.
+    pub fn add_iteration(&mut self, iteration: IterationAudit) {
+        self.iterations.push(iteration);
+    }
+
+    /// Get duration in seconds.
+    pub fn duration_secs(&self) -> Option<f64> {
+        self.ended_at.map(|end| {
+            (end - self.started_at).num_milliseconds() as f64 / 1000.0
+        })
+    }
+
+    /// Check if this sub-phase completed successfully.
+    pub fn is_successful(&self) -> bool {
+        matches!(self.outcome, PhaseOutcome::Completed { .. })
     }
 }
 

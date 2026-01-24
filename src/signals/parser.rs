@@ -4,8 +4,9 @@
 //! - `<progress>X%</progress>` or `<progress>X</progress>`
 //! - `<blocker>description</blocker>`
 //! - `<pivot>description</pivot>`
+//! - `<spawn-subphase>JSON</spawn-subphase>` for sub-phase spawning
 
-use super::types::{BlockerSignal, IterationSignals, PivotSignal, ProgressSignal};
+use super::types::{BlockerSignal, IterationSignals, PivotSignal, ProgressSignal, SubPhaseSpawnSignal};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -18,6 +19,10 @@ static BLOCKER_REGEX: LazyLock<Regex> =
 
 static PIVOT_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<pivot>(.*?)</pivot>").unwrap());
+
+// Regex for sub-phase spawn signal - captures multiline JSON content
+static SPAWN_SUBPHASE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)<spawn-subphase>\s*(.*?)\s*</spawn-subphase>").unwrap());
 
 /// Parser for extracting signals from Claude's output.
 pub struct SignalParser {
@@ -74,6 +79,35 @@ impl SignalParser {
 
                     if self.verbose {
                         eprintln!("  Signal: pivot \"{}\"", new_approach);
+                    }
+                }
+            }
+        }
+
+        // Extract sub-phase spawn signals
+        for cap in SPAWN_SUBPHASE_REGEX.captures_iter(text) {
+            if let Some(json_match) = cap.get(1) {
+                let json_str = json_match.as_str().trim();
+                if !json_str.is_empty() {
+                    // Try to parse as JSON
+                    match serde_json::from_str::<SubPhaseSpawnSignal>(json_str) {
+                        Ok(mut spawn_signal) => {
+                            spawn_signal.timestamp = chrono::Utc::now();
+                            signals.sub_phase_spawns.push(spawn_signal);
+
+                            if self.verbose {
+                                eprintln!(
+                                    "  Signal: spawn-subphase \"{}\" (budget: {})",
+                                    signals.sub_phase_spawns.last().unwrap().name,
+                                    signals.sub_phase_spawns.last().unwrap().budget
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            if self.verbose {
+                                eprintln!("  Warning: Failed to parse spawn-subphase JSON: {}", e);
+                            }
+                        }
                     }
                 }
             }
@@ -221,5 +255,97 @@ mod tests {
         let parser = SignalParser::new(true);
         let signals = parser.parse("<progress>50%</progress>");
         assert_eq!(signals.progress.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_spawn_subphase() {
+        let text = r#"
+            <spawn-subphase>
+            {
+                "name": "OAuth setup",
+                "promise": "OAUTH DONE",
+                "budget": 5,
+                "reasoning": "OAuth is complex"
+            }
+            </spawn-subphase>
+        "#;
+
+        let signals = extract_signals(text);
+        assert_eq!(signals.sub_phase_spawns.len(), 1);
+        assert_eq!(signals.sub_phase_spawns[0].name, "OAuth setup");
+        assert_eq!(signals.sub_phase_spawns[0].promise, "OAUTH DONE");
+        assert_eq!(signals.sub_phase_spawns[0].budget, 5);
+        assert_eq!(signals.sub_phase_spawns[0].reasoning, "OAuth is complex");
+    }
+
+    #[test]
+    fn test_parse_spawn_subphase_minimal() {
+        let text = r#"
+            <spawn-subphase>{"name": "Task", "promise": "DONE", "budget": 3}</spawn-subphase>
+        "#;
+
+        let signals = extract_signals(text);
+        assert_eq!(signals.sub_phase_spawns.len(), 1);
+        assert_eq!(signals.sub_phase_spawns[0].name, "Task");
+        assert_eq!(signals.sub_phase_spawns[0].budget, 3);
+        assert!(signals.sub_phase_spawns[0].reasoning.is_empty());
+    }
+
+    #[test]
+    fn test_parse_multiple_spawn_subphases() {
+        let text = r#"
+            <spawn-subphase>{"name": "First", "promise": "FIRST DONE", "budget": 3}</spawn-subphase>
+            <spawn-subphase>{"name": "Second", "promise": "SECOND DONE", "budget": 4}</spawn-subphase>
+        "#;
+
+        let signals = extract_signals(text);
+        assert_eq!(signals.sub_phase_spawns.len(), 2);
+        assert_eq!(signals.sub_phase_spawns[0].name, "First");
+        assert_eq!(signals.sub_phase_spawns[1].name, "Second");
+    }
+
+    #[test]
+    fn test_parse_spawn_subphase_with_other_signals() {
+        let text = r#"
+            <progress>50%</progress>
+            <spawn-subphase>{"name": "Task", "promise": "DONE", "budget": 3}</spawn-subphase>
+            <blocker>Need OAuth credentials</blocker>
+        "#;
+
+        let signals = extract_signals(text);
+        assert_eq!(signals.progress.len(), 1);
+        assert_eq!(signals.sub_phase_spawns.len(), 1);
+        assert_eq!(signals.blockers.len(), 1);
+        assert!(signals.has_sub_phase_spawns());
+    }
+
+    #[test]
+    fn test_parse_spawn_subphase_invalid_json() {
+        let text = r#"
+            <spawn-subphase>{ invalid json }</spawn-subphase>
+        "#;
+
+        let signals = extract_signals(text);
+        assert_eq!(signals.sub_phase_spawns.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_spawn_subphase_with_skills() {
+        let text = r#"
+            <spawn-subphase>
+            {
+                "name": "API setup",
+                "promise": "API DONE",
+                "budget": 8,
+                "reasoning": "API needs dedicated focus",
+                "skills": ["api-design", "rust-conventions"]
+            }
+            </spawn-subphase>
+        "#;
+
+        let signals = extract_signals(text);
+        assert_eq!(signals.sub_phase_spawns.len(), 1);
+        assert_eq!(signals.sub_phase_spawns[0].skills.len(), 2);
+        assert_eq!(signals.sub_phase_spawns[0].skills[0], "api-design");
     }
 }

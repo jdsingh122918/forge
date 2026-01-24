@@ -386,4 +386,104 @@ impl OrchestratorUI {
             .ok();
         self.multi.println("").ok();
     }
+
+    /// Print a sub-phase header for sub-phase execution.
+    pub fn print_sub_phase_header(
+        &self,
+        sub_phase: &str,
+        description: &str,
+        promise: &str,
+        budget: u32,
+        parent_phase: &str,
+    ) {
+        self.multi.println("").ok();
+        self.multi
+            .println(format!(
+                "  {} Sub-phase {} (of phase {}): {}",
+                style("└▶").cyan(),
+                style(sub_phase).yellow().bold(),
+                style(parent_phase).dim(),
+                description
+            ))
+            .ok();
+        self.multi
+            .println(format!(
+                "     {} {}  {} {} iterations",
+                style("Promise:").dim(),
+                promise,
+                style("Budget:").dim(),
+                budget
+            ))
+            .ok();
+        self.multi.println("").ok();
+    }
+
+    /// Start a sub-phase (similar to start_phase but with different styling).
+    pub fn start_sub_phase(&self, sub_phase: &str, description: &str, parent_phase: &str) {
+        self.iteration_bar.set_message(format!(
+            "Sub-phase {}: {} (parent: {})",
+            style(sub_phase).yellow(),
+            description,
+            style(parent_phase).dim()
+        ));
+    }
+
+    /// Complete a sub-phase successfully.
+    pub fn sub_phase_complete(&self, sub_phase: &str, parent_phase: &str) {
+        self.multi
+            .println(format!(
+                "  {} Sub-phase {} of {} complete!",
+                CHECK,
+                style(sub_phase).green().bold(),
+                style(parent_phase).dim()
+            ))
+            .ok();
+    }
+
+    /// Mark a sub-phase as failed.
+    pub fn sub_phase_failed(&self, sub_phase: &str, parent_phase: &str, reason: &str) {
+        self.multi
+            .println(format!(
+                "  {} Sub-phase {} of {} failed: {}",
+                CROSS,
+                style(sub_phase).red().bold(),
+                style(parent_phase).dim(),
+                reason
+            ))
+            .ok();
+    }
+
+    /// Show a sub-phase spawn request.
+    pub fn show_sub_phase_spawn(&self, name: &str, promise: &str, budget: u32) {
+        self.multi
+            .println(format!(
+                "    {} Spawning sub-phase: {} (promise: {}, budget: {})",
+                style("🔀").cyan(),
+                style(name).yellow(),
+                style(promise).dim(),
+                style(budget).cyan()
+            ))
+            .ok();
+    }
+
+    /// Show sub-phase progress summary.
+    pub fn show_sub_phase_progress(&self, completed: usize, total: usize, failed: usize) {
+        let status = if failed > 0 {
+            format!(
+                "{}/{} sub-phases ({} failed)",
+                style(completed).green(),
+                total,
+                style(failed).red()
+            )
+        } else {
+            format!(
+                "{}/{} sub-phases complete",
+                style(completed).green(),
+                total
+            )
+        };
+        self.multi
+            .println(format!("  {} {}", style("📊").dim(), status))
+            .ok();
+    }
 }
