@@ -1,3 +1,4 @@
+use crate::signals::IterationSignals;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -80,6 +81,9 @@ pub struct IterationAudit {
     pub git_snapshot_after: Option<String>,
     pub file_diffs: Vec<FileDiff>,
     pub promise_found: bool,
+    /// Progress signals extracted from this iteration (progress %, blockers, pivots)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signals: Option<IterationSignals>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

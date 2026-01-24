@@ -156,6 +156,27 @@ impl HookManager {
         self.run_hooks(&context).await
     }
 
+    /// Convenience method: run PostIteration hooks with signals.
+    pub async fn run_post_iteration_with_signals(
+        &self,
+        phase: &crate::phase::Phase,
+        iteration: u32,
+        file_changes: &crate::audit::FileChangeSummary,
+        promise_found: bool,
+        output: Option<&str>,
+        signals: &crate::signals::IterationSignals,
+    ) -> Result<HookResult> {
+        let context = HookContext::post_iteration_with_signals(
+            phase,
+            iteration,
+            file_changes,
+            promise_found,
+            output,
+            signals,
+        );
+        self.run_hooks(&context).await
+    }
+
     /// Convenience method: run OnFailure hooks.
     pub async fn run_on_failure(
         &self,

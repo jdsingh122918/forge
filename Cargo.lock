@@ -370,6 +370,7 @@ dependencies = [
  "glob",
  "indicatif",
  "predicates",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

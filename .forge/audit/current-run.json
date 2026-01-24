@@ -125,6 +125,40 @@
         "total_lines_added": 346,
         "total_lines_removed": 6
       }
+    },
+    {
+      "phase_number": "05",
+      "description": "Progress Signaling",
+      "promise": "PROGRESS COMPLETE",
+      "started_at": "2026-01-24T07:23:05.605512Z",
+      "ended_at": "2026-01-24T07:30:57.732894Z",
+      "iterations": [],
+      "outcome": {
+        "Completed": {
+          "iteration": 1
+        }
+      },
+      "file_changes": {
+        "files_added": [
+          ".forge/logs/phase-05-iter-1-output.log",
+          ".forge/logs/phase-05-iter-1-prompt.md",
+          "src/signals/"
+        ],
+        "files_modified": [
+          "Cargo.lock",
+          "Cargo.toml",
+          "src/audit/mod.rs",
+          "src/hooks/manager.rs",
+          "src/hooks/types.rs",
+          "src/lib.rs",
+          "src/main.rs",
+          "src/orchestrator/runner.rs",
+          "src/ui/progress.rs"
+        ],
+        "files_deleted": [],
+        "total_lines_added": 211,
+        "total_lines_removed": 2
+      }
     }
   ]
 }

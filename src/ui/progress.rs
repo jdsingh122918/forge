@@ -1,4 +1,5 @@
 use crate::audit::{ChangeType, FileChangeSummary};
+use crate::signals::IterationSignals;
 use console::{Emoji, style};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::path::Path;
@@ -12,6 +13,9 @@ static FOLDER: Emoji<'_, '_> = Emoji("📁 ", "");
 static FILE_NEW: Emoji<'_, '_> = Emoji("📄 ", "+");
 static FILE_MOD: Emoji<'_, '_> = Emoji("📝 ", "~");
 static FILE_DEL: Emoji<'_, '_> = Emoji("🗑️  ", "-");
+static PROGRESS: Emoji<'_, '_> = Emoji("📊 ", "[PROG]");
+static BLOCKER: Emoji<'_, '_> = Emoji("🚧 ", "[BLOCK]");
+static PIVOT: Emoji<'_, '_> = Emoji("🔄 ", "[PIVOT]");
 
 pub struct OrchestratorUI {
     multi: MultiProgress,
@@ -185,10 +189,100 @@ impl OrchestratorUI {
             .ok();
     }
 
+    /// Show progress signals from Claude's output.
+    ///
+    /// Displays progress percentage, blockers, and pivots extracted from the iteration.
+    pub fn show_signals(&self, signals: &IterationSignals) {
+        // Show latest progress percentage
+        if let Some(pct) = signals.latest_progress() {
+            self.multi
+                .println(format!(
+                    "    {} Progress: {}",
+                    PROGRESS,
+                    style(format!("{}%", pct)).cyan().bold()
+                ))
+                .ok();
+        }
+
+        // Show all blockers (important - always show)
+        for blocker in &signals.blockers {
+            self.multi
+                .println(format!(
+                    "    {} Blocker: {}",
+                    BLOCKER,
+                    style(&blocker.description).red().bold()
+                ))
+                .ok();
+        }
+
+        // Show pivots
+        for pivot in &signals.pivots {
+            self.multi
+                .println(format!(
+                    "    {} Pivot: {}",
+                    PIVOT,
+                    style(&pivot.new_approach).yellow()
+                ))
+                .ok();
+        }
+    }
+
+    /// Show a progress percentage update.
+    pub fn show_progress(&self, percentage: u8) {
+        let iter = self.current_iter.load(Ordering::SeqCst);
+        let max = self.max_iter.load(Ordering::SeqCst);
+        self.iteration_bar.set_message(format!(
+            "Running iteration {}/{} {} {}",
+            style(iter).cyan(),
+            max,
+            PROGRESS,
+            style(format!("{}%", percentage)).cyan().bold()
+        ));
+        self.multi
+            .println(format!(
+                "    {} Progress: {}",
+                PROGRESS,
+                style(format!("{}%", percentage)).cyan().bold()
+            ))
+            .ok();
+    }
+
+    /// Show a blocker that Claude has identified.
+    pub fn show_blocker(&self, description: &str) {
+        self.multi
+            .println(format!(
+                "    {} {}",
+                BLOCKER,
+                style(format!("BLOCKER: {}", description)).red().bold()
+            ))
+            .ok();
+    }
+
+    /// Show a pivot (change in approach) from Claude.
+    pub fn show_pivot(&self, new_approach: &str) {
+        self.multi
+            .println(format!(
+                "    {} {}",
+                PIVOT,
+                style(format!("Pivot: {}", new_approach)).yellow()
+            ))
+            .ok();
+    }
+
     pub fn iteration_success(&self, iter: u32) {
         self.iteration_bar.finish_with_message(format!(
             "{} Iteration {} complete - promise found!",
             CHECK, iter
+        ));
+    }
+
+    /// Update the iteration bar with a custom message (e.g., progress %).
+    pub fn iteration_bar_message(&self, iter: u32, max: u32, msg: &str) {
+        self.iteration_bar.set_message(format!(
+            "Iteration {}/{} - {}",
+            style(iter).cyan(),
+            max,
+            style(msg).dim()
         ));
     }
 

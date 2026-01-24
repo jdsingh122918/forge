@@ -9,6 +9,7 @@ pub mod interview;
 pub mod orchestrator;
 pub mod patterns;
 pub mod phase;
+pub mod signals;
 pub mod skills;
 pub mod stream;
 pub mod tracker;

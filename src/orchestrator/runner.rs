@@ -1,6 +1,7 @@
 use crate::audit::ClaudeSession;
 use crate::config::Config;
 use crate::phase::Phase;
+use crate::signals::{extract_signals, IterationSignals};
 use crate::skills::SkillsLoader;
 use crate::stream::{ContentBlock, StreamEvent, describe_tool_use, tool_emoji, truncate_thinking};
 use crate::ui::OrchestratorUI;
@@ -19,6 +20,8 @@ pub struct IterationResult {
     pub session: ClaudeSession,
     pub promise_found: bool,
     pub output: String,
+    /// Signals extracted from Claude's output (progress, blockers, pivots)
+    pub signals: IterationSignals,
 }
 
 impl ClaudeRunner {
@@ -200,7 +203,15 @@ impl ClaudeRunner {
         let promise_tag = format!("<promise>{}</promise>", phase.promise);
         let promise_found = combined_output.contains(&promise_tag);
 
+        // Extract progress signals from output
+        let signals = extract_signals(&combined_output);
+
         if let Some(ref ui) = ui {
+            // Show signal information
+            if signals.has_signals() {
+                ui.show_signals(&signals);
+            }
+
             if promise_found {
                 ui.log_step(&format!("Promise tag found: {}", promise_tag));
             } else {
@@ -224,6 +235,7 @@ impl ClaudeRunner {
             session,
             promise_found,
             output: combined_output,
+            signals,
         })
     }
 
@@ -251,6 +263,14 @@ impl ClaudeRunner {
 3. Run tests/checks to verify your work
 4. Only output <promise>{}</promise> when the task is FULLY complete and verified
 5. If tests fail, fix them before claiming completion
+
+## PROGRESS SIGNALS (Optional)
+You can use these tags to communicate your progress:
+- <progress>X%</progress> - Report completion percentage (0-100)
+- <blocker>description</blocker> - Signal you're blocked and need help
+- <pivot>new approach</pivot> - Signal you're changing strategy
+
+Example: <progress>50%</progress> indicates you're halfway done.
 
 "#,
             phase.promise

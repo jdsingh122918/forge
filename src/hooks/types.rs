@@ -9,6 +9,7 @@
 
 use crate::audit::FileChangeSummary;
 use crate::phase::Phase;
+use crate::signals::IterationSignals;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -238,6 +239,9 @@ pub struct HookContext {
     /// Claude's output (for PostIteration)
     #[serde(default)]
     pub claude_output: Option<String>,
+    /// Progress signals extracted from Claude's output (for PostIteration)
+    #[serde(default)]
+    pub signals: Option<IterationSignals>,
     /// Additional context data
     #[serde(default)]
     pub extra: HashMap<String, serde_json::Value>,
@@ -253,6 +257,7 @@ impl HookContext {
             file_changes: previous_changes.cloned(),
             promise_found: None,
             claude_output: None,
+            signals: None,
             extra: HashMap::new(),
         }
     }
@@ -271,6 +276,7 @@ impl HookContext {
             file_changes: Some(file_changes.clone()),
             promise_found: Some(promise_found),
             claude_output: None,
+            signals: None,
             extra: HashMap::new(),
         }
     }
@@ -284,6 +290,7 @@ impl HookContext {
             file_changes: None,
             promise_found: None,
             claude_output: None,
+            signals: None,
             extra: HashMap::new(),
         }
     }
@@ -303,6 +310,28 @@ impl HookContext {
             file_changes: Some(file_changes.clone()),
             promise_found: Some(promise_found),
             claude_output: output.map(|s| s.to_string()),
+            signals: None,
+            extra: HashMap::new(),
+        }
+    }
+
+    /// Create a new context for a PostIteration event with signals.
+    pub fn post_iteration_with_signals(
+        phase: &Phase,
+        iteration: u32,
+        file_changes: &FileChangeSummary,
+        promise_found: bool,
+        output: Option<&str>,
+        signals: &IterationSignals,
+    ) -> Self {
+        Self {
+            event: HookEvent::PostIteration,
+            phase: Some(PhaseContext::from(phase)),
+            iteration: Some(iteration),
+            file_changes: Some(file_changes.clone()),
+            promise_found: Some(promise_found),
+            claude_output: output.map(|s| s.to_string()),
+            signals: Some(signals.clone()),
             extra: HashMap::new(),
         }
     }
@@ -316,6 +345,7 @@ impl HookContext {
             file_changes: Some(file_changes.clone()),
             promise_found: Some(false),
             claude_output: None,
+            signals: None,
             extra: HashMap::new(),
         }
     }
@@ -329,6 +359,7 @@ impl HookContext {
             file_changes: previous_changes.cloned(),
             promise_found: None,
             claude_output: None,
+            signals: None,
             extra: HashMap::new(),
         }
     }
@@ -336,6 +367,12 @@ impl HookContext {
     /// Add extra data to the context.
     pub fn with_extra(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
         self.extra.insert(key.into(), value);
+        self
+    }
+
+    /// Add signals to the context.
+    pub fn with_signals(mut self, signals: &IterationSignals) -> Self {
+        self.signals = Some(signals.clone());
         self
     }
 }

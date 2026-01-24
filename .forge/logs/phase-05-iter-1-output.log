@@ -1,0 +1,53 @@
+All 269 tests pass. Let me provide a summary of what was implemented for Phase 05 - Progress Signaling:
+
+## Summary of Progress Signaling Implementation
+
+### New Module: `src/signals/`
+
+1. **`src/signals/mod.rs`** - Module entry point that exports types and parser
+2. **`src/signals/types.rs`** - Signal type definitions:
+   - `ProgressSignal` - Represents `<progress>X%</progress>` tags with percentage (0-100)
+   - `BlockerSignal` - Represents `<blocker>description</blocker>` tags for obstacles
+   - `PivotSignal` - Represents `<pivot>new approach</pivot>` tags for strategy changes
+   - `IterationSignals` - Collection of all signals from an iteration with helper methods
+3. **`src/signals/parser.rs`** - Regex-based parsing of signal tags from Claude's output
+
+### Integration Points Updated:
+
+1. **`src/orchestrator/runner.rs`**:
+   - `IterationResult` now includes `signals: IterationSignals`
+   - Signals are extracted after each iteration
+   - Prompt now documents the available signal tags
+   - UI is updated to show signals when detected
+
+2. **`src/hooks/types.rs`**:
+   - `HookContext` now includes `signals: Option<IterationSignals>`
+   - New `post_iteration_with_signals()` and `with_signals()` methods
+
+3. **`src/hooks/manager.rs`**:
+   - New `run_post_iteration_with_signals()` convenience method
+
+4. **`src/audit/mod.rs`**:
+   - `IterationAudit` now includes `signals: Option<IterationSignals>` for audit trail
+
+5. **`src/ui/progress.rs`**:
+   - New emojis: 📊 (progress), 🚧 (blocker), 🔄 (pivot)
+   - `show_signals()` - Display all signals from an iteration
+   - `show_progress()` - Show progress percentage update
+   - `show_blocker()` - Highlight a blocker message
+   - `show_pivot()` - Show strategy change
+   - `iteration_bar_message()` - Update iteration bar with custom message
+
+6. **`src/main.rs`** (orchestration loop):
+   - Signals passed to PostIteration hooks
+   - Blocker pause-and-prompt: When blockers are detected, user is prompted to continue or stop
+   - Progress percentage shown in iteration status
+
+### Dependencies Added:
+- `regex = "1"` in Cargo.toml for signal tag parsing
+
+### Test Coverage:
+- 16 new tests in `src/signals/` for parsing and types
+- All 269 tests pass
+
+<promise>PROGRESS COMPLETE</promise>

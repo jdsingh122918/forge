@@ -366,16 +366,42 @@ async fn run_orchestrator(
                 ui.show_file_change(path, forge::audit::ChangeType::Modified);
             }
 
-            // Run PostIteration hooks
+            // Run PostIteration hooks with signals
             let post_iter_result = hook_manager
-                .run_post_iteration(
+                .run_post_iteration_with_signals(
                     &phase,
                     iter,
                     &changes,
                     result.promise_found,
                     Some(&result.output),
+                    &result.signals,
                 )
                 .await?;
+
+            // Handle blockers - pause and prompt user if there are unacknowledged blockers
+            if result.signals.has_unacknowledged_blockers() {
+                let blockers = result.signals.unacknowledged_blockers();
+                for blocker in &blockers {
+                    ui.show_blocker(&blocker.description);
+                }
+
+                // Prompt user about blockers
+                use dialoguer::Confirm;
+                let continue_anyway = Confirm::new()
+                    .with_prompt(format!(
+                        "{} blocker(s) detected. Continue anyway?",
+                        blockers.len()
+                    ))
+                    .default(true)
+                    .interact()
+                    .unwrap_or(true);
+
+                if !continue_anyway {
+                    ui.phase_failed(&phase.number, "User stopped due to blockers");
+                    phase_audit.finish(PhaseOutcome::UserAborted, changes.clone());
+                    break;
+                }
+            }
 
             // PostIteration hook can override promise detection
             let should_complete = match post_iter_result.action {
@@ -396,6 +422,10 @@ async fn run_orchestrator(
                 completed = true;
                 break;
             } else {
+                // Show progress if available
+                if let Some(pct) = result.signals.latest_progress() {
+                    ui.iteration_bar_message(iter, phase.budget, &format!("{}% done", pct));
+                }
                 ui.iteration_continue(iter);
             }
 
