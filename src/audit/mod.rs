@@ -48,6 +48,24 @@ pub struct PhaseAudit {
     pub iterations: Vec<IterationAudit>,
     pub outcome: PhaseOutcome,
     pub file_changes: FileChangeSummary,
+    /// Compaction events that occurred during this phase.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compaction_events: Vec<CompactionEvent>,
+}
+
+/// Record of a context compaction event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactionEvent {
+    /// When the compaction occurred.
+    pub timestamp: DateTime<Utc>,
+    /// Number of iterations that were compacted.
+    pub iterations_compacted: u32,
+    /// Original context size in characters.
+    pub original_chars: usize,
+    /// Summary size in characters.
+    pub summary_chars: usize,
+    /// Compression ratio achieved (0.0 to 1.0).
+    pub compression_ratio: f32,
 }
 
 impl PhaseAudit {
@@ -61,6 +79,7 @@ impl PhaseAudit {
             iterations: Vec::new(),
             outcome: PhaseOutcome::InProgress,
             file_changes: FileChangeSummary::default(),
+            compaction_events: Vec::new(),
         }
     }
 
@@ -68,6 +87,28 @@ impl PhaseAudit {
         self.ended_at = Some(Utc::now());
         self.outcome = outcome;
         self.file_changes = changes;
+    }
+
+    /// Record a compaction event.
+    pub fn add_compaction_event(
+        &mut self,
+        iterations_compacted: u32,
+        original_chars: usize,
+        summary_chars: usize,
+    ) {
+        let compression_ratio = if original_chars > 0 {
+            1.0 - (summary_chars as f32 / original_chars as f32)
+        } else {
+            0.0
+        };
+
+        self.compaction_events.push(CompactionEvent {
+            timestamp: Utc::now(),
+            iterations_compacted,
+            original_chars,
+            summary_chars,
+            compression_ratio,
+        });
     }
 }
 

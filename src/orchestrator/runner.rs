@@ -12,6 +12,53 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+/// Optional context that can be injected into prompts.
+/// Used for compaction summaries and other context additions.
+#[derive(Debug, Clone, Default)]
+pub struct PromptContext {
+    /// Compaction summary to inject (if context was compacted).
+    pub compaction_summary: Option<String>,
+    /// Additional context to include.
+    pub additional_context: Option<String>,
+}
+
+impl PromptContext {
+    /// Create an empty prompt context.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a prompt context with a compaction summary.
+    pub fn with_compaction(summary: String) -> Self {
+        Self {
+            compaction_summary: Some(summary),
+            additional_context: None,
+        }
+    }
+
+    /// Check if there's any context to inject.
+    pub fn has_content(&self) -> bool {
+        self.compaction_summary.is_some() || self.additional_context.is_some()
+    }
+
+    /// Generate the context section for injection.
+    pub fn generate_section(&self) -> String {
+        let mut section = String::new();
+
+        if let Some(ref summary) = self.compaction_summary {
+            section.push_str(summary);
+            section.push('\n');
+        }
+
+        if let Some(ref additional) = self.additional_context {
+            section.push_str(additional);
+            section.push('\n');
+        }
+
+        section
+    }
+}
+
 pub struct ClaudeRunner {
     config: Config,
 }
@@ -35,7 +82,18 @@ impl ClaudeRunner {
         iteration: u32,
         ui: Option<Arc<OrchestratorUI>>,
     ) -> Result<IterationResult> {
-        let prompt = self.generate_prompt(phase);
+        self.run_iteration_with_context(phase, iteration, ui, None).await
+    }
+
+    /// Run an iteration with optional injected context (e.g., compaction summary).
+    pub async fn run_iteration_with_context(
+        &self,
+        phase: &Phase,
+        iteration: u32,
+        ui: Option<Arc<OrchestratorUI>>,
+        prompt_context: Option<&PromptContext>,
+    ) -> Result<IterationResult> {
+        let prompt = self.generate_prompt_with_context(phase, prompt_context);
 
         // Write prompt to file
         let prompt_file = self.config.log_dir.join(format!(
@@ -239,7 +297,13 @@ impl ClaudeRunner {
         })
     }
 
+    #[allow(dead_code)]
     fn generate_prompt(&self, phase: &Phase) -> String {
+        self.generate_prompt_with_context(phase, None)
+    }
+
+    /// Generate a prompt with optional injected context.
+    fn generate_prompt_with_context(&self, phase: &Phase, prompt_context: Option<&PromptContext>) -> String {
         // Read spec file contents
         let spec_content = std::fs::read_to_string(&self.config.spec_file)
             .unwrap_or_else(|e| format!("[ERROR: Could not read spec file: {}]", e));
@@ -247,13 +311,19 @@ impl ClaudeRunner {
         // Load skills for this phase
         let skills_section = self.load_skills_for_phase(phase);
 
+        // Generate compaction/context section if provided
+        let context_section = prompt_context
+            .filter(|ctx| ctx.has_content())
+            .map(|ctx| ctx.generate_section())
+            .unwrap_or_default();
+
         let base_context = format!(
             r#"You are implementing a project per the following spec.
-
+{}
 ## SPECIFICATION
 {}
 {}"#,
-            spec_content, skills_section
+            context_section, spec_content, skills_section
         );
 
         let critical_rules = format!(
