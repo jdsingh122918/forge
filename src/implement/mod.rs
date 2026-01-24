@@ -24,7 +24,7 @@ use std::path::Path;
 
 use crate::generate::{create_phases_file, parse_review_action, ReviewAction};
 use crate::init::get_forge_dir;
-use crate::phase::Phase;
+use crate::phase::{Phase, PhaseType};
 
 /// Run the implement command.
 ///
@@ -57,7 +57,7 @@ pub fn run_implement(
         extracted
             .phases
             .into_iter()
-            .filter(|p| p.phase_type.as_deref() != Some("test"))
+            .filter(|p| p.phase_type != Some(PhaseType::Test))
             .collect()
     } else {
         extracted.phases
@@ -130,7 +130,7 @@ pub fn run_implement(
                     extracted
                         .phases
                         .into_iter()
-                        .filter(|p| p.phase_type.as_deref() != Some("test"))
+                        .filter(|p| p.phase_type != Some(PhaseType::Test))
                         .collect()
                 } else {
                     extracted.phases
@@ -139,10 +139,13 @@ pub fn run_implement(
 
                 // Update spec and phases
                 let spec_content = generate_spec_markdown(&extracted.spec);
-                std::fs::write(forge_dir.join("spec.md"), &spec_content)?;
+                std::fs::write(forge_dir.join("spec.md"), &spec_content)
+                    .context("Failed to write spec.md during regeneration")?;
 
                 let phases_file = create_phases_file(phases.clone(), &spec_content);
-                phases_file.save(&forge_dir.join("phases.json"))?;
+                phases_file
+                    .save(&forge_dir.join("phases.json"))
+                    .context("Failed to write phases.json during regeneration")?;
 
                 display_phases_with_type(&phases);
                 continue;
@@ -159,10 +162,9 @@ pub fn run_implement(
 fn display_phases_with_type(phases: &[Phase]) {
     println!();
     for phase in phases {
-        let type_tag = match phase.phase_type.as_deref() {
-            Some("test") => "[test]",
-            Some("implement") => "[implement]",
-            Some(other) => other,
+        let type_tag = match phase.phase_type {
+            Some(PhaseType::Test) => "[test]",
+            Some(PhaseType::Implement) => "[implement]",
             None => "",
         };
 

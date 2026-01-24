@@ -14,6 +14,7 @@ use std::process::{Command, Stdio};
 use crate::forge_config::ForgeConfig;
 use crate::init::{get_forge_dir, is_initialized};
 use crate::phase::{Phase, PhasesFile};
+use crate::util::extract_json_object;
 
 /// The system prompt used for generating phases from a spec.
 pub const GENERATION_SYSTEM_PROMPT: &str = r#"You are generating implementation phases from a project specification.
@@ -108,35 +109,6 @@ pub fn parse_phases_from_output(output: &str) -> Result<ParsedPhases> {
     }
 
     Ok(ParsedPhases { phases })
-}
-
-/// Extract a JSON object from text that may contain other content.
-///
-/// Looks for the outermost `{...}` pattern.
-fn extract_json_object(text: &str) -> Option<String> {
-    let start = text.find('{')?;
-    let mut depth = 0;
-    let mut end = start;
-
-    for (i, ch) in text[start..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    end = start + i + 1;
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if depth == 0 && end > start {
-        Some(text[start..end].to_string())
-    } else {
-        None
-    }
 }
 
 /// Create a PhasesFile from parsed phases and spec content.

@@ -27,7 +27,7 @@ pub fn generate_spec_markdown(spec: &ExtractedSpec) -> String {
     // Header
     lines.push(format!("# Implementation Spec: {}", spec.title));
     lines.push(String::new());
-    lines.push(format!("> Generated from: {}", spec.source));
+    lines.push(format!("> Generated from: {}", spec.source.display()));
     lines.push(format!("> Generated at: {}", Utc::now().to_rfc3339()));
     lines.push(String::new());
 
@@ -85,7 +85,7 @@ pub fn generate_spec_markdown(spec: &ExtractedSpec) -> String {
     // Footer
     lines.push("---".to_string());
     lines.push("*This spec was auto-generated from a design document.*".to_string());
-    lines.push(format!("*Original design: {}*", spec.source));
+    lines.push(format!("*Original design: {}*", spec.source.display()));
     lines.push(String::new());
 
     lines.join("\n")
@@ -93,13 +93,15 @@ pub fn generate_spec_markdown(spec: &ExtractedSpec) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::implement::types::{CodePattern, Complexity, Component};
 
     fn sample_spec() -> ExtractedSpec {
         ExtractedSpec {
             title: "GitHub Agent".to_string(),
-            source: "docs/plans/github-agent.md".to_string(),
+            source: PathBuf::from("docs/plans/github-agent.md"),
             goal: "Build an AI agent that responds to GitHub issues".to_string(),
             components: vec![
                 Component {
@@ -210,7 +212,7 @@ mod tests {
     fn test_generate_spec_markdown_component_no_dependencies() {
         let spec = ExtractedSpec {
             title: "Simple".to_string(),
-            source: "test.md".to_string(),
+            source: PathBuf::from("test.md"),
             goal: "Test".to_string(),
             components: vec![Component {
                 name: "Standalone".to_string(),

@@ -17,6 +17,7 @@ pub mod stream;
 pub mod subphase;
 pub mod tracker;
 pub mod ui;
+pub mod util;
 
 // Re-export from phase for backward compatibility
 pub mod phases {

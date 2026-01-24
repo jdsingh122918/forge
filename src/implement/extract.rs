@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 
 use crate::forge_config::ForgeConfig;
 use crate::phase::Phase;
+use crate::util::extract_json_object;
 
 use super::types::{ExtractedDesign, ExtractedSpec};
 
@@ -101,7 +102,7 @@ Output a JSON object with this exact structure:
 /// - Exists
 /// - Is a markdown file (.md extension)
 /// - Is not empty
-/// - Contains at least one markdown header
+/// - Warns if no markdown headers are present (but does not fail)
 ///
 /// # Arguments
 /// * `path` - Path to the design document
@@ -162,9 +163,19 @@ pub fn extract_design(
 
 /// Call Claude with the extraction prompt.
 fn call_claude_for_extraction(project_dir: &Path, prompt: &str) -> Result<String> {
-    let claude_cmd = ForgeConfig::new(project_dir.to_path_buf())
-        .map(|c| c.claude_cmd())
-        .unwrap_or_else(|_| std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".to_string()));
+    let claude_cmd = match ForgeConfig::new(project_dir.to_path_buf()) {
+        Ok(config) => config.claude_cmd(),
+        Err(e) => {
+            eprintln!("Warning: Failed to load forge config ({}), checking CLAUDE_CMD env var", e);
+            match std::env::var("CLAUDE_CMD") {
+                Ok(cmd) => cmd,
+                Err(_) => {
+                    eprintln!("Warning: CLAUDE_CMD not set, using default 'claude'");
+                    "claude".to_string()
+                }
+            }
+        }
+    };
 
     let mut cmd = Command::new(&claude_cmd);
     cmd.arg("--print");
@@ -206,8 +217,8 @@ fn parse_extraction_response(output: &str, source_path: &Path) -> Result<Extract
         .context("Failed to parse spec from JSON")?;
 
     // Ensure source is set
-    if spec.source.is_empty() {
-        spec.source = source_path.display().to_string();
+    if spec.source.as_os_str().is_empty() {
+        spec.source = source_path.to_path_buf();
     }
 
     // Extract phases
@@ -229,39 +240,17 @@ fn parse_extraction_response(output: &str, source_path: &Path) -> Result<Extract
         bail!("No implementable components found in design doc");
     }
 
+    if phases.is_empty() {
+        bail!("No phases generated from design doc. Claude may have failed to produce a phase plan.");
+    }
+
     Ok(ExtractedDesign { spec, phases })
-}
-
-/// Extract a JSON object from text that may contain other content.
-fn extract_json_object(text: &str) -> Option<String> {
-    let start = text.find('{')?;
-    let mut depth = 0;
-    let mut end = start;
-
-    for (i, ch) in text[start..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    end = start + i + 1;
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if depth == 0 && end > start {
-        Some(text[start..end].to_string())
-    } else {
-        None
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::phase::PhaseType;
     use tempfile::tempdir;
 
     #[test]
@@ -377,10 +366,10 @@ mod tests {
 
         let result = parse_extraction_response(output, Path::new("test.md")).unwrap();
         assert_eq!(result.spec.title, "Test Project");
-        assert_eq!(result.spec.source, "test.md"); // Filled in from path
+        assert_eq!(result.spec.source, Path::new("test.md")); // Filled in from path
         assert_eq!(result.spec.components.len(), 1);
         assert_eq!(result.phases.len(), 1);
-        assert_eq!(result.phases[0].phase_type, Some("test".to_string()));
+        assert_eq!(result.phases[0].phase_type, Some(PhaseType::Test));
     }
 
     #[test]

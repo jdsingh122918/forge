@@ -212,7 +212,14 @@ async fn main() -> Result<()> {
             dry_run,
         } => {
             if let Some(start) = start_phase {
-                // Resume from specific phase
+                // Verify phases exist before resuming
+                let phases_path = project_dir.join(".forge").join("phases.json");
+                if !phases_path.exists() {
+                    anyhow::bail!(
+                        "Cannot resume from phase {}: No phases.json found. Run 'forge implement <design-doc>' first.",
+                        start
+                    );
+                }
                 run_orchestrator(&cli, project_dir, Some(start.clone())).await?;
             } else {
                 cmd_implement(&project_dir, design_doc, *no_tdd, *dry_run)?;

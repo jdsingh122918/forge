@@ -13,6 +13,17 @@ use std::path::Path;
 
 use crate::forge_config::PermissionMode;
 
+/// Phase type for TDD workflow.
+/// Used by `forge implement` to distinguish test phases from implementation phases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PhaseType {
+    /// Test phase - writes tests first
+    Test,
+    /// Implement phase - writes implementation code
+    Implement,
+}
+
 /// Represents a single implementation phase.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Phase {
@@ -48,10 +59,10 @@ pub struct Phase {
     /// These are populated dynamically during orchestration
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sub_phases: Vec<SubPhase>,
-    /// Phase type for TDD workflow (e.g., "test" or "implement")
+    /// Phase type for TDD workflow (test or implement)
     /// Used by `forge implement` to distinguish test phases from implementation phases
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub phase_type: Option<String>,
+    pub phase_type: Option<PhaseType>,
 }
 
 /// Represents a sub-phase that is dynamically spawned from a parent phase.

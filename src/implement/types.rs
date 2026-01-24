@@ -3,6 +3,8 @@
 //! These types represent the structured output from Claude when extracting
 //! implementation details from a design document.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::phase::Phase;
@@ -25,7 +27,7 @@ pub struct ExtractedSpec {
     /// Title of the implementation
     pub title: String,
     /// Path to the source design document
-    pub source: String,
+    pub source: PathBuf,
     /// One paragraph summary of what to build
     pub goal: String,
     /// Components to be implemented
@@ -134,7 +136,7 @@ mod tests {
     fn test_extracted_spec_serialization() {
         let spec = ExtractedSpec {
             title: "GitHub Agent".to_string(),
-            source: "docs/plans/github-agent.md".to_string(),
+            source: PathBuf::from("docs/plans/github-agent.md"),
             goal: "Build an agent that responds to GitHub issues".to_string(),
             components: vec![],
             patterns: vec![],
