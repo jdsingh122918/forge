@@ -1,0 +1,86 @@
+{
+  "spec_hash": "forge-evolution-v1",
+  "generated_at": "2026-01-24T12:00:00Z",
+  "phases": [
+    {
+      "number": "01",
+      "name": "Configuration Unification Foundation",
+      "promise": "CONFIG COMPLETE",
+      "budget": 8,
+      "reasoning": "Establish the unified forge.toml configuration system as the foundation. This must come first because all other features (hooks, skills, permission modes) will read from this config. Includes parsing, validation, and migration from any existing scattered settings.",
+      "depends_on": []
+    },
+    {
+      "number": "02",
+      "name": "Hook System Core",
+      "promise": "HOOKS COMPLETE",
+      "budget": 15,
+      "reasoning": "Implement the hook event system as the foundation for extensibility. This enables PrePhase, PostPhase, PreIteration, PostIteration, OnFailure, and OnApproval events. Command hooks execute bash scripts with JSON input/output. This is prioritized because other features can leverage hooks for their behavior.",
+      "depends_on": ["01"]
+    },
+    {
+      "number": "03",
+      "name": "Prompt Hooks Integration",
+      "promise": "PROMPT_HOOKS COMPLETE",
+      "budget": 10,
+      "reasoning": "Extend the hook system to support prompt-type hooks that use a small LLM to evaluate conditions and return decisions. This enables intelligent automation of approval and continuation decisions.",
+      "depends_on": ["02"]
+    },
+    {
+      "number": "04",
+      "name": "Skills and Templates System",
+      "promise": "SKILLS COMPLETE",
+      "budget": 12,
+      "reasoning": "Implement the skills loading system for reusable prompt fragments. Skills are loaded from .forge/skills/ directories and injected into phase prompts when referenced. This provides immediate productivity gains by reducing prompt repetition.",
+      "depends_on": ["01"]
+    },
+    {
+      "number": "05",
+      "name": "Progress Signaling",
+      "promise": "PROGRESS COMPLETE",
+      "budget": 10,
+      "reasoning": "Implement intermediate progress signals beyond binary promise detection. Parse and respond to <progress>, <blocker>, and <pivot> tags. Blockers pause execution and prompt user. Progress updates display in UI. Pivots are logged for pattern analysis.",
+      "depends_on": ["01"]
+    },
+    {
+      "number": "06",
+      "name": "Permission Modes",
+      "promise": "PERMISSIONS COMPLETE",
+      "budget": 12,
+      "reasoning": "Implement the dynamic permission mode system with strict, standard, autonomous, and readonly modes. Phases can specify their permission level, and the orchestrator adjusts oversight accordingly. Integrates with the hook system for OnApproval events.",
+      "depends_on": ["02", "05"]
+    },
+    {
+      "number": "07",
+      "name": "Context Compaction",
+      "promise": "COMPACTION COMPLETE",
+      "budget": 15,
+      "reasoning": "Implement context size tracking and automatic summarization to prevent context overflow during long-running phases. Add --context-limit flag and forge compact command. Preserve critical context while discarding verbose intermediate outputs.",
+      "depends_on": ["01", "05"]
+    },
+    {
+      "number": "08",
+      "name": "Pattern Learning Improvements",
+      "promise": "PATTERNS COMPLETE",
+      "budget": 18,
+      "reasoning": "Enhance pattern learning to capture phase type classification, iteration counts, failure modes, file change patterns, and effective prompt structures. Apply patterns to suggest budgets, warn on divergence, and recommend skills. Builds on existing pattern system.",
+      "depends_on": ["01", "04", "05"]
+    },
+    {
+      "number": "09",
+      "name": "Sub-Phase Delegation",
+      "promise": "SUBPHASES COMPLETE",
+      "budget": 20,
+      "reasoning": "Implement sub-phase spawning for handling scope discovery. Sub-phases inherit parent git snapshots, have independent budgets carved from parent, and maintain hierarchical audit trails. Parent completes only when all sub-phases complete. This is the most complex feature.",
+      "depends_on": ["02", "05", "06"]
+    },
+    {
+      "number": "10",
+      "name": "Integration Testing and Polish",
+      "promise": "INTEGRATION COMPLETE",
+      "budget": 12,
+      "reasoning": "Comprehensive integration testing of all new features working together. Ensure backward compatibility with existing .forge/ structures. Verify audit trail exports, CLI interface additions, and documentation updates. Final polish pass.",
+      "depends_on": ["03", "04", "06", "07", "08", "09"]
+    }
+  ]
+}

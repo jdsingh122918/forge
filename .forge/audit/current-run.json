@@ -1,0 +1,13 @@
+{
+  "run_id": "75673421-64fa-4b04-b4ab-1a4f19dd3aae",
+  "started_at": "2026-01-24T06:48:22.331022Z",
+  "ended_at": null,
+  "config": {
+    "auto_approve_threshold": 5,
+    "skip_permissions": true,
+    "verbose": false,
+    "spec_file": "/Users/jdsingh/Projects/AI/forge/docs/plans/test-spec.md",
+    "project_dir": "/Users/jdsingh/Projects/AI/forge"
+  },
+  "phases": []
+}
