@@ -77,6 +77,24 @@ impl HookDefinition {
         }
     }
 
+    /// Create a new prompt hook.
+    ///
+    /// Prompt hooks use Claude CLI to evaluate conditions and return decisions.
+    /// The prompt should describe what condition to evaluate and what decision to make.
+    pub fn prompt(event: HookEvent, prompt: impl Into<String>) -> Self {
+        Self {
+            event,
+            r#match: None,
+            hook_type: HookType::Prompt,
+            command: None,
+            prompt: Some(prompt.into()),
+            working_dir: None,
+            timeout_secs: default_timeout(),
+            enabled: true,
+            description: None,
+        }
+    }
+
     /// Add a pattern match to this hook.
     pub fn with_match(mut self, pattern: impl Into<String>) -> Self {
         self.r#match = Some(pattern.into());
@@ -432,5 +450,88 @@ description = "Ensure database is running before phase"
             config.hooks[0].description,
             Some("Ensure database is running before phase".to_string())
         );
+    }
+
+    #[test]
+    fn test_hook_definition_prompt() {
+        let hook = HookDefinition::prompt(
+            HookEvent::PostIteration,
+            "Did Claude make meaningful progress?",
+        );
+
+        assert_eq!(hook.event, HookEvent::PostIteration);
+        assert_eq!(hook.hook_type, HookType::Prompt);
+        assert_eq!(
+            hook.prompt,
+            Some("Did Claude make meaningful progress?".to_string())
+        );
+        assert!(hook.command.is_none());
+        assert!(hook.enabled);
+    }
+
+    #[test]
+    fn test_hooks_config_parse_prompt_hook() {
+        let toml = r#"
+[[hooks]]
+event = "post_iteration"
+type = "prompt"
+prompt = "Did Claude make meaningful progress? Return {continue: bool, reason: str}"
+description = "Evaluate iteration progress"
+
+[[hooks]]
+event = "on_approval"
+type = "prompt"
+match = "database-*"
+prompt = "Should this database migration be approved?"
+timeout_secs = 60
+"#;
+
+        let config = HooksConfig::parse(toml).unwrap();
+        assert_eq!(config.hooks.len(), 2);
+
+        // First hook
+        assert_eq!(config.hooks[0].event, HookEvent::PostIteration);
+        assert_eq!(config.hooks[0].hook_type, HookType::Prompt);
+        assert!(config.hooks[0].prompt.is_some());
+        assert!(config.hooks[0]
+            .prompt
+            .as_ref()
+            .unwrap()
+            .contains("meaningful progress"));
+
+        // Second hook
+        assert_eq!(config.hooks[1].event, HookEvent::OnApproval);
+        assert_eq!(config.hooks[1].hook_type, HookType::Prompt);
+        assert_eq!(config.hooks[1].r#match, Some("database-*".to_string()));
+        assert_eq!(config.hooks[1].timeout_secs, 60);
+    }
+
+    #[test]
+    fn test_hooks_config_validate_prompt_hook() {
+        let toml = r#"
+[[hooks]]
+event = "post_iteration"
+type = "prompt"
+# Missing prompt - should warn
+"#;
+
+        let config = HooksConfig::parse(toml).unwrap();
+        let warnings = config.validate();
+
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("no prompt specified"));
+    }
+
+    #[test]
+    fn test_hook_definition_prompt_with_match() {
+        let hook = HookDefinition::prompt(HookEvent::PrePhase, "Should we proceed?")
+            .with_match("api-*")
+            .with_timeout(120)
+            .with_description("Pre-phase approval for API phases");
+
+        assert_eq!(hook.r#match, Some("api-*".to_string()));
+        assert_eq!(hook.timeout_secs, 120);
+        assert!(hook.matches_phase("api-endpoints"));
+        assert!(!hook.matches_phase("database-setup"));
     }
 }

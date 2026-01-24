@@ -94,8 +94,8 @@ pub enum HookType {
     /// and returns JSON output. Exit code controls flow.
     Command,
     /// Prompt hook: uses a small LLM to evaluate a condition and return a decision.
-    /// (To be implemented in phase 03)
-    #[allow(dead_code)]
+    /// Claude CLI is invoked with the hook's prompt and context, and the response
+    /// is parsed for an action (continue, block, skip, approve, reject, modify).
     Prompt,
 }
 

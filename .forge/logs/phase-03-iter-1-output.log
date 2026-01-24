@@ -1,0 +1,74 @@
+The implementation is complete. Let me provide a summary of what was implemented:
+
+## Summary of Phase 03 - Prompt Hooks Integration
+
+### Implementation Complete
+
+I've successfully implemented prompt hooks for the Forge orchestration system. Here's what was added:
+
+#### 1. **Core `execute_prompt` Method** (`src/hooks/executor.rs`)
+- Spawns Claude CLI with a carefully crafted prompt that includes:
+  - The serialized context (JSON) with phase info, iteration number, etc.
+  - The hook's custom prompt template
+  - Instructions for returning a JSON response with action (continue/block/skip/approve/reject/modify)
+- Handles timeout with configurable `timeout_secs`
+- Handles Claude failures gracefully (blocks operation on error)
+
+#### 2. **Response Parsing** (`src/hooks/executor.rs`)
+- `parse_prompt_response`: Parses Claude's response to extract the action
+- `extract_json_from_response`: Handles JSON wrapped in markdown code blocks
+- `parse_natural_language_response`: Falls back to natural language parsing if JSON parsing fails
+
+#### 3. **Configuration Support** (`src/hooks/config.rs`)
+- Added `HookDefinition::prompt()` constructor for creating prompt hooks
+- Prompt hooks are fully parseable from TOML configuration
+
+#### 4. **Type Updates** (`src/hooks/types.rs`)
+- Removed `#[allow(dead_code)]` from `HookType::Prompt`
+- Updated documentation to reflect implemented functionality
+
+#### 5. **Tests**
+Added comprehensive tests for:
+- JSON extraction from various response formats (raw, markdown blocks)
+- Response parsing for all action types
+- Natural language fallback parsing
+- Case-insensitive action matching
+- Mock Claude integration tests
+- Timeout handling
+- Error handling for Claude failures
+
+### Example Usage
+
+```toml
+# .forge/hooks.toml
+[[hooks]]
+event = "post_iteration"
+type = "prompt"
+prompt = "Did Claude make meaningful progress? Return {continue: bool, reason: str}"
+timeout_secs = 60
+
+[[hooks]]
+event = "on_approval"
+type = "prompt"
+match = "database-*"
+prompt = "Should this database migration be approved based on the changes?"
+```
+
+### How It Works
+
+1. When a prompt hook triggers, the executor builds a full prompt combining:
+   - System instructions for Claude
+   - Serialized context JSON
+   - The hook's custom prompt
+   - Response format instructions
+
+2. Claude CLI is invoked with `--print --dangerously-skip-permissions`
+
+3. The response is parsed:
+   - First tries JSON in code blocks
+   - Then tries raw JSON
+   - Falls back to natural language detection
+
+4. Returns appropriate `HookResult` with action (continue, block, skip, approve, reject, modify)
+
+<promise>PROMPT_HOOKS COMPLETE</promise>

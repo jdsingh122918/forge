@@ -2,7 +2,7 @@
 //!
 //! This module handles the actual execution of hooks:
 //! - Command hooks: spawn subprocess, pass JSON context via stdin, parse result from stdout
-//! - Prompt hooks: (to be implemented in phase 03)
+//! - Prompt hooks: use a small LLM to evaluate a condition and return a decision
 
 use super::config::HookDefinition;
 use super::types::{HookAction, HookContext, HookResult, HookType};
@@ -14,20 +14,41 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::time::timeout;
 
+/// Default Claude command to use for prompt hooks
+const DEFAULT_CLAUDE_CMD: &str = "claude";
+
 /// Executes hooks and returns their results.
 pub struct HookExecutor {
     /// Project directory (used as default working directory)
     project_dir: std::path::PathBuf,
     /// Whether to show verbose output
     verbose: bool,
+    /// Claude command to use for prompt hooks
+    claude_cmd: String,
 }
 
 impl HookExecutor {
     /// Create a new hook executor.
     pub fn new(project_dir: impl AsRef<Path>, verbose: bool) -> Self {
+        let claude_cmd =
+            std::env::var("CLAUDE_CMD").unwrap_or_else(|_| DEFAULT_CLAUDE_CMD.to_string());
         Self {
             project_dir: project_dir.as_ref().to_path_buf(),
             verbose,
+            claude_cmd,
+        }
+    }
+
+    /// Create a new hook executor with a custom Claude command.
+    pub fn with_claude_cmd(
+        project_dir: impl AsRef<Path>,
+        verbose: bool,
+        claude_cmd: impl Into<String>,
+    ) -> Self {
+        Self {
+            project_dir: project_dir.as_ref().to_path_buf(),
+            verbose,
+            claude_cmd: claude_cmd.into(),
         }
     }
 
@@ -39,15 +60,16 @@ impl HookExecutor {
     /// - Reads result from stdout as JSON
     /// - Exit code 0 = Continue, 1 = Block, 2 = Skip, other = error
     ///
+    /// For prompt hooks:
+    /// - Spawns Claude CLI with the hook's prompt and serialized context
+    /// - Parses Claude's response as JSON for action/decision
+    /// - Falls back to natural language parsing if JSON fails
+    ///
     /// Returns a HookResult indicating what action to take.
     pub async fn execute(&self, hook: &HookDefinition, context: &HookContext) -> Result<HookResult> {
         match hook.hook_type {
             HookType::Command => self.execute_command(hook, context).await,
-            HookType::Prompt => {
-                // Prompt hooks will be implemented in phase 03
-                // For now, just continue
-                Ok(HookResult::continue_execution())
-            }
+            HookType::Prompt => self.execute_prompt(hook, context).await,
         }
     }
 
@@ -142,6 +164,276 @@ impl HookExecutor {
 
         // Parse result based on exit code and stdout
         self.parse_hook_result(&output, hook)
+    }
+
+    /// Execute a prompt hook using Claude CLI.
+    ///
+    /// Prompt hooks use a small LLM to evaluate conditions and return decisions.
+    /// The hook's prompt is combined with the serialized context and sent to Claude.
+    /// Claude's response is parsed for a JSON decision or interpreted from natural language.
+    async fn execute_prompt(
+        &self,
+        hook: &HookDefinition,
+        context: &HookContext,
+    ) -> Result<HookResult> {
+        let prompt_template = hook
+            .prompt
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Prompt hook has no prompt specified"))?;
+
+        // Serialize context to JSON for Claude
+        let context_json = serde_json::to_string_pretty(context)
+            .context("Failed to serialize hook context to JSON")?;
+
+        // Build the full prompt for Claude
+        let full_prompt = format!(
+            r#"You are a hook evaluator for the Forge orchestration system. Your job is to evaluate conditions and return decisions.
+
+## Context
+The following JSON contains information about the current orchestration state:
+```json
+{context_json}
+```
+
+## Your Task
+{prompt_template}
+
+## Response Format
+You MUST respond with a JSON object in this exact format:
+```json
+{{
+  "action": "<action>",
+  "message": "<optional reason>",
+  "inject": "<optional content to inject>"
+}}
+```
+
+Where `action` must be one of:
+- "continue" - Allow the operation to proceed normally
+- "block" - Stop/abort the current operation
+- "skip" - Skip this phase/iteration
+- "approve" - Auto-approve (for approval hooks)
+- "reject" - Reject (for approval hooks)
+- "modify" - Continue but inject additional context (requires "inject" field)
+
+Respond ONLY with the JSON object, no other text."#,
+            context_json = context_json,
+            prompt_template = prompt_template
+        );
+
+        if self.verbose {
+            eprintln!(
+                "[hook] Executing prompt hook (event: {}, timeout: {}s)",
+                context.event, hook.timeout_secs
+            );
+        }
+
+        // Build and spawn Claude command
+        let mut child = Command::new(&self.claude_cmd)
+            .arg("--print")
+            .arg("--dangerously-skip-permissions")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .current_dir(&self.project_dir)
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "Failed to spawn Claude process for prompt hook: {}",
+                    self.claude_cmd
+                )
+            })?;
+
+        // Write prompt to stdin
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(full_prompt.as_bytes())
+                .await
+                .context("Failed to write prompt to Claude stdin")?;
+            // stdin is dropped here, closing the pipe
+        }
+
+        // Wait for completion with timeout
+        let timeout_duration = Duration::from_secs(hook.timeout_secs);
+        let output = match timeout(timeout_duration, child.wait_with_output()).await {
+            Ok(result) => result.context("Failed to wait for Claude process")?,
+            Err(_) => {
+                // Timeout - the process will be killed when child is dropped
+                return Ok(HookResult::block(format!(
+                    "Prompt hook timed out after {} seconds",
+                    hook.timeout_secs
+                )));
+            }
+        };
+
+        let exit_code = output.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if self.verbose {
+            eprintln!("[hook] Claude completed with exit code: {}", exit_code);
+            if !stderr.is_empty() {
+                eprintln!("[hook] Claude stderr: {}", stderr.trim());
+            }
+        }
+
+        // If Claude failed to run, block the operation
+        if exit_code != 0 {
+            return Ok(HookResult::block(format!(
+                "Claude process failed (exit {}): {}",
+                exit_code,
+                if !stderr.is_empty() {
+                    stderr.trim().to_string()
+                } else {
+                    "unknown error".to_string()
+                }
+            )));
+        }
+
+        // Parse Claude's response
+        self.parse_prompt_response(&stdout)
+    }
+
+    /// Parse the response from a prompt hook (Claude's output).
+    fn parse_prompt_response(&self, response: &str) -> Result<HookResult> {
+        let response = response.trim();
+
+        // Try to extract JSON from the response
+        // Claude might wrap it in markdown code blocks
+        let json_str = Self::extract_json_from_response(response);
+
+        // Try to parse as JSON HookResult
+        if let Ok(result) = serde_json::from_str::<HookResult>(json_str) {
+            if self.verbose {
+                eprintln!("[hook] Parsed JSON response: action={:?}", result.action);
+            }
+            return Ok(result);
+        }
+
+        // Try to parse a simpler action-only format
+        #[derive(serde::Deserialize)]
+        struct SimpleResponse {
+            action: String,
+            #[serde(default)]
+            message: Option<String>,
+            #[serde(default)]
+            inject: Option<String>,
+        }
+
+        if let Ok(simple) = serde_json::from_str::<SimpleResponse>(json_str) {
+            let action = match simple.action.to_lowercase().as_str() {
+                "continue" => HookAction::Continue,
+                "block" => HookAction::Block,
+                "skip" => HookAction::Skip,
+                "approve" => HookAction::Approve,
+                "reject" => HookAction::Reject,
+                "modify" => HookAction::Modify,
+                _ => {
+                    return Ok(HookResult::block(format!(
+                        "Unknown action in prompt response: {}",
+                        simple.action
+                    )));
+                }
+            };
+
+            return Ok(HookResult {
+                action,
+                message: simple.message,
+                inject: simple.inject,
+                ..Default::default()
+            });
+        }
+
+        // Fall back to natural language parsing
+        self.parse_natural_language_response(response)
+    }
+
+    /// Extract JSON from a response that might contain markdown code blocks.
+    fn extract_json_from_response(response: &str) -> &str {
+        // Try to find JSON in code blocks first
+        if let Some(start) = response.find("```json") {
+            if let Some(end) = response[start + 7..].find("```") {
+                return response[start + 7..start + 7 + end].trim();
+            }
+        }
+
+        // Try generic code blocks
+        if let Some(start) = response.find("```") {
+            let after_start = &response[start + 3..];
+            // Skip the language identifier line if present
+            let json_start = if let Some(newline) = after_start.find('\n') {
+                newline + 1
+            } else {
+                0
+            };
+            if let Some(end) = after_start[json_start..].find("```") {
+                return after_start[json_start..json_start + end].trim();
+            }
+        }
+
+        // Try to find raw JSON object
+        if let Some(start) = response.find('{') {
+            if let Some(end) = response.rfind('}') {
+                if end > start {
+                    return &response[start..=end];
+                }
+            }
+        }
+
+        response
+    }
+
+    /// Parse natural language response as a fallback.
+    fn parse_natural_language_response(&self, response: &str) -> Result<HookResult> {
+        let lower = response.to_lowercase();
+
+        // Look for clear indicators
+        if lower.contains("block") || lower.contains("abort") || lower.contains("stop") {
+            return Ok(HookResult::block(format!(
+                "Prompt hook indicated block: {}",
+                Self::truncate(response, 200)
+            )));
+        }
+
+        if lower.contains("skip") {
+            return Ok(HookResult::skip(format!(
+                "Prompt hook indicated skip: {}",
+                Self::truncate(response, 200)
+            )));
+        }
+
+        if lower.contains("reject") {
+            return Ok(HookResult::reject(format!(
+                "Prompt hook indicated rejection: {}",
+                Self::truncate(response, 200)
+            )));
+        }
+
+        if lower.contains("approve") {
+            return Ok(HookResult::approve());
+        }
+
+        // Default to continue if no clear indicator
+        // This is safe because:
+        // 1. The prompt asked for explicit action
+        // 2. Most ambiguous responses should be treated as "proceed"
+        if self.verbose {
+            eprintln!(
+                "[hook] No clear action in response, defaulting to continue: {}",
+                Self::truncate(response, 100)
+            );
+        }
+
+        Ok(HookResult::continue_execution())
+    }
+
+    /// Truncate a string to a maximum length with ellipsis.
+    fn truncate(s: &str, max_len: usize) -> String {
+        if s.len() <= max_len {
+            s.to_string()
+        } else {
+            format!("{}...", &s[..max_len])
+        }
     }
 
     /// Parse the result from a command hook.
@@ -568,5 +860,416 @@ exit 0
 
         let reject_result = executor.execute(&reject_hook, &context).await.unwrap();
         assert_eq!(reject_result.action, HookAction::Reject);
+    }
+
+    // ========== Prompt Hook Tests ==========
+
+    /// Create a prompt hook definition for testing.
+    fn create_prompt_hook(event: super::super::types::HookEvent, prompt: &str) -> HookDefinition {
+        HookDefinition {
+            event,
+            r#match: None,
+            hook_type: HookType::Prompt,
+            command: None,
+            prompt: Some(prompt.to_string()),
+            working_dir: None,
+            timeout_secs: 30,
+            enabled: true,
+            description: None,
+        }
+    }
+
+    #[test]
+    fn test_extract_json_from_response_raw_json() {
+        let response = r#"{"action": "continue", "message": "All good"}"#;
+        let extracted = HookExecutor::extract_json_from_response(response);
+        assert_eq!(extracted, response);
+    }
+
+    #[test]
+    fn test_extract_json_from_response_markdown_code_block() {
+        let response = r#"Here's the result:
+```json
+{"action": "block", "message": "Not allowed"}
+```
+That's my decision."#;
+        let extracted = HookExecutor::extract_json_from_response(response);
+        assert_eq!(
+            extracted,
+            r#"{"action": "block", "message": "Not allowed"}"#
+        );
+    }
+
+    #[test]
+    fn test_extract_json_from_response_generic_code_block() {
+        let response = r#"Result:
+```
+{"action": "skip"}
+```"#;
+        let extracted = HookExecutor::extract_json_from_response(response);
+        assert_eq!(extracted, r#"{"action": "skip"}"#);
+    }
+
+    #[test]
+    fn test_extract_json_from_response_embedded_json() {
+        let response = r#"I think you should {"action": "approve"} because it looks fine."#;
+        let extracted = HookExecutor::extract_json_from_response(response);
+        assert_eq!(extracted, r#"{"action": "approve"}"#);
+    }
+
+    #[test]
+    fn test_parse_prompt_response_valid_json() {
+        let dir = tempdir().unwrap();
+        let executor = HookExecutor::new(dir.path(), false);
+
+        let response = r#"{"action": "continue", "message": "Looks good"}"#;
+        let result = executor.parse_prompt_response(response).unwrap();
+        assert_eq!(result.action, HookAction::Continue);
+        assert_eq!(result.message, Some("Looks good".to_string()));
+    }
+
+    #[test]
+    fn test_parse_prompt_response_block() {
+        let dir = tempdir().unwrap();
+        let executor = HookExecutor::new(dir.path(), false);
+
+        let response = r#"{"action": "block", "message": "Security issue detected"}"#;
+        let result = executor.parse_prompt_response(response).unwrap();
+        assert_eq!(result.action, HookAction::Block);
+        assert!(result.message.unwrap().contains("Security issue"));
+    }
+
+    #[test]
+    fn test_parse_prompt_response_skip() {
+        let dir = tempdir().unwrap();
+        let executor = HookExecutor::new(dir.path(), false);
+
+        let response = r#"{"action": "skip", "message": "Already done"}"#;
+        let result = executor.parse_prompt_response(response).unwrap();
+        assert_eq!(result.action, HookAction::Skip);
+    }
+
+    #[test]
+    fn test_parse_prompt_response_approve() {
+        let dir = tempdir().unwrap();
+        let executor = HookExecutor::new(dir.path(), false);
+
+        let response = r#"{"action": "approve"}"#;
+        let result = executor.parse_prompt_response(response).unwrap();
+        assert_eq!(result.action, HookAction::Approve);
+    }
+
+    #[test]
+    fn test_parse_prompt_response_reject() {
+        let dir = tempdir().unwrap();
+        let executor = HookExecutor::new(dir.path(), false);
+
+        let response = r#"{"action": "reject", "message": "Does not meet criteria"}"#;
+        let result = executor.parse_prompt_response(response).unwrap();
+        assert_eq!(result.action, HookAction::Reject);
+    }
+
+    #[test]
+    fn test_parse_prompt_response_modify() {
+        let dir = tempdir().unwrap();
+        let executor = HookExecutor::new(dir.path(), false);
+
+        let response =
+            r#"{"action": "modify", "inject": "Additional context: check the database first"}"#;
+        let result = executor.parse_prompt_response(response).unwrap();
+        assert_eq!(result.action, HookAction::Modify);
+        assert!(result.inject.unwrap().contains("check the database"));
+    }
+
+    #[test]
+    fn test_parse_prompt_response_with_markdown() {
+        let dir = tempdir().unwrap();
+        let executor = HookExecutor::new(dir.path(), false);
+
+        let response = r#"Based on my analysis:
+```json
+{"action": "continue", "message": "All tests pass"}
+```
+The phase can proceed."#;
+        let result = executor.parse_prompt_response(response).unwrap();
+        assert_eq!(result.action, HookAction::Continue);
+    }
+
+    #[test]
+    fn test_parse_prompt_response_natural_language_block() {
+        let dir = tempdir().unwrap();
+        let executor = HookExecutor::new(dir.path(), false);
+
+        let response = "I think we should block this operation because there are security concerns.";
+        let result = executor.parse_prompt_response(response).unwrap();
+        assert_eq!(result.action, HookAction::Block);
+    }
+
+    #[test]
+    fn test_parse_prompt_response_natural_language_skip() {
+        let dir = tempdir().unwrap();
+        let executor = HookExecutor::new(dir.path(), false);
+
+        let response = "This phase should be skipped as it's not relevant.";
+        let result = executor.parse_prompt_response(response).unwrap();
+        assert_eq!(result.action, HookAction::Skip);
+    }
+
+    #[test]
+    fn test_parse_prompt_response_natural_language_approve() {
+        let dir = tempdir().unwrap();
+        let executor = HookExecutor::new(dir.path(), false);
+
+        let response = "I approve this change, it looks good.";
+        let result = executor.parse_prompt_response(response).unwrap();
+        assert_eq!(result.action, HookAction::Approve);
+    }
+
+    #[test]
+    fn test_parse_prompt_response_natural_language_reject() {
+        let dir = tempdir().unwrap();
+        let executor = HookExecutor::new(dir.path(), false);
+
+        let response = "I must reject this proposal because it doesn't meet our standards.";
+        let result = executor.parse_prompt_response(response).unwrap();
+        assert_eq!(result.action, HookAction::Reject);
+    }
+
+    #[test]
+    fn test_parse_prompt_response_ambiguous_defaults_to_continue() {
+        let dir = tempdir().unwrap();
+        let executor = HookExecutor::new(dir.path(), false);
+
+        let response = "Everything seems fine, no issues detected.";
+        let result = executor.parse_prompt_response(response).unwrap();
+        assert_eq!(result.action, HookAction::Continue);
+    }
+
+    #[test]
+    fn test_parse_prompt_response_case_insensitive() {
+        let dir = tempdir().unwrap();
+        let executor = HookExecutor::new(dir.path(), false);
+
+        let response = r#"{"action": "CONTINUE"}"#;
+        let result = executor.parse_prompt_response(response).unwrap();
+        assert_eq!(result.action, HookAction::Continue);
+
+        let response2 = r#"{"action": "Block"}"#;
+        let result2 = executor.parse_prompt_response(response2).unwrap();
+        assert_eq!(result2.action, HookAction::Block);
+    }
+
+    #[test]
+    fn test_truncate() {
+        assert_eq!(HookExecutor::truncate("short", 10), "short");
+        assert_eq!(HookExecutor::truncate("this is a longer string", 10), "this is a ...");
+    }
+
+    #[test]
+    fn test_prompt_hook_definition_validation() {
+        let valid_hook = create_prompt_hook(
+            super::super::types::HookEvent::PostIteration,
+            "Did Claude make progress?",
+        );
+        assert!(valid_hook.validate().is_empty());
+
+        // Prompt hook without prompt should warn
+        let mut invalid_hook = create_prompt_hook(
+            super::super::types::HookEvent::PostIteration,
+            "test",
+        );
+        invalid_hook.prompt = None;
+        let warnings = invalid_hook.validate();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("no prompt specified"));
+    }
+
+    #[test]
+    fn test_with_claude_cmd() {
+        let dir = tempdir().unwrap();
+        let executor = HookExecutor::with_claude_cmd(dir.path(), false, "custom-claude");
+        assert_eq!(executor.claude_cmd, "custom-claude");
+    }
+
+    #[tokio::test]
+    async fn test_execute_prompt_hook_missing_prompt() {
+        let dir = tempdir().unwrap();
+        let executor = HookExecutor::new(dir.path(), false);
+
+        let mut hook = create_prompt_hook(
+            super::super::types::HookEvent::PostIteration,
+            "test",
+        );
+        hook.prompt = None;
+
+        let phase = Phase::new("01", "Test", "DONE", 5, "", vec![]);
+        let context = HookContext::pre_phase(&phase, None);
+
+        let result = executor.execute(&hook, &context).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no prompt specified"));
+    }
+
+    // Note: Full integration tests with actual Claude CLI would require
+    // either mocking or running in an environment with Claude installed.
+    // The following test uses a mock script to simulate Claude's behavior.
+
+    #[tokio::test]
+    async fn test_execute_prompt_hook_with_mock_claude() {
+        let dir = tempdir().unwrap();
+
+        // Create a mock "claude" script that outputs JSON
+        let mock_claude = create_test_script(
+            dir.path(),
+            "mock-claude",
+            r#"#!/bin/sh
+# Read stdin (the prompt) and output a JSON response
+cat > /dev/null
+echo '{"action": "continue", "message": "Mock approval"}'
+"#,
+        );
+
+        let executor = HookExecutor::with_claude_cmd(
+            dir.path(),
+            false,
+            mock_claude.to_string_lossy().to_string(),
+        );
+
+        let hook = create_prompt_hook(
+            super::super::types::HookEvent::PostIteration,
+            "Did Claude make progress?",
+        );
+
+        let phase = Phase::new("01", "Test", "DONE", 5, "", vec![]);
+        let context = HookContext::post_iteration(&phase, 1, &Default::default(), false, None);
+
+        let result = executor.execute(&hook, &context).await.unwrap();
+        assert_eq!(result.action, HookAction::Continue);
+        assert_eq!(result.message, Some("Mock approval".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_execute_prompt_hook_mock_block() {
+        let dir = tempdir().unwrap();
+
+        let mock_claude = create_test_script(
+            dir.path(),
+            "mock-claude",
+            r#"#!/bin/sh
+cat > /dev/null
+echo '{"action": "block", "message": "No progress detected"}'
+"#,
+        );
+
+        let executor = HookExecutor::with_claude_cmd(
+            dir.path(),
+            false,
+            mock_claude.to_string_lossy().to_string(),
+        );
+
+        let hook = create_prompt_hook(
+            super::super::types::HookEvent::PostIteration,
+            "Did Claude make progress?",
+        );
+
+        let phase = Phase::new("01", "Test", "DONE", 5, "", vec![]);
+        let context = HookContext::post_iteration(&phase, 1, &Default::default(), false, None);
+
+        let result = executor.execute(&hook, &context).await.unwrap();
+        assert_eq!(result.action, HookAction::Block);
+        assert!(result.message.unwrap().contains("No progress"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_prompt_hook_mock_with_markdown() {
+        let dir = tempdir().unwrap();
+
+        let mock_claude = create_test_script(
+            dir.path(),
+            "mock-claude",
+            r#"#!/bin/sh
+cat > /dev/null
+echo 'Here is my analysis:'
+echo '```json'
+echo '{"action": "approve"}'
+echo '```'
+"#,
+        );
+
+        let executor = HookExecutor::with_claude_cmd(
+            dir.path(),
+            false,
+            mock_claude.to_string_lossy().to_string(),
+        );
+
+        let hook = create_prompt_hook(
+            super::super::types::HookEvent::OnApproval,
+            "Should we approve this phase?",
+        );
+
+        let phase = Phase::new("01", "Test", "DONE", 5, "", vec![]);
+        let context = HookContext::on_approval(&phase, None);
+
+        let result = executor.execute(&hook, &context).await.unwrap();
+        assert_eq!(result.action, HookAction::Approve);
+    }
+
+    #[tokio::test]
+    async fn test_execute_prompt_hook_timeout() {
+        let dir = tempdir().unwrap();
+
+        let mock_claude = create_test_script(
+            dir.path(),
+            "mock-claude",
+            "#!/bin/sh\nsleep 10\n",
+        );
+
+        let executor = HookExecutor::with_claude_cmd(
+            dir.path(),
+            false,
+            mock_claude.to_string_lossy().to_string(),
+        );
+
+        let mut hook = create_prompt_hook(
+            super::super::types::HookEvent::PostIteration,
+            "Test timeout",
+        );
+        hook.timeout_secs = 1;
+
+        let phase = Phase::new("01", "Test", "DONE", 5, "", vec![]);
+        let context = HookContext::pre_phase(&phase, None);
+
+        let result = executor.execute(&hook, &context).await.unwrap();
+        assert_eq!(result.action, HookAction::Block);
+        assert!(result.message.unwrap().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_prompt_hook_claude_failure() {
+        let dir = tempdir().unwrap();
+
+        let mock_claude = create_test_script(
+            dir.path(),
+            "mock-claude",
+            "#!/bin/sh\necho 'Error!' >&2\nexit 1\n",
+        );
+
+        let executor = HookExecutor::with_claude_cmd(
+            dir.path(),
+            false,
+            mock_claude.to_string_lossy().to_string(),
+        );
+
+        let hook = create_prompt_hook(
+            super::super::types::HookEvent::PostIteration,
+            "Test failure",
+        );
+
+        let phase = Phase::new("01", "Test", "DONE", 5, "", vec![]);
+        let context = HookContext::pre_phase(&phase, None);
+
+        let result = executor.execute(&hook, &context).await.unwrap();
+        assert_eq!(result.action, HookAction::Block);
+        assert!(result.message.unwrap().contains("Error!"));
     }
 }
