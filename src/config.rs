@@ -80,9 +80,16 @@ impl Config {
         flags
     }
 
-    /// Find a spec file in docs/plans/ directory using glob pattern *spec*.md
-    /// Returns the most recently modified spec file if multiple are found
+    /// Find a spec file, checking .forge/spec.md first, then docs/plans/*spec*.md
+    /// Returns the most recently modified spec file if multiple are found in docs/plans/
     fn find_spec_file(project_dir: &PathBuf) -> Result<PathBuf> {
+        // First, check .forge/spec.md (preferred location)
+        let forge_spec = project_dir.join(".forge/spec.md");
+        if forge_spec.exists() {
+            return Ok(forge_spec);
+        }
+
+        // Fall back to docs/plans/*spec*.md for backward compatibility
         let pattern = project_dir
             .join("docs/plans/*spec*.md")
             .to_string_lossy()
@@ -95,7 +102,7 @@ impl Config {
 
         if spec_files.is_empty() {
             return Err(anyhow!(
-                "No spec file found. Please provide --spec-file or create a *spec*.md file in docs/plans/"
+                "No spec file found. Create .forge/spec.md or provide --spec-file"
             ));
         }
 

@@ -1,37 +1,13 @@
 {
-  "run_id": "75673421-64fa-4b04-b4ab-1a4f19dd3aae",
-  "started_at": "2026-01-24T06:48:22.331022Z",
+  "run_id": "b9bd5323-f23c-493c-8a47-fac2d0eedd78",
+  "started_at": "2026-01-24T06:51:47.849320Z",
   "ended_at": null,
   "config": {
     "auto_approve_threshold": 5,
     "skip_permissions": true,
     "verbose": false,
-    "spec_file": "/Users/jdsingh/Projects/AI/forge/docs/plans/test-spec.md",
+    "spec_file": "/Users/jdsingh/Projects/AI/forge/.forge/spec.md",
     "project_dir": "/Users/jdsingh/Projects/AI/forge"
   },
-  "phases": [
-    {
-      "phase_number": "01",
-      "description": "Configuration Unification Foundation",
-      "promise": "CONFIG COMPLETE",
-      "started_at": "2026-01-24T06:48:22.331188Z",
-      "ended_at": "2026-01-24T06:48:35.727419Z",
-      "iterations": [],
-      "outcome": {
-        "Completed": {
-          "iteration": 1
-        }
-      },
-      "file_changes": {
-        "files_added": [
-          ".forge/logs/",
-          "hello.txt"
-        ],
-        "files_modified": [],
-        "files_deleted": [],
-        "total_lines_added": 0,
-        "total_lines_removed": 0
-      }
-    }
-  ]
+  "phases": []
 }
