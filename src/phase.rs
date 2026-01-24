@@ -27,6 +27,9 @@ pub struct Phase {
     /// List of phase numbers that this phase depends on
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// List of skill names to load for this phase
+    #[serde(default)]
+    pub skills: Vec<String>,
 }
 
 impl Phase {
@@ -46,6 +49,28 @@ impl Phase {
             budget,
             reasoning: reasoning.to_string(),
             depends_on,
+            skills: Vec::new(),
+        }
+    }
+
+    /// Create a new Phase with skills.
+    pub fn with_skills(
+        number: &str,
+        name: &str,
+        promise: &str,
+        budget: u32,
+        reasoning: &str,
+        depends_on: Vec<String>,
+        skills: Vec<String>,
+    ) -> Self {
+        Self {
+            number: number.to_string(),
+            name: name.to_string(),
+            promise: promise.to_string(),
+            budget,
+            reasoning: reasoning.to_string(),
+            depends_on,
+            skills,
         }
     }
 

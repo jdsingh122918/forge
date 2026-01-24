@@ -1,0 +1,86 @@
+The implementation is complete. Let me provide a summary of what was implemented:
+
+## Summary: Skills and Templates System (Phase 04)
+
+I have successfully implemented the Skills and Templates System for Forge. Here's what was created:
+
+### New Files
+- **`src/skills/mod.rs`** - Core skills module with:
+  - `Skill` struct representing a loaded skill
+  - `SkillsLoader` for loading and caching skills
+  - Helper functions: `ensure_skills_directory()`, `create_skill()`, `delete_skill()`
+  - 16 comprehensive unit tests
+
+### Modified Files
+
+1. **`src/lib.rs`** - Added `pub mod skills;` export
+
+2. **`src/phase.rs`** - Added:
+   - `skills: Vec<String>` field to `Phase` struct
+   - `Phase::with_skills()` constructor for phases with skills
+
+3. **`src/forge_config.rs`** - Added:
+   - `SkillsSection` struct with `global` skills list
+   - `skills` field in `PhaseOverride` for pattern-based skill overrides
+   - `skills` field in `PhaseSettings` for resolved phase settings
+   - Updated `phase_settings()` to merge global and phase-specific skills
+
+4. **`src/orchestrator/runner.rs`** - Updated:
+   - `generate_prompt()` to load and inject skills into prompts
+   - Added `load_skills_for_phase()` helper method
+   - 2 new tests for skills integration
+
+5. **`src/init/mod.rs`** - Updated:
+   - Created `.forge/skills/` directory on init
+   - Updated documentation and tests
+
+6. **`src/main.rs`** - Added:
+   - `Skills` command with subcommands: `list`, `show`, `create`, `delete`
+   - Full CLI interface for skill management
+
+### Skill Structure
+```
+.forge/skills/
+├── rust-conventions/
+│   └── SKILL.md
+├── testing-strategy/
+│   └── SKILL.md
+└── cli-design/
+    └── SKILL.md
+```
+
+### Usage Examples
+
+**Phase JSON with skills:**
+```json
+{
+  "number": "03",
+  "name": "API implementation",
+  "skills": ["rust-conventions", "api-design"],
+  "promise": "API COMPLETE"
+}
+```
+
+**Global skills in forge.toml:**
+```toml
+[skills]
+global = ["rust-conventions"]
+
+[phases.overrides."database-*"]
+skills = ["sql-conventions"]
+```
+
+**CLI Commands:**
+```bash
+forge skills list              # List all skills
+forge skills show <name>       # View skill content
+forge skills create <name>     # Create new skill
+forge skills delete <name>     # Delete skill
+```
+
+### Test Results
+- All 248 tests pass
+- Release build succeeds
+- CLI commands work correctly
+
+<promise>SKILLS COMPLETE</promise>

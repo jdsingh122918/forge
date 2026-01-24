@@ -143,6 +143,9 @@ pub struct PhaseOverride {
     /// Override context limit for matching phases
     #[serde(default)]
     pub context_limit: Option<String>,
+    /// Additional skills for matching phases
+    #[serde(default)]
+    pub skills: Vec<String>,
 }
 
 /// Phase override configuration section.
@@ -171,6 +174,14 @@ impl HooksSection {
     }
 }
 
+/// Skills configuration section.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SkillsSection {
+    /// Global skills that apply to all phases
+    #[serde(default)]
+    pub global: Vec<String>,
+}
+
 /// The complete forge.toml configuration structure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForgeToml {
@@ -186,6 +197,9 @@ pub struct ForgeToml {
     /// Hook definitions (alternative to hooks.toml)
     #[serde(default)]
     pub hooks: HooksSection,
+    /// Skills configuration
+    #[serde(default)]
+    pub skills: SkillsSection,
 }
 
 impl Default for ForgeToml {
@@ -195,6 +209,7 @@ impl Default for ForgeToml {
             defaults: DefaultsConfig::default(),
             phases: PhasesConfig::default(),
             hooks: HooksSection::default(),
+            skills: SkillsSection::default(),
         }
     }
 }
@@ -252,10 +267,14 @@ impl ForgeToml {
 
     /// Get effective settings for a specific phase, applying pattern overrides.
     pub fn phase_settings(&self, phase_name: &str) -> PhaseSettings {
+        // Start with global skills
+        let mut skills = self.skills.global.clone();
+
         let mut settings = PhaseSettings {
             budget: self.defaults.budget,
             permission_mode: self.defaults.permission_mode,
             context_limit: self.defaults.context_limit.clone(),
+            skills: Vec::new(),
         };
 
         // Apply matching overrides
@@ -270,9 +289,16 @@ impl ForgeToml {
                 if let Some(ref limit) = override_cfg.context_limit {
                     settings.context_limit = limit.clone();
                 }
+                // Add override skills (avoiding duplicates)
+                for skill in &override_cfg.skills {
+                    if !skills.contains(skill) {
+                        skills.push(skill.clone());
+                    }
+                }
             }
         }
 
+        settings.skills = skills;
         settings
     }
 
@@ -313,6 +339,8 @@ pub struct PhaseSettings {
     pub permission_mode: PermissionMode,
     /// Context limit for the phase
     pub context_limit: String,
+    /// Skills to load for this phase (global + phase-specific)
+    pub skills: Vec<String>,
 }
 
 /// Check if a pattern matches a phase name.

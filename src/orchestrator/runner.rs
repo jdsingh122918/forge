@@ -1,6 +1,7 @@
 use crate::audit::ClaudeSession;
 use crate::config::Config;
 use crate::phase::Phase;
+use crate::skills::SkillsLoader;
 use crate::stream::{ContentBlock, StreamEvent, describe_tool_use, tool_emoji, truncate_thinking};
 use crate::ui::OrchestratorUI;
 use anyhow::{Context, Result};
@@ -231,13 +232,20 @@ impl ClaudeRunner {
         let spec_content = std::fs::read_to_string(&self.config.spec_file)
             .unwrap_or_else(|e| format!("[ERROR: Could not read spec file: {}]", e));
 
+        // Load skills for this phase
+        let skills_section = self.load_skills_for_phase(phase);
+
         let base_context = format!(
             r#"You are implementing a project per the following spec.
 
 ## SPECIFICATION
 {}
+{}"#,
+            spec_content, skills_section
+        );
 
-## CRITICAL RULES
+        let critical_rules = format!(
+            r#"## CRITICAL RULES
 1. Follow the spec requirements exactly
 2. Check existing code before making changes
 3. Run tests/checks to verify your work
@@ -245,17 +253,50 @@ impl ClaudeRunner {
 5. If tests fail, fix them before claiming completion
 
 "#,
-            spec_content, phase.promise
+            phase.promise
         );
 
         format!(
-            "{}## TASK
+            "{}{}## TASK
 Implement phase {} - {}
 
 When complete, output:
 <promise>{}</promise>",
-            base_context, phase.number, phase.name, phase.promise
+            base_context, critical_rules, phase.number, phase.name, phase.promise
         )
+    }
+
+    /// Load skills for a phase, combining phase-defined skills with global skills from config.
+    fn load_skills_for_phase(&self, phase: &Phase) -> String {
+        let forge_dir = self.config.project_dir.join(".forge");
+        let mut loader = SkillsLoader::new(&forge_dir, self.config.verbose);
+
+        // Collect all skill names: phase skills + global skills from config
+        let mut all_skills = phase.skills.clone();
+
+        // Add global skills from forge.toml if available
+        if let Some(fc) = self.config.forge_config() {
+            let phase_settings = fc.toml.phase_settings(&phase.name);
+            for skill in phase_settings.skills {
+                if !all_skills.contains(&skill) {
+                    all_skills.push(skill);
+                }
+            }
+        }
+
+        if all_skills.is_empty() {
+            return String::new();
+        }
+
+        match loader.generate_skills_section(&all_skills) {
+            Ok(section) => section,
+            Err(e) => {
+                if self.config.verbose {
+                    eprintln!("Warning: Failed to load skills: {}", e);
+                }
+                String::new()
+            }
+        }
     }
 
     pub fn get_prompt_file(&self, phase: &str, iteration: u32) -> PathBuf {
@@ -397,6 +438,81 @@ mod tests {
         assert!(
             prompt.contains("<promise>DB_DONE</promise>"),
             "Prompt should contain promise tag"
+        );
+    }
+
+    #[test]
+    fn test_generate_prompt_with_skills() {
+        let dir = tempdir().unwrap();
+        let spec_content = "# Spec Content";
+
+        // Create spec file
+        let plans_dir = dir.path().join("docs/plans");
+        fs::create_dir_all(&plans_dir).unwrap();
+        let spec_file = plans_dir.join("test-spec.md");
+        fs::write(&spec_file, spec_content).unwrap();
+
+        // Create skills directory with a test skill
+        let skills_dir = dir.path().join(".forge/skills/test-skill");
+        fs::create_dir_all(&skills_dir).unwrap();
+        fs::write(
+            skills_dir.join("SKILL.md"),
+            "# Test Skill\n\nThis is test skill content.",
+        )
+        .unwrap();
+
+        let config = Config::new(dir.path().to_path_buf(), false, 5, Some(spec_file)).unwrap();
+        let runner = ClaudeRunner::new(config);
+
+        // Create phase with skills
+        let phase = Phase::with_skills(
+            "01",
+            "Test Phase",
+            "TEST_DONE",
+            5,
+            "Test reasoning",
+            vec![],
+            vec!["test-skill".to_string()],
+        );
+        let prompt = runner.generate_prompt_for_test(&phase);
+
+        // Verify skill content is injected
+        assert!(
+            prompt.contains("## SKILLS AND CONVENTIONS"),
+            "Prompt should have skills section"
+        );
+        assert!(
+            prompt.contains("## SKILL: TEST SKILL"),
+            "Prompt should contain skill header"
+        );
+        assert!(
+            prompt.contains("This is test skill content."),
+            "Prompt should contain skill content"
+        );
+    }
+
+    #[test]
+    fn test_generate_prompt_without_skills() {
+        let dir = tempdir().unwrap();
+        let spec_content = "# Spec Content";
+        let config = setup_test_config(dir.path(), spec_content);
+        let runner = ClaudeRunner::new(config);
+
+        // Create phase without skills
+        let phase = Phase::new(
+            "01",
+            "Test Phase",
+            "TEST_DONE",
+            5,
+            "Test reasoning",
+            vec![],
+        );
+        let prompt = runner.generate_prompt_for_test(&phase);
+
+        // Verify no skills section when no skills are referenced
+        assert!(
+            !prompt.contains("## SKILLS AND CONVENTIONS"),
+            "Prompt should not have skills section when no skills are used"
         );
     }
 }
