@@ -2,6 +2,12 @@
 
 /// Extract a JSON object from text that may contain other content.
 /// Uses brace-counting to find the outermost JSON object.
+///
+/// # Limitations
+///
+/// This is a heuristic that may fail if the JSON contains strings with
+/// unbalanced braces (e.g., `{"msg": "use { here"}`). It's designed for
+/// extracting Claude's JSON output where this is unlikely.
 pub fn extract_json_object(text: &str) -> Option<String> {
     let start = text.find('{')?;
     let mut depth = 0;

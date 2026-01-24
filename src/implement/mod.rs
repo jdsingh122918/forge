@@ -52,19 +52,8 @@ pub fn run_implement(
     println!("Extracting implementation details...");
     let extracted = extract_design(project_dir, &design_content, design_doc)?;
 
-    // 3. Filter out test phases if --no-tdd
-    let phases: Vec<Phase> = if no_tdd {
-        extracted
-            .phases
-            .into_iter()
-            .filter(|p| p.phase_type != Some(PhaseType::Test))
-            .collect()
-    } else {
-        extracted.phases
-    };
-
-    // Renumber phases after filtering
-    let phases = renumber_phases(phases);
+    // 3. Filter out test phases if --no-tdd and renumber
+    let phases = filter_phases(extracted.phases, no_tdd);
 
     // 4. Generate spec.md
     println!("Generating implementation spec...");
@@ -126,16 +115,7 @@ pub fn run_implement(
                 println!("\nRegenerating...");
                 // Re-extract
                 let extracted = extract_design(project_dir, &design_content, design_doc)?;
-                let phases: Vec<Phase> = if no_tdd {
-                    extracted
-                        .phases
-                        .into_iter()
-                        .filter(|p| p.phase_type != Some(PhaseType::Test))
-                        .collect()
-                } else {
-                    extracted.phases
-                };
-                let phases = renumber_phases(phases);
+                let phases = filter_phases(extracted.phases, no_tdd);
 
                 // Update spec and phases
                 let spec_content = generate_spec_markdown(&extracted.spec);
@@ -174,6 +154,22 @@ fn display_phases_with_type(phases: &[Phase]) {
         );
     }
     println!();
+}
+
+/// Filter phases based on TDD setting and renumber them.
+///
+/// If `no_tdd` is true, test phases are filtered out.
+/// The remaining phases are then renumbered sequentially.
+fn filter_phases(phases: Vec<Phase>, no_tdd: bool) -> Vec<Phase> {
+    let filtered = if no_tdd {
+        phases
+            .into_iter()
+            .filter(|p| p.phase_type != Some(PhaseType::Test))
+            .collect()
+    } else {
+        phases
+    };
+    renumber_phases(filtered)
 }
 
 /// Renumber phases sequentially after filtering.

@@ -158,7 +158,7 @@ impl SubPhase {
             },
             parent_phase: Some(parent.number.clone()),
             sub_phases: Vec::new(),
-            phase_type: parent.phase_type.clone(),
+            phase_type: parent.phase_type,
         }
     }
 

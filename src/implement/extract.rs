@@ -114,7 +114,7 @@ pub fn validate_design_doc(path: &Path) -> Result<String> {
         bail!("Design doc not found: {}", path.display());
     }
 
-    if path.extension().map(|e| e != "md").unwrap_or(true) {
+    if !path.extension().is_some_and(|e| e == "md") {
         bail!("Design doc must be a markdown file (.md)");
     }
 
@@ -228,12 +228,14 @@ fn parse_extraction_response(output: &str, source_path: &Path) -> Result<Extract
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("'phases' field is not an array"))?;
 
-    let mut phases = Vec::new();
-    for (i, phase_value) in phases_array.iter().enumerate() {
-        let phase: Phase = serde_json::from_value(phase_value.clone())
-            .with_context(|| format!("Failed to parse phase {} from JSON", i + 1))?;
-        phases.push(phase);
-    }
+    let phases: Vec<Phase> = phases_array
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            serde_json::from_value(v.clone())
+                .with_context(|| format!("Failed to parse phase {} from JSON", i + 1))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     // Validate we have at least some components
     if spec.components.is_empty() {
