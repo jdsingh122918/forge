@@ -64,14 +64,16 @@ pub fn parse_context_limit(s: &str) -> Result<ContextLimit> {
         anyhow::bail!("Context limit cannot be empty");
     }
 
-    if s.ends_with('%') {
-        let num_str = &s[..s.len() - 1];
+    if let Some(num_str) = s.strip_suffix('%') {
         let pct: f32 = num_str
             .parse()
             .with_context(|| format!("Invalid percentage in context limit: {}", s))?;
 
         if pct <= 0.0 || pct > 100.0 {
-            anyhow::bail!("Context limit percentage must be between 0 and 100, got {}", pct);
+            anyhow::bail!(
+                "Context limit percentage must be between 0 and 100, got {}",
+                pct
+            );
         }
 
         Ok(ContextLimit::Percentage(pct))

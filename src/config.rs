@@ -65,8 +65,7 @@ impl Config {
         let (claude_cmd, skip_permissions) = if let Some(ref fc) = forge_config {
             (fc.claude_cmd(), fc.skip_permissions())
         } else {
-            let claude_cmd =
-                std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".to_string());
+            let claude_cmd = std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".to_string());
             let skip_permissions = std::env::var("SKIP_PERMISSIONS")
                 .map(|v| v != "false")
                 .unwrap_or(true);

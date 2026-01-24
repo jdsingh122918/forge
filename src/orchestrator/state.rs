@@ -107,7 +107,7 @@ impl StateManager {
                 // Only consider old format (top-level phases) for this query
                 parts.len() == 4 && line.contains("|completed|")
             })
-            .last()
+            .next_back()
             .and_then(|line| line.split('|').next())
             .map(|s| s.to_string())
     }
@@ -122,8 +122,7 @@ impl StateManager {
 
         content
             .lines()
-            .filter(|line| line.contains("|completed|"))
-            .last()
+            .rfind(|line| line.contains("|completed|"))
             .and_then(|line| {
                 let parts: Vec<&str> = line.split('|').collect();
                 if parts.len() == 5 {
@@ -184,10 +183,7 @@ impl StateManager {
     /// Get entries for a specific phase including its sub-phases.
     pub fn get_phase_entries(&self, phase: &str) -> Result<Vec<StateEntry>> {
         let entries = self.get_entries()?;
-        Ok(entries
-            .into_iter()
-            .filter(|e| e.phase == phase)
-            .collect())
+        Ok(entries.into_iter().filter(|e| e.phase == phase).collect())
     }
 
     /// Get entries for a specific sub-phase.
@@ -216,7 +212,11 @@ impl StateManager {
     }
 
     /// Check if all sub-phases of a parent are complete.
-    pub fn all_sub_phases_complete(&self, parent_phase: &str, expected_count: usize) -> Result<bool> {
+    pub fn all_sub_phases_complete(
+        &self,
+        parent_phase: &str,
+        expected_count: usize,
+    ) -> Result<bool> {
         let completed = self.get_completed_sub_phases(parent_phase)?;
         Ok(completed.len() >= expected_count)
     }

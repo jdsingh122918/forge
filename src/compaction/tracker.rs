@@ -1,6 +1,6 @@
 //! Context size tracking for compaction decisions.
 
-use super::config::{parse_context_limit, ContextLimit};
+use super::config::{ContextLimit, parse_context_limit};
 use super::{COMPACTION_SAFETY_MARGIN, DEFAULT_MODEL_WINDOW_CHARS, MIN_PRESERVED_CONTEXT};
 
 /// Tracks context usage across iterations and determines when compaction is needed.
@@ -128,7 +128,10 @@ impl ContextTracker {
 
         // Reduce iteration count since compacted iterations are now summarized
         // Keep at least 1 to indicate there's compacted history
-        self.iteration_count = self.iteration_count.saturating_sub(iterations_compacted).max(1);
+        self.iteration_count = self
+            .iteration_count
+            .saturating_sub(iterations_compacted)
+            .max(1);
     }
 
     /// Check if compaction has been performed in this phase.
@@ -148,7 +151,8 @@ impl ContextTracker {
 
     /// Get the remaining context budget.
     pub fn remaining_budget(&self) -> usize {
-        self.effective_limit().saturating_sub(self.total_context_used())
+        self.effective_limit()
+            .saturating_sub(self.total_context_used())
     }
 
     /// Check if there's enough budget for a new iteration.
@@ -282,7 +286,10 @@ mod tests {
     #[test]
     fn test_with_defaults() {
         let tracker = ContextTracker::with_defaults();
-        assert_eq!(tracker.effective_limit(), (DEFAULT_MODEL_WINDOW_CHARS as f32 * 0.8) as usize);
+        assert_eq!(
+            tracker.effective_limit(),
+            (DEFAULT_MODEL_WINDOW_CHARS as f32 * 0.8) as usize
+        );
     }
 
     #[test]

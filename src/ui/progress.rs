@@ -476,11 +476,7 @@ impl OrchestratorUI {
                 style(failed).red()
             )
         } else {
-            format!(
-                "{}/{} sub-phases complete",
-                style(completed).green(),
-                total
-            )
+            format!("{}/{} sub-phases complete", style(completed).green(), total)
         };
         self.multi
             .println(format!("  {} {}", style("📊").dim(), status))

@@ -90,9 +90,11 @@ impl std::str::FromStr for HookEvent {
 /// The type of hook execution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum HookType {
     /// Command hook: executes a bash script that receives JSON input via stdin
     /// and returns JSON output. Exit code controls flow.
+    #[default]
     Command,
     /// Prompt hook: uses a small LLM to evaluate a condition and return a decision.
     /// Claude CLI is invoked with the hook's prompt and context, and the response
@@ -100,17 +102,13 @@ pub enum HookType {
     Prompt,
 }
 
-impl Default for HookType {
-    fn default() -> Self {
-        HookType::Command
-    }
-}
-
 /// The action a hook can instruct the orchestrator to take.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum HookAction {
     /// Continue with normal execution
+    #[default]
     Continue,
     /// Block/abort the current operation
     Block,
@@ -122,12 +120,6 @@ pub enum HookAction {
     Approve,
     /// Reject (for OnApproval hooks)
     Reject,
-}
-
-impl Default for HookAction {
-    fn default() -> Self {
-        HookAction::Continue
-    }
 }
 
 /// Result returned from hook execution.
@@ -407,8 +399,14 @@ mod tests {
 
     #[test]
     fn test_hook_event_from_str() {
-        assert_eq!("pre_phase".parse::<HookEvent>().unwrap(), HookEvent::PrePhase);
-        assert_eq!("PrePhase".parse::<HookEvent>().unwrap(), HookEvent::PrePhase);
+        assert_eq!(
+            "pre_phase".parse::<HookEvent>().unwrap(),
+            HookEvent::PrePhase
+        );
+        assert_eq!(
+            "PrePhase".parse::<HookEvent>().unwrap(),
+            HookEvent::PrePhase
+        );
         assert_eq!(
             "post_iteration".parse::<HookEvent>().unwrap(),
             HookEvent::PostIteration

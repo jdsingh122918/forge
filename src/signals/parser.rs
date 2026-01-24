@@ -6,7 +6,9 @@
 //! - `<pivot>description</pivot>`
 //! - `<spawn-subphase>JSON</spawn-subphase>` for sub-phase spawning
 
-use super::types::{BlockerSignal, IterationSignals, PivotSignal, ProgressSignal, SubPhaseSpawnSignal};
+use super::types::{
+    BlockerSignal, IterationSignals, PivotSignal, ProgressSignal, SubPhaseSpawnSignal,
+};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -47,7 +49,9 @@ impl SignalParser {
                 if let Ok(percentage) = raw_value.parse::<u8>() {
                     // Clamp to 100
                     let clamped = percentage.min(100);
-                    signals.progress.push(ProgressSignal::new(clamped, raw_value));
+                    signals
+                        .progress
+                        .push(ProgressSignal::new(clamped, raw_value));
 
                     if self.verbose {
                         eprintln!("  Signal: progress {}%", clamped);

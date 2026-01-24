@@ -185,7 +185,9 @@ async fn main() -> Result<()> {
         Commands::Patterns { command } => cmd_patterns(command.clone())?,
         Commands::Config { command } => cmd_config(&project_dir, command.clone())?,
         Commands::Skills { command } => cmd_skills(&project_dir, command.clone())?,
-        Commands::Compact { phase, status } => cmd_compact(&project_dir, &cli, phase.as_deref(), *status)?,
+        Commands::Compact { phase, status } => {
+            cmd_compact(&project_dir, &cli, phase.as_deref(), *status)?
+        }
     }
 
     Ok(())
@@ -213,7 +215,9 @@ async fn run_orchestrator(
     start_phase: Option<String>,
 ) -> Result<()> {
     use forge::audit::{AuditLogger, FileChangeSummary, PhaseAudit, PhaseOutcome, RunConfig};
-    use forge::compaction::{CompactionManager, DEFAULT_MODEL_WINDOW_CHARS, extract_output_summary};
+    use forge::compaction::{
+        CompactionManager, DEFAULT_MODEL_WINDOW_CHARS, extract_output_summary,
+    };
     use forge::config::Config;
     use forge::forge_config::{ForgeToml, PermissionMode};
     use forge::gates::{ApprovalGate, GateDecision, IterationDecision, ProgressTracker};
@@ -239,10 +243,10 @@ async fn run_orchestrator(
 
     // Merge hooks from forge.toml if it exists
     let forge_dir = get_forge_dir(&project_dir);
-    if let Ok(toml) = ForgeToml::load_or_default(&forge_dir) {
-        if !toml.hooks.definitions.is_empty() {
-            hook_manager.merge_config(toml.hooks.into_hooks_config());
-        }
+    if let Ok(toml) = ForgeToml::load_or_default(&forge_dir)
+        && !toml.hooks.definitions.is_empty()
+    {
+        hook_manager.merge_config(toml.hooks.into_hooks_config());
     }
 
     // Report hook count if any
@@ -308,7 +312,10 @@ async fn run_orchestrator(
         let decision = match approval_result.action {
             HookAction::Approve => {
                 if cli.verbose {
-                    println!("  {} (hook auto-approved)", console::style("Auto-approved").dim());
+                    println!(
+                        "  {} (hook auto-approved)",
+                        console::style("Auto-approved").dim()
+                    );
                 }
                 GateDecision::Approved
             }
@@ -418,25 +425,26 @@ async fn run_orchestrator(
             }
 
             // === AUTONOMOUS MODE: Check progress before continuing ===
-            if phase.permission_mode == PermissionMode::Autonomous && iter > 1 {
-                if !gate.check_autonomous_progress(&progress_tracker) {
-                    match gate.prompt_no_progress()? {
-                        IterationDecision::Continue => {
-                            // Reset stale counter and continue
-                            progress_tracker.stale_iterations = 0;
-                        }
-                        IterationDecision::StopPhase => {
-                            println!("  Phase stopped due to no progress");
-                            break;
-                        }
-                        IterationDecision::Abort => {
-                            println!("  Orchestrator aborted by user");
-                            phase_aborted = true;
-                            break;
-                        }
-                        IterationDecision::Skip => {
-                            continue;
-                        }
+            if phase.permission_mode == PermissionMode::Autonomous
+                && iter > 1
+                && !gate.check_autonomous_progress(&progress_tracker)
+            {
+                match gate.prompt_no_progress()? {
+                    IterationDecision::Continue => {
+                        // Reset stale counter and continue
+                        progress_tracker.stale_iterations = 0;
+                    }
+                    IterationDecision::StopPhase => {
+                        println!("  Phase stopped due to no progress");
+                        break;
+                    }
+                    IterationDecision::Abort => {
+                        println!("  Orchestrator aborted by user");
+                        phase_aborted = true;
+                        break;
+                    }
+                    IterationDecision::Skip => {
+                        continue;
                     }
                 }
             }
@@ -480,7 +488,12 @@ async fn run_orchestrator(
 
             // Run iteration with optional compaction context
             let result = runner
-                .run_iteration_with_context(&phase, iter, Some(ui.clone()), current_prompt_context.as_ref())
+                .run_iteration_with_context(
+                    &phase,
+                    iter,
+                    Some(ui.clone()),
+                    current_prompt_context.as_ref(),
+                )
                 .await?;
 
             // Compute changes
@@ -488,13 +501,18 @@ async fn run_orchestrator(
             ui.update_files(&changes);
 
             // === READONLY MODE: Validate no modifications ===
-            if phase.permission_mode == PermissionMode::Readonly {
-                if let Err(e) = gate.validate_readonly_changes(&phase, &changes) {
-                    println!("  {} {}", console::style("Error:").red().bold(), e);
-                    ui.phase_failed(&phase.number, "readonly mode violation");
-                    phase_audit.finish(PhaseOutcome::Error { message: e.to_string() }, changes.clone());
-                    break;
-                }
+            if phase.permission_mode == PermissionMode::Readonly
+                && let Err(e) = gate.validate_readonly_changes(&phase, &changes)
+            {
+                println!("  {} {}", console::style("Error:").red().bold(), e);
+                ui.phase_failed(&phase.number, "readonly mode violation");
+                phase_audit.finish(
+                    PhaseOutcome::Error {
+                        message: e.to_string(),
+                    },
+                    changes.clone(),
+                );
+                break;
             }
 
             // Show individual file changes
@@ -618,15 +636,17 @@ async fn run_orchestrator(
                 .run_post_phase(
                     &phase,
                     phase.budget,
-                    previous_changes.as_ref().unwrap_or(&FileChangeSummary::default()),
+                    previous_changes
+                        .as_ref()
+                        .unwrap_or(&FileChangeSummary::default()),
                     true,
                 )
                 .await?;
 
-            if let Some(msg) = &post_phase_result.message {
-                if cli.verbose {
-                    println!("  PostPhase hook: {}", msg);
-                }
+            if let Some(msg) = &post_phase_result.message
+                && cli.verbose
+            {
+                println!("  PostPhase hook: {}", msg);
             }
 
             ui.phase_complete(&phase.number);
@@ -693,12 +713,12 @@ fn cmd_list(project_dir: &PathBuf) -> Result<()> {
     println!("Spec hash: {}", pf.spec_hash);
     println!();
     println!(
-        "{:<8} {:<25} {:<8} {}",
-        "Phase", "Promise", "Budget", "Description"
+        "{:<8} {:<25} {:<8} Description",
+        "Phase", "Promise", "Budget"
     );
     println!(
-        "{:<8} {:<25} {:<8} {}",
-        "--------", "-------------------------", "------", "-----------"
+        "{:<8} {:<25} {:<8} -----------",
+        "--------", "-------------------------", "------"
     );
 
     for phase in &pf.phases {
@@ -776,19 +796,19 @@ fn cmd_status(project_dir: &PathBuf) -> Result<()> {
 
     // Show phase count if available
     let phases_file = forge_dir.join("phases.json");
-    if phases_file.exists() {
-        if let Ok(pf) = PhasesFile::load(&phases_file) {
-            let total = pf.total_phase_count();
-            if total > pf.phases.len() {
-                println!(
-                    "         {} phases ({} top-level, {} sub-phases)",
-                    total,
-                    pf.phases.len(),
-                    total - pf.phases.len()
-                );
-            } else {
-                println!("         {} phases defined", pf.phases.len());
-            }
+    if phases_file.exists()
+        && let Ok(pf) = PhasesFile::load(&phases_file)
+    {
+        let total = pf.total_phase_count();
+        if total > pf.phases.len() {
+            println!(
+                "         {} phases ({} top-level, {} sub-phases)",
+                total,
+                pf.phases.len(),
+                total - pf.phases.len()
+            );
+        } else {
+            println!("         {} phases defined", pf.phases.len());
         }
     }
 
@@ -821,10 +841,10 @@ fn cmd_status(project_dir: &PathBuf) -> Result<()> {
             if let Some(last) = state.get_last_completed_phase() {
                 println!("  Last completed phase: {}", last);
             }
-            if let Some(last_any) = state.get_last_completed_any() {
-                if last_any.contains('.') {
-                    println!("  Last completed (any): {}", last_any);
-                }
+            if let Some(last_any) = state.get_last_completed_any()
+                && last_any.contains('.')
+            {
+                println!("  Last completed (any): {}", last_any);
             }
 
             println!();
@@ -1017,8 +1037,8 @@ fn cmd_learn(project_dir: &std::path::Path, name: Option<&str>) -> Result<()> {
 fn cmd_patterns(command: Option<PatternsCommands>) -> Result<()> {
     use forge::patterns::{
         display_budget_suggestions, display_pattern, display_pattern_matches,
-        display_patterns_list, display_type_statistics, get_pattern, list_patterns,
-        match_patterns, suggest_budgets,
+        display_patterns_list, display_type_statistics, get_pattern, list_patterns, match_patterns,
+        suggest_budgets,
     };
 
     match command {
@@ -1080,8 +1100,8 @@ fn cmd_patterns(command: Option<PatternsCommands>) -> Result<()> {
                 return Ok(());
             }
 
-            let spec_content = std::fs::read_to_string(&spec_path)
-                .context("Failed to read spec file")?;
+            let spec_content =
+                std::fs::read_to_string(&spec_path).context("Failed to read spec file")?;
 
             let patterns = list_patterns()?;
             if patterns.is_empty() {
@@ -1111,8 +1131,22 @@ fn cmd_patterns(command: Option<PatternsCommands>) -> Result<()> {
 
                 // Create hypothetical phases based on common phase types
                 let demo_phases = vec![
-                    forge::phase::Phase::new("01", "Project scaffold", "SCAFFOLD COMPLETE", 8, "Setup", vec![]),
-                    forge::phase::Phase::new("02", "Core implementation", "CORE COMPLETE", 15, "Build", vec![]),
+                    forge::phase::Phase::new(
+                        "01",
+                        "Project scaffold",
+                        "SCAFFOLD COMPLETE",
+                        8,
+                        "Setup",
+                        vec![],
+                    ),
+                    forge::phase::Phase::new(
+                        "02",
+                        "Core implementation",
+                        "CORE COMPLETE",
+                        15,
+                        "Build",
+                        vec![],
+                    ),
                     forge::phase::Phase::new("03", "Testing", "TESTS COMPLETE", 10, "Test", vec![]),
                 ];
 
@@ -1133,16 +1167,29 @@ fn cmd_patterns(command: Option<PatternsCommands>) -> Result<()> {
                     println!();
 
                     println!("{:<25} {:<15} {:<15}", "Metric", &p1.name, &p2.name);
-                    println!("{:<25} {:<15} {:<15}", "-".repeat(25), "-".repeat(15), "-".repeat(15));
+                    println!(
+                        "{:<25} {:<15} {:<15}",
+                        "-".repeat(25),
+                        "-".repeat(15),
+                        "-".repeat(15)
+                    );
 
-                    println!("{:<25} {:<15} {:<15}", "Total Phases", p1.total_phases, p2.total_phases);
+                    println!(
+                        "{:<25} {:<15} {:<15}",
+                        "Total Phases", p1.total_phases, p2.total_phases
+                    );
                     println!(
                         "{:<25} {:<15.0}% {:<15.0}%",
                         "Success Rate",
                         p1.success_rate * 100.0,
                         p2.success_rate * 100.0
                     );
-                    println!("{:<25} {:<15} {:<15}", "Tags", p1.tags.join(", "), p2.tags.join(", "));
+                    println!(
+                        "{:<25} {:<15} {:<15}",
+                        "Tags",
+                        p1.tags.join(", "),
+                        p2.tags.join(", ")
+                    );
                     println!();
 
                     // Compare type statistics
@@ -1154,8 +1201,12 @@ fn cmd_patterns(command: Option<PatternsCommands>) -> Result<()> {
 
                         let count1 = s1.map(|s| s.count).unwrap_or(0);
                         let count2 = s2.map(|s| s.count).unwrap_or(0);
-                        let avg1 = s1.map(|s| format!("{:.1}", s.avg_iterations)).unwrap_or("-".to_string());
-                        let avg2 = s2.map(|s| format!("{:.1}", s.avg_iterations)).unwrap_or("-".to_string());
+                        let avg1 = s1
+                            .map(|s| format!("{:.1}", s.avg_iterations))
+                            .unwrap_or("-".to_string());
+                        let avg2 = s2
+                            .map(|s| format!("{:.1}", s.avg_iterations))
+                            .unwrap_or("-".to_string());
 
                         if count1 > 0 || count2 > 0 {
                             println!(
@@ -1322,7 +1373,7 @@ fn cmd_config(project_dir: &std::path::Path, command: Option<ConfigCommands>) ->
 fn cmd_skills(project_dir: &std::path::Path, command: Option<SkillsCommands>) -> Result<()> {
     use dialoguer::Confirm;
     use forge::init::get_forge_dir;
-    use forge::skills::{create_skill, delete_skill, SkillsLoader};
+    use forge::skills::{SkillsLoader, create_skill, delete_skill};
 
     let forge_dir = get_forge_dir(project_dir);
     let mut loader = SkillsLoader::new(&forge_dir, false);
@@ -1509,10 +1560,10 @@ fn cmd_compact(
                         total_prompt_chars += content.len();
                         iteration_count += 1;
                     }
-                } else if name.ends_with("-output.log") {
-                    if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                        total_output_chars += content.len();
-                    }
+                } else if name.ends_with("-output.log")
+                    && let Ok(content) = std::fs::read_to_string(entry.path())
+                {
+                    total_output_chars += content.len();
                 }
             }
         }
@@ -1549,7 +1600,10 @@ fn cmd_compact(
 
     if status_only {
         println!();
-        println!("Use 'forge compact --phase {}' to perform compaction.", phase_number);
+        println!(
+            "Use 'forge compact --phase {}' to perform compaction.",
+            phase_number
+        );
         return Ok(());
     }
 

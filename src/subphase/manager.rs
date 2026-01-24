@@ -11,7 +11,7 @@ use anyhow::Result;
 use crate::phase::{Phase, PhasesFile, SubPhase, SubPhaseStatus};
 use crate::signals::SubPhaseSpawnSignal;
 
-use super::{spawn_from_signal, validate_spawn, SpawnValidation, SubPhaseConfig};
+use super::{SpawnValidation, SubPhaseConfig, spawn_from_signal, validate_spawn};
 
 /// Manages sub-phase lifecycle for a parent phase.
 pub struct SubPhaseManager {
@@ -65,10 +65,10 @@ impl SubPhaseManager {
                     );
                 }
                 parent.sub_phases.push(sub_phase);
-            } else if self.verbose {
-                if let Some(msg) = validation.error_message() {
-                    eprintln!("  Sub-phase spawn rejected: {}", msg);
-                }
+            } else if self.verbose
+                && let Some(msg) = validation.error_message()
+            {
+                eprintln!("  Sub-phase spawn rejected: {}", msg);
             }
 
             results.push((signal.clone(), validation));

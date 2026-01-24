@@ -236,7 +236,14 @@ mod tests {
     }
 
     fn create_test_sub_phase(parent: &Phase) -> SubPhase {
-        SubPhase::new(&parent.number, 1, "OAuth setup", "OAUTH DONE", 5, "OAuth is complex")
+        SubPhase::new(
+            &parent.number,
+            1,
+            "OAuth setup",
+            "OAUTH DONE",
+            5,
+            "OAuth is complex",
+        )
     }
 
     #[test]

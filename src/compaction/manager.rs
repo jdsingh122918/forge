@@ -227,7 +227,9 @@ impl CompactionManager {
     /// - If compaction has occurred: the compaction summary text
     /// - Otherwise: None (use normal prompts)
     pub fn get_context_injection(&self) -> Option<&str> {
-        self.last_compaction.as_ref().map(|s| s.summary_text.as_str())
+        self.last_compaction
+            .as_ref()
+            .map(|s| s.summary_text.as_str())
     }
 }
 
@@ -329,10 +331,24 @@ mod tests {
         // Limit is 80k, threshold is 72k (80k - 10% of 80k)
 
         // Add iterations that put us below threshold
-        manager.record_iteration(1, 30_000, 30_000, &empty_changes(), &empty_signals(), "Iter 1");
+        manager.record_iteration(
+            1,
+            30_000,
+            30_000,
+            &empty_changes(),
+            &empty_signals(),
+            "Iter 1",
+        );
         assert!(!manager.should_compact()); // Only 1 iteration
 
-        manager.record_iteration(2, 5_000, 5_000, &empty_changes(), &empty_signals(), "Iter 2");
+        manager.record_iteration(
+            2,
+            5_000,
+            5_000,
+            &empty_changes(),
+            &empty_signals(),
+            "Iter 2",
+        );
         assert!(!manager.should_compact()); // 70k < 72k
 
         manager.record_iteration(3, 3_000, 0, &empty_changes(), &empty_signals(), "Iter 3");
@@ -345,8 +361,22 @@ mod tests {
         let mut manager = CompactionManager::new("01", "Setup", "SETUP_DONE", "80%", 100_000);
 
         // Add enough iterations to trigger compaction
-        manager.record_iteration(1, 25_000, 25_000, &empty_changes(), &empty_signals(), "First");
-        manager.record_iteration(2, 15_000, 10_000, &empty_changes(), &empty_signals(), "Second");
+        manager.record_iteration(
+            1,
+            25_000,
+            25_000,
+            &empty_changes(),
+            &empty_signals(),
+            "First",
+        );
+        manager.record_iteration(
+            2,
+            15_000,
+            10_000,
+            &empty_changes(),
+            &empty_signals(),
+            "Second",
+        );
         manager.record_iteration(3, 5_000, 0, &empty_changes(), &empty_signals(), "Third");
 
         // Total: 80k, threshold: 70k -> should compact
@@ -388,8 +418,22 @@ mod tests {
     fn test_force_compact() {
         let mut manager = CompactionManager::with_defaults("01", "Setup", "DONE");
 
-        manager.record_iteration(1, 10_000, 5_000, &empty_changes(), &empty_signals(), "Iter 1");
-        manager.record_iteration(2, 10_000, 5_000, &empty_changes(), &empty_signals(), "Iter 2");
+        manager.record_iteration(
+            1,
+            10_000,
+            5_000,
+            &empty_changes(),
+            &empty_signals(),
+            "Iter 1",
+        );
+        manager.record_iteration(
+            2,
+            10_000,
+            5_000,
+            &empty_changes(),
+            &empty_signals(),
+            "Iter 2",
+        );
 
         let result = manager.force_compact().unwrap();
 
@@ -406,13 +450,32 @@ mod tests {
         // Before compaction
         assert!(manager.get_context_injection().is_none());
 
-        manager.record_iteration(1, 10_000, 5_000, &empty_changes(), &empty_signals(), "Iter 1");
-        manager.record_iteration(2, 10_000, 5_000, &empty_changes(), &empty_signals(), "Iter 2");
+        manager.record_iteration(
+            1,
+            10_000,
+            5_000,
+            &empty_changes(),
+            &empty_signals(),
+            "Iter 1",
+        );
+        manager.record_iteration(
+            2,
+            10_000,
+            5_000,
+            &empty_changes(),
+            &empty_signals(),
+            "Iter 2",
+        );
         let _ = manager.force_compact();
 
         // After compaction
         assert!(manager.get_context_injection().is_some());
-        assert!(manager.get_context_injection().unwrap().contains("CONTEXT COMPACTION"));
+        assert!(
+            manager
+                .get_context_injection()
+                .unwrap()
+                .contains("CONTEXT COMPACTION")
+        );
     }
 
     #[test]

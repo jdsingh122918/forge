@@ -168,9 +168,20 @@ impl PhaseTypeStats {
         let count = phases.len() as u32;
         let total_iterations: u32 = phases.iter().map(|p| p.actual_iterations).sum();
         let total_budget: u32 = phases.iter().map(|p| p.original_budget).sum();
-        let min_iterations = phases.iter().map(|p| p.actual_iterations).min().unwrap_or(0);
-        let max_iterations = phases.iter().map(|p| p.actual_iterations).max().unwrap_or(0);
-        let within_budget = phases.iter().filter(|p| p.actual_iterations <= p.original_budget).count();
+        let min_iterations = phases
+            .iter()
+            .map(|p| p.actual_iterations)
+            .min()
+            .unwrap_or(0);
+        let max_iterations = phases
+            .iter()
+            .map(|p| p.actual_iterations)
+            .max()
+            .unwrap_or(0);
+        let within_budget = phases
+            .iter()
+            .filter(|p| p.actual_iterations <= p.original_budget)
+            .count();
 
         Self {
             count,
@@ -235,7 +246,8 @@ impl Pattern {
         self.type_stats.clear();
         for (phase_type, phases) in by_type {
             let stats = PhaseTypeStats::from_phases(&phases);
-            self.type_stats.insert(phase_type.as_str().to_string(), stats);
+            self.type_stats
+                .insert(phase_type.as_str().to_string(), stats);
         }
     }
 
@@ -325,7 +337,8 @@ impl Pattern {
 ///
 /// Creates the directory if it doesn't exist.
 pub fn get_global_forge_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
     let global_dir = home.join(GLOBAL_FORGE_DIR);
     Ok(global_dir)
 }
@@ -374,9 +387,12 @@ pub fn list_patterns() -> Result<Vec<Pattern>> {
 
     let mut patterns = Vec::new();
 
-    for entry in std::fs::read_dir(&patterns_dir)
-        .with_context(|| format!("Failed to read patterns directory: {}", patterns_dir.display()))?
-    {
+    for entry in std::fs::read_dir(&patterns_dir).with_context(|| {
+        format!(
+            "Failed to read patterns directory: {}",
+            patterns_dir.display()
+        )
+    })? {
         let entry = entry?;
         let path = entry.path();
 
@@ -547,8 +563,12 @@ fn extract_file_patterns_for_phase(audit_dir: &Path, phase_number: &str) -> Vec<
                 continue;
             }
 
-            let Some(outcome) = phase.get("outcome") else { continue };
-            let Some(changes) = outcome.get("file_changes") else { continue };
+            let Some(outcome) = phase.get("outcome") else {
+                continue;
+            };
+            let Some(changes) = outcome.get("file_changes") else {
+                continue;
+            };
 
             // Get added files
             if let Some(added) = changes.get("files_added").and_then(|a| a.as_array()) {
@@ -623,9 +643,7 @@ pub fn learn_pattern(project_dir: &Path, pattern_name: Option<&str>) -> Result<P
     // Read phases.json
     let phases_file_path = forge_dir.join("phases.json");
     if !phases_file_path.exists() {
-        bail!(
-            "No phases.json found. Run 'forge generate' first to create phases."
-        );
+        bail!("No phases.json found. Run 'forge generate' first to create phases.");
     }
 
     let phases_file = PhasesFile::load(&phases_file_path)?;
@@ -659,9 +677,7 @@ pub fn learn_pattern(project_dir: &Path, pattern_name: Option<&str>) -> Result<P
             .rev()
             .find(|e| e.phase == phase.number && e.status == "completed");
 
-        let actual_iterations = completed_entry
-            .map(|e| e.iteration)
-            .unwrap_or(phase.budget);
+        let actual_iterations = completed_entry.map(|e| e.iteration).unwrap_or(phase.budget);
 
         // Classify the phase type
         let phase_type = PhaseType::classify(&phase.name);
@@ -738,7 +754,10 @@ pub fn save_pattern(pattern: &Pattern) -> Result<PathBuf> {
 /// Display a pattern in a formatted way.
 pub fn display_pattern(pattern: &Pattern) {
     println!("Pattern: {}", pattern.name);
-    println!("Created: {}", pattern.created_at.format("%Y-%m-%d %H:%M:%S"));
+    println!(
+        "Created: {}",
+        pattern.created_at.format("%Y-%m-%d %H:%M:%S")
+    );
     println!("Tags: {}", pattern.tags.join(", "));
     println!();
     println!("Summary:");
@@ -751,15 +770,15 @@ pub fn display_pattern(pattern: &Pattern) {
     );
     println!(
         "  {:<25} {:<15} {:<10} {:<10}",
-        "-------------------------",
-        "---------------",
-        "----------",
-        "----------"
+        "-------------------------", "---------------", "----------", "----------"
     );
 
     for stat in &pattern.phase_stats {
         let efficiency = if stat.original_budget > 0 {
-            format!("{}%", (stat.actual_iterations as f64 / stat.original_budget as f64 * 100.0) as u32)
+            format!(
+                "{}%",
+                (stat.actual_iterations as f64 / stat.original_budget as f64 * 100.0) as u32
+            )
         } else {
             "-".to_string()
         };
@@ -795,10 +814,7 @@ pub fn display_patterns_list(patterns: &[Pattern]) {
     );
     println!(
         "{:<20} {:<30} {:<8} {:<10}",
-        "--------------------",
-        "------------------------------",
-        "--------",
-        "----------"
+        "--------------------", "------------------------------", "--------", "----------"
     );
 
     for pattern in patterns {
@@ -848,7 +864,12 @@ pub struct PatternMatch<'a> {
 
 impl<'a> PatternMatch<'a> {
     /// Create a new pattern match with computed scores.
-    fn new(pattern: &'a Pattern, spec_tags: &[String], spec_keywords: &[String], phase_count: usize) -> Self {
+    fn new(
+        pattern: &'a Pattern,
+        spec_tags: &[String],
+        spec_keywords: &[String],
+        phase_count: usize,
+    ) -> Self {
         let tag_score = Self::compute_tag_similarity(&pattern.tags, spec_tags);
         let phase_score = Self::compute_phase_similarity(pattern.total_phases, phase_count);
         let keyword_score = Self::compute_keyword_similarity(&pattern.spec_summary, spec_keywords);
@@ -924,7 +945,10 @@ fn extract_keywords_from_spec(spec_content: &str) -> Vec<String> {
     let mut keywords = Vec::new();
 
     // Extract significant words (longer than 4 chars, not common words)
-    let stop_words = ["the", "and", "for", "with", "from", "that", "this", "will", "have", "should", "would", "could", "also", "each", "when", "into", "more", "other"];
+    let stop_words = [
+        "the", "and", "for", "with", "from", "that", "this", "will", "have", "should", "would",
+        "could", "also", "each", "when", "into", "more", "other",
+    ];
 
     for word in spec_lower.split_whitespace() {
         let clean: String = word.chars().filter(|c| c.is_alphanumeric()).collect();
@@ -969,7 +993,11 @@ pub fn match_patterns<'a>(spec_content: &str, patterns: &'a [Pattern]) -> Vec<Pa
         .collect();
 
     // Sort by score descending
-    matches.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    matches.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     matches
 }
@@ -1009,7 +1037,10 @@ impl BudgetSuggestion {
 ///
 /// # Returns
 /// A vector of BudgetSuggestion for each phase.
-pub fn suggest_budgets(patterns: &[&Pattern], phases: &[crate::phase::Phase]) -> Vec<BudgetSuggestion> {
+pub fn suggest_budgets(
+    patterns: &[&Pattern],
+    phases: &[crate::phase::Phase],
+) -> Vec<BudgetSuggestion> {
     let mut suggestions = Vec::new();
 
     // Build aggregate type stats across all similar patterns
@@ -1077,8 +1108,14 @@ pub fn display_pattern_matches(matches: &[PatternMatch]) {
 
     println!();
     println!("Similar Patterns:");
-    println!("{:<20} {:<10} {:<10} {:<10} {:<10}", "Name", "Score", "Tags", "Phases", "Keywords");
-    println!("{:<20} {:<10} {:<10} {:<10} {:<10}", "--------------------", "----------", "----------", "----------", "----------");
+    println!(
+        "{:<20} {:<10} {:<10} {:<10} {:<10}",
+        "Name", "Score", "Tags", "Phases", "Keywords"
+    );
+    println!(
+        "{:<20} {:<10} {:<10} {:<10} {:<10}",
+        "--------------------", "----------", "----------", "----------", "----------"
+    );
 
     for m in matches.iter().take(5) {
         println!(
@@ -1104,8 +1141,14 @@ pub fn display_budget_suggestions(suggestions: &[BudgetSuggestion]) {
 
     println!();
     println!("Budget Recommendations:");
-    println!("{:<6} {:<25} {:<10} {:<10} {:<10}", "Phase", "Name", "Original", "Suggested", "Confidence");
-    println!("{:<6} {:<25} {:<10} {:<10} {:<10}", "------", "-------------------------", "----------", "----------", "----------");
+    println!(
+        "{:<6} {:<25} {:<10} {:<10} {:<10}",
+        "Phase", "Name", "Original", "Suggested", "Confidence"
+    );
+    println!(
+        "{:<6} {:<25} {:<10} {:<10} {:<10}",
+        "------", "-------------------------", "----------", "----------", "----------"
+    );
 
     for s in &significant {
         println!(
@@ -1190,11 +1233,26 @@ pub fn display_type_statistics(patterns: &[Pattern]) {
     }
 
     println!();
-    println!("Phase Type Statistics (across {} patterns):", patterns.len());
-    println!("{:<12} {:<8} {:<10} {:<10} {:<10} {:<10}", "Type", "Count", "Avg Iter", "Min", "Max", "Success");
-    println!("{:<12} {:<8} {:<10} {:<10} {:<10} {:<10}", "------------", "--------", "----------", "----------", "----------", "----------");
+    println!(
+        "Phase Type Statistics (across {} patterns):",
+        patterns.len()
+    );
+    println!(
+        "{:<12} {:<8} {:<10} {:<10} {:<10} {:<10}",
+        "Type", "Count", "Avg Iter", "Min", "Max", "Success"
+    );
+    println!(
+        "{:<12} {:<8} {:<10} {:<10} {:<10} {:<10}",
+        "------------", "--------", "----------", "----------", "----------", "----------"
+    );
 
-    let types = [PhaseType::Scaffold, PhaseType::Implement, PhaseType::Test, PhaseType::Refactor, PhaseType::Fix];
+    let types = [
+        PhaseType::Scaffold,
+        PhaseType::Implement,
+        PhaseType::Test,
+        PhaseType::Refactor,
+        PhaseType::Fix,
+    ];
     for phase_type in types {
         if let Some(phases) = type_data.get(&phase_type) {
             let stats = PhaseTypeStats::from_phases(phases);
@@ -1488,12 +1546,16 @@ mod tests {
         let spec = "# Project Title\n\nThis is the first paragraph describing the project.\n\nThis is the second paragraph.";
         let summary = extract_summary_from_spec(spec);
 
-        assert_eq!(summary, "This is the first paragraph describing the project.");
+        assert_eq!(
+            summary,
+            "This is the first paragraph describing the project."
+        );
     }
 
     #[test]
     fn test_extract_summary_from_spec_multiline_paragraph() {
-        let spec = "# Title\n\nFirst line of paragraph.\nSecond line of paragraph.\n\nNew paragraph.";
+        let spec =
+            "# Title\n\nFirst line of paragraph.\nSecond line of paragraph.\n\nNew paragraph.";
         let summary = extract_summary_from_spec(spec);
 
         assert_eq!(
@@ -1537,7 +1599,12 @@ mod tests {
 
         let result = learn_pattern(dir.path(), None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No phases.json found"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No phases.json found")
+        );
     }
 
     #[test]
@@ -1572,7 +1639,8 @@ mod tests {
         std::fs::write(forge_dir.join("phases.json"), phases_json).unwrap();
 
         // Create state file with completion entries
-        let state_content = "01|5|completed|2026-01-23T10:00:00Z\n02|10|completed|2026-01-23T11:00:00Z\n";
+        let state_content =
+            "01|5|completed|2026-01-23T10:00:00Z\n02|10|completed|2026-01-23T11:00:00Z\n";
         std::fs::write(forge_dir.join("state"), state_content).unwrap();
 
         // Create spec
@@ -1664,8 +1732,14 @@ mod tests {
     fn test_phase_type_classify_scaffold() {
         assert_eq!(PhaseType::classify("Project scaffold"), PhaseType::Scaffold);
         assert_eq!(PhaseType::classify("Initial setup"), PhaseType::Scaffold);
-        assert_eq!(PhaseType::classify("Bootstrap project"), PhaseType::Scaffold);
-        assert_eq!(PhaseType::classify("Structure skeleton"), PhaseType::Scaffold);
+        assert_eq!(
+            PhaseType::classify("Bootstrap project"),
+            PhaseType::Scaffold
+        );
+        assert_eq!(
+            PhaseType::classify("Structure skeleton"),
+            PhaseType::Scaffold
+        );
     }
 
     #[test]
@@ -1678,7 +1752,10 @@ mod tests {
 
     #[test]
     fn test_phase_type_classify_refactor() {
-        assert_eq!(PhaseType::classify("Refactor auth module"), PhaseType::Refactor);
+        assert_eq!(
+            PhaseType::classify("Refactor auth module"),
+            PhaseType::Refactor
+        );
         assert_eq!(PhaseType::classify("Code cleanup"), PhaseType::Refactor);
         assert_eq!(PhaseType::classify("Optimize queries"), PhaseType::Refactor);
         assert_eq!(PhaseType::classify("Simplify logic"), PhaseType::Refactor);
@@ -1695,7 +1772,10 @@ mod tests {
     #[test]
     fn test_phase_type_classify_implement() {
         // Default case
-        assert_eq!(PhaseType::classify("API implementation"), PhaseType::Implement);
+        assert_eq!(
+            PhaseType::classify("API implementation"),
+            PhaseType::Implement
+        );
         assert_eq!(PhaseType::classify("Auth module"), PhaseType::Implement);
         assert_eq!(PhaseType::classify("Database schema"), PhaseType::Implement);
     }
@@ -1711,8 +1791,14 @@ mod tests {
 
     #[test]
     fn test_phase_type_serialization() {
-        assert_eq!(serde_json::to_string(&PhaseType::Scaffold).unwrap(), "\"scaffold\"");
-        assert_eq!(serde_json::to_string(&PhaseType::Implement).unwrap(), "\"implement\"");
+        assert_eq!(
+            serde_json::to_string(&PhaseType::Scaffold).unwrap(),
+            "\"scaffold\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PhaseType::Implement).unwrap(),
+            "\"implement\""
+        );
 
         let parsed: PhaseType = serde_json::from_str("\"test\"").unwrap();
         assert_eq!(parsed, PhaseType::Test);
@@ -1819,9 +1905,7 @@ mod tests {
 
     #[test]
     fn test_match_patterns_filters_low_scores() {
-        let patterns = vec![
-            create_test_pattern("unrelated", vec!["java", "mobile"], 20),
-        ];
+        let patterns = vec![create_test_pattern("unrelated", vec!["java", "mobile"], 20)];
 
         let spec = "# Rust API\n\nBuild a Rust API.";
         let matches = match_patterns(spec, &patterns);
@@ -1836,9 +1920,14 @@ mod tests {
 
     #[test]
     fn test_suggest_budgets_empty_patterns() {
-        let phases = vec![
-            crate::phase::Phase::new("01", "Scaffold", "DONE", 10, "Setup", vec![]),
-        ];
+        let phases = vec![crate::phase::Phase::new(
+            "01",
+            "Scaffold",
+            "DONE",
+            10,
+            "Setup",
+            vec![],
+        )];
 
         let suggestions = suggest_budgets(&[], &phases);
         assert_eq!(suggestions.len(), 1);
@@ -1848,23 +1937,26 @@ mod tests {
     #[test]
     fn test_suggest_budgets_with_history() {
         let mut pattern = Pattern::new("test");
-        pattern.phase_stats = vec![
-            PhaseStat {
-                name: "Project scaffold".to_string(),
-                promise: "DONE".to_string(),
-                actual_iterations: 5,
-                original_budget: 10,
-                phase_type: PhaseType::Scaffold,
-                file_patterns: vec![],
-                exceeded_budget: false,
-                common_errors: vec![],
-            },
-        ];
+        pattern.phase_stats = vec![PhaseStat {
+            name: "Project scaffold".to_string(),
+            promise: "DONE".to_string(),
+            actual_iterations: 5,
+            original_budget: 10,
+            phase_type: PhaseType::Scaffold,
+            file_patterns: vec![],
+            exceeded_budget: false,
+            common_errors: vec![],
+        }];
         pattern.compute_type_stats();
 
-        let phases = vec![
-            crate::phase::Phase::new("01", "Initial scaffold", "DONE", 10, "Setup", vec![]),
-        ];
+        let phases = vec![crate::phase::Phase::new(
+            "01",
+            "Initial scaffold",
+            "DONE",
+            10,
+            "Setup",
+            vec![],
+        )];
 
         let suggestions = suggest_budgets(&[&pattern], &phases);
         assert_eq!(suggestions.len(), 1);
@@ -1925,18 +2017,16 @@ mod tests {
     #[test]
     fn test_recommend_skills_from_patterns() {
         let mut pattern = Pattern::new("api-project");
-        pattern.phase_stats = vec![
-            PhaseStat {
-                name: "API implementation".to_string(),
-                promise: "DONE".to_string(),
-                actual_iterations: 10,
-                original_budget: 15,
-                phase_type: PhaseType::Implement,
-                file_patterns: vec!["src/handlers/*.rs".to_string()],
-                exceeded_budget: false,
-                common_errors: vec![],
-            },
-        ];
+        pattern.phase_stats = vec![PhaseStat {
+            name: "API implementation".to_string(),
+            promise: "DONE".to_string(),
+            actual_iterations: 10,
+            original_budget: 15,
+            phase_type: PhaseType::Implement,
+            file_patterns: vec!["src/handlers/*.rs".to_string()],
+            exceeded_budget: false,
+            common_errors: vec![],
+        }];
 
         let skills = recommend_skills_for_phase("Core implementation", &[&pattern]);
         assert!(skills.contains(&"api-design".to_string()));
@@ -1949,7 +2039,10 @@ mod tests {
     #[test]
     fn test_generalize_file_pattern() {
         assert_eq!(generalize_file_pattern("src/main.rs"), "src/*.rs");
-        assert_eq!(generalize_file_pattern("src/handlers/user.rs"), "src/handlers/*.rs");
+        assert_eq!(
+            generalize_file_pattern("src/handlers/user.rs"),
+            "src/handlers/*.rs"
+        );
         assert_eq!(generalize_file_pattern("tests/api_test.py"), "tests/*.py");
     }
 
@@ -2055,25 +2148,31 @@ mod tests {
 
         pattern.compute_common_file_patterns();
 
-        assert!(pattern.common_file_patterns.contains(&"src/*.rs".to_string()));
-        assert!(pattern.common_file_patterns.contains(&"tests/*.rs".to_string()));
+        assert!(
+            pattern
+                .common_file_patterns
+                .contains(&"src/*.rs".to_string())
+        );
+        assert!(
+            pattern
+                .common_file_patterns
+                .contains(&"tests/*.rs".to_string())
+        );
     }
 
     #[test]
     fn test_pattern_suggest_budget_for_type() {
         let mut pattern = Pattern::new("test");
-        pattern.phase_stats = vec![
-            PhaseStat {
-                name: "Setup".to_string(),
-                promise: "DONE".to_string(),
-                actual_iterations: 5,
-                original_budget: 10,
-                phase_type: PhaseType::Scaffold,
-                file_patterns: vec![],
-                exceeded_budget: false,
-                common_errors: vec![],
-            },
-        ];
+        pattern.phase_stats = vec![PhaseStat {
+            name: "Setup".to_string(),
+            promise: "DONE".to_string(),
+            actual_iterations: 5,
+            original_budget: 10,
+            phase_type: PhaseType::Scaffold,
+            file_patterns: vec![],
+            exceeded_budget: false,
+            common_errors: vec![],
+        }];
         pattern.compute_type_stats();
 
         let suggestion = pattern.suggest_budget_for_type(PhaseType::Scaffold);

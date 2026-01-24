@@ -53,8 +53,8 @@ impl ProgressTracker {
     /// Update tracker with latest changes and return whether progress was made.
     pub fn update(&mut self, changes: &FileChangeSummary, progress_pct: Option<u8>) -> bool {
         let current_count = changes.total_files();
-        let made_progress = current_count > self.last_file_count
-            || progress_pct > self.last_progress_pct;
+        let made_progress =
+            current_count > self.last_file_count || progress_pct > self.last_progress_pct;
 
         if made_progress {
             self.stale_iterations = 0;
@@ -154,15 +154,16 @@ impl ApprovalGate {
             }
             PermissionMode::Standard | PermissionMode::Strict => {
                 // Standard and Strict: use threshold-based auto-approval for phase start
-                if let Some(changes) = previous_changes {
-                    if changes.total_files() <= self.auto_threshold && changes.total_files() > 0 {
-                        println!(
-                            "  {} (≤{} files changed)",
-                            console::style("Auto-approved").dim(),
-                            self.auto_threshold
-                        );
-                        return Ok(GateDecision::Approved);
-                    }
+                if let Some(changes) = previous_changes
+                    && changes.total_files() <= self.auto_threshold
+                    && changes.total_files() > 0
+                {
+                    println!(
+                        "  {} (≤{} files changed)",
+                        console::style("Auto-approved").dim(),
+                        self.auto_threshold
+                    );
+                    return Ok(GateDecision::Approved);
                 }
 
                 // Interactive prompt for phase start
@@ -201,10 +202,7 @@ impl ApprovalGate {
 
     /// Check whether to continue in autonomous mode based on progress.
     /// Returns true if should continue, false if should prompt user.
-    pub fn check_autonomous_progress(
-        &self,
-        tracker: &ProgressTracker,
-    ) -> bool {
+    pub fn check_autonomous_progress(&self, tracker: &ProgressTracker) -> bool {
         if self.skip_all {
             return true;
         }
@@ -219,11 +217,7 @@ impl ApprovalGate {
             self.stale_threshold
         );
 
-        let options = &[
-            "Continue anyway",
-            "Stop this phase",
-            "Abort orchestrator",
-        ];
+        let options = &["Continue anyway", "Stop this phase", "Abort orchestrator"];
 
         let selection = Select::with_theme(&ColorfulTheme::default())
             .with_prompt("What would you like to do?")
@@ -404,10 +398,7 @@ impl ApprovalGate {
 
         // If --yes flag, auto-approve
         if self.skip_all {
-            println!(
-                "  {} (--yes flag)",
-                console::style("Auto-approved").dim()
-            );
+            println!("  {} (--yes flag)", console::style("Auto-approved").dim());
             return Ok(GateDecision::Approved);
         }
 
@@ -628,7 +619,12 @@ mod tests {
         };
         let result = gate.validate_readonly_changes(&phase, &changes);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Readonly mode violation"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Readonly mode violation")
+        );
     }
 
     #[test]

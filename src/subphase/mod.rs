@@ -21,19 +21,13 @@ pub enum SpawnValidation {
     /// The spawn request is valid and can proceed.
     Valid,
     /// The budget exceeds the parent's remaining budget.
-    InsufficientBudget {
-        requested: u32,
-        available: u32,
-    },
+    InsufficientBudget { requested: u32, available: u32 },
     /// The promise tag is invalid (e.g., empty or duplicate).
     InvalidPromise(String),
     /// The name is invalid (e.g., empty).
     InvalidName(String),
     /// Too many sub-phases already spawned.
-    TooManySubPhases {
-        current: usize,
-        max: usize,
-    },
+    TooManySubPhases { current: usize, max: usize },
 }
 
 impl SpawnValidation {
@@ -46,24 +40,19 @@ impl SpawnValidation {
     pub fn error_message(&self) -> Option<String> {
         match self {
             SpawnValidation::Valid => None,
-            SpawnValidation::InsufficientBudget { requested, available } => {
-                Some(format!(
-                    "Requested budget {} exceeds available budget {}",
-                    requested, available
-                ))
-            }
-            SpawnValidation::InvalidPromise(reason) => {
-                Some(format!("Invalid promise: {}", reason))
-            }
-            SpawnValidation::InvalidName(reason) => {
-                Some(format!("Invalid name: {}", reason))
-            }
-            SpawnValidation::TooManySubPhases { current, max } => {
-                Some(format!(
-                    "Too many sub-phases: {} already spawned (max {})",
-                    current, max
-                ))
-            }
+            SpawnValidation::InsufficientBudget {
+                requested,
+                available,
+            } => Some(format!(
+                "Requested budget {} exceeds available budget {}",
+                requested, available
+            )),
+            SpawnValidation::InvalidPromise(reason) => Some(format!("Invalid promise: {}", reason)),
+            SpawnValidation::InvalidName(reason) => Some(format!("Invalid name: {}", reason)),
+            SpawnValidation::TooManySubPhases { current, max } => Some(format!(
+                "Too many sub-phases: {} already spawned (max {})",
+                current, max
+            )),
         }
     }
 }
@@ -106,7 +95,11 @@ pub fn validate_spawn(
     }
 
     // Check for duplicate promise in existing sub-phases
-    if parent.sub_phases.iter().any(|sp| sp.promise == signal.promise) {
+    if parent
+        .sub_phases
+        .iter()
+        .any(|sp| sp.promise == signal.promise)
+    {
         return SpawnValidation::InvalidPromise(format!(
             "Promise '{}' already used by another sub-phase",
             signal.promise
@@ -114,7 +107,9 @@ pub fn validate_spawn(
     }
 
     // Check budget
-    let available = parent.remaining_budget().saturating_sub(config.min_parent_budget_reserve);
+    let available = parent
+        .remaining_budget()
+        .saturating_sub(config.min_parent_budget_reserve);
     if signal.budget > available {
         return SpawnValidation::InsufficientBudget {
             requested: signal.budget,
@@ -181,7 +176,10 @@ mod tests {
         let config = SubPhaseConfig::default();
 
         match validate_spawn(&signal, &phase, &config) {
-            SpawnValidation::InsufficientBudget { requested, available } => {
+            SpawnValidation::InsufficientBudget {
+                requested,
+                available,
+            } => {
                 assert_eq!(requested, 25);
                 assert!(available < 25);
             }

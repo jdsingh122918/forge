@@ -109,7 +109,11 @@ impl SkillsLoader {
 
         if !skill_file.exists() {
             if self.verbose {
-                eprintln!("Warning: Skill '{}' not found at {}", name, skill_file.display());
+                eprintln!(
+                    "Warning: Skill '{}' not found at {}",
+                    name,
+                    skill_file.display()
+                );
             }
             return Ok(None);
         }
@@ -162,8 +166,12 @@ impl SkillsLoader {
         }
 
         let mut skills = Vec::new();
-        let entries = std::fs::read_dir(&self.skills_dir)
-            .with_context(|| format!("Failed to read skills directory: {}", self.skills_dir.display()))?;
+        let entries = std::fs::read_dir(&self.skills_dir).with_context(|| {
+            format!(
+                "Failed to read skills directory: {}",
+                self.skills_dir.display()
+            )
+        })?;
 
         for entry in entries {
             let entry = entry?;
@@ -199,8 +207,12 @@ impl SkillsLoader {
 /// Create the skills directory structure.
 pub fn ensure_skills_directory(forge_dir: &Path) -> Result<PathBuf> {
     let skills_dir = forge_dir.join(SKILLS_DIR);
-    std::fs::create_dir_all(&skills_dir)
-        .with_context(|| format!("Failed to create skills directory: {}", skills_dir.display()))?;
+    std::fs::create_dir_all(&skills_dir).with_context(|| {
+        format!(
+            "Failed to create skills directory: {}",
+            skills_dir.display()
+        )
+    })?;
     Ok(skills_dir)
 }
 
@@ -247,14 +259,22 @@ mod tests {
 
     #[test]
     fn test_skill_new() {
-        let skill = Skill::new("rust-conventions", PathBuf::from("/test"), "Use clippy".to_string());
+        let skill = Skill::new(
+            "rust-conventions",
+            PathBuf::from("/test"),
+            "Use clippy".to_string(),
+        );
         assert_eq!(skill.name, "rust-conventions");
         assert_eq!(skill.content, "Use clippy");
     }
 
     #[test]
     fn test_skill_as_prompt_section() {
-        let skill = Skill::new("rust-conventions", PathBuf::from("/test"), "Use clippy.\nRun tests.".to_string());
+        let skill = Skill::new(
+            "rust-conventions",
+            PathBuf::from("/test"),
+            "Use clippy.\nRun tests.".to_string(),
+        );
         let section = skill.as_prompt_section();
         assert!(section.contains("## SKILL: RUST CONVENTIONS"));
         assert!(section.contains("Use clippy."));
@@ -331,7 +351,11 @@ mod tests {
         create_test_skill(&forge_dir, "skill-b", "Content B");
 
         let mut loader = SkillsLoader::new(&forge_dir, false);
-        let names = vec!["skill-a".to_string(), "skill-b".to_string(), "nonexistent".to_string()];
+        let names = vec![
+            "skill-a".to_string(),
+            "skill-b".to_string(),
+            "nonexistent".to_string(),
+        ];
         let skills = loader.load_skills(&names).unwrap();
 
         assert_eq!(skills.len(), 2);
@@ -347,7 +371,10 @@ mod tests {
         create_test_skill(&forge_dir, "testing-strategy", "Write unit tests.");
 
         let mut loader = SkillsLoader::new(&forge_dir, false);
-        let names = vec!["rust-conventions".to_string(), "testing-strategy".to_string()];
+        let names = vec![
+            "rust-conventions".to_string(),
+            "testing-strategy".to_string(),
+        ];
         let section = loader.generate_skills_section(&names).unwrap();
 
         assert!(section.contains("## SKILLS AND CONVENTIONS"));
@@ -405,7 +432,11 @@ mod tests {
 
         // Create a directory without SKILL.md (should be ignored)
         std::fs::create_dir_all(forge_dir.join("skills/incomplete-skill")).unwrap();
-        std::fs::write(forge_dir.join("skills/incomplete-skill/README.md"), "Not a skill").unwrap();
+        std::fs::write(
+            forge_dir.join("skills/incomplete-skill/README.md"),
+            "Not a skill",
+        )
+        .unwrap();
 
         let loader = SkillsLoader::new(&forge_dir, false);
         let skills = loader.list_skills().unwrap();
@@ -434,7 +465,8 @@ mod tests {
         let forge_dir = dir.path().join(".forge");
         std::fs::create_dir_all(&forge_dir).unwrap();
 
-        let skill_dir = create_skill(&forge_dir, "new-skill", "# New Skill\n\nContent here.").unwrap();
+        let skill_dir =
+            create_skill(&forge_dir, "new-skill", "# New Skill\n\nContent here.").unwrap();
 
         assert!(skill_dir.exists());
         let content = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();

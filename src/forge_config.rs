@@ -183,7 +183,7 @@ pub struct SkillsSection {
 }
 
 /// The complete forge.toml configuration structure.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ForgeToml {
     /// Project-level settings
     #[serde(default)]
@@ -200,18 +200,6 @@ pub struct ForgeToml {
     /// Skills configuration
     #[serde(default)]
     pub skills: SkillsSection,
-}
-
-impl Default for ForgeToml {
-    fn default() -> Self {
-        Self {
-            project: ProjectConfig::default(),
-            defaults: DefaultsConfig::default(),
-            phases: PhasesConfig::default(),
-            hooks: HooksSection::default(),
-            skills: SkillsSection::default(),
-        }
-    }
 }
 
 impl ForgeToml {
@@ -316,13 +304,13 @@ impl ForgeToml {
 
         // Validate override patterns
         for (pattern, override_cfg) in &self.phases.overrides {
-            if let Some(ref limit) = override_cfg.context_limit {
-                if !is_valid_context_limit(limit) {
-                    warnings.push(format!(
-                        "Invalid context_limit '{}' in override for pattern '{}'",
-                        limit, pattern
-                    ));
-                }
+            if let Some(ref limit) = override_cfg.context_limit
+                && !is_valid_context_limit(limit)
+            {
+                warnings.push(format!(
+                    "Invalid context_limit '{}' in override for pattern '{}'",
+                    limit, pattern
+                ));
             }
         }
 
@@ -404,8 +392,7 @@ fn is_valid_context_limit(limit: &str) -> bool {
     if limit.is_empty() {
         return false;
     }
-    if limit.ends_with('%') {
-        let num_str = &limit[..limit.len() - 1];
+    if let Some(num_str) = limit.strip_suffix('%') {
         if let Ok(num) = num_str.parse::<u32>() {
             return num <= 100;
         }
@@ -577,7 +564,12 @@ mod tests {
     fn test_permission_mode_from_str_invalid() {
         let result = "invalid".parse::<PermissionMode>();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid permission mode"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid permission mode")
+        );
     }
 
     #[test]
@@ -697,7 +689,10 @@ permission_mode = "autonomous"
         assert_eq!(db_override.budget, Some(12));
 
         let test_override = toml.phases.overrides.get("test-*").unwrap();
-        assert_eq!(test_override.permission_mode, Some(PermissionMode::Autonomous));
+        assert_eq!(
+            test_override.permission_mode,
+            Some(PermissionMode::Autonomous)
+        );
         assert_eq!(test_override.budget, None);
     }
 

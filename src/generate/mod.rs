@@ -203,9 +203,7 @@ pub fn call_claude_for_phases(project_dir: &Path, spec_content: &str) -> Result<
     // Get claude_cmd from unified configuration
     let claude_cmd = ForgeConfig::new(project_dir.to_path_buf())
         .map(|c| c.claude_cmd())
-        .unwrap_or_else(|_| {
-            std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".to_string())
-        });
+        .unwrap_or_else(|_| std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".to_string()));
 
     // Build the prompt
     let prompt = format!(

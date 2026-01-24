@@ -47,11 +47,7 @@ impl HookManager {
     }
 
     /// Create a HookManager with explicit config.
-    pub fn with_config(
-        project_dir: impl AsRef<Path>,
-        config: HooksConfig,
-        verbose: bool,
-    ) -> Self {
+    pub fn with_config(project_dir: impl AsRef<Path>, config: HooksConfig, verbose: bool) -> Self {
         let project_dir = project_dir.as_ref();
         let forge_dir = project_dir.join(".forge");
         let executor = HookExecutor::new(project_dir, verbose);
@@ -292,7 +288,10 @@ command = "./test2.sh"
         };
 
         let config2 = HooksConfig {
-            hooks: vec![HookDefinition::command(HookEvent::PostPhase, "./script2.sh")],
+            hooks: vec![HookDefinition::command(
+                HookEvent::PostPhase,
+                "./script2.sh",
+            )],
         };
 
         let mut manager = HookManager::with_config(dir.path(), config1, false);
@@ -434,32 +433,48 @@ command = "{}"
         let changes = crate::audit::FileChangeSummary::default();
 
         // All convenience methods should work without hooks
-        assert!(manager.run_pre_phase(&phase, None).await.unwrap().should_continue());
-        assert!(manager
-            .run_post_phase(&phase, 1, &changes, true)
-            .await
-            .unwrap()
-            .should_continue());
-        assert!(manager
-            .run_pre_iteration(&phase, 1)
-            .await
-            .unwrap()
-            .should_continue());
-        assert!(manager
-            .run_post_iteration(&phase, 1, &changes, true, None)
-            .await
-            .unwrap()
-            .should_continue());
-        assert!(manager
-            .run_on_failure(&phase, 5, &changes)
-            .await
-            .unwrap()
-            .should_continue());
-        assert!(manager
-            .run_on_approval(&phase, None)
-            .await
-            .unwrap()
-            .should_continue());
+        assert!(
+            manager
+                .run_pre_phase(&phase, None)
+                .await
+                .unwrap()
+                .should_continue()
+        );
+        assert!(
+            manager
+                .run_post_phase(&phase, 1, &changes, true)
+                .await
+                .unwrap()
+                .should_continue()
+        );
+        assert!(
+            manager
+                .run_pre_iteration(&phase, 1)
+                .await
+                .unwrap()
+                .should_continue()
+        );
+        assert!(
+            manager
+                .run_post_iteration(&phase, 1, &changes, true, None)
+                .await
+                .unwrap()
+                .should_continue()
+        );
+        assert!(
+            manager
+                .run_on_failure(&phase, 5, &changes)
+                .await
+                .unwrap()
+                .should_continue()
+        );
+        assert!(
+            manager
+                .run_on_approval(&phase, None)
+                .await
+                .unwrap()
+                .should_continue()
+        );
     }
 
     #[test]

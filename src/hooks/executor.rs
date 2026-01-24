@@ -66,7 +66,11 @@ impl HookExecutor {
     /// - Falls back to natural language parsing if JSON fails
     ///
     /// Returns a HookResult indicating what action to take.
-    pub async fn execute(&self, hook: &HookDefinition, context: &HookContext) -> Result<HookResult> {
+    pub async fn execute(
+        &self,
+        hook: &HookDefinition,
+        context: &HookContext,
+    ) -> Result<HookResult> {
         match hook.hook_type {
             HookType::Command => self.execute_command(hook, context).await,
             HookType::Prompt => self.execute_prompt(hook, context).await,
@@ -351,10 +355,10 @@ Respond ONLY with the JSON object, no other text."#,
     /// Extract JSON from a response that might contain markdown code blocks.
     fn extract_json_from_response(response: &str) -> &str {
         // Try to find JSON in code blocks first
-        if let Some(start) = response.find("```json") {
-            if let Some(end) = response[start + 7..].find("```") {
-                return response[start + 7..start + 7 + end].trim();
-            }
+        if let Some(start) = response.find("```json")
+            && let Some(end) = response[start + 7..].find("```")
+        {
+            return response[start + 7..start + 7 + end].trim();
         }
 
         // Try generic code blocks
@@ -372,12 +376,11 @@ Respond ONLY with the JSON object, no other text."#,
         }
 
         // Try to find raw JSON object
-        if let Some(start) = response.find('{') {
-            if let Some(end) = response.rfind('}') {
-                if end > start {
-                    return &response[start..=end];
-                }
-            }
+        if let Some(start) = response.find('{')
+            && let Some(end) = response.rfind('}')
+            && end > start
+        {
+            return &response[start..=end];
         }
 
         response
@@ -451,10 +454,10 @@ Respond ONLY with the JSON object, no other text."#,
         }
 
         // First, try to parse stdout as JSON result
-        if !stdout.trim().is_empty() {
-            if let Ok(result) = serde_json::from_str::<HookResult>(stdout.trim()) {
-                return Ok(result);
-            }
+        if !stdout.trim().is_empty()
+            && let Ok(result) = serde_json::from_str::<HookResult>(stdout.trim())
+        {
+            return Ok(result);
         }
 
         // Fall back to exit code based result
@@ -620,8 +623,11 @@ mod tests {
     #[tokio::test]
     async fn test_execute_command_hook_skip() {
         let dir = tempdir().unwrap();
-        let script_path =
-            create_test_script(dir.path(), "hook.sh", "#!/bin/sh\necho 'Skip this'\nexit 2\n");
+        let script_path = create_test_script(
+            dir.path(),
+            "hook.sh",
+            "#!/bin/sh\necho 'Skip this'\nexit 2\n",
+        );
 
         let executor = HookExecutor::new(dir.path(), false);
         let hook = HookDefinition::command(
@@ -806,7 +812,8 @@ exit 0
     async fn test_execute_all_combines_injections() {
         let dir = tempdir().unwrap();
 
-        let script1 = create_test_script(dir.path(), "hook1.sh", "#!/bin/sh\necho 'First'\nexit 0\n");
+        let script1 =
+            create_test_script(dir.path(), "hook1.sh", "#!/bin/sh\necho 'First'\nexit 0\n");
         let script2 =
             create_test_script(dir.path(), "hook2.sh", "#!/bin/sh\necho 'Second'\nexit 0\n");
 
@@ -1000,7 +1007,8 @@ The phase can proceed."#;
         let dir = tempdir().unwrap();
         let executor = HookExecutor::new(dir.path(), false);
 
-        let response = "I think we should block this operation because there are security concerns.";
+        let response =
+            "I think we should block this operation because there are security concerns.";
         let result = executor.parse_prompt_response(response).unwrap();
         assert_eq!(result.action, HookAction::Block);
     }
@@ -1062,7 +1070,10 @@ The phase can proceed."#;
     #[test]
     fn test_truncate() {
         assert_eq!(HookExecutor::truncate("short", 10), "short");
-        assert_eq!(HookExecutor::truncate("this is a longer string", 10), "this is a ...");
+        assert_eq!(
+            HookExecutor::truncate("this is a longer string", 10),
+            "this is a ..."
+        );
     }
 
     #[test]
@@ -1074,10 +1085,8 @@ The phase can proceed."#;
         assert!(valid_hook.validate().is_empty());
 
         // Prompt hook without prompt should warn
-        let mut invalid_hook = create_prompt_hook(
-            super::super::types::HookEvent::PostIteration,
-            "test",
-        );
+        let mut invalid_hook =
+            create_prompt_hook(super::super::types::HookEvent::PostIteration, "test");
         invalid_hook.prompt = None;
         let warnings = invalid_hook.validate();
         assert_eq!(warnings.len(), 1);
@@ -1096,10 +1105,7 @@ The phase can proceed."#;
         let dir = tempdir().unwrap();
         let executor = HookExecutor::new(dir.path(), false);
 
-        let mut hook = create_prompt_hook(
-            super::super::types::HookEvent::PostIteration,
-            "test",
-        );
+        let mut hook = create_prompt_hook(super::super::types::HookEvent::PostIteration, "test");
         hook.prompt = None;
 
         let phase = Phase::new("01", "Test", "DONE", 5, "", vec![]);
@@ -1107,7 +1113,12 @@ The phase can proceed."#;
 
         let result = executor.execute(&hook, &context).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no prompt specified"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("no prompt specified")
+        );
     }
 
     // Note: Full integration tests with actual Claude CLI would require
@@ -1218,11 +1229,7 @@ echo '```'
     async fn test_execute_prompt_hook_timeout() {
         let dir = tempdir().unwrap();
 
-        let mock_claude = create_test_script(
-            dir.path(),
-            "mock-claude",
-            "#!/bin/sh\nsleep 10\n",
-        );
+        let mock_claude = create_test_script(dir.path(), "mock-claude", "#!/bin/sh\nsleep 10\n");
 
         let executor = HookExecutor::with_claude_cmd(
             dir.path(),

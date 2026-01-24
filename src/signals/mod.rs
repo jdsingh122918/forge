@@ -13,5 +13,7 @@
 mod parser;
 mod types;
 
-pub use parser::{extract_signals, SignalParser};
-pub use types::{BlockerSignal, IterationSignals, PivotSignal, ProgressSignal, SubPhaseSpawnSignal};
+pub use parser::{SignalParser, extract_signals};
+pub use types::{
+    BlockerSignal, IterationSignals, PivotSignal, ProgressSignal, SubPhaseSpawnSignal,
+};

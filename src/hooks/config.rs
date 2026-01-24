@@ -493,11 +493,13 @@ timeout_secs = 60
         assert_eq!(config.hooks[0].event, HookEvent::PostIteration);
         assert_eq!(config.hooks[0].hook_type, HookType::Prompt);
         assert!(config.hooks[0].prompt.is_some());
-        assert!(config.hooks[0]
-            .prompt
-            .as_ref()
-            .unwrap()
-            .contains("meaningful progress"));
+        assert!(
+            config.hooks[0]
+                .prompt
+                .as_ref()
+                .unwrap()
+                .contains("meaningful progress")
+        );
 
         // Second hook
         assert_eq!(config.hooks[1].event, HookEvent::OnApproval);

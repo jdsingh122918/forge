@@ -258,12 +258,18 @@ impl Phase {
 
     /// Get pending sub-phases that haven't been executed yet.
     pub fn pending_sub_phases(&self) -> Vec<&SubPhase> {
-        self.sub_phases.iter().filter(|sp| sp.is_pending()).collect()
+        self.sub_phases
+            .iter()
+            .filter(|sp| sp.is_pending())
+            .collect()
     }
 
     /// Get all sub-phases that are not yet complete.
     pub fn incomplete_sub_phases(&self) -> Vec<&SubPhase> {
-        self.sub_phases.iter().filter(|sp| !sp.is_complete()).collect()
+        self.sub_phases
+            .iter()
+            .filter(|sp| !sp.is_complete())
+            .collect()
     }
 
     /// Add a new sub-phase to this phase.
@@ -403,10 +409,10 @@ impl PhasesFile {
         // Parse parent phase number from sub-phase number
         if let Some(dot_pos) = number.find('.') {
             let parent_number = &number[..dot_pos];
-            if let Some(parent) = self.get_phase(parent_number) {
-                if let Some(sub_phase) = parent.get_sub_phase(number) {
-                    return Some((parent, sub_phase));
-                }
+            if let Some(parent) = self.get_phase(parent_number)
+                && let Some(sub_phase) = parent.get_sub_phase(number)
+            {
+                return Some((parent, sub_phase));
             }
         }
         None
@@ -469,7 +475,12 @@ impl PhasesFile {
 
     /// Count total phases including sub-phases.
     pub fn total_phase_count(&self) -> usize {
-        self.phases.len() + self.phases.iter().map(|p| p.sub_phases.len()).sum::<usize>()
+        self.phases.len()
+            + self
+                .phases
+                .iter()
+                .map(|p| p.sub_phases.len())
+                .sum::<usize>()
     }
 }
 
@@ -1258,8 +1269,18 @@ mod tests {
             .add_sub_phases_to_phase(
                 "05",
                 vec![
-                    ("OAuth".to_string(), "OAUTH DONE".to_string(), 5, "reason".to_string()),
-                    ("JWT".to_string(), "JWT DONE".to_string(), 4, "reason".to_string()),
+                    (
+                        "OAuth".to_string(),
+                        "OAUTH DONE".to_string(),
+                        5,
+                        "reason".to_string(),
+                    ),
+                    (
+                        "JWT".to_string(),
+                        "JWT DONE".to_string(),
+                        4,
+                        "reason".to_string(),
+                    ),
                 ],
             )
             .unwrap();
@@ -1291,9 +1312,16 @@ mod tests {
             ],
         };
 
-        pf.add_sub_phases_to_phase("01", vec![
-            ("Sub A".to_string(), "A DONE".to_string(), 3, "reason".to_string()),
-        ]).unwrap();
+        pf.add_sub_phases_to_phase(
+            "01",
+            vec![(
+                "Sub A".to_string(),
+                "A DONE".to_string(),
+                3,
+                "reason".to_string(),
+            )],
+        )
+        .unwrap();
 
         let flattened = pf.get_all_phases_flattened();
 

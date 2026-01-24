@@ -150,10 +150,9 @@ impl CompactionSummary {
         for iter in iterations {
             // Collect accomplishments from summaries
             if !iter.summary.is_empty() {
-                summary.accomplishments.push(format!(
-                    "Iteration {}: {}",
-                    iter.iteration, iter.summary
-                ));
+                summary
+                    .accomplishments
+                    .push(format!("Iteration {}: {}", iter.iteration, iter.summary));
             }
 
             // Deduplicate files
@@ -266,7 +265,10 @@ impl CompactionSummary {
             "**Continue working on:** Phase {} - {}\n",
             self.phase_number, self.phase_name
         ));
-        text.push_str(&format!("**Goal:** Output <promise>{}</promise> when complete.\n\n", self.promise));
+        text.push_str(&format!(
+            "**Goal:** Output <promise>{}</promise> when complete.\n\n",
+            self.promise
+        ));
 
         text
     }
@@ -306,8 +308,7 @@ mod tests {
 
     #[test]
     fn test_iteration_context_builder() {
-        let ctx = IterationContext::new(1)
-            .with_summary("Implemented auth module");
+        let ctx = IterationContext::new(1).with_summary("Implemented auth module");
 
         assert_eq!(ctx.summary, "Implemented auth module");
     }

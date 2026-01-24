@@ -118,7 +118,7 @@ pub fn describe_tool_use(name: &str, input: &Value) -> String {
                 .unwrap_or("subagent");
             format!("Agent: {}", desc)
         }
-        _ => format!("{}", name),
+        _ => name.to_string(),
     }
 }
 

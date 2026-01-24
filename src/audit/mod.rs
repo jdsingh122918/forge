@@ -211,9 +211,15 @@ impl PhaseAudit {
     pub fn total_file_changes(&self) -> FileChangeSummary {
         let mut summary = self.file_changes.clone();
         for spa in &self.sub_phase_audits {
-            summary.files_added.extend(spa.file_changes.files_added.clone());
-            summary.files_modified.extend(spa.file_changes.files_modified.clone());
-            summary.files_deleted.extend(spa.file_changes.files_deleted.clone());
+            summary
+                .files_added
+                .extend(spa.file_changes.files_added.clone());
+            summary
+                .files_modified
+                .extend(spa.file_changes.files_modified.clone());
+            summary
+                .files_deleted
+                .extend(spa.file_changes.files_deleted.clone());
             summary.total_lines_added += spa.file_changes.total_lines_added;
             summary.total_lines_removed += spa.file_changes.total_lines_removed;
         }
@@ -269,9 +275,8 @@ impl SubPhaseAudit {
 
     /// Get duration in seconds.
     pub fn duration_secs(&self) -> Option<f64> {
-        self.ended_at.map(|end| {
-            (end - self.started_at).num_milliseconds() as f64 / 1000.0
-        })
+        self.ended_at
+            .map(|end| (end - self.started_at).num_milliseconds() as f64 / 1000.0)
     }
 
     /// Check if this sub-phase completed successfully.

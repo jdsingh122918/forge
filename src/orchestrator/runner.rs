@@ -1,7 +1,7 @@
 use crate::audit::ClaudeSession;
 use crate::config::Config;
 use crate::phase::Phase;
-use crate::signals::{extract_signals, IterationSignals};
+use crate::signals::{IterationSignals, extract_signals};
 use crate::skills::SkillsLoader;
 use crate::stream::{ContentBlock, StreamEvent, describe_tool_use, tool_emoji, truncate_thinking};
 use crate::ui::OrchestratorUI;
@@ -82,7 +82,8 @@ impl ClaudeRunner {
         iteration: u32,
         ui: Option<Arc<OrchestratorUI>>,
     ) -> Result<IterationResult> {
-        self.run_iteration_with_context(phase, iteration, ui, None).await
+        self.run_iteration_with_context(phase, iteration, ui, None)
+            .await
     }
 
     /// Run an iteration with optional injected context (e.g., compaction summary).
@@ -200,10 +201,10 @@ impl ClaudeRunner {
                                         accumulated_text.push('\n');
                                         // Show brief thinking snippet
                                         let snippet = truncate_thinking(&text, 60);
-                                        if !snippet.is_empty() {
-                                            if let Some(ref ui) = ui {
-                                                ui.show_thinking(&snippet);
-                                            }
+                                        if !snippet.is_empty()
+                                            && let Some(ref ui) = ui
+                                        {
+                                            ui.show_thinking(&snippet);
                                         }
                                     }
                                 }
@@ -248,10 +249,8 @@ impl ClaudeRunner {
         // Use final_result if available, otherwise accumulated text
         let combined_output = final_result.unwrap_or(accumulated_text);
 
-        if is_error {
-            if let Some(ref ui) = ui {
-                ui.log_step("Claude reported an error");
-            }
+        if is_error && let Some(ref ui) = ui {
+            ui.log_step("Claude reported an error");
         }
 
         // Write output to file
@@ -303,7 +302,11 @@ impl ClaudeRunner {
     }
 
     /// Generate a prompt with optional injected context.
-    fn generate_prompt_with_context(&self, phase: &Phase, prompt_context: Option<&PromptContext>) -> String {
+    fn generate_prompt_with_context(
+        &self,
+        phase: &Phase,
+        prompt_context: Option<&PromptContext>,
+    ) -> String {
         // Read spec file contents
         let spec_content = std::fs::read_to_string(&self.config.spec_file)
             .unwrap_or_else(|e| format!("[ERROR: Could not read spec file: {}]", e));
@@ -589,14 +592,7 @@ mod tests {
         let runner = ClaudeRunner::new(config);
 
         // Create phase without skills
-        let phase = Phase::new(
-            "01",
-            "Test Phase",
-            "TEST_DONE",
-            5,
-            "Test reasoning",
-            vec![],
-        );
+        let phase = Phase::new("01", "Test Phase", "TEST_DONE", 5, "Test reasoning", vec![]);
         let prompt = runner.generate_prompt_for_test(&phase);
 
         // Verify no skills section when no skills are referenced
