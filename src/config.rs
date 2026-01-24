@@ -2,6 +2,13 @@ use anyhow::{Context, Result, anyhow};
 use glob::glob;
 use std::path::PathBuf;
 
+use crate::forge_config::ForgeConfig;
+
+/// Runtime configuration for Forge.
+///
+/// This struct bridges the unified ForgeConfig with the runtime needs of
+/// the orchestrator. It handles spec file discovery and provides convenient
+/// access to all configuration values.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub project_dir: PathBuf,
@@ -14,9 +21,15 @@ pub struct Config {
     pub skip_permissions: bool,
     pub verbose: bool,
     pub auto_approve_threshold: usize,
+    /// The underlying unified configuration
+    forge_config: Option<ForgeConfig>,
 }
 
 impl Config {
+    /// Create a new Config with the specified parameters.
+    ///
+    /// This constructor maintains backward compatibility while internally
+    /// using ForgeConfig for unified settings.
     pub fn new(
         project_dir: PathBuf,
         verbose: bool,
@@ -26,6 +39,15 @@ impl Config {
         let project_dir = project_dir
             .canonicalize()
             .context("Failed to resolve project directory")?;
+
+        // Load unified configuration
+        let forge_config = ForgeConfig::with_cli_args(
+            project_dir.clone(),
+            verbose,
+            false,
+            Some(auto_approve_threshold),
+        )
+        .ok();
 
         let spec_file = match spec_file {
             Some(path) => path
@@ -39,10 +61,17 @@ impl Config {
         let log_dir = forge_dir.join("logs");
         let state_file = forge_dir.join("state");
 
-        let claude_cmd = std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".to_string());
-        let skip_permissions = std::env::var("SKIP_PERMISSIONS")
-            .map(|v| v != "false")
-            .unwrap_or(true);
+        // Get values from ForgeConfig if available, otherwise fall back to env/defaults
+        let (claude_cmd, skip_permissions) = if let Some(ref fc) = forge_config {
+            (fc.claude_cmd(), fc.skip_permissions())
+        } else {
+            let claude_cmd =
+                std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".to_string());
+            let skip_permissions = std::env::var("SKIP_PERMISSIONS")
+                .map(|v| v != "false")
+                .unwrap_or(true);
+            (claude_cmd, skip_permissions)
+        };
 
         Ok(Self {
             project_dir,
@@ -55,7 +84,13 @@ impl Config {
             skip_permissions,
             verbose,
             auto_approve_threshold,
+            forge_config,
         })
+    }
+
+    /// Get the underlying ForgeConfig if available.
+    pub fn forge_config(&self) -> Option<&ForgeConfig> {
+        self.forge_config.as_ref()
     }
 
     pub fn ensure_directories(&self) -> Result<()> {

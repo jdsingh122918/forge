@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use crate::forge_config::ForgeConfig;
 use crate::init::{get_forge_dir, is_initialized};
 use crate::phase::{Phase, PhasesFile};
 
@@ -199,7 +200,12 @@ pub fn read_spec(project_dir: &Path) -> Result<String> {
 /// # Returns
 /// The raw output from Claude.
 pub fn call_claude_for_phases(project_dir: &Path, spec_content: &str) -> Result<String> {
-    let claude_cmd = std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".to_string());
+    // Get claude_cmd from unified configuration
+    let claude_cmd = ForgeConfig::new(project_dir.to_path_buf())
+        .map(|c| c.claude_cmd())
+        .unwrap_or_else(|_| {
+            std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".to_string())
+        });
 
     // Build the prompt
     let prompt = format!(

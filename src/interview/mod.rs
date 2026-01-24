@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
 
+use crate::forge_config::ForgeConfig;
 use crate::init::{get_forge_dir, is_initialized};
 
 /// The system prompt used for conducting project interviews.
@@ -66,7 +67,13 @@ pub fn run_interview(project_dir: &Path) -> Result<()> {
     }
 
     let forge_dir = get_forge_dir(project_dir);
-    let claude_cmd = std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".to_string());
+
+    // Get claude_cmd from unified configuration
+    let claude_cmd = ForgeConfig::new(project_dir.to_path_buf())
+        .map(|c| c.claude_cmd())
+        .unwrap_or_else(|_| {
+            std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".to_string())
+        });
 
     println!("Starting interview session...");
     println!("Claude will ask questions to help create your project specification.");

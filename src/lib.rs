@@ -1,5 +1,6 @@
 pub mod audit;
 pub mod config;
+pub mod forge_config;
 pub mod gates;
 pub mod generate;
 pub mod init;
