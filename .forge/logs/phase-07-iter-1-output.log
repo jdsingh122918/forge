@@ -1,0 +1,80 @@
+Let me provide a summary of what was implemented for Phase 07 - Context Compaction.
+
+## Summary of Implementation
+
+### New Module: `src/compaction/`
+
+The compaction system consists of four files:
+
+1. **`mod.rs`** - Module root with constants and re-exports
+   - `DEFAULT_MODEL_WINDOW_CHARS` - Default model context window (~800k chars)
+   - `MIN_PRESERVED_CONTEXT` - Minimum context to preserve (50k chars)
+   - `COMPACTION_SAFETY_MARGIN` - Safety margin for triggering compaction (10%)
+
+2. **`config.rs`** - Context limit configuration parsing
+   - `ContextLimit` enum - Percentage (e.g., "80%") or Absolute (e.g., "500000")
+   - `parse_context_limit()` - Parses limit strings with validation
+
+3. **`tracker.rs`** - Context size tracking
+   - `ContextTracker` - Tracks cumulative context across iterations
+   - `should_compact()` - Determines when compaction is needed
+   - `apply_compaction()` - Records compaction and resets tracking
+
+4. **`manager.rs`** - Compaction orchestration
+   - `CompactionManager` - Manages context compaction for a phase
+   - `record_iteration()` - Records iteration data for potential compaction
+   - `compact_if_needed()` - Performs automatic compaction when threshold reached
+   - `extract_output_summary()` - Extracts brief summary from verbose output
+
+5. **`summary.rs`** - Compaction summary types
+   - `IterationContext` - Context for a single iteration
+   - `CompactionSummary` - Summary that replaces multiple iterations
+
+### Updates to Existing Code:
+
+1. **`src/lib.rs`** - Added `pub mod compaction;`
+
+2. **`src/orchestrator/runner.rs`**
+   - Added `PromptContext` struct for injecting context
+   - Added `run_iteration_with_context()` method
+   - Updated `generate_prompt_with_context()` to include compaction summary
+
+3. **`src/orchestrator/mod.rs`** - Exported `PromptContext`
+
+4. **`src/audit/mod.rs`**
+   - Added `CompactionEvent` struct for audit trail
+   - Added `compaction_events` field to `PhaseAudit`
+   - Added `add_compaction_event()` method
+
+5. **`src/main.rs`**
+   - Added `--context-limit` CLI flag
+   - Added `Compact` command with `--phase` and `--status` flags
+   - Integrated `CompactionManager` into orchestration loop
+   - Added automatic compaction before iterations when threshold reached
+   - Added verbose context status logging
+
+### Features Implemented:
+
+1. **Context Size Tracking** - Cumulative tracking of prompt + output characters
+2. **Automatic Compaction** - Triggers when approaching context limit (default 80% - 10% margin)
+3. **Preservation Strategy** - Keeps current phase goal, recent changes, error context
+4. **Audit Integration** - Compaction events stored in phase audit trail
+5. **CLI Support** - `--context-limit` flag and `forge compact` command
+6. **Configuration** - Supports `context_limit` in `forge.toml` with phase overrides
+
+### Configuration Example:
+
+```toml
+# forge.toml
+[defaults]
+context_limit = "80%"
+
+[phases.overrides."complex-*"]
+context_limit = "60%"
+```
+
+### All Tests Pass:
+- 320 tests passing
+- Build successful (both dev and release)
+
+<promise>COMPACTION COMPLETE</promise>

@@ -1,4 +1,5 @@
 use crate::audit::{ChangeType, FileChangeSummary};
+use crate::signals::IterationSignals;
 use console::{Emoji, style};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::path::Path;
@@ -12,6 +13,9 @@ static FOLDER: Emoji<'_, '_> = Emoji("📁 ", "");
 static FILE_NEW: Emoji<'_, '_> = Emoji("📄 ", "+");
 static FILE_MOD: Emoji<'_, '_> = Emoji("📝 ", "~");
 static FILE_DEL: Emoji<'_, '_> = Emoji("🗑️  ", "-");
+static PROGRESS: Emoji<'_, '_> = Emoji("📊 ", "[PROG]");
+static BLOCKER: Emoji<'_, '_> = Emoji("🚧 ", "[BLOCK]");
+static PIVOT: Emoji<'_, '_> = Emoji("🔄 ", "[PIVOT]");
 
 pub struct OrchestratorUI {
     multi: MultiProgress,
@@ -185,10 +189,100 @@ impl OrchestratorUI {
             .ok();
     }
 
+    /// Show progress signals from Claude's output.
+    ///
+    /// Displays progress percentage, blockers, and pivots extracted from the iteration.
+    pub fn show_signals(&self, signals: &IterationSignals) {
+        // Show latest progress percentage
+        if let Some(pct) = signals.latest_progress() {
+            self.multi
+                .println(format!(
+                    "    {} Progress: {}",
+                    PROGRESS,
+                    style(format!("{}%", pct)).cyan().bold()
+                ))
+                .ok();
+        }
+
+        // Show all blockers (important - always show)
+        for blocker in &signals.blockers {
+            self.multi
+                .println(format!(
+                    "    {} Blocker: {}",
+                    BLOCKER,
+                    style(&blocker.description).red().bold()
+                ))
+                .ok();
+        }
+
+        // Show pivots
+        for pivot in &signals.pivots {
+            self.multi
+                .println(format!(
+                    "    {} Pivot: {}",
+                    PIVOT,
+                    style(&pivot.new_approach).yellow()
+                ))
+                .ok();
+        }
+    }
+
+    /// Show a progress percentage update.
+    pub fn show_progress(&self, percentage: u8) {
+        let iter = self.current_iter.load(Ordering::SeqCst);
+        let max = self.max_iter.load(Ordering::SeqCst);
+        self.iteration_bar.set_message(format!(
+            "Running iteration {}/{} {} {}",
+            style(iter).cyan(),
+            max,
+            PROGRESS,
+            style(format!("{}%", percentage)).cyan().bold()
+        ));
+        self.multi
+            .println(format!(
+                "    {} Progress: {}",
+                PROGRESS,
+                style(format!("{}%", percentage)).cyan().bold()
+            ))
+            .ok();
+    }
+
+    /// Show a blocker that Claude has identified.
+    pub fn show_blocker(&self, description: &str) {
+        self.multi
+            .println(format!(
+                "    {} {}",
+                BLOCKER,
+                style(format!("BLOCKER: {}", description)).red().bold()
+            ))
+            .ok();
+    }
+
+    /// Show a pivot (change in approach) from Claude.
+    pub fn show_pivot(&self, new_approach: &str) {
+        self.multi
+            .println(format!(
+                "    {} {}",
+                PIVOT,
+                style(format!("Pivot: {}", new_approach)).yellow()
+            ))
+            .ok();
+    }
+
     pub fn iteration_success(&self, iter: u32) {
         self.iteration_bar.finish_with_message(format!(
             "{} Iteration {} complete - promise found!",
             CHECK, iter
+        ));
+    }
+
+    /// Update the iteration bar with a custom message (e.g., progress %).
+    pub fn iteration_bar_message(&self, iter: u32, max: u32, msg: &str) {
+        self.iteration_bar.set_message(format!(
+            "Iteration {}/{} - {}",
+            style(iter).cyan(),
+            max,
+            style(msg).dim()
         ));
     }
 
@@ -291,5 +385,101 @@ impl OrchestratorUI {
             ))
             .ok();
         self.multi.println("").ok();
+    }
+
+    /// Print a sub-phase header for sub-phase execution.
+    pub fn print_sub_phase_header(
+        &self,
+        sub_phase: &str,
+        description: &str,
+        promise: &str,
+        budget: u32,
+        parent_phase: &str,
+    ) {
+        self.multi.println("").ok();
+        self.multi
+            .println(format!(
+                "  {} Sub-phase {} (of phase {}): {}",
+                style("└▶").cyan(),
+                style(sub_phase).yellow().bold(),
+                style(parent_phase).dim(),
+                description
+            ))
+            .ok();
+        self.multi
+            .println(format!(
+                "     {} {}  {} {} iterations",
+                style("Promise:").dim(),
+                promise,
+                style("Budget:").dim(),
+                budget
+            ))
+            .ok();
+        self.multi.println("").ok();
+    }
+
+    /// Start a sub-phase (similar to start_phase but with different styling).
+    pub fn start_sub_phase(&self, sub_phase: &str, description: &str, parent_phase: &str) {
+        self.iteration_bar.set_message(format!(
+            "Sub-phase {}: {} (parent: {})",
+            style(sub_phase).yellow(),
+            description,
+            style(parent_phase).dim()
+        ));
+    }
+
+    /// Complete a sub-phase successfully.
+    pub fn sub_phase_complete(&self, sub_phase: &str, parent_phase: &str) {
+        self.multi
+            .println(format!(
+                "  {} Sub-phase {} of {} complete!",
+                CHECK,
+                style(sub_phase).green().bold(),
+                style(parent_phase).dim()
+            ))
+            .ok();
+    }
+
+    /// Mark a sub-phase as failed.
+    pub fn sub_phase_failed(&self, sub_phase: &str, parent_phase: &str, reason: &str) {
+        self.multi
+            .println(format!(
+                "  {} Sub-phase {} of {} failed: {}",
+                CROSS,
+                style(sub_phase).red().bold(),
+                style(parent_phase).dim(),
+                reason
+            ))
+            .ok();
+    }
+
+    /// Show a sub-phase spawn request.
+    pub fn show_sub_phase_spawn(&self, name: &str, promise: &str, budget: u32) {
+        self.multi
+            .println(format!(
+                "    {} Spawning sub-phase: {} (promise: {}, budget: {})",
+                style("🔀").cyan(),
+                style(name).yellow(),
+                style(promise).dim(),
+                style(budget).cyan()
+            ))
+            .ok();
+    }
+
+    /// Show sub-phase progress summary.
+    pub fn show_sub_phase_progress(&self, completed: usize, total: usize, failed: usize) {
+        let status = if failed > 0 {
+            format!(
+                "{}/{} sub-phases ({} failed)",
+                style(completed).green(),
+                total,
+                style(failed).red()
+            )
+        } else {
+            format!("{}/{} sub-phases complete", style(completed).green(), total)
+        };
+        self.multi
+            .println(format!("  {} {}", style("📊").dim(), status))
+            .ok();
     }
 }

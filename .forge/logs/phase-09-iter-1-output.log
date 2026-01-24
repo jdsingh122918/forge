@@ -1,0 +1,68 @@
+The implementation of phase 09 (Sub-Phase Delegation) is complete. Let me provide a summary of what was implemented:
+
+## Summary: Sub-Phase Delegation Feature
+
+### Core Components Implemented
+
+1. **Phase Struct Extensions** (`src/phase.rs`)
+   - Added `parent_phase: Option<String>` field to track parent-child relationships
+   - Added `sub_phases: Vec<SubPhase>` to store dynamically spawned sub-phases
+   - Added `SubPhase` struct with number, name, promise, budget, reasoning, parent_phase, order, skills, permission_mode, and status
+   - Added `SubPhaseStatus` enum (Pending, InProgress, Completed, Failed, Skipped)
+   - Added helper methods: `is_sub_phase()`, `has_sub_phases()`, `add_sub_phase()`, `remaining_budget()`, `all_sub_phases_complete()`, `next_sub_phase()`, etc.
+
+2. **State Manager Extensions** (`src/orchestrator/state.rs`)
+   - Extended `StateEntry` with optional `sub_phase` field
+   - Added `save_sub_phase()` for hierarchical state tracking
+   - Added `get_phase_entries()`, `get_sub_phase_entries()`, `get_completed_sub_phases()`
+   - Backward-compatible with existing 4-field format (phase|iteration|status|timestamp)
+
+3. **Audit Trail Extensions** (`src/audit/mod.rs`)
+   - Added `SubPhaseAudit` struct for detailed sub-phase tracking
+   - Extended `PhaseAudit` with `parent_phase` and `sub_phase_audits` fields
+   - Added methods for aggregating file changes and iteration counts
+
+4. **Signal System Extensions** (`src/signals/`)
+   - Added `SubPhaseSpawnSignal` for `<spawn-subphase>JSON</spawn-subphase>` tags
+   - Extended parser to detect and parse sub-phase spawn requests
+   - Added `has_sub_phase_spawns()` and `get_sub_phase_spawns()` to IterationSignals
+
+5. **Sub-Phase Module** (`src/subphase/`)
+   - `SubPhaseManager`: Processes spawn signals, manages sub-phase lifecycle
+   - `SubPhaseExecutor`: Converts sub-phases to executable phases, builds context headers
+   - `SpawnValidation`: Validates budget, name, promise, and sub-phase limits
+   - `SubPhaseConfig`: Configurable max_sub_phases and min_parent_budget_reserve
+
+6. **Gate System Extensions** (`src/gates/mod.rs`)
+   - Added `SubPhaseSpawnDecision` enum (Approved, Skipped, RejectAll)
+   - Added `check_sub_phase_spawn()` for spawn approval
+   - Added `check_sub_phase()` for sub-phase execution approval
+
+7. **UI Extensions** (`src/ui/progress.rs`)
+   - Added `print_sub_phase_header()`, `start_sub_phase()`, `sub_phase_complete()`, `sub_phase_failed()`
+   - Added `show_sub_phase_spawn()` and `show_sub_phase_progress()`
+
+8. **CLI Command Updates** (`src/main.rs`)
+   - Updated `forge list` to display sub-phases with proper indentation
+   - Updated `forge status` to show sub-phase completion progress
+
+### Key Features
+
+- **Dynamic Scope Discovery**: Claude can output `<spawn-subphase>` signals to request sub-phases when discovering larger scope
+- **Budget Carving**: Sub-phases carve budget from parent's remaining budget
+- **Hierarchical State**: State file supports both old and new format for backward compatibility
+- **Status Tracking**: Each sub-phase has independent status lifecycle
+- **Skill Inheritance**: Sub-phases inherit parent's skills by default
+- **Permission Inheritance**: Sub-phases inherit parent's permission mode by default
+
+### Tests Added
+
+- 20+ new tests for sub-phase functionality
+- Signal parsing tests for `<spawn-subphase>` tags
+- Phase manipulation tests (add, get, update sub-phases)
+- State management tests for hierarchical entries
+- Validation tests for spawn requests
+
+All 383 tests pass successfully.
+
+<promise>SUBPHASES COMPLETE</promise>

@@ -38,11 +38,11 @@ impl AuditLogger {
     where
         F: FnOnce(&mut PhaseAudit),
     {
-        if let Some(ref mut run) = self.current_run {
-            if let Some(phase) = run.phases.last_mut() {
-                f(phase);
-                self.save_current()?;
-            }
+        if let Some(ref mut run) = self.current_run
+            && let Some(phase) = run.phases.last_mut()
+        {
+            f(phase);
+            self.save_current()?;
         }
         Ok(())
     }

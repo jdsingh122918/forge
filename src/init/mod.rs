@@ -10,7 +10,8 @@
 //! ├── state            # Current execution state
 //! ├── audit/           # Run logs and audit trail
 //! │   └── runs/
-//! └── prompts/         # Optional prompt overrides
+//! ├── prompts/         # Optional prompt overrides
+//! └── skills/          # Reusable prompt fragments (skills)
 //! ```
 
 use anyhow::{Context, Result};
@@ -84,6 +85,7 @@ fn ensure_directory_structure(forge_dir: &Path) -> Result<()> {
     let audit_dir = forge_dir.join("audit");
     let runs_dir = audit_dir.join("runs");
     let prompts_dir = forge_dir.join("prompts");
+    let skills_dir = forge_dir.join("skills");
 
     std::fs::create_dir_all(&audit_dir)
         .with_context(|| format!("Failed to create audit directory: {}", audit_dir.display()))?;
@@ -95,6 +97,13 @@ fn ensure_directory_structure(forge_dir: &Path) -> Result<()> {
         format!(
             "Failed to create prompts directory: {}",
             prompts_dir.display()
+        )
+    })?;
+
+    std::fs::create_dir_all(&skills_dir).with_context(|| {
+        format!(
+            "Failed to create skills directory: {}",
+            skills_dir.display()
         )
     })?;
 
@@ -195,6 +204,8 @@ mod tests {
         assert!(forge_dir.join("audit/runs").is_dir());
         assert!(forge_dir.join("prompts").exists());
         assert!(forge_dir.join("prompts").is_dir());
+        assert!(forge_dir.join("skills").exists());
+        assert!(forge_dir.join("skills").is_dir());
     }
 
     #[test]

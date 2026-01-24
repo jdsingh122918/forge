@@ -1,23 +1,33 @@
-# Forge Loop Orchestrator
+# Forge
 
-A Rust CLI tool that orchestrates AI-driven implementation of complex projects through sequential development phases. Forge automates running Claude AI to complete specific implementation tasks, tracks progress via git, and maintains detailed audit logs.
+AI-powered development orchestrator that breaks specs into phases and runs Claude iteratively until completion. Forge embodies disciplined agentic development with calm gating, thoughtful planning, optimized resource usage, and efficient execution.
 
 ## Overview
 
-Forge breaks down a large implementation spec into phases, running Claude AI against each phase with structured prompts. It monitors for completion signals, tracks file changes, provides approval gates between phases, and maintains comprehensive audit logs.
+Forge transforms a project specification into executable phases, running Claude AI against each phase with structured prompts. It monitors for completion signals, manages context to prevent overflow, tracks file changes, provides intelligent approval gates, and maintains comprehensive audit logs.
+
+## Features
+
+- **Phase-Based Execution**: Break complex projects into sequential phases with iteration budgets
+- **Hook System**: Event-driven extensibility with command and prompt hooks
+- **Skills/Templates**: Reusable prompt fragments loaded on-demand
+- **Context Compaction**: Automatic summarization to prevent context overflow
+- **Sub-Phase Delegation**: Spawn child phases for scope discovery
+- **Permission Modes**: Varying oversight levels (strict, standard, autonomous, readonly)
+- **Pattern Learning**: Capture and reuse patterns from successful projects
+- **Progress Signaling**: Intermediate status updates, blockers, and pivots
 
 ## Installation
 
 ### Prerequisites
 
-- Rust toolchain (1.70+)
+- Rust toolchain (Edition 2024)
 - Git
 - [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) installed and in PATH
 
 ### Build
 
 ```bash
-cd forge
 cargo build --release
 ```
 
@@ -34,16 +44,19 @@ ln -s $(pwd)/target/release/forge ~/.local/bin/forge
 ## Quick Start
 
 ```bash
-# Navigate to your project directory
-cd /path/to/your/project
+# Initialize a new project
+forge init
 
-# Ensure you have a spec file at docs/plans/*spec*.md
-# Or specify one explicitly with --spec-file
+# Create a spec interactively
+forge interview
+
+# Generate phases from the spec
+forge generate
 
 # Start the orchestration loop
 forge run
 
-# View all phases
+# View phases
 forge list
 
 # Check progress
@@ -52,198 +65,328 @@ forge status
 
 ## Commands
 
-### `forge run`
+### Core Workflow
 
-Starts the orchestration loop, running through all phases sequentially.
+| Command | Description |
+|---------|-------------|
+| `forge init` | Initialize `.forge/` directory structure |
+| `forge interview` | Interactive spec generation |
+| `forge generate` | Create phases from spec |
+| `forge run` | Execute phases sequentially |
+| `forge run --phase 07` | Start from specific phase |
+| `forge phase <N>` | Run a single phase |
+| `forge list` | Display all phases |
+| `forge status` | Show progress |
+| `forge reset` | Reset all progress |
 
-```bash
-forge run                     # Start from beginning or resume
-forge run --phase 07          # Start from specific phase
-forge run --yes               # Auto-approve all phases
-forge run -v                  # Verbose output
-```
+### Configuration
 
-### `forge phase <NUMBER>`
+| Command | Description |
+|---------|-------------|
+| `forge config show` | Display current configuration |
+| `forge config validate` | Check configuration for issues |
+| `forge config init` | Create default `forge.toml` |
 
-Run a single specific phase without affecting state.
+### Skills Management
 
-```bash
-forge phase 07                # Run phase 07 only
-```
+| Command | Description |
+|---------|-------------|
+| `forge skills` | List all available skills |
+| `forge skills show <name>` | Display skill content |
+| `forge skills create <name>` | Create a new skill |
+| `forge skills delete <name>` | Delete a skill |
 
-### `forge list`
+### Pattern Learning
 
-Display all implementation phases with their details.
+| Command | Description |
+|---------|-------------|
+| `forge learn` | Learn pattern from current project |
+| `forge patterns` | List learned patterns |
+| `forge patterns show <name>` | Show pattern details |
+| `forge patterns stats` | Aggregate statistics |
+| `forge patterns recommend` | Suggest patterns for spec |
+| `forge patterns compare` | Compare two patterns |
 
-```
-Phase  Promise                   Budget  Description
-01     SCAFFOLD COMPLETE         12      Project scaffolding
-02     MIGRATIONS COMPLETE       15      Database schema and migrations
-...
-```
+### Context Management
 
-### `forge status`
+| Command | Description |
+|---------|-------------|
+| `forge compact` | Manually trigger compaction |
+| `forge compact --status` | Show compaction status |
 
-Show orchestration progress and recent state entries.
+### Audit
 
-### `forge reset`
-
-Reset all progress and state.
-
-```bash
-forge reset                   # Interactive confirmation
-forge reset --force           # Skip confirmation
-```
-
-### `forge audit`
-
-View audit information (subcommands: `show`, `export`, `changes`).
+| Command | Description |
+|---------|-------------|
+| `forge audit show <phase>` | View phase audit |
+| `forge audit changes` | Show file changes |
+| `forge audit export <file>` | Export audit to JSON |
 
 ## Global Options
 
 | Option | Description |
 |--------|-------------|
 | `-v, --verbose` | Enable verbose output |
-| `--yes` | Auto-approve all phases (non-interactive) |
-| `--auto-approve-threshold <N>` | Auto-approve phases with ≤N file changes (default: 5) |
-| `--project-dir <PATH>` | Project directory (default: current directory) |
-| `--spec-file <PATH>` | Path to spec file (default: auto-discovers `docs/plans/*spec*.md`) |
+| `--yes` | Auto-approve all phases |
+| `--auto-approve-threshold <N>` | Auto-approve when file changes ≤ N (default: 5) |
+| `--project-dir <PATH>` | Project directory |
+| `--spec-file <PATH>` | Path to spec file |
+| `--context-limit <LIMIT>` | Context limit (e.g., "80%" or "500000") |
 
 ## Configuration
+
+### forge.toml
+
+Create `.forge/forge.toml` for project configuration:
+
+```toml
+[project]
+name = "my-project"
+claude_cmd = "claude"
+
+[defaults]
+budget = 8
+auto_approve_threshold = 5
+permission_mode = "standard"  # strict, standard, autonomous, readonly
+context_limit = "80%"
+skip_permissions = true
+
+# Phase-specific overrides using glob patterns
+[phases.overrides."database-*"]
+permission_mode = "strict"
+budget = 12
+
+[phases.overrides."*-readonly"]
+permission_mode = "readonly"
+
+# Global skills (loaded for all phases)
+[skills]
+global = ["rust-conventions"]
+
+# Hook definitions
+[[hooks.definitions]]
+event = "PrePhase"
+match_pattern = "*database*"
+command = "./scripts/ensure-db.sh"
+
+[[hooks.definitions]]
+event = "OnApproval"
+type = "prompt"
+prompt = "Should we proceed? Return {approve: bool, reason: str}"
+```
 
 ### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CLAUDE_CMD` | Command to invoke Claude CLI | `claude` |
+| `CLAUDE_CMD` | Claude CLI command | `claude` |
 | `SKIP_PERMISSIONS` | Skip permission prompts | `true` |
 
-### Auto-Created Directories
+## Hook System
 
-Forge creates these directories in your project:
+Hooks intercept lifecycle events for custom behavior:
 
-| Directory | Purpose |
-|-----------|---------|
-| `.forge-audit/` | Audit logs and snapshots |
-| `.forge-audit/runs/` | Completed run logs (JSON) |
-| `.forge-audit/snapshots/` | Git snapshots |
-| `.forge-logs/` | Phase prompts and outputs |
-| `.forge-state` | State log file |
+### Hook Events
 
-## How It Works
+| Event | Description |
+|-------|-------------|
+| `PrePhase` | Before phase execution |
+| `PostPhase` | After phase completion |
+| `PreIteration` | Before each Claude invocation |
+| `PostIteration` | After each Claude response |
+| `OnFailure` | When phase exceeds budget |
+| `OnApproval` | When approval gate is presented |
 
-### Phase Workflow
+### Hook Types
 
-1. **Approval Gate** - Interactive prompt (or auto-approve based on settings)
-2. **Git Snapshot** - Creates a commit before changes
-3. **Claude Iterations** - Runs Claude up to max iterations per phase
-4. **Promise Detection** - Looks for `<promise>PHASE_PROMISE</promise>` in output
-5. **Completion** - Marks phase complete when promise found
-6. **Audit Log** - Records all activity
+**Command Hooks**: Execute bash scripts with JSON input
 
-### Approval Gates
-
-Before each phase, Forge prompts for approval:
-
-1. **Yes, run this phase** - Proceed
-2. **Yes, and auto-approve remaining** - Proceed and skip future prompts
-3. **Skip this phase** - Move to next phase
-4. **Abort orchestrator** - Stop entirely
-
-Auto-approval triggers when:
-- `--yes` flag is set
-- Previous phase changed ≤ threshold files (default: 5)
-
-### Promise Tags
-
-Each phase has a unique promise tag that Claude must output to signal completion:
-
-```
-<promise>SCAFFOLD COMPLETE</promise>
+```toml
+[[hooks.definitions]]
+event = "PrePhase"
+command = "./scripts/setup.sh"
 ```
 
-If the promise isn't found after max iterations, the phase fails.
+**Prompt Hooks**: Use LLM to evaluate conditions
 
-## Project Structure
-
-```
-forge/
-├── src/
-│   ├── main.rs           # CLI entry point and orchestration loop
-│   ├── config.rs         # Configuration loading
-│   ├── phases.rs         # Phase definitions
-│   ├── audit/
-│   │   ├── mod.rs        # Audit types
-│   │   └── logger.rs     # Audit persistence
-│   ├── gates/
-│   │   └── mod.rs        # Approval gate logic
-│   ├── orchestrator/
-│   │   ├── runner.rs     # Claude process runner
-│   │   └── state.rs      # State persistence
-│   ├── tracker/
-│   │   └── git.rs        # Git integration
-│   └── ui/
-│       └── progress.rs   # Progress bars
-└── Cargo.toml
+```toml
+[[hooks.definitions]]
+event = "PostIteration"
+type = "prompt"
+prompt = "Did Claude make meaningful progress? Return {continue: bool}"
 ```
 
-## Example Workflow
+## Skills System
 
-```bash
-# Start a fresh run
-$ forge run
-[Phase 01/22] Project scaffolding
-  Promise: SCAFFOLD COMPLETE | Budget: 12 iterations
+Skills are reusable prompt fragments in `.forge/skills/`:
 
-? Approve phase 01? ›
-❯ Yes, run this phase
-  Yes, and auto-approve remaining phases
-  Skip this phase
-  Abort orchestrator
-
-[Iteration 1/12] Running Claude...
-✅ Promise found! Phase 01 complete.
-
-[Phase 02/22] Database schema and migrations
-...
-
-# Check progress later
-$ forge status
-Last completed phase: 07
-Recent entries:
-  07 | 3 | completed | 2026-01-22T14:30:45Z
-  06 | 2 | completed | 2026-01-22T14:25:12Z
-  ...
-
-# Resume from where you left off
-$ forge run
-Resuming from phase 08...
+```
+.forge/skills/
+├── rust-conventions/
+│   └── SKILL.md
+├── testing-strategy/
+│   └── SKILL.md
+└── api-design/
+    └── SKILL.md
 ```
 
-## Audit Logs
-
-Completed runs are saved as JSON in `.forge-audit/runs/`:
+Reference skills in phases:
 
 ```json
 {
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "started_at": "2026-01-22T14:00:00Z",
-  "finished_at": "2026-01-22T15:30:00Z",
-  "config": { ... },
-  "phases": [
-    {
-      "phase": "01",
-      "description": "Project scaffolding",
-      "outcome": "Completed",
-      "file_changes": {
-        "files_added": 15,
-        "files_modified": 2,
-        "lines_added": 450,
-        "lines_removed": 0
-      }
-    }
-  ]
+  "number": "03",
+  "name": "API implementation",
+  "skills": ["rust-conventions", "api-design"],
+  "promise": "API COMPLETE"
 }
+```
+
+## Permission Modes
+
+| Mode | Description |
+|------|-------------|
+| `strict` | Require approval for every iteration |
+| `standard` | Approve phase start, auto-continue iterations |
+| `autonomous` | Auto-approve if within budget and making progress |
+| `readonly` | Research/planning only, no file modifications |
+
+## Progress Signaling
+
+Beyond binary promise detection, Claude can output intermediate signals:
+
+```xml
+<progress>50%</progress>     <!-- Partial completion -->
+<blocker>Need X</blocker>    <!-- Pause and prompt user -->
+<pivot>New approach Y</pivot> <!-- Strategy shift logged -->
+```
+
+## Sub-Phase Delegation
+
+Phases can spawn child phases for discovered scope:
+
+```xml
+<spawn_subphase>
+{
+  "name": "Set up OAuth provider",
+  "promise": "OAUTH COMPLETE",
+  "budget": 5,
+  "reasoning": "OAuth setup is complex enough for its own phase"
+}
+</spawn_subphase>
+```
+
+Sub-phases:
+- Inherit parent's git snapshot as baseline
+- Have independent budgets carved from parent
+- Must complete before parent can complete
+- Maintain hierarchical audit trail
+
+## Context Compaction
+
+Forge tracks context usage and automatically summarizes prior iterations when approaching limits:
+
+- Preserves: current phase goal, recent code changes, error context
+- Discards: verbose intermediate outputs, superseded attempts
+- Configurable threshold via `--context-limit` or `forge.toml`
+
+## Pattern Learning
+
+Capture project patterns for future use:
+
+```bash
+# After completing a project
+forge learn --name my-pattern
+
+# Apply to new projects
+forge patterns recommend --spec ./new-project-spec.md
+```
+
+Patterns capture:
+- Phase type classification (scaffold, implement, test, refactor, fix)
+- Typical iteration counts by phase type
+- Common failure modes and recovery patterns
+- File change patterns
+- Effective prompt structures
+
+## Directory Structure
+
+```
+.forge/
+├── forge.toml       # Configuration (optional)
+├── hooks.toml       # Hooks (optional, can also be in forge.toml)
+├── spec.md          # Project specification
+├── phases.json      # Generated phases
+├── state            # Execution state
+├── audit/
+│   ├── runs/        # Completed run logs (JSON)
+│   └── current-run.json
+├── logs/            # Phase prompts and outputs
+├── prompts/         # Custom prompt overrides
+└── skills/          # Reusable prompt fragments
+    ├── skill-name/
+    │   └── SKILL.md
+    └── ...
+```
+
+## Example Session
+
+```bash
+$ forge init
+Initialized forge project at .forge/
+
+$ forge interview
+# Interactive Q&A to generate spec...
+Spec saved to .forge/spec.md
+
+$ forge generate
+Analyzing spec...
+Generated 10 phases
+
+$ forge run
+[Phase 01/10] Project scaffolding
+  Promise: SCAFFOLD COMPLETE | Budget: 8 iterations | Mode: standard
+
+? Approve phase 01?
+❯ Yes, run this phase
+  Yes, and auto-approve remaining
+  Skip this phase
+  Abort
+
+[Iteration 1/8] Running Claude...
+  Context: 45% used
+  Files: +15 added, 2 modified
+✅ Promise found! Phase 01 complete.
+
+[Phase 02/10] Core implementation
+  Loading skills: rust-conventions
+...
+
+$ forge status
+Forge Project Status
+====================
+Project: Initialized
+Spec:    Ready
+Phases:  Ready (10 phases)
+
+Execution Progress:
+  Phases completed: 5
+  Last completed: 05
+
+$ forge patterns
+No patterns found. Complete a project and run 'forge learn'.
+```
+
+## Testing
+
+```bash
+# Run all tests (427 total)
+cargo test
+
+# Unit tests only
+cargo test --lib
+
+# Integration tests only
+cargo test --test integration_tests
 ```
 
 ## License

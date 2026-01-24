@@ -1,0 +1,59 @@
+Now let me summarize what has been implemented for Phase 01 - Configuration Unification Foundation:
+
+## Summary of Implementation
+
+### Files Created/Modified:
+
+1. **`src/forge_config.rs`** (new) - The unified configuration module:
+   - `PermissionMode` enum: strict, standard, autonomous, readonly
+   - `ForgeToml` struct: parses `.forge/forge.toml` with:
+     - `[project]` section: name, claude_cmd
+     - `[defaults]` section: budget, auto_approve_threshold, permission_mode, context_limit, skip_permissions
+     - `[phases.overrides."pattern"]` section: pattern-based phase overrides
+   - `ForgeConfig` struct: combines file config with CLI args and env vars
+   - Pattern matching for phase overrides (supports `*` and `?` wildcards)
+   - 30+ unit tests for all functionality
+
+2. **`src/config.rs`** (modified) - Integrated with ForgeConfig:
+   - Now uses `ForgeConfig` internally when available
+   - Maintains backward compatibility with existing API
+   - Gets `claude_cmd` and `skip_permissions` from unified config
+
+3. **`src/lib.rs`** (modified) - Added new module export
+
+4. **`src/interview/mod.rs`** (modified) - Uses ForgeConfig for claude_cmd
+
+5. **`src/generate/mod.rs`** (modified) - Uses ForgeConfig for claude_cmd
+
+6. **`src/main.rs`** (modified) - Added `forge config` command:
+   - `forge config show` - Display current configuration
+   - `forge config validate` - Validate config and show warnings
+   - `forge config init` - Create default forge.toml
+
+### Configuration Priority (highest to lowest):
+1. CLI arguments
+2. Environment variables (CLAUDE_CMD, SKIP_PERMISSIONS)
+3. `.forge/forge.toml` file
+4. Built-in defaults
+
+### Example Configuration:
+```toml
+[project]
+name = "my-project"
+claude_cmd = "claude"
+
+[defaults]
+budget = 8
+auto_approve_threshold = 5
+permission_mode = "standard"
+context_limit = "80%"
+skip_permissions = true
+
+[phases.overrides."database-*"]
+permission_mode = "strict"
+budget = 12
+```
+
+All 158 tests pass, and the build completes successfully.
+
+<promise>CONFIG COMPLETE</promise>

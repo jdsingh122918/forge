@@ -125,22 +125,22 @@ impl GitTracker {
             let mut lines_removed = 0;
             let mut diff_content = String::new();
 
-            if let Ok(patch) = git2::Patch::from_diff(&diff, delta_idx) {
-                if let Some(mut patch) = patch {
-                    let mut buf = Vec::new();
-                    patch
-                        .print(&mut |_delta, _hunk, line| {
-                            match line.origin() {
-                                '+' => lines_added += 1,
-                                '-' => lines_removed += 1,
-                                _ => {}
-                            }
-                            buf.extend_from_slice(line.content());
-                            true
-                        })
-                        .ok();
-                    diff_content = String::from_utf8_lossy(&buf).to_string();
-                }
+            if let Ok(patch) = git2::Patch::from_diff(&diff, delta_idx)
+                && let Some(mut patch) = patch
+            {
+                let mut buf = Vec::new();
+                patch
+                    .print(&mut |_delta, _hunk, line| {
+                        match line.origin() {
+                            '+' => lines_added += 1,
+                            '-' => lines_removed += 1,
+                            _ => {}
+                        }
+                        buf.extend_from_slice(line.content());
+                        true
+                    })
+                    .ok();
+                diff_content = String::from_utf8_lossy(&buf).to_string();
             }
 
             file_diffs.push(FileDiff {

@@ -1,6 +1,8 @@
 use crate::audit::ClaudeSession;
 use crate::config::Config;
 use crate::phase::Phase;
+use crate::signals::{IterationSignals, extract_signals};
+use crate::skills::SkillsLoader;
 use crate::stream::{ContentBlock, StreamEvent, describe_tool_use, tool_emoji, truncate_thinking};
 use crate::ui::OrchestratorUI;
 use anyhow::{Context, Result};
@@ -10,6 +12,53 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+/// Optional context that can be injected into prompts.
+/// Used for compaction summaries and other context additions.
+#[derive(Debug, Clone, Default)]
+pub struct PromptContext {
+    /// Compaction summary to inject (if context was compacted).
+    pub compaction_summary: Option<String>,
+    /// Additional context to include.
+    pub additional_context: Option<String>,
+}
+
+impl PromptContext {
+    /// Create an empty prompt context.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a prompt context with a compaction summary.
+    pub fn with_compaction(summary: String) -> Self {
+        Self {
+            compaction_summary: Some(summary),
+            additional_context: None,
+        }
+    }
+
+    /// Check if there's any context to inject.
+    pub fn has_content(&self) -> bool {
+        self.compaction_summary.is_some() || self.additional_context.is_some()
+    }
+
+    /// Generate the context section for injection.
+    pub fn generate_section(&self) -> String {
+        let mut section = String::new();
+
+        if let Some(ref summary) = self.compaction_summary {
+            section.push_str(summary);
+            section.push('\n');
+        }
+
+        if let Some(ref additional) = self.additional_context {
+            section.push_str(additional);
+            section.push('\n');
+        }
+
+        section
+    }
+}
+
 pub struct ClaudeRunner {
     config: Config,
 }
@@ -18,6 +67,8 @@ pub struct IterationResult {
     pub session: ClaudeSession,
     pub promise_found: bool,
     pub output: String,
+    /// Signals extracted from Claude's output (progress, blockers, pivots)
+    pub signals: IterationSignals,
 }
 
 impl ClaudeRunner {
@@ -31,7 +82,19 @@ impl ClaudeRunner {
         iteration: u32,
         ui: Option<Arc<OrchestratorUI>>,
     ) -> Result<IterationResult> {
-        let prompt = self.generate_prompt(phase);
+        self.run_iteration_with_context(phase, iteration, ui, None)
+            .await
+    }
+
+    /// Run an iteration with optional injected context (e.g., compaction summary).
+    pub async fn run_iteration_with_context(
+        &self,
+        phase: &Phase,
+        iteration: u32,
+        ui: Option<Arc<OrchestratorUI>>,
+        prompt_context: Option<&PromptContext>,
+    ) -> Result<IterationResult> {
+        let prompt = self.generate_prompt_with_context(phase, prompt_context);
 
         // Write prompt to file
         let prompt_file = self.config.log_dir.join(format!(
@@ -138,10 +201,10 @@ impl ClaudeRunner {
                                         accumulated_text.push('\n');
                                         // Show brief thinking snippet
                                         let snippet = truncate_thinking(&text, 60);
-                                        if !snippet.is_empty() {
-                                            if let Some(ref ui) = ui {
-                                                ui.show_thinking(&snippet);
-                                            }
+                                        if !snippet.is_empty()
+                                            && let Some(ref ui) = ui
+                                        {
+                                            ui.show_thinking(&snippet);
                                         }
                                     }
                                 }
@@ -186,10 +249,8 @@ impl ClaudeRunner {
         // Use final_result if available, otherwise accumulated text
         let combined_output = final_result.unwrap_or(accumulated_text);
 
-        if is_error {
-            if let Some(ref ui) = ui {
-                ui.log_step("Claude reported an error");
-            }
+        if is_error && let Some(ref ui) = ui {
+            ui.log_step("Claude reported an error");
         }
 
         // Write output to file
@@ -199,7 +260,15 @@ impl ClaudeRunner {
         let promise_tag = format!("<promise>{}</promise>", phase.promise);
         let promise_found = combined_output.contains(&promise_tag);
 
+        // Extract progress signals from output
+        let signals = extract_signals(&combined_output);
+
         if let Some(ref ui) = ui {
+            // Show signal information
+            if signals.has_signals() {
+                ui.show_signals(&signals);
+            }
+
             if promise_found {
                 ui.log_step(&format!("Promise tag found: {}", promise_tag));
             } else {
@@ -223,39 +292,104 @@ impl ClaudeRunner {
             session,
             promise_found,
             output: combined_output,
+            signals,
         })
     }
 
+    #[allow(dead_code)]
     fn generate_prompt(&self, phase: &Phase) -> String {
+        self.generate_prompt_with_context(phase, None)
+    }
+
+    /// Generate a prompt with optional injected context.
+    fn generate_prompt_with_context(
+        &self,
+        phase: &Phase,
+        prompt_context: Option<&PromptContext>,
+    ) -> String {
         // Read spec file contents
         let spec_content = std::fs::read_to_string(&self.config.spec_file)
             .unwrap_or_else(|e| format!("[ERROR: Could not read spec file: {}]", e));
 
+        // Load skills for this phase
+        let skills_section = self.load_skills_for_phase(phase);
+
+        // Generate compaction/context section if provided
+        let context_section = prompt_context
+            .filter(|ctx| ctx.has_content())
+            .map(|ctx| ctx.generate_section())
+            .unwrap_or_default();
+
         let base_context = format!(
             r#"You are implementing a project per the following spec.
-
+{}
 ## SPECIFICATION
 {}
+{}"#,
+            context_section, spec_content, skills_section
+        );
 
-## CRITICAL RULES
+        let critical_rules = format!(
+            r#"## CRITICAL RULES
 1. Follow the spec requirements exactly
 2. Check existing code before making changes
 3. Run tests/checks to verify your work
 4. Only output <promise>{}</promise> when the task is FULLY complete and verified
 5. If tests fail, fix them before claiming completion
 
+## PROGRESS SIGNALS (Optional)
+You can use these tags to communicate your progress:
+- <progress>X%</progress> - Report completion percentage (0-100)
+- <blocker>description</blocker> - Signal you're blocked and need help
+- <pivot>new approach</pivot> - Signal you're changing strategy
+
+Example: <progress>50%</progress> indicates you're halfway done.
+
 "#,
-            spec_content, phase.promise
+            phase.promise
         );
 
         format!(
-            "{}## TASK
+            "{}{}## TASK
 Implement phase {} - {}
 
 When complete, output:
 <promise>{}</promise>",
-            base_context, phase.number, phase.name, phase.promise
+            base_context, critical_rules, phase.number, phase.name, phase.promise
         )
+    }
+
+    /// Load skills for a phase, combining phase-defined skills with global skills from config.
+    fn load_skills_for_phase(&self, phase: &Phase) -> String {
+        let forge_dir = self.config.project_dir.join(".forge");
+        let mut loader = SkillsLoader::new(&forge_dir, self.config.verbose);
+
+        // Collect all skill names: phase skills + global skills from config
+        let mut all_skills = phase.skills.clone();
+
+        // Add global skills from forge.toml if available
+        if let Some(fc) = self.config.forge_config() {
+            let phase_settings = fc.toml.phase_settings(&phase.name);
+            for skill in phase_settings.skills {
+                if !all_skills.contains(&skill) {
+                    all_skills.push(skill);
+                }
+            }
+        }
+
+        if all_skills.is_empty() {
+            return String::new();
+        }
+
+        match loader.generate_skills_section(&all_skills) {
+            Ok(section) => section,
+            Err(e) => {
+                if self.config.verbose {
+                    eprintln!("Warning: Failed to load skills: {}", e);
+                }
+                String::new()
+            }
+        }
     }
 
     pub fn get_prompt_file(&self, phase: &str, iteration: u32) -> PathBuf {
@@ -397,6 +531,74 @@ mod tests {
         assert!(
             prompt.contains("<promise>DB_DONE</promise>"),
             "Prompt should contain promise tag"
+        );
+    }
+
+    #[test]
+    fn test_generate_prompt_with_skills() {
+        let dir = tempdir().unwrap();
+        let spec_content = "# Spec Content";
+
+        // Create spec file
+        let plans_dir = dir.path().join("docs/plans");
+        fs::create_dir_all(&plans_dir).unwrap();
+        let spec_file = plans_dir.join("test-spec.md");
+        fs::write(&spec_file, spec_content).unwrap();
+
+        // Create skills directory with a test skill
+        let skills_dir = dir.path().join(".forge/skills/test-skill");
+        fs::create_dir_all(&skills_dir).unwrap();
+        fs::write(
+            skills_dir.join("SKILL.md"),
+            "# Test Skill\n\nThis is test skill content.",
+        )
+        .unwrap();
+
+        let config = Config::new(dir.path().to_path_buf(), false, 5, Some(spec_file)).unwrap();
+        let runner = ClaudeRunner::new(config);
+
+        // Create phase with skills
+        let phase = Phase::with_skills(
+            "01",
+            "Test Phase",
+            "TEST_DONE",
+            5,
+            "Test reasoning",
+            vec![],
+            vec!["test-skill".to_string()],
+        );
+        let prompt = runner.generate_prompt_for_test(&phase);
+
+        // Verify skill content is injected
+        assert!(
+            prompt.contains("## SKILLS AND CONVENTIONS"),
+            "Prompt should have skills section"
+        );
+        assert!(
+            prompt.contains("## SKILL: TEST SKILL"),
+            "Prompt should contain skill header"
+        );
+        assert!(
+            prompt.contains("This is test skill content."),
+            "Prompt should contain skill content"
+        );
+    }
+
+    #[test]
+    fn test_generate_prompt_without_skills() {
+        let dir = tempdir().unwrap();
+        let spec_content = "# Spec Content";
+        let config = setup_test_config(dir.path(), spec_content);
+        let runner = ClaudeRunner::new(config);
+
+        // Create phase without skills
+        let phase = Phase::new("01", "Test Phase", "TEST_DONE", 5, "Test reasoning", vec![]);
+        let prompt = runner.generate_prompt_for_test(&phase);
+
+        // Verify no skills section when no skills are referenced
+        assert!(
+            !prompt.contains("## SKILLS AND CONVENTIONS"),
+            "Prompt should not have skills section when no skills are used"
         );
     }
 }

@@ -1,13 +1,19 @@
 pub mod audit;
+pub mod compaction;
 pub mod config;
+pub mod forge_config;
 pub mod gates;
 pub mod generate;
+pub mod hooks;
 pub mod init;
 pub mod interview;
 pub mod orchestrator;
 pub mod patterns;
 pub mod phase;
+pub mod signals;
+pub mod skills;
 pub mod stream;
+pub mod subphase;
 pub mod tracker;
 pub mod ui;
 
