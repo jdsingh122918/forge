@@ -153,6 +153,24 @@ pub struct PhasesConfig {
     pub overrides: HashMap<String, PhaseOverride>,
 }
 
+/// Hook definitions embedded in forge.toml.
+/// Re-exports from hooks module for configuration convenience.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HooksSection {
+    /// List of hook definitions
+    #[serde(default, rename = "hooks")]
+    pub definitions: Vec<crate::hooks::HookDefinition>,
+}
+
+impl HooksSection {
+    /// Convert to HooksConfig for use with HookManager.
+    pub fn into_hooks_config(self) -> crate::hooks::HooksConfig {
+        crate::hooks::HooksConfig {
+            hooks: self.definitions,
+        }
+    }
+}
+
 /// The complete forge.toml configuration structure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForgeToml {
@@ -165,6 +183,9 @@ pub struct ForgeToml {
     /// Phase-specific overrides
     #[serde(default)]
     pub phases: PhasesConfig,
+    /// Hook definitions (alternative to hooks.toml)
+    #[serde(default)]
+    pub hooks: HooksSection,
 }
 
 impl Default for ForgeToml {
@@ -173,6 +194,7 @@ impl Default for ForgeToml {
             project: ProjectConfig::default(),
             defaults: DefaultsConfig::default(),
             phases: PhasesConfig::default(),
+            hooks: HooksSection::default(),
         }
     }
 }

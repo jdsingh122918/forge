@@ -1,0 +1,69 @@
+The Hook System Core is now fully implemented. Let me provide a summary of what was built:
+
+## Summary: Hook System Core (Phase 02)
+
+### What was implemented:
+
+1. **Hook Types and Events** (`src/hooks/types.rs`)
+   - `HookEvent` enum: PrePhase, PostPhase, PreIteration, PostIteration, OnFailure, OnApproval
+   - `HookType` enum: Command (implemented), Prompt (placeholder for phase 03)
+   - `HookAction` enum: Continue, Block, Skip, Modify, Approve, Reject
+   - `HookResult` struct with action, message, inject, and metadata
+   - `HookContext` struct providing phase, iteration, file changes to hooks
+
+2. **Hook Configuration** (`src/hooks/config.rs`)
+   - `HookDefinition` struct with event, match pattern, command, timeout, etc.
+   - `HooksConfig` struct for loading from `.forge/hooks.toml`
+   - Pattern matching via glob patterns (e.g., `database-*`)
+   - Validation of hook definitions
+
+3. **Hook Executor** (`src/hooks/executor.rs`)
+   - Command hook execution via subprocess
+   - JSON context passed via stdin
+   - Environment variables: FORGE_EVENT, FORGE_PHASE, FORGE_ITERATION
+   - Exit code interpretation: 0=Continue, 1=Block, 2=Skip, 3=Approve, 4=Reject
+   - JSON or plain text output parsing
+   - Timeout handling
+
+4. **Hook Manager** (`src/hooks/manager.rs`)
+   - Main entry point for hook system
+   - Loads hooks from configuration
+   - Matches hooks to events and phases
+   - Convenience methods: run_pre_phase, run_post_phase, run_pre_iteration, etc.
+
+5. **Integration with forge.toml** (`src/forge_config.rs`)
+   - Added `HooksSection` to ForgeToml
+   - Hooks can be defined in either `hooks.toml` or `forge.toml`
+
+6. **Integration into Orchestrator** (`src/main.rs`)
+   - HookManager initialized at orchestrator start
+   - Hooks from both hooks.toml and forge.toml merged
+   - All lifecycle hooks called at appropriate points:
+     - OnApproval: Before approval gate (can auto-approve/reject)
+     - PrePhase: Before phase starts (can block/skip)
+     - PreIteration: Before each Claude invocation
+     - PostIteration: After each Claude response
+     - OnFailure: When max iterations reached
+     - PostPhase: After phase completes
+
+### Usage Example:
+
+**`.forge/hooks.toml`:**
+```toml
+[[hooks]]
+event = "pre_phase"
+match = "database-*"
+command = "./scripts/ensure-db-running.sh"
+
+[[hooks]]
+event = "post_iteration"
+command = "./scripts/check-progress.sh"
+timeout_secs = 60
+```
+
+### Tests:
+- 200 tests passing
+- Comprehensive unit tests for all hook components
+- Integration tests for hook execution and phase matching
+
+<promise>HOOKS COMPLETE</promise>

@@ -3,6 +3,7 @@ pub mod config;
 pub mod forge_config;
 pub mod gates;
 pub mod generate;
+pub mod hooks;
 pub mod init;
 pub mod interview;
 pub mod orchestrator;

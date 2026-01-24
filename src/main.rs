@@ -155,7 +155,10 @@ async fn run_orchestrator(
 ) -> Result<()> {
     use forge::audit::{AuditLogger, FileChangeSummary, PhaseAudit, PhaseOutcome, RunConfig};
     use forge::config::Config;
+    use forge::forge_config::ForgeToml;
     use forge::gates::{ApprovalGate, GateDecision};
+    use forge::hooks::{HookAction, HookManager};
+    use forge::init::get_forge_dir;
     use forge::orchestrator::{ClaudeRunner, StateManager};
     use forge::phase::load_phases_or_default;
     use forge::tracker::GitTracker;
@@ -170,6 +173,23 @@ async fn run_orchestrator(
         cli.spec_file.clone(),
     )?;
     config.ensure_directories()?;
+
+    // Initialize hook manager
+    let mut hook_manager = HookManager::new(&project_dir, cli.verbose)?;
+
+    // Merge hooks from forge.toml if it exists
+    let forge_dir = get_forge_dir(&project_dir);
+    if let Ok(toml) = ForgeToml::load_or_default(&forge_dir) {
+        if !toml.hooks.definitions.is_empty() {
+            hook_manager.merge_config(toml.hooks.into_hooks_config());
+        }
+    }
+
+    // Report hook count if any
+    let hook_count = hook_manager.hook_count();
+    if hook_count > 0 && cli.verbose {
+        println!("Loaded {} hook(s)", hook_count);
+    }
 
     let state = StateManager::new(config.state_file.clone());
     let tracker = GitTracker::new(&config.project_dir)?;
@@ -205,8 +225,36 @@ async fn run_orchestrator(
     let mut previous_changes: Option<FileChangeSummary> = None;
 
     for phase in phases {
-        // Approval gate
-        let decision = gate.check_phase(&phase, previous_changes.as_ref(), &ui)?;
+        // Run OnApproval hooks first (can auto-approve/reject)
+        let approval_result = hook_manager
+            .run_on_approval(&phase, previous_changes.as_ref())
+            .await?;
+
+        let decision = match approval_result.action {
+            HookAction::Approve => {
+                if cli.verbose {
+                    println!("  {} (hook auto-approved)", console::style("Auto-approved").dim());
+                }
+                GateDecision::Approved
+            }
+            HookAction::Reject => {
+                if let Some(msg) = &approval_result.message {
+                    println!("  Hook rejected: {}", msg);
+                }
+                GateDecision::Rejected
+            }
+            HookAction::Block => {
+                if let Some(msg) = &approval_result.message {
+                    println!("  Hook blocked: {}", msg);
+                }
+                audit.finish_run()?;
+                return Ok(());
+            }
+            _ => {
+                // No hook decision, use normal approval gate
+                gate.check_phase(&phase, previous_changes.as_ref(), &ui)?
+            }
+        };
 
         match decision {
             GateDecision::Aborted => {
@@ -221,6 +269,28 @@ async fn run_orchestrator(
             GateDecision::Approved | GateDecision::ApprovedAll => {}
         }
 
+        // Run PrePhase hooks
+        let pre_phase_result = hook_manager
+            .run_pre_phase(&phase, previous_changes.as_ref())
+            .await?;
+
+        match pre_phase_result.action {
+            HookAction::Block => {
+                if let Some(msg) = &pre_phase_result.message {
+                    println!("  PrePhase hook blocked: {}", msg);
+                }
+                audit.finish_run()?;
+                return Ok(());
+            }
+            HookAction::Skip => {
+                if let Some(msg) = &pre_phase_result.message {
+                    println!("  PrePhase hook skipped phase: {}", msg);
+                }
+                continue;
+            }
+            _ => {}
+        }
+
         ui.start_phase(&phase.number, &phase.name);
         state.save(&phase.number, 0, "started")?;
 
@@ -231,6 +301,25 @@ async fn run_orchestrator(
 
         let mut completed = false;
         for iter in 1..=phase.budget {
+            // Run PreIteration hooks
+            let pre_iter_result = hook_manager.run_pre_iteration(&phase, iter).await?;
+
+            match pre_iter_result.action {
+                HookAction::Block => {
+                    if let Some(msg) = &pre_iter_result.message {
+                        println!("  PreIteration hook blocked: {}", msg);
+                    }
+                    break;
+                }
+                HookAction::Skip => {
+                    if let Some(msg) = &pre_iter_result.message {
+                        println!("  PreIteration hook skipped iteration: {}", msg);
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+
             ui.start_iteration(iter, phase.budget);
 
             let result = runner.run_iteration(&phase, iter, Some(ui.clone())).await?;
@@ -247,7 +336,29 @@ async fn run_orchestrator(
                 ui.show_file_change(path, forge::audit::ChangeType::Modified);
             }
 
-            if result.promise_found {
+            // Run PostIteration hooks
+            let post_iter_result = hook_manager
+                .run_post_iteration(
+                    &phase,
+                    iter,
+                    &changes,
+                    result.promise_found,
+                    Some(&result.output),
+                )
+                .await?;
+
+            // PostIteration hook can override promise detection
+            let should_complete = match post_iter_result.action {
+                HookAction::Block => {
+                    if let Some(msg) = &post_iter_result.message {
+                        println!("  PostIteration hook blocked: {}", msg);
+                    }
+                    false
+                }
+                _ => result.promise_found,
+            };
+
+            if should_complete {
                 ui.iteration_success(iter);
                 phase_audit.finish(PhaseOutcome::Completed { iteration: iter }, changes.clone());
                 state.save(&phase.number, iter, "completed")?;
@@ -263,10 +374,36 @@ async fn run_orchestrator(
 
         if !completed {
             let changes = tracker.compute_changes(&snapshot_sha)?;
+
+            // Run OnFailure hooks
+            let failure_result = hook_manager
+                .run_on_failure(&phase, phase.budget, &changes)
+                .await?;
+
+            if let Some(msg) = &failure_result.message {
+                println!("  OnFailure hook: {}", msg);
+            }
+
             phase_audit.finish(PhaseOutcome::MaxIterationsReached, changes);
             state.save(&phase.number, phase.budget, "max_iterations")?;
             ui.phase_failed(&phase.number, "max iterations reached");
         } else {
+            // Run PostPhase hooks
+            let post_phase_result = hook_manager
+                .run_post_phase(
+                    &phase,
+                    phase.budget,
+                    previous_changes.as_ref().unwrap_or(&FileChangeSummary::default()),
+                    true,
+                )
+                .await?;
+
+            if let Some(msg) = &post_phase_result.message {
+                if cli.verbose {
+                    println!("  PostPhase hook: {}", msg);
+                }
+            }
+
             ui.phase_complete(&phase.number);
         }
 
