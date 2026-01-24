@@ -185,8 +185,8 @@ async fn run_orchestrator(
 ) -> Result<()> {
     use forge::audit::{AuditLogger, FileChangeSummary, PhaseAudit, PhaseOutcome, RunConfig};
     use forge::config::Config;
-    use forge::forge_config::ForgeToml;
-    use forge::gates::{ApprovalGate, GateDecision};
+    use forge::forge_config::{ForgeToml, PermissionMode};
+    use forge::gates::{ApprovalGate, GateDecision, IterationDecision, ProgressTracker};
     use forge::hooks::{HookAction, HookManager};
     use forge::init::get_forge_dir;
     use forge::orchestrator::{ClaudeRunner, StateManager};
@@ -237,9 +237,24 @@ async fn run_orchestrator(
 
     // Load phases from phases.json if it exists, otherwise use defaults
     let all_phases = load_phases_or_default(Some(&config.phases_file))?;
+
+    // Apply permission modes from config to each phase
+    let forge_toml = ForgeToml::load_or_default(&forge_dir)?;
     let phases: Vec<_> = all_phases
         .into_iter()
         .filter(|p| p.number.as_str() >= start.as_str())
+        .map(|mut p| {
+            // Get phase settings from config (includes pattern-matched overrides)
+            let settings = forge_toml.phase_settings(&p.name);
+            // Apply permission mode from config if phase doesn't have one explicitly set
+            // (phases.json can override with explicit permission_mode)
+            if p.permission_mode == PermissionMode::Standard {
+                p.permission_mode = settings.permission_mode;
+            }
+            // Also apply budget from config if it differs and wasn't explicitly set in phases.json
+            // (We don't override budget here since phases.json is the primary source)
+            p
+        })
         .collect();
     let ui = std::sync::Arc::new(OrchestratorUI::new(phases.len() as u64, cli.verbose));
 
@@ -329,8 +344,57 @@ async fn run_orchestrator(
         // Take git snapshot before phase
         let snapshot_sha = tracker.snapshot_before(&phase.number)?;
 
+        // Initialize progress tracker for autonomous mode
+        let mut progress_tracker = ProgressTracker::new();
+
         let mut completed = false;
+        let mut phase_aborted = false;
         for iter in 1..=phase.budget {
+            // === STRICT MODE: Per-iteration approval ===
+            if phase.permission_mode == PermissionMode::Strict {
+                let current_changes = tracker.compute_changes(&snapshot_sha)?;
+                match gate.check_iteration(&phase, iter, Some(&current_changes), &ui)? {
+                    IterationDecision::Continue => {}
+                    IterationDecision::Skip => {
+                        println!("  Iteration {} skipped by user", iter);
+                        continue;
+                    }
+                    IterationDecision::StopPhase => {
+                        println!("  Phase stopped by user at iteration {}", iter);
+                        break;
+                    }
+                    IterationDecision::Abort => {
+                        println!("  Orchestrator aborted by user");
+                        phase_aborted = true;
+                        break;
+                    }
+                }
+            }
+
+            // === AUTONOMOUS MODE: Check progress before continuing ===
+            if phase.permission_mode == PermissionMode::Autonomous && iter > 1 {
+                if !gate.check_autonomous_progress(&progress_tracker) {
+                    match gate.prompt_no_progress()? {
+                        IterationDecision::Continue => {
+                            // Reset stale counter and continue
+                            progress_tracker.stale_iterations = 0;
+                        }
+                        IterationDecision::StopPhase => {
+                            println!("  Phase stopped due to no progress");
+                            break;
+                        }
+                        IterationDecision::Abort => {
+                            println!("  Orchestrator aborted by user");
+                            phase_aborted = true;
+                            break;
+                        }
+                        IterationDecision::Skip => {
+                            continue;
+                        }
+                    }
+                }
+            }
+
             // Run PreIteration hooks
             let pre_iter_result = hook_manager.run_pre_iteration(&phase, iter).await?;
 
@@ -358,6 +422,16 @@ async fn run_orchestrator(
             let changes = tracker.compute_changes(&snapshot_sha)?;
             ui.update_files(&changes);
 
+            // === READONLY MODE: Validate no modifications ===
+            if phase.permission_mode == PermissionMode::Readonly {
+                if let Err(e) = gate.validate_readonly_changes(&phase, &changes) {
+                    println!("  {} {}", console::style("Error:").red().bold(), e);
+                    ui.phase_failed(&phase.number, "readonly mode violation");
+                    phase_audit.finish(PhaseOutcome::Error { message: e.to_string() }, changes.clone());
+                    break;
+                }
+            }
+
             // Show individual file changes
             for path in &changes.files_added {
                 ui.show_file_change(path, forge::audit::ChangeType::Added);
@@ -365,6 +439,10 @@ async fn run_orchestrator(
             for path in &changes.files_modified {
                 ui.show_file_change(path, forge::audit::ChangeType::Modified);
             }
+
+            // Update progress tracker for autonomous mode
+            let progress_pct = result.signals.latest_progress();
+            progress_tracker.update(&changes, progress_pct);
 
             // Run PostIteration hooks with signals
             let post_iter_result = hook_manager
@@ -430,6 +508,12 @@ async fn run_orchestrator(
             }
 
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        }
+
+        // Handle phase abort (exit orchestrator entirely)
+        if phase_aborted {
+            audit.finish_run()?;
+            return Ok(());
         }
 
         if !completed {

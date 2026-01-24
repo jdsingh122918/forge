@@ -1,0 +1,67 @@
+Let me provide a summary of what was implemented:
+
+## Summary: Phase 06 - Permission Modes
+
+### Changes Made
+
+**1. Phase struct (`src/phase.rs`)**
+- Added `permission_mode: PermissionMode` field with serde default
+- Added `Phase::with_permission_mode()` constructor
+- Added tests for permission mode serialization/deserialization
+
+**2. ApprovalGate (`src/gates/mod.rs`)**
+- Added `IterationDecision` enum for per-iteration decisions (strict mode)
+- Added `ProgressTracker` struct for autonomous mode progress tracking
+- Enhanced `check_phase()` to handle all 4 permission modes:
+  - **Strict**: Shows mode in header, defers per-iteration approval
+  - **Standard**: Existing behavior (threshold-based auto-approval)
+  - **Autonomous**: Auto-approves phase start
+  - **Readonly**: Auto-approves with warning about blocked modifications
+- Added `check_iteration()` for strict mode per-iteration approval
+- Added `check_autonomous_progress()` and `prompt_no_progress()` for autonomous mode
+- Added `should_block_modifications()` and `validate_readonly_changes()` for readonly mode
+- Added comprehensive tests for all new functionality
+
+**3. Orchestrator (`src/main.rs`)**
+- Import new types: `PermissionMode`, `IterationDecision`, `ProgressTracker`
+- Apply permission modes from forge.toml config to each phase at load time
+- Added strict mode per-iteration approval in the iteration loop
+- Added autonomous mode progress checking before each iteration (after first)
+- Added readonly mode validation after each iteration's changes
+- Handle phase abort properly when user aborts from iteration or progress prompts
+
+### Permission Modes Behavior
+
+| Mode | Phase Start | Each Iteration | File Changes |
+|------|-------------|----------------|--------------|
+| **strict** | Prompt (threshold applies) | Prompt before each | Allowed |
+| **standard** | Prompt (threshold applies) | Auto-continue | Allowed |
+| **autonomous** | Auto-approve | Auto unless stale | Allowed |
+| **readonly** | Auto-approve | Auto-continue | Blocked with error |
+
+### Configuration
+
+Permission modes can be set in `forge.toml`:
+```toml
+[defaults]
+permission_mode = "standard"
+
+[phases.overrides."database-*"]
+permission_mode = "strict"
+
+[phases.overrides."research-*"]
+permission_mode = "readonly"
+```
+
+Or directly in `phases.json`:
+```json
+{
+  "number": "07",
+  "name": "Database migration",
+  "promise": "MIGRATION COMPLETE",
+  "budget": 12,
+  "permission_mode": "strict"
+}
+```
+
+<promise>PERMISSIONS COMPLETE</promise>

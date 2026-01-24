@@ -10,6 +10,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use crate::forge_config::PermissionMode;
+
 /// Represents a single implementation phase.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Phase {
@@ -30,6 +32,13 @@ pub struct Phase {
     /// List of skill names to load for this phase
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Permission mode for this phase (defaults to Standard)
+    /// - Strict: Require approval for every iteration
+    /// - Standard: Approve phase start, auto-continue iterations
+    /// - Autonomous: Auto-approve if within budget and making progress
+    /// - Readonly: Planning/research phases, no file modifications
+    #[serde(default)]
+    pub permission_mode: PermissionMode,
 }
 
 impl Phase {
@@ -50,6 +59,7 @@ impl Phase {
             reasoning: reasoning.to_string(),
             depends_on,
             skills: Vec::new(),
+            permission_mode: PermissionMode::default(),
         }
     }
 
@@ -71,6 +81,29 @@ impl Phase {
             reasoning: reasoning.to_string(),
             depends_on,
             skills,
+            permission_mode: PermissionMode::default(),
+        }
+    }
+
+    /// Create a new Phase with permission mode.
+    pub fn with_permission_mode(
+        number: &str,
+        name: &str,
+        promise: &str,
+        budget: u32,
+        reasoning: &str,
+        depends_on: Vec<String>,
+        permission_mode: PermissionMode,
+    ) -> Self {
+        Self {
+            number: number.to_string(),
+            name: name.to_string(),
+            promise: promise.to_string(),
+            budget,
+            reasoning: reasoning.to_string(),
+            depends_on,
+            skills: Vec::new(),
+            permission_mode,
         }
     }
 
@@ -425,6 +458,71 @@ mod tests {
 
         assert_eq!(phase.reasoning, "");
         assert!(phase.depends_on.is_empty());
+        // Permission mode defaults to Standard
+        assert_eq!(phase.permission_mode, PermissionMode::Standard);
+    }
+
+    #[test]
+    fn test_phase_with_permission_mode() {
+        let phase = Phase::with_permission_mode(
+            "01",
+            "Database migration",
+            "MIGRATION DONE",
+            10,
+            "Run database migrations",
+            vec![],
+            PermissionMode::Strict,
+        );
+
+        assert_eq!(phase.permission_mode, PermissionMode::Strict);
+        assert!(phase.skills.is_empty());
+    }
+
+    #[test]
+    fn test_phase_permission_mode_serialization() {
+        // Test serializing and deserializing phases with different permission modes
+        let phase = Phase::with_permission_mode(
+            "01",
+            "Research",
+            "RESEARCH DONE",
+            5,
+            "Explore options",
+            vec![],
+            PermissionMode::Readonly,
+        );
+
+        let json = serde_json::to_string(&phase).unwrap();
+        assert!(json.contains("\"permission_mode\":\"readonly\""));
+
+        let parsed: Phase = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.permission_mode, PermissionMode::Readonly);
+    }
+
+    #[test]
+    fn test_phase_permission_mode_from_json() {
+        // Test parsing permission_mode from JSON
+        let json = r#"{
+            "number": "07",
+            "name": "Database migration",
+            "promise": "MIGRATION COMPLETE",
+            "budget": 12,
+            "permission_mode": "strict"
+        }"#;
+
+        let phase: Phase = serde_json::from_str(json).unwrap();
+        assert_eq!(phase.permission_mode, PermissionMode::Strict);
+
+        // Test autonomous mode
+        let json_autonomous = r#"{
+            "number": "08",
+            "name": "Test automation",
+            "promise": "TESTS COMPLETE",
+            "budget": 20,
+            "permission_mode": "autonomous"
+        }"#;
+
+        let phase_auto: Phase = serde_json::from_str(json_autonomous).unwrap();
+        assert_eq!(phase_auto.permission_mode, PermissionMode::Autonomous);
     }
 
     // =========================================
