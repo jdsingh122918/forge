@@ -312,14 +312,11 @@ pub fn parse_review_action(input: &str) -> Result<ReviewAction> {
 ///
 /// # Returns
 /// `Ok(())` on success, or an error if something fails.
-///
-/// # Future: Pattern Matching Integration
-/// TODO: After reading the spec, check for similar patterns using
-/// `patterns::match_patterns()`. If similar patterns are found:
-/// - Display budget suggestions based on historical data using `patterns::suggest_budgets()`
-/// - Include pattern insights in the system prompt for Claude
-/// - Allow user to choose budget adjustments based on patterns
 pub fn run_generate(project_dir: &Path) -> Result<()> {
+    use crate::patterns::{
+        display_budget_suggestions, display_pattern_matches, list_patterns, match_patterns,
+        suggest_budgets,
+    };
     use dialoguer::Input;
 
     // Check if project is initialized
@@ -330,6 +327,14 @@ pub fn run_generate(project_dir: &Path) -> Result<()> {
     // Read spec
     println!("Reading spec from .forge/spec.md...");
     let spec_content = read_spec(project_dir)?;
+
+    // Check for similar patterns
+    let all_patterns = list_patterns().unwrap_or_default();
+    let pattern_matches = match_patterns(&spec_content, &all_patterns);
+
+    if !pattern_matches.is_empty() {
+        display_pattern_matches(&pattern_matches);
+    }
 
     // Main loop for generation and review
     loop {
@@ -342,6 +347,21 @@ pub fn run_generate(project_dir: &Path) -> Result<()> {
 
         // Display phases
         display_phases(&parsed.phases);
+
+        // If we have similar patterns, show budget suggestions
+        if !pattern_matches.is_empty() {
+            let similar_patterns: Vec<_> = pattern_matches
+                .iter()
+                .filter(|m| m.score > 0.3)
+                .take(3)
+                .map(|m| m.pattern)
+                .collect();
+
+            if !similar_patterns.is_empty() {
+                let suggestions = suggest_budgets(&similar_patterns, &parsed.phases);
+                display_budget_suggestions(&suggestions);
+            }
+        }
 
         // Show options
         println!("[a]pprove  [e]dit phase  [r]egenerate  [q]uit");
