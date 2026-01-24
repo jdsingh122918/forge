@@ -89,6 +89,23 @@ pub enum Commands {
         #[arg(long)]
         status: bool,
     },
+    /// Implement a design document end-to-end with TDD phases
+    Implement {
+        /// Path to the design document (markdown)
+        design_doc: PathBuf,
+
+        /// Skip TDD test phase generation
+        #[arg(long)]
+        no_tdd: bool,
+
+        /// Start from a specific phase (for resuming)
+        #[arg(long)]
+        start_phase: Option<String>,
+
+        /// Generate spec and phases without executing
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -187,6 +204,19 @@ async fn main() -> Result<()> {
         Commands::Skills { command } => cmd_skills(&project_dir, command.clone())?,
         Commands::Compact { phase, status } => {
             cmd_compact(&project_dir, &cli, phase.as_deref(), *status)?
+        }
+        Commands::Implement {
+            design_doc,
+            no_tdd,
+            start_phase,
+            dry_run,
+        } => {
+            if let Some(start) = start_phase {
+                // Resume from specific phase
+                run_orchestrator(&cli, project_dir, Some(start.clone())).await?;
+            } else {
+                cmd_implement(&project_dir, design_doc, *no_tdd, *dry_run)?;
+            }
         }
     }
 
@@ -986,6 +1016,16 @@ fn cmd_interview(project_dir: &std::path::Path) -> Result<()> {
 fn cmd_generate(project_dir: &std::path::Path) -> Result<()> {
     use forge::generate::run_generate;
     run_generate(project_dir)
+}
+
+fn cmd_implement(
+    project_dir: &std::path::Path,
+    design_doc: &std::path::Path,
+    no_tdd: bool,
+    dry_run: bool,
+) -> Result<()> {
+    use forge::implement::run_implement;
+    run_implement(project_dir, design_doc, no_tdd, dry_run)
 }
 
 fn cmd_learn(project_dir: &std::path::Path, name: Option<&str>) -> Result<()> {

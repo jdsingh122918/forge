@@ -48,6 +48,10 @@ pub struct Phase {
     /// These are populated dynamically during orchestration
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sub_phases: Vec<SubPhase>,
+    /// Phase type for TDD workflow (e.g., "test" or "implement")
+    /// Used by `forge implement` to distinguish test phases from implementation phases
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_type: Option<String>,
 }
 
 /// Represents a sub-phase that is dynamically spawned from a parent phase.
@@ -143,6 +147,7 @@ impl SubPhase {
             },
             parent_phase: Some(parent.number.clone()),
             sub_phases: Vec::new(),
+            phase_type: parent.phase_type.clone(),
         }
     }
 
@@ -181,6 +186,7 @@ impl Phase {
             permission_mode: PermissionMode::default(),
             parent_phase: None,
             sub_phases: Vec::new(),
+            phase_type: None,
         }
     }
 
@@ -205,6 +211,7 @@ impl Phase {
             permission_mode: PermissionMode::default(),
             parent_phase: None,
             sub_phases: Vec::new(),
+            phase_type: None,
         }
     }
 
@@ -229,6 +236,7 @@ impl Phase {
             permission_mode,
             parent_phase: None,
             sub_phases: Vec::new(),
+            phase_type: None,
         }
     }
 
