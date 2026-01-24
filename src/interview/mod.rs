@@ -104,7 +104,7 @@ pub fn run_interview(project_dir: &Path) -> Result<()> {
         let reader = BufReader::new(stdout);
         let mut full_output = String::new();
 
-        for line in reader.lines().flatten() {
+        for line in reader.lines().map_while(Result::ok) {
             println!("{}", line);
             full_output.push_str(&line);
             full_output.push('\n');

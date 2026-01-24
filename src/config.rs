@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use glob::glob;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::forge_config::ForgeConfig;
 
@@ -116,7 +116,7 @@ impl Config {
 
     /// Find a spec file, checking .forge/spec.md first, then docs/plans/*spec*.md
     /// Returns the most recently modified spec file if multiple are found in docs/plans/
-    fn find_spec_file(project_dir: &PathBuf) -> Result<PathBuf> {
+    fn find_spec_file(project_dir: &Path) -> Result<PathBuf> {
         // First, check .forge/spec.md (preferred location)
         let forge_spec = project_dir.join(".forge/spec.md");
         if forge_spec.exists() {

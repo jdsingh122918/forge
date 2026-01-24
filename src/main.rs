@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "forge")]
@@ -683,7 +683,7 @@ async fn run_single_phase(cli: &Cli, project_dir: PathBuf, phase_num: &str) -> R
     run_orchestrator(cli, project_dir, Some(phase.number)).await
 }
 
-fn cmd_list(project_dir: &PathBuf) -> Result<()> {
+fn cmd_list(project_dir: &Path) -> Result<()> {
     use forge::init::{get_forge_dir, has_phases, is_initialized};
     use forge::phase::PhasesFile;
 
@@ -756,7 +756,7 @@ fn cmd_list(project_dir: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn cmd_status(project_dir: &PathBuf) -> Result<()> {
+fn cmd_status(project_dir: &Path) -> Result<()> {
     use forge::init::{get_forge_dir, has_phases, has_spec, is_initialized};
     use forge::orchestrator::StateManager;
     use forge::phase::PhasesFile;
@@ -876,13 +876,13 @@ fn cmd_status(project_dir: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn cmd_reset(project_dir: &PathBuf, cli: &Cli, force: bool) -> Result<()> {
+fn cmd_reset(project_dir: &Path, cli: &Cli, force: bool) -> Result<()> {
     use dialoguer::Confirm;
     use forge::config::Config;
     use forge::orchestrator::StateManager;
 
     let config = Config::new(
-        project_dir.clone(),
+        project_dir.to_path_buf(),
         cli.verbose,
         cli.auto_approve_threshold,
         None,
@@ -912,11 +912,11 @@ fn cmd_reset(project_dir: &PathBuf, cli: &Cli, force: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_audit(project_dir: &PathBuf, command: &AuditCommands) -> Result<()> {
+fn cmd_audit(project_dir: &Path, command: &AuditCommands) -> Result<()> {
     use forge::audit::AuditLogger;
     use forge::config::Config;
 
-    let config = Config::new(project_dir.clone(), false, 5, None)?;
+    let config = Config::new(project_dir.to_path_buf(), false, 5, None)?;
     let _audit = AuditLogger::new(&config.audit_dir);
 
     match command {

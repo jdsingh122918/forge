@@ -101,13 +101,12 @@ impl StateManager {
 
         content
             .lines()
-            .filter(|line| {
+            .rfind(|line| {
                 let parts: Vec<&str> = line.split('|').collect();
                 // Old format has 4 parts, new sub-phase format has 5 parts
                 // Only consider old format (top-level phases) for this query
                 parts.len() == 4 && line.contains("|completed|")
             })
-            .next_back()
             .and_then(|line| line.split('|').next())
             .map(|s| s.to_string())
     }
