@@ -9,10 +9,60 @@
 
 use anyhow::{Context, Result, bail};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::forge_config::ForgeConfig;
 use crate::init::{get_forge_dir, is_initialized};
+
+/// Build a Claude command for one turn of the interview conversation.
+///
+/// This function creates a Command configured for `--print` mode with:
+/// - The interview system prompt
+/// - The user's message as the prompt
+/// - Session management for multi-turn conversation
+///
+/// # Arguments
+/// * `claude_cmd` - The Claude CLI command/path to use
+/// * `project_dir` - The project directory to run in
+/// * `user_message` - The user's input for this turn
+/// * `is_continuation` - Whether this continues a previous conversation
+///
+/// # Returns
+/// A configured `Command` ready to be executed.
+pub fn build_interview_command(
+    claude_cmd: &str,
+    project_dir: &str,
+    user_message: Option<&str>,
+    is_continuation: bool,
+) -> Command {
+    let mut cmd = Command::new(claude_cmd);
+
+    // Use --print mode for non-interactive execution
+    cmd.arg("--print");
+
+    // Add system prompt flag - this guides Claude's interview behavior
+    cmd.arg("--system-prompt").arg(INTERVIEW_SYSTEM_PROMPT);
+
+    // For continuation turns, use --continue to resume the most recent conversation
+    if is_continuation {
+        cmd.arg("--continue");
+    }
+
+    // Add the user's message as the prompt
+    if let Some(msg) = user_message {
+        cmd.arg("-p").arg(msg);
+    }
+
+    // Set working directory
+    cmd.current_dir(project_dir);
+
+    // Pipe all stdio for programmatic control
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    cmd
+}
 
 /// The system prompt used for conducting project interviews.
 pub const INTERVIEW_SYSTEM_PROMPT: &str = r#"You are conducting an interview to create a project specification.
@@ -41,12 +91,14 @@ The spec should include:
 
 /// Run an interactive interview session to generate a project spec.
 ///
-/// This function:
+/// This function implements a conversation loop:
 /// 1. Checks if the project is initialized (has `.forge/` directory)
-/// 2. Spawns Claude CLI with the interview system prompt
-/// 3. Runs in interactive mode so user can converse with Claude
-/// 4. Watches for `<spec>...</spec>` tags in the output
-/// 5. Extracts spec content and saves to `.forge/spec.md`
+/// 2. Starts Claude with an initial prompt to begin the interview
+/// 3. Loops: reads user input, sends to Claude, displays response
+/// 4. Watches for `<spec>...</spec>` tags in Claude's output
+/// 5. Saves the spec when detected and exits
+///
+/// The loop continues until a spec is generated or user types "quit"/"exit".
 ///
 /// # Arguments
 /// * `project_dir` - The root directory of the project
@@ -61,6 +113,8 @@ The spec should include:
 /// - Displaying relevant patterns to inform the interview
 /// - Adapting budget suggestions based on pattern history
 pub fn run_interview(project_dir: &Path) -> Result<()> {
+    use std::io::{BufRead, Write};
+
     // Check if project is initialized
     if !is_initialized(project_dir) {
         bail!("Project not initialized. Run 'forge init' first to create the .forge/ directory.");
@@ -75,58 +129,86 @@ pub fn run_interview(project_dir: &Path) -> Result<()> {
 
     println!("Starting interview session...");
     println!("Claude will ask questions to help create your project specification.");
-    println!("When complete, the spec will be saved to .forge/spec.md");
+    println!("Type 'quit' or 'exit' to end the session.");
     println!();
 
-    // Build the command for interactive Claude session
-    let mut cmd = Command::new(&claude_cmd);
+    let project_dir_str = project_dir.to_str().unwrap_or(".");
 
-    // Add system prompt flag
-    cmd.arg("--system-prompt").arg(INTERVIEW_SYSTEM_PROMPT);
+    // Accumulate all output for spec extraction
+    let mut full_output = String::new();
 
-    // Set working directory
-    cmd.current_dir(project_dir);
+    // First turn: start the interview with an initial prompt (no continuation)
+    let initial_prompt = "Start the interview. Ask your first question.";
+    let response = run_claude_turn(
+        &claude_cmd,
+        project_dir_str,
+        initial_prompt,
+        false, // First turn - don't use --continue
+    )?;
 
-    // Run interactively - inherit stdin/stdout/stderr
-    cmd.stdin(std::process::Stdio::inherit());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::inherit());
+    println!("{}", response);
+    full_output.push_str(&response);
 
-    // Spawn the process
-    let mut child = cmd.spawn().context("Failed to spawn Claude process")?;
-
-    // Capture stdout while allowing interactive session
-    let stdout = child.stdout.take().context("Failed to get stdout")?;
-
-    // Read output in a separate thread while allowing user interaction
-    let output_handle = std::thread::spawn(move || {
-        use std::io::{BufRead, BufReader};
-        let reader = BufReader::new(stdout);
-        let mut full_output = String::new();
-
-        for line in reader.lines().map_while(Result::ok) {
-            println!("{}", line);
-            full_output.push_str(&line);
-            full_output.push('\n');
-        }
-
-        full_output
-    });
-
-    // Wait for process to complete
-    let status = child.wait().context("Failed to wait for Claude process")?;
-
-    // Get the full output
-    let full_output = output_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Failed to join output thread"))?;
-
-    if !status.success() {
-        let exit_code = status.code().unwrap_or(-1);
-        bail!("Claude process exited with code: {}", exit_code);
+    // Check for spec in initial response (unlikely but possible)
+    if let Some(spec_content) = extract_spec(&full_output) {
+        save_spec(&forge_dir, &spec_content)?;
+        println!();
+        println!("Spec saved to .forge/spec.md");
+        return Ok(());
     }
 
-    // Extract spec from output
+    // Conversation loop
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+
+    loop {
+        // Prompt for user input
+        print!("\n> ");
+        stdout.flush()?;
+
+        let mut user_input = String::new();
+        if stdin.lock().read_line(&mut user_input)? == 0 {
+            // EOF - user pressed Ctrl+D
+            println!("\nSession ended.");
+            break;
+        }
+
+        let user_input = user_input.trim();
+
+        // Check for exit commands
+        if user_input.eq_ignore_ascii_case("quit") || user_input.eq_ignore_ascii_case("exit") {
+            println!("Session ended.");
+            break;
+        }
+
+        // Skip empty input
+        if user_input.is_empty() {
+            continue;
+        }
+
+        // Send to Claude and get response (continuation turn)
+        println!();
+        let response = run_claude_turn(
+            &claude_cmd,
+            project_dir_str,
+            user_input,
+            true, // Continuation turn - use --continue
+        )?;
+
+        println!("{}", response);
+        full_output.push_str("\n");
+        full_output.push_str(&response);
+
+        // Check for spec in response
+        if let Some(spec_content) = extract_spec(&full_output) {
+            save_spec(&forge_dir, &spec_content)?;
+            println!();
+            println!("Spec saved to .forge/spec.md");
+            return Ok(());
+        }
+    }
+
+    // Final check for spec in accumulated output
     if let Some(spec_content) = extract_spec(&full_output) {
         save_spec(&forge_dir, &spec_content)?;
         println!();
@@ -137,6 +219,35 @@ pub fn run_interview(project_dir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Execute a single turn of conversation with Claude.
+///
+/// # Arguments
+/// * `claude_cmd` - The Claude CLI command/path
+/// * `project_dir` - The project directory
+/// * `user_message` - The user's message for this turn
+/// * `is_continuation` - Whether this is a continuation of a previous conversation
+///
+/// # Returns
+/// The text response from Claude.
+fn run_claude_turn(
+    claude_cmd: &str,
+    project_dir: &str,
+    user_message: &str,
+    is_continuation: bool,
+) -> Result<String> {
+    let mut cmd = build_interview_command(claude_cmd, project_dir, Some(user_message), is_continuation);
+
+    let output = cmd.output().context("Failed to run Claude")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Claude failed: {}", stderr);
+    }
+
+    let response = String::from_utf8_lossy(&output.stdout).to_string();
+    Ok(response)
 }
 
 /// Extract content from `<spec>...</spec>` tags.
@@ -323,6 +434,45 @@ End of output
         let err = result.unwrap_err();
         assert!(err.to_string().contains("not initialized"));
         assert!(err.to_string().contains("forge init"));
+    }
+
+    // =========================================
+    // build_interview_command tests
+    // =========================================
+
+    #[test]
+    fn test_build_interview_command_first_turn() {
+        use std::ffi::OsStr;
+        let cmd = build_interview_command("claude", "/tmp/test", Some("Hello"), false);
+        let args: Vec<_> = cmd.get_args().collect();
+
+        // Should have --print for non-interactive mode
+        assert!(args.iter().any(|a| *a == OsStr::new("--print")));
+
+        // Should have system prompt
+        assert!(args.iter().any(|a| *a == OsStr::new("--system-prompt")));
+
+        // Should have -p for prompt
+        assert!(args.iter().any(|a| *a == OsStr::new("-p")));
+
+        // Should NOT have --continue for first turn
+        assert!(!args.iter().any(|a| *a == OsStr::new("--continue")));
+    }
+
+    #[test]
+    fn test_build_interview_command_continuation() {
+        use std::ffi::OsStr;
+        let cmd = build_interview_command("claude", "/tmp/test", Some("msg"), true);
+        let args: Vec<_> = cmd.get_args().collect();
+
+        // Should have --continue for continuation turns
+        assert!(args.iter().any(|a| *a == OsStr::new("--continue")));
+    }
+
+    #[test]
+    fn test_build_interview_command_custom_claude() {
+        let cmd = build_interview_command("/custom/claude", "/tmp/test", None, false);
+        assert_eq!(cmd.get_program(), "/custom/claude");
     }
 
     // =========================================
