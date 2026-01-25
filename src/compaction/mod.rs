@@ -65,9 +65,9 @@ mod tests {
 
     #[test]
     fn test_default_constants() {
-        assert!(DEFAULT_MODEL_WINDOW_CHARS > 0);
-        assert!(MIN_PRESERVED_CONTEXT > 0);
-        assert!(MIN_PRESERVED_CONTEXT < DEFAULT_MODEL_WINDOW_CHARS);
-        assert!(COMPACTION_SAFETY_MARGIN > 0.0 && COMPACTION_SAFETY_MARGIN < 50.0);
+        const { assert!(DEFAULT_MODEL_WINDOW_CHARS > 0) };
+        const { assert!(MIN_PRESERVED_CONTEXT > 0) };
+        const { assert!(MIN_PRESERVED_CONTEXT < DEFAULT_MODEL_WINDOW_CHARS) };
+        const { assert!(COMPACTION_SAFETY_MARGIN > 0.0 && COMPACTION_SAFETY_MARGIN < 50.0) };
     }
 }
