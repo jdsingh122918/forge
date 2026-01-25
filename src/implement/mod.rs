@@ -14,7 +14,7 @@ pub mod extract;
 pub mod spec_gen;
 pub mod types;
 
-pub use extract::{extract_design, validate_design_doc, DESIGN_DOC_EXTRACTION_PROMPT};
+pub use extract::{DESIGN_DOC_EXTRACTION_PROMPT, extract_design, validate_design_doc};
 pub use spec_gen::generate_spec_markdown;
 pub use types::{CodePattern, Complexity, Component, ExtractedDesign, ExtractedSpec};
 
@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use dialoguer::Input;
 use std::path::Path;
 
-use crate::generate::{create_phases_file, parse_review_action, ReviewAction};
+use crate::generate::{ReviewAction, create_phases_file, parse_review_action};
 use crate::init::get_forge_dir;
 use crate::phase::{Phase, PhaseType};
 
@@ -62,12 +62,10 @@ pub fn run_implement(
 
     // Ensure .forge directory exists
     if !forge_dir.exists() {
-        std::fs::create_dir_all(&forge_dir)
-            .context("Failed to create .forge directory")?;
+        std::fs::create_dir_all(&forge_dir).context("Failed to create .forge directory")?;
     }
 
-    std::fs::write(forge_dir.join("spec.md"), &spec_content)
-        .context("Failed to write spec.md")?;
+    std::fs::write(forge_dir.join("spec.md"), &spec_content).context("Failed to write spec.md")?;
 
     // 5. Save phases.json
     println!("Generating phases...");
@@ -183,7 +181,8 @@ fn renumber_phases(phases: Vec<Phase>) -> Vec<Phase> {
     }
 
     // Build a mapping from old number to new number
-    let mut number_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut number_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for (i, phase) in phases.iter().enumerate() {
         let new_number = format!("{:02}", i + 1);
         number_map.insert(phase.number.clone(), new_number);
@@ -224,7 +223,14 @@ mod tests {
     fn test_renumber_phases_sequential() {
         let phases = vec![
             Phase::new("01", "First", "FIRST DONE", 5, "reason", vec![]),
-            Phase::new("02", "Second", "SECOND DONE", 5, "reason", vec!["01".into()]),
+            Phase::new(
+                "02",
+                "Second",
+                "SECOND DONE",
+                5,
+                "reason",
+                vec!["01".into()],
+            ),
         ];
 
         let result = renumber_phases(phases);
@@ -260,8 +266,22 @@ mod tests {
     fn test_renumber_phases_removes_dangling_deps() {
         // If a dependency was filtered out, it should be removed
         let phases = vec![
-            Phase::new("02", "Second", "SECOND DONE", 5, "reason", vec!["01".into()]),
-            Phase::new("04", "Fourth", "FOURTH DONE", 5, "reason", vec!["02".into(), "03".into()]),
+            Phase::new(
+                "02",
+                "Second",
+                "SECOND DONE",
+                5,
+                "reason",
+                vec!["01".into()],
+            ),
+            Phase::new(
+                "04",
+                "Fourth",
+                "FOURTH DONE",
+                5,
+                "reason",
+                vec!["02".into(), "03".into()],
+            ),
         ];
 
         let result = renumber_phases(phases);

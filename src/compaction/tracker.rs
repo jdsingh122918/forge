@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn test_has_budget_for() {
-        let mut tracker = ContextTracker::new("80%", 100_000);
+        let tracker = ContextTracker::new("80%", 100_000);
         // Limit is 80k, MIN_PRESERVED_CONTEXT is 50k
 
         // We need room for prompt + 50k minimum

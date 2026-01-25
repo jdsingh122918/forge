@@ -3,7 +3,7 @@
 //! This module handles parsing design documents and extracting
 //! implementation-ready specifications and phases via Claude.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -114,7 +114,7 @@ pub fn validate_design_doc(path: &Path) -> Result<String> {
         bail!("Design doc not found: {}", path.display());
     }
 
-    if !path.extension().is_some_and(|e| e == "md") {
+    if path.extension().is_none_or(|e| e != "md") {
         bail!("Design doc must be a markdown file (.md)");
     }
 
@@ -166,7 +166,10 @@ fn call_claude_for_extraction(project_dir: &Path, prompt: &str) -> Result<String
     let claude_cmd = match ForgeConfig::new(project_dir.to_path_buf()) {
         Ok(config) => config.claude_cmd(),
         Err(e) => {
-            eprintln!("Warning: Failed to load forge config ({}), checking CLAUDE_CMD env var", e);
+            eprintln!(
+                "Warning: Failed to load forge config ({}), checking CLAUDE_CMD env var",
+                e
+            );
             match std::env::var("CLAUDE_CMD") {
                 Ok(cmd) => cmd,
                 Err(_) => {
@@ -213,8 +216,8 @@ fn parse_extraction_response(output: &str, source_path: &Path) -> Result<Extract
         .get("spec")
         .ok_or_else(|| anyhow::anyhow!("No 'spec' field in JSON output"))?;
 
-    let mut spec: ExtractedSpec = serde_json::from_value(spec_value.clone())
-        .context("Failed to parse spec from JSON")?;
+    let mut spec: ExtractedSpec =
+        serde_json::from_value(spec_value.clone()).context("Failed to parse spec from JSON")?;
 
     // Ensure source is set
     if spec.source.as_os_str().is_empty() {
@@ -243,7 +246,9 @@ fn parse_extraction_response(output: &str, source_path: &Path) -> Result<Extract
     }
 
     if phases.is_empty() {
-        bail!("No phases generated from design doc. Claude may have failed to produce a phase plan.");
+        bail!(
+            "No phases generated from design doc. Claude may have failed to produce a phase plan."
+        );
     }
 
     Ok(ExtractedDesign { spec, phases })
@@ -390,7 +395,12 @@ mod tests {
 
         let result = parse_extraction_response(output, Path::new("test.md"));
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No implementable components"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No implementable components")
+        );
     }
 
     #[test]

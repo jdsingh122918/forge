@@ -41,25 +41,37 @@ mod tests {
     #[test]
     fn test_extract_json_object_simple() {
         let text = r#"{"key": "value"}"#;
-        assert_eq!(extract_json_object(text), Some(r#"{"key": "value"}"#.to_string()));
+        assert_eq!(
+            extract_json_object(text),
+            Some(r#"{"key": "value"}"#.to_string())
+        );
     }
 
     #[test]
     fn test_extract_json_object_with_prefix() {
         let text = r#"Here is the JSON: {"key": "value"}"#;
-        assert_eq!(extract_json_object(text), Some(r#"{"key": "value"}"#.to_string()));
+        assert_eq!(
+            extract_json_object(text),
+            Some(r#"{"key": "value"}"#.to_string())
+        );
     }
 
     #[test]
     fn test_extract_json_object_with_suffix() {
         let text = r#"{"key": "value"} and some more text"#;
-        assert_eq!(extract_json_object(text), Some(r#"{"key": "value"}"#.to_string()));
+        assert_eq!(
+            extract_json_object(text),
+            Some(r#"{"key": "value"}"#.to_string())
+        );
     }
 
     #[test]
     fn test_extract_json_object_nested() {
         let text = r#"{"outer": {"inner": "value"}}"#;
-        assert_eq!(extract_json_object(text), Some(r#"{"outer": {"inner": "value"}}"#.to_string()));
+        assert_eq!(
+            extract_json_object(text),
+            Some(r#"{"outer": {"inner": "value"}}"#.to_string())
+        );
     }
 
     #[test]

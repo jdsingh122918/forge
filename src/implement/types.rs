@@ -88,10 +88,7 @@ mod tests {
 
     #[test]
     fn test_complexity_serialization() {
-        assert_eq!(
-            serde_json::to_string(&Complexity::Low).unwrap(),
-            "\"low\""
-        );
+        assert_eq!(serde_json::to_string(&Complexity::Low).unwrap(), "\"low\"");
         assert_eq!(
             serde_json::to_string(&Complexity::Medium).unwrap(),
             "\"medium\""
