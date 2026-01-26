@@ -127,7 +127,7 @@ pub enum Commands {
         #[arg(long, default_value = "auto")]
         backend: String,
 
-        /// Enable review specialists (comma-separated: security,performance,architecture,all)
+        /// Enable review specialists (comma-separated: security,performance,architecture,simplicity,all)
         #[arg(long)]
         review: Option<String>,
 
@@ -2031,6 +2031,7 @@ async fn cmd_swarm(
                     "security".to_string(),
                     "performance".to_string(),
                     "architecture".to_string(),
+                    "simplicity".to_string(),
                 ]
             } else {
                 r.split(',').map(|s| s.trim().to_string()).collect()
