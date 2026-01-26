@@ -22,6 +22,12 @@ pub struct DagConfig {
     pub swarm_backend: SwarmBackend,
     /// Review configuration
     pub review: ReviewConfig,
+    /// Enable dynamic decomposition
+    pub decomposition_enabled: bool,
+    /// Budget percentage threshold for decomposition
+    pub decomposition_threshold: u32,
+    /// Finding types to always escalate
+    pub escalation_types: Vec<String>,
 }
 
 impl Default for DagConfig {
@@ -32,6 +38,9 @@ impl Default for DagConfig {
             swarm_enabled: true,
             swarm_backend: SwarmBackend::Auto,
             review: ReviewConfig::default(),
+            decomposition_enabled: true,
+            decomposition_threshold: 50,
+            escalation_types: Vec::new(),
         }
     }
 }
@@ -55,9 +64,33 @@ impl DagConfig {
         self
     }
 
+    /// Set the swarm backend.
+    pub fn with_swarm_backend(mut self, backend: SwarmBackend) -> Self {
+        self.swarm_backend = backend;
+        self
+    }
+
     /// Set the review configuration.
     pub fn with_review(mut self, review: ReviewConfig) -> Self {
         self.review = review;
+        self
+    }
+
+    /// Enable or disable dynamic decomposition.
+    pub fn with_decomposition(mut self, enabled: bool) -> Self {
+        self.decomposition_enabled = enabled;
+        self
+    }
+
+    /// Set the decomposition budget threshold.
+    pub fn with_decomposition_threshold(mut self, threshold: u32) -> Self {
+        self.decomposition_threshold = threshold;
+        self
+    }
+
+    /// Set the escalation types.
+    pub fn with_escalation_types(mut self, types: Vec<String>) -> Self {
+        self.escalation_types = types;
         self
     }
 }

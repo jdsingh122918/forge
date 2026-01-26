@@ -238,6 +238,30 @@
         "total_lines_added": 348,
         "total_lines_removed": 0
       }
+    },
+    {
+      "phase_number": "20",
+      "description": "CLI Swarm Subcommand",
+      "promise": "CLI SWARM COMPLETE",
+      "started_at": "2026-01-26T17:13:20.905758Z",
+      "ended_at": "2026-01-26T17:21:21.781980Z",
+      "iterations": [],
+      "outcome": {
+        "Completed": {
+          "iteration": 1
+        }
+      },
+      "file_changes": {
+        "files_added": [],
+        "files_modified": [
+          "src/dag/mod.rs",
+          "src/dag/scheduler.rs",
+          "src/main.rs"
+        ],
+        "files_deleted": [],
+        "total_lines_added": 415,
+        "total_lines_removed": 102
+      }
     }
   ]
 }

@@ -45,7 +45,7 @@ mod state;
 
 pub use builder::DagBuilder;
 pub use executor::{DagExecutor, ExecutionResult, ExecutorConfig, PhaseEvent};
-pub use scheduler::{DagConfig, DagScheduler, PhaseNode, PhaseStatus, ReviewConfig, ReviewMode};
+pub use scheduler::{DagConfig, DagScheduler, PhaseNode, PhaseStatus, ReviewConfig, ReviewMode, SwarmBackend};
 pub use state::{DagState, DagSummary, PhaseResult};
 
 #[cfg(test)]
