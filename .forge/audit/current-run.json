@@ -1,30 +1,13 @@
 {
-  "run_id": "08a47203-cbb2-4225-b561-562ff540190d",
-  "started_at": "2026-01-26T07:30:14.325553Z",
+  "run_id": "3c564ddb-ab1e-494a-9732-a92464ff999c",
+  "started_at": "2026-01-26T15:47:28.753315Z",
   "ended_at": null,
   "config": {
     "auto_approve_threshold": 5,
     "skip_permissions": true,
-    "verbose": true,
-    "spec_file": "/Users/jdsingh/Projects/AI/forge/docs/plans/test-spec.md",
+    "verbose": false,
+    "spec_file": "/Users/jdsingh/Projects/AI/forge/.forge/spec.md",
     "project_dir": "/Users/jdsingh/Projects/AI/forge"
   },
-  "phases": [
-    {
-      "phase_number": "11",
-      "description": "Callback HTTP Server",
-      "promise": "CALLBACK SERVER COMPLETE",
-      "started_at": "2026-01-26T07:30:14.325906Z",
-      "ended_at": "2026-01-26T07:32:29.191067Z",
-      "iterations": [],
-      "outcome": "MaxIterationsReached",
-      "file_changes": {
-        "files_added": [],
-        "files_modified": [],
-        "files_deleted": [],
-        "total_lines_added": 0,
-        "total_lines_removed": 0
-      }
-    }
-  ]
+  "phases": []
 }
