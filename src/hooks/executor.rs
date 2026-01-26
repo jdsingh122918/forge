@@ -1258,7 +1258,7 @@ echo '```'
         let mock_claude = create_test_script(
             dir.path(),
             "mock-claude",
-            "#!/bin/sh\necho 'Error!' >&2\nexit 1\n",
+            "#!/bin/sh\ncat > /dev/null\necho 'Error!' >&2\nexit 1\n",
         );
 
         let executor = HookExecutor::with_claude_cmd(
