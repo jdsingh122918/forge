@@ -26,18 +26,37 @@ impl GitTracker {
 
         let sig = Signature::now("forge", "forge@localhost")?;
 
-        let parent = self.repo.head()?.peel_to_commit()?;
-
-        let commit_id = self.repo.commit(
-            Some("HEAD"),
-            &sig,
-            &sig,
-            &format!("[forge] snapshot before phase {}", phase),
-            &tree,
-            &[&parent],
-        )?;
+        // Handle unborn branch (new repo with no commits yet)
+        let commit_id = if let Some(parent) = self.get_head_commit() {
+            self.repo.commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                &format!("[forge] snapshot before phase {}", phase),
+                &tree,
+                &[&parent],
+            )?
+        } else {
+            // No parent commit - create initial commit
+            self.repo.commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                &format!("[forge] snapshot before phase {}", phase),
+                &tree,
+                &[], // No parents for initial commit
+            )?
+        };
 
         Ok(commit_id.to_string())
+    }
+
+    /// Get the HEAD commit if it exists (returns None for unborn branches)
+    fn get_head_commit(&self) -> Option<git2::Commit<'_>> {
+        self.repo
+            .head()
+            .ok()
+            .and_then(|head| head.peel_to_commit().ok())
     }
 
     /// Compute changes since the snapshot
@@ -155,10 +174,8 @@ impl GitTracker {
         Ok(file_diffs)
     }
 
-    /// Get current HEAD SHA
-    pub fn head_sha(&self) -> Result<String> {
-        let head = self.repo.head()?;
-        let commit = head.peel_to_commit()?;
-        Ok(commit.id().to_string())
+    /// Get current HEAD SHA (returns None for unborn branches)
+    pub fn head_sha(&self) -> Option<String> {
+        self.get_head_commit().map(|c| c.id().to_string())
     }
 }
