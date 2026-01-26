@@ -493,6 +493,10 @@ command = "{}"
                 timeout_secs: 30,
                 enabled: true,
                 description: None,
+                swarm_strategy: None,
+                max_agents: None,
+                swarm_tasks: None,
+                reviews: None,
             }],
         };
 

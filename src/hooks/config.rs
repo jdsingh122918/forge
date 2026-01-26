@@ -6,6 +6,7 @@
 
 use super::types::{HookEvent, HookType};
 use crate::forge_config::pattern_matches;
+use crate::swarm::context::{ReviewSpecialistType, SwarmStrategy, SwarmTask};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -51,6 +52,24 @@ pub struct HookDefinition {
     /// Optional description for documentation
     #[serde(default)]
     pub description: Option<String>,
+
+    // === Swarm hook fields (only used when hook_type is Swarm) ===
+    /// Execution strategy for swarm coordination (for swarm hooks)
+    #[serde(default)]
+    pub swarm_strategy: Option<SwarmStrategy>,
+
+    /// Maximum agents to spawn in parallel (for swarm hooks)
+    #[serde(default)]
+    pub max_agents: Option<u32>,
+
+    /// Pre-defined tasks for the swarm to execute (for swarm hooks)
+    /// If not specified, the swarm leader will analyze and decompose the work
+    #[serde(default)]
+    pub swarm_tasks: Option<Vec<SwarmTask>>,
+
+    /// Review specialists to run after swarm completion (for swarm hooks)
+    #[serde(default)]
+    pub reviews: Option<Vec<ReviewSpecialistType>>,
 }
 
 fn default_timeout() -> u64 {
@@ -74,6 +93,10 @@ impl HookDefinition {
             timeout_secs: default_timeout(),
             enabled: true,
             description: None,
+            swarm_strategy: None,
+            max_agents: None,
+            swarm_tasks: None,
+            reviews: None,
         }
     }
 
@@ -92,6 +115,38 @@ impl HookDefinition {
             timeout_secs: default_timeout(),
             enabled: true,
             description: None,
+            swarm_strategy: None,
+            max_agents: None,
+            swarm_tasks: None,
+            reviews: None,
+        }
+    }
+
+    /// Create a new swarm hook.
+    ///
+    /// Swarm hooks invoke the SwarmExecutor to run a Claude Code swarm for complex
+    /// parallel task execution. The swarm coordinates multiple agents and can run
+    /// review specialists.
+    ///
+    /// # Arguments
+    ///
+    /// * `event` - The hook event that triggers swarm execution
+    /// * `strategy` - The execution strategy for task coordination
+    pub fn swarm(event: HookEvent, strategy: SwarmStrategy) -> Self {
+        Self {
+            event,
+            r#match: None,
+            hook_type: HookType::Swarm,
+            command: None,
+            prompt: None,
+            working_dir: None,
+            timeout_secs: 1800, // 30 minutes default for swarm execution
+            enabled: true,
+            description: None,
+            swarm_strategy: Some(strategy),
+            max_agents: Some(4), // Default to 4 agents
+            swarm_tasks: None,
+            reviews: None,
         }
     }
 
@@ -116,6 +171,24 @@ impl HookDefinition {
     /// Disable this hook.
     pub fn disabled(mut self) -> Self {
         self.enabled = false;
+        self
+    }
+
+    /// Set the maximum number of agents for swarm execution.
+    pub fn with_max_agents(mut self, max_agents: u32) -> Self {
+        self.max_agents = Some(max_agents);
+        self
+    }
+
+    /// Set pre-defined tasks for swarm execution.
+    pub fn with_swarm_tasks(mut self, tasks: Vec<SwarmTask>) -> Self {
+        self.swarm_tasks = Some(tasks);
+        self
+    }
+
+    /// Set review specialists for swarm execution.
+    pub fn with_reviews(mut self, reviews: Vec<ReviewSpecialistType>) -> Self {
+        self.reviews = Some(reviews);
         self
     }
 
@@ -144,6 +217,22 @@ impl HookDefinition {
                 if self.prompt.is_none() {
                     warnings.push(format!(
                         "Hook for event '{}' has type 'prompt' but no prompt specified",
+                        self.event
+                    ));
+                }
+            }
+            HookType::Swarm => {
+                if self.swarm_strategy.is_none() {
+                    warnings.push(format!(
+                        "Hook for event '{}' has type 'swarm' but no strategy specified",
+                        self.event
+                    ));
+                }
+                if let Some(max_agents) = self.max_agents
+                    && max_agents == 0
+                {
+                    warnings.push(format!(
+                        "Hook for event '{}' has max_agents of 0",
                         self.event
                     ));
                 }
@@ -534,6 +623,188 @@ type = "prompt"
         assert_eq!(hook.r#match, Some("api-*".to_string()));
         assert_eq!(hook.timeout_secs, 120);
         assert!(hook.matches_phase("api-endpoints"));
+        assert!(!hook.matches_phase("database-setup"));
+    }
+
+    // ========== Swarm Hook Tests ==========
+
+    #[test]
+    fn test_hook_definition_swarm() {
+        let hook = HookDefinition::swarm(HookEvent::PrePhase, SwarmStrategy::Parallel);
+
+        assert_eq!(hook.event, HookEvent::PrePhase);
+        assert_eq!(hook.hook_type, HookType::Swarm);
+        assert_eq!(hook.swarm_strategy, Some(SwarmStrategy::Parallel));
+        assert_eq!(hook.max_agents, Some(4)); // Default
+        assert!(hook.command.is_none());
+        assert!(hook.prompt.is_none());
+        assert!(hook.enabled);
+        assert_eq!(hook.timeout_secs, 1800); // 30 minutes default
+    }
+
+    #[test]
+    fn test_hook_definition_swarm_with_builder() {
+        let tasks = vec![
+            SwarmTask::new("task-1", "Task 1", "First task", 5),
+            SwarmTask::new("task-2", "Task 2", "Second task", 5),
+        ];
+        let reviews = vec![
+            ReviewSpecialistType::Security,
+            ReviewSpecialistType::Performance,
+        ];
+
+        let hook = HookDefinition::swarm(HookEvent::PrePhase, SwarmStrategy::WavePipeline)
+            .with_match("complex-*")
+            .with_max_agents(8)
+            .with_swarm_tasks(tasks)
+            .with_reviews(reviews)
+            .with_description("Swarm for complex phases");
+
+        assert_eq!(hook.r#match, Some("complex-*".to_string()));
+        assert_eq!(hook.max_agents, Some(8));
+        assert_eq!(hook.swarm_tasks.as_ref().unwrap().len(), 2);
+        assert_eq!(hook.reviews.as_ref().unwrap().len(), 2);
+        assert_eq!(
+            hook.description,
+            Some("Swarm for complex phases".to_string())
+        );
+    }
+
+    #[test]
+    fn test_hooks_config_parse_swarm_hook() {
+        let toml = r#"
+[[hooks]]
+event = "pre_phase"
+type = "swarm"
+swarm_strategy = "parallel"
+max_agents = 6
+description = "Run swarm for this phase"
+
+[[hooks]]
+event = "pre_phase"
+type = "swarm"
+swarm_strategy = "adaptive"
+match = "database-*"
+"#;
+
+        let config = HooksConfig::parse(toml).unwrap();
+        assert_eq!(config.hooks.len(), 2);
+
+        // First hook
+        assert_eq!(config.hooks[0].event, HookEvent::PrePhase);
+        assert_eq!(config.hooks[0].hook_type, HookType::Swarm);
+        assert_eq!(
+            config.hooks[0].swarm_strategy,
+            Some(SwarmStrategy::Parallel)
+        );
+        assert_eq!(config.hooks[0].max_agents, Some(6));
+
+        // Second hook
+        assert_eq!(
+            config.hooks[1].swarm_strategy,
+            Some(SwarmStrategy::Adaptive)
+        );
+        assert_eq!(config.hooks[1].r#match, Some("database-*".to_string()));
+    }
+
+    #[test]
+    fn test_hooks_config_parse_swarm_with_tasks() {
+        let toml = r#"
+[[hooks]]
+event = "pre_phase"
+type = "swarm"
+swarm_strategy = "wave_pipeline"
+
+[[hooks.swarm_tasks]]
+id = "task-1"
+name = "Setup Database"
+description = "Initialize the database schema"
+budget = 5
+files = ["src/db/schema.rs"]
+
+[[hooks.swarm_tasks]]
+id = "task-2"
+name = "Seed Data"
+description = "Add initial data"
+budget = 3
+depends_on = ["task-1"]
+"#;
+
+        let config = HooksConfig::parse(toml).unwrap();
+        assert_eq!(config.hooks.len(), 1);
+
+        let hook = &config.hooks[0];
+        assert!(hook.swarm_tasks.is_some());
+
+        let tasks = hook.swarm_tasks.as_ref().unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].id, "task-1");
+        assert_eq!(tasks[0].name, "Setup Database");
+        assert_eq!(tasks[0].budget, 5);
+        assert_eq!(tasks[1].depends_on, vec!["task-1"]);
+    }
+
+    #[test]
+    fn test_hooks_config_parse_swarm_with_reviews() {
+        let toml = r#"
+[[hooks]]
+event = "post_phase"
+type = "swarm"
+swarm_strategy = "sequential"
+reviews = ["security", "performance", "architecture"]
+"#;
+
+        let config = HooksConfig::parse(toml).unwrap();
+        let hook = &config.hooks[0];
+
+        assert!(hook.reviews.is_some());
+        let reviews = hook.reviews.as_ref().unwrap();
+        assert_eq!(reviews.len(), 3);
+        assert_eq!(reviews[0], ReviewSpecialistType::Security);
+        assert_eq!(reviews[1], ReviewSpecialistType::Performance);
+        assert_eq!(reviews[2], ReviewSpecialistType::Architecture);
+    }
+
+    #[test]
+    fn test_hooks_config_validate_swarm_hook() {
+        let toml = r#"
+[[hooks]]
+event = "pre_phase"
+type = "swarm"
+# Missing swarm_strategy - should warn
+"#;
+
+        let config = HooksConfig::parse(toml).unwrap();
+        let warnings = config.validate();
+
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("no strategy specified"));
+    }
+
+    #[test]
+    fn test_hooks_config_validate_swarm_zero_agents() {
+        let toml = r#"
+[[hooks]]
+event = "pre_phase"
+type = "swarm"
+swarm_strategy = "parallel"
+max_agents = 0
+"#;
+
+        let config = HooksConfig::parse(toml).unwrap();
+        let warnings = config.validate();
+
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("max_agents of 0"));
+    }
+
+    #[test]
+    fn test_swarm_hook_matches_phase() {
+        let hook = HookDefinition::swarm(HookEvent::PrePhase, SwarmStrategy::Parallel)
+            .with_match("oauth-*");
+
+        assert!(hook.matches_phase("oauth-integration"));
+        assert!(hook.matches_phase("oauth-providers"));
         assert!(!hook.matches_phase("database-setup"));
     }
 }

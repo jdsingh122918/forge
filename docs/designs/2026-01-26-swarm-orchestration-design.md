@@ -1,7 +1,7 @@
 # Forge Swarm Orchestration Design
 
 **Date:** 2026-01-26
-**Status:** Implementation Complete
+**Status:** Draft
 **Author:** Claude + User
 **Approach:** Hybrid (Native DAG + Swarm Hooks)
 

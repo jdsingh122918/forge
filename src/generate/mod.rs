@@ -185,6 +185,7 @@ pub fn call_claude_for_phases(project_dir: &Path, spec_content: &str) -> Result<
 
     let mut cmd = Command::new(&claude_cmd);
     cmd.arg("--print");
+    cmd.arg("--no-session-persistence");
     cmd.arg("-p");
     cmd.arg(&prompt);
     cmd.current_dir(project_dir);
@@ -279,10 +280,16 @@ pub fn parse_review_action(input: &str) -> Result<ReviewAction> {
 ///
 /// # Arguments
 /// * `project_dir` - The project root directory
+/// * `spec_file` - Optional path to a spec file. If not provided, defaults to `.forge/spec.md`
+/// * `auto_approve` - If true, automatically approve generated phases without prompting
 ///
 /// # Returns
 /// `Ok(())` on success, or an error if something fails.
-pub fn run_generate(project_dir: &Path) -> Result<()> {
+pub fn run_generate(
+    project_dir: &Path,
+    spec_file: Option<&Path>,
+    auto_approve: bool,
+) -> Result<()> {
     use crate::patterns::{
         display_budget_suggestions, display_pattern_matches, list_patterns, match_patterns,
         suggest_budgets,
@@ -294,9 +301,19 @@ pub fn run_generate(project_dir: &Path) -> Result<()> {
         bail!("Project not initialized. Run 'forge init' first to create the .forge/ directory.");
     }
 
-    // Read spec
-    println!("Reading spec from .forge/spec.md...");
-    let spec_content = read_spec(project_dir)?;
+    // Read spec - from provided file or default location
+    let spec_content = if let Some(spec_path) = spec_file {
+        println!("Reading spec from {}...", spec_path.display());
+        std::fs::read_to_string(spec_path)
+            .with_context(|| format!("Failed to read spec file: {}", spec_path.display()))?
+    } else {
+        println!("Reading spec from .forge/spec.md...");
+        read_spec(project_dir)?
+    };
+
+    if spec_content.trim().is_empty() {
+        bail!("Spec file is empty. Please provide a valid spec file.");
+    }
 
     // Check for similar patterns
     let all_patterns = list_patterns().unwrap_or_default();
@@ -331,6 +348,19 @@ pub fn run_generate(project_dir: &Path) -> Result<()> {
                 let suggestions = suggest_budgets(&similar_patterns, &parsed.phases);
                 display_budget_suggestions(&suggestions);
             }
+        }
+
+        // Auto-approve if flag is set
+        if auto_approve {
+            let forge_dir = get_forge_dir(project_dir);
+            let phases_file_path = forge_dir.join("phases.json");
+            let phases_file = create_phases_file(parsed.phases, &spec_content);
+            phases_file.save(&phases_file_path)?;
+            println!(
+                "\nPhases automatically approved and saved to {}",
+                phases_file_path.display()
+            );
+            return Ok(());
         }
 
         // Show options
@@ -753,7 +783,7 @@ I hope this helps!"#;
         let dir = tempdir().unwrap();
         // Don't initialize the project
 
-        let result = run_generate(dir.path());
+        let result = run_generate(dir.path(), None, true);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("not initialized"));

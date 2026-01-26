@@ -3,9 +3,14 @@
 //! This module handles the actual execution of hooks:
 //! - Command hooks: spawn subprocess, pass JSON context via stdin, parse result from stdout
 //! - Prompt hooks: use a small LLM to evaluate a condition and return a decision
+//! - Swarm hooks: invoke SwarmExecutor for parallel task execution via Claude Code swarms
 
 use super::config::HookDefinition;
 use super::types::{HookAction, HookContext, HookResult, HookType};
+use crate::swarm::context::{
+    PhaseInfo, ReviewConfig, ReviewSpecialistConfig, SwarmContext, SwarmStrategy,
+};
+use crate::swarm::executor::{SwarmConfig, SwarmExecutor};
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Stdio;
@@ -65,6 +70,11 @@ impl HookExecutor {
     /// - Parses Claude's response as JSON for action/decision
     /// - Falls back to natural language parsing if JSON fails
     ///
+    /// For swarm hooks:
+    /// - Invokes the SwarmExecutor with phase context
+    /// - Coordinates multiple Claude Code agents for parallel execution
+    /// - Returns Continue on success, Block on failure
+    ///
     /// Returns a HookResult indicating what action to take.
     pub async fn execute(
         &self,
@@ -74,6 +84,7 @@ impl HookExecutor {
         match hook.hook_type {
             HookType::Command => self.execute_command(hook, context).await,
             HookType::Prompt => self.execute_prompt(hook, context).await,
+            HookType::Swarm => self.execute_swarm(hook, context).await,
         }
     }
 
@@ -235,6 +246,7 @@ Respond ONLY with the JSON object, no other text."#,
         // Build and spawn Claude command
         let mut child = Command::new(&self.claude_cmd)
             .arg("--print")
+            .arg("--no-session-persistence")
             .arg("--dangerously-skip-permissions")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -296,6 +308,156 @@ Respond ONLY with the JSON object, no other text."#,
 
         // Parse Claude's response
         self.parse_prompt_response(&stdout)
+    }
+
+    /// Execute a swarm hook using the SwarmExecutor.
+    ///
+    /// Swarm hooks invoke the SwarmExecutor to coordinate multiple Claude Code agents
+    /// for complex parallel task execution. The swarm can:
+    /// - Decompose complex work into parallel tasks
+    /// - Run review specialists for quality gating
+    /// - Adaptively choose execution strategies
+    ///
+    /// # Arguments
+    ///
+    /// * `hook` - The swarm hook definition containing strategy, max_agents, tasks, and reviews
+    /// * `context` - The hook context with phase information
+    ///
+    /// # Returns
+    ///
+    /// * `Continue` if the swarm execution succeeded
+    /// * `Block` if the swarm execution failed
+    async fn execute_swarm(
+        &self,
+        hook: &HookDefinition,
+        context: &HookContext,
+    ) -> Result<HookResult> {
+        // Extract phase information from context
+        let phase_ctx = context.phase.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Swarm hook requires phase context, but none was provided")
+        })?;
+
+        // Get swarm strategy (default to Adaptive if not specified)
+        let strategy = hook.swarm_strategy.unwrap_or(SwarmStrategy::Adaptive);
+
+        // Build PhaseInfo from HookContext
+        let phase_info = PhaseInfo::new(
+            &phase_ctx.number,
+            &phase_ctx.name,
+            &phase_ctx.promise,
+            phase_ctx.budget,
+        );
+
+        if self.verbose {
+            eprintln!(
+                "[hook] Executing swarm hook for phase {} with strategy {:?}",
+                phase_ctx.number, strategy
+            );
+        }
+
+        // Configure the SwarmExecutor
+        let swarm_config = SwarmConfig::default()
+            .with_claude_cmd(&self.claude_cmd)
+            .with_working_dir(self.project_dir.clone())
+            .with_timeout(Duration::from_secs(hook.timeout_secs))
+            .with_verbose(self.verbose)
+            .with_skip_permissions(true);
+
+        let executor = SwarmExecutor::new(swarm_config);
+
+        // Build SwarmContext
+        // Note: callback_url will be set by the executor when it starts the callback server
+        let mut swarm_context = SwarmContext::new(
+            phase_info,
+            "", // callback_url placeholder - executor will set this
+            self.project_dir.clone(),
+        )
+        .with_strategy(strategy);
+
+        // Add pre-defined tasks if specified
+        if let Some(ref tasks) = hook.swarm_tasks {
+            swarm_context = swarm_context.with_tasks(tasks.clone());
+        }
+
+        // Add review configuration if specified
+        if let Some(ref reviews) = hook.reviews {
+            let mut review_config = ReviewConfig::new();
+            for specialist_type in reviews {
+                // Default to gating=true for review specialists
+                let config = ReviewSpecialistConfig::new(specialist_type.clone(), true);
+                review_config = review_config.add_specialist(config);
+            }
+            swarm_context = swarm_context.with_reviews(review_config);
+        }
+
+        // Add additional context from hook context
+        if let Some(ref output) = context.claude_output {
+            let context_str = format!("Previous Claude output:\n{}\n", output);
+            swarm_context = swarm_context.with_additional_context(&context_str);
+        }
+
+        // Execute the swarm
+        let result = executor.execute(swarm_context).await?;
+
+        if self.verbose {
+            eprintln!(
+                "[hook] Swarm completed: success={}, tasks_completed={}, tasks_failed={}",
+                result.success,
+                result.tasks_completed.len(),
+                result.tasks_failed.len()
+            );
+        }
+
+        // Convert SwarmResult to HookResult
+        if result.success {
+            // Build metadata with swarm execution details
+            let mut metadata = std::collections::HashMap::new();
+            metadata.insert(
+                "tasks_completed".to_string(),
+                serde_json::json!(result.tasks_completed),
+            );
+            metadata.insert(
+                "files_changed".to_string(),
+                serde_json::json!(result.files_changed),
+            );
+            metadata.insert("reviews".to_string(), serde_json::json!(result.reviews));
+            metadata.insert(
+                "duration_secs".to_string(),
+                serde_json::json!(result.duration.as_secs()),
+            );
+
+            Ok(HookResult {
+                action: HookAction::Continue,
+                message: Some(format!(
+                    "Swarm completed {} tasks",
+                    result.tasks_completed.len()
+                )),
+                inject: None,
+                metadata,
+            })
+        } else {
+            let error_msg = result
+                .error
+                .unwrap_or_else(|| "Unknown swarm error".to_string());
+
+            // Include details about what failed
+            let mut metadata = std::collections::HashMap::new();
+            metadata.insert(
+                "tasks_completed".to_string(),
+                serde_json::json!(result.tasks_completed),
+            );
+            metadata.insert(
+                "tasks_failed".to_string(),
+                serde_json::json!(result.tasks_failed),
+            );
+
+            Ok(HookResult {
+                action: HookAction::Block,
+                message: Some(format!("Swarm execution failed: {}", error_msg)),
+                inject: None,
+                metadata,
+            })
+        }
     }
 
     /// Parse the response from a prompt hook (Claude's output).
@@ -883,6 +1045,10 @@ exit 0
             timeout_secs: 30,
             enabled: true,
             description: None,
+            swarm_strategy: None,
+            max_agents: None,
+            swarm_tasks: None,
+            reviews: None,
         }
     }
 
@@ -1278,5 +1444,194 @@ echo '```'
         let result = executor.execute(&hook, &context).await.unwrap();
         assert_eq!(result.action, HookAction::Block);
         assert!(result.message.unwrap().contains("Error!"));
+    }
+
+    // ========== Swarm Hook Tests ==========
+
+    use crate::swarm::context::{ReviewSpecialistType, SwarmStrategy, SwarmTask};
+
+    /// Create a swarm hook definition for testing.
+    fn create_swarm_hook(
+        event: super::super::types::HookEvent,
+        strategy: SwarmStrategy,
+    ) -> HookDefinition {
+        HookDefinition::swarm(event, strategy)
+    }
+
+    #[test]
+    fn test_swarm_hook_definition_creation() {
+        let hook = create_swarm_hook(
+            super::super::types::HookEvent::PrePhase,
+            SwarmStrategy::Parallel,
+        );
+
+        assert_eq!(hook.event, super::super::types::HookEvent::PrePhase);
+        assert_eq!(hook.hook_type, HookType::Swarm);
+        assert_eq!(hook.swarm_strategy, Some(SwarmStrategy::Parallel));
+        assert_eq!(hook.max_agents, Some(4)); // Default
+        assert!(hook.enabled);
+        assert_eq!(hook.timeout_secs, 1800); // 30 minutes default for swarm
+    }
+
+    #[test]
+    fn test_swarm_hook_with_tasks() {
+        let tasks = vec![
+            SwarmTask::new("task-1", "First Task", "Do the first thing", 5),
+            SwarmTask::new("task-2", "Second Task", "Do the second thing", 5),
+        ];
+
+        let hook = create_swarm_hook(
+            super::super::types::HookEvent::PrePhase,
+            SwarmStrategy::WavePipeline,
+        )
+        .with_swarm_tasks(tasks.clone());
+
+        assert_eq!(hook.swarm_tasks.as_ref().unwrap().len(), 2);
+        assert_eq!(hook.swarm_tasks.as_ref().unwrap()[0].id, "task-1");
+    }
+
+    #[test]
+    fn test_swarm_hook_with_reviews() {
+        let reviews = vec![
+            ReviewSpecialistType::Security,
+            ReviewSpecialistType::Performance,
+        ];
+
+        let hook = create_swarm_hook(
+            super::super::types::HookEvent::PostPhase,
+            SwarmStrategy::Adaptive,
+        )
+        .with_reviews(reviews);
+
+        assert!(hook.reviews.is_some());
+        assert_eq!(hook.reviews.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_swarm_hook_with_max_agents() {
+        let hook = create_swarm_hook(
+            super::super::types::HookEvent::PrePhase,
+            SwarmStrategy::Parallel,
+        )
+        .with_max_agents(8);
+
+        assert_eq!(hook.max_agents, Some(8));
+    }
+
+    #[test]
+    fn test_swarm_hook_validation_valid() {
+        let hook = create_swarm_hook(
+            super::super::types::HookEvent::PrePhase,
+            SwarmStrategy::Adaptive,
+        );
+
+        let warnings = hook.validate();
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn test_swarm_hook_validation_no_strategy() {
+        // Create a swarm hook but remove the strategy
+        let hook = HookDefinition {
+            event: super::super::types::HookEvent::PrePhase,
+            r#match: None,
+            hook_type: HookType::Swarm,
+            command: None,
+            prompt: None,
+            working_dir: None,
+            timeout_secs: 1800,
+            enabled: true,
+            description: None,
+            swarm_strategy: None, // Missing strategy
+            max_agents: Some(4),
+            swarm_tasks: None,
+            reviews: None,
+        };
+
+        let warnings = hook.validate();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("no strategy specified"));
+    }
+
+    #[test]
+    fn test_swarm_hook_validation_zero_agents() {
+        let hook = create_swarm_hook(
+            super::super::types::HookEvent::PrePhase,
+            SwarmStrategy::Parallel,
+        )
+        .with_max_agents(0);
+
+        let warnings = hook.validate();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("max_agents of 0"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_swarm_hook_requires_phase_context() {
+        let dir = tempdir().unwrap();
+        let executor = HookExecutor::new(dir.path(), false);
+
+        let hook = create_swarm_hook(
+            super::super::types::HookEvent::PrePhase,
+            SwarmStrategy::Adaptive,
+        );
+
+        // Create context without phase information
+        let context = HookContext {
+            event: super::super::types::HookEvent::PrePhase,
+            phase: None, // No phase context!
+            iteration: None,
+            file_changes: None,
+            promise_found: None,
+            claude_output: None,
+            signals: None,
+            extra: std::collections::HashMap::new(),
+        };
+
+        let result = executor.execute(&hook, &context).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("requires phase context")
+        );
+    }
+
+    #[test]
+    fn test_swarm_strategy_default() {
+        let hook = HookDefinition::swarm(
+            super::super::types::HookEvent::PrePhase,
+            SwarmStrategy::default(),
+        );
+
+        assert_eq!(hook.swarm_strategy, Some(SwarmStrategy::Adaptive));
+    }
+
+    #[test]
+    fn test_swarm_hook_builder_chain() {
+        let tasks = vec![SwarmTask::new("t1", "Task 1", "Description 1", 3)];
+        let reviews = vec![ReviewSpecialistType::Security];
+
+        let hook = HookDefinition::swarm(
+            super::super::types::HookEvent::PrePhase,
+            SwarmStrategy::Sequential,
+        )
+        .with_match("database-*")
+        .with_timeout(3600)
+        .with_max_agents(2)
+        .with_swarm_tasks(tasks)
+        .with_reviews(reviews)
+        .with_description("Run swarm for database phases");
+
+        assert_eq!(hook.r#match, Some("database-*".to_string()));
+        assert_eq!(hook.timeout_secs, 3600);
+        assert_eq!(hook.max_agents, Some(2));
+        assert!(hook.swarm_tasks.is_some());
+        assert!(hook.reviews.is_some());
+        assert_eq!(
+            hook.description,
+            Some("Run swarm for database phases".to_string())
+        );
     }
 }

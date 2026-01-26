@@ -1,47 +1,49 @@
 # Forge
 
-AI-powered development orchestrator that breaks specs into phases and runs Claude iteratively until completion.
+AI-powered development orchestrator that breaks specs into phases and runs Claude iteratively until completion. Enables disciplined agentic development with parallel execution, review gates, and checkpoint recovery.
 
 ## Quick Reference
 
-**Build:** `cargo build --release`
-**Test:** `cargo test` (unit: `--lib`, integration: `--test integration_tests`)
-**Run:** `cargo run -- <command>`
+```bash
+cargo build --release              # Build
+cargo test                         # All tests (--lib for unit, --test integration_tests for integration)
+cargo run -- <command>             # Run CLI
+```
 
 ## Tech Stack
 
-Rust (Edition 2024), clap v4, tokio v1, git2 v0.19, anyhow + thiserror
+Rust (Edition 2024), clap v4, tokio v1, petgraph v0.6, git2 v0.19, axum v0.7, anyhow + thiserror
 
 ## Key Concepts
 
-- **Phases:** Sequential steps with iteration budgets; emit `<promise>DONE</promise>` to signal completion
-- **Permission Modes:** strict (approve each iteration), standard (approve phase start), autonomous (auto if progress), readonly
-- **Hooks:** 6 events (PrePhase, PostPhase, PreIteration, PostIteration, OnFailure, OnApproval) — command or prompt type
+- **Phases:** Steps with iteration budgets; emit `<promise>DONE</promise>` to signal completion
+- **Swarm:** Parallel execution via native DAG scheduler (`forge swarm`) with optional review specialists
+- **Permission Modes:** strict | standard | autonomous | readonly
+- **Hooks:** 6 events (PrePhase, PostPhase, PreIteration, PostIteration, OnFailure, OnApproval)
 - **Signals:** `<progress>`, `<blocker>`, `<pivot>` tags parsed from Claude output
-- **Compaction:** Auto-summarizes context at 85% capacity
+- **Reviews:** security, performance, architecture, simplicity — with arbiter resolution
 
 ## Where to Look
 
 | Need | Location |
 |------|----------|
-| Full command reference | `README.md` |
-| Architecture & roadmap | `.forge/spec.md` |
-| Rust conventions | `.forge/skills/rust-conventions/SKILL.md` |
-| Testing strategy | `.forge/skills/testing-strategy/SKILL.md` |
-| CLI design patterns | `.forge/skills/cli-design/SKILL.md` |
-| Core orchestration loop | `src/orchestrator/runner.rs` |
-| Phase/subphase structs | `src/phase.rs` |
-| Configuration parsing | `src/forge_config.rs` |
-| State persistence | `src/orchestrator/state.rs` (pipe-delimited append-only)
+| Commands & swarm usage | `README.md` |
+| Architecture & design | `.forge/spec.md` |
+| Sequential execution | `src/orchestrator/runner.rs` |
+| DAG scheduler | `src/dag/scheduler.rs`, `src/dag/executor.rs` |
+| Swarm coordination | `src/swarm/executor.rs` |
+| Review system | `src/review/specialists.rs`, `src/review/arbiter.rs` |
+| Phase definitions | `src/phase.rs` |
+| Configuration | `src/forge_config.rs` |
+| State persistence | `src/orchestrator/state.rs` |
 
 ## Environment
 
 - `CLAUDE_CMD` — Claude CLI command (default: `claude`)
-- `SKIP_PERMISSIONS` — Skip permission prompts (default: true)
+- `SKIP_PERMISSIONS` — Skip permission prompts (default: `true`)
 
-## Contributing
+## Guidelines
 
-1. Read the relevant skill before making changes (rust-conventions, testing-strategy, cli-design)
-2. All public functions return `Result<T>` with `.context()` for error enrichment
-3. Use tokio for all async operations — never block in async code
-4. Add tests for new functionality; run `cargo test` before committing
+1. All public functions return `Result<T>` with `.context()` for error enrichment
+2. Use tokio for all async — never block in async code
+3. Run `cargo test` before committing

@@ -13,6 +13,10 @@ indicatif = "0.17"
 
 # Async
 tokio = { version = "1", features = ["full", "process"] }
+futures = "0.3"
+
+# HTTP Server (for swarm callback server)
+axum = "0.7"
 
 # Git
 git2 = "0.19"
@@ -37,3 +41,5 @@ regex = "1"
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

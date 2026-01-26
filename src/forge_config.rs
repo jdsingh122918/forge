@@ -22,6 +22,30 @@
 //! [phases.overrides."database-*"]
 //! permission_mode = "strict"
 //! budget = 12
+//!
+//! [reviews]
+//! enabled = true
+//! parallel = true
+//! mode = "arbiter"
+//! confidence_threshold = 0.7
+//!
+//! [[reviews.specialists]]
+//! type = "security"
+//! gate = true
+//!
+//! [[reviews.specialists]]
+//! type = "performance"
+//! gate = false
+//!
+//! [decomposition]
+//! enabled = true
+//! budget_threshold = 50
+//! progress_threshold = 30
+//! allow_explicit_request = true
+//! detect_complexity_signals = true
+//! min_tasks = 2
+//! max_tasks = 10
+//! budget_buffer = 10
 //! ```
 
 use anyhow::{Context, Result};
@@ -182,6 +206,179 @@ pub struct SkillsSection {
     pub global: Vec<String>,
 }
 
+/// Review configuration section.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewsSection {
+    /// Whether review integration is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Default review specialists for all phases.
+    #[serde(default)]
+    pub specialists: Vec<ReviewSpecialistConfig>,
+    /// Whether to run reviews in parallel.
+    #[serde(default = "default_review_parallel")]
+    pub parallel: bool,
+    /// Resolution mode for failed reviews.
+    #[serde(default)]
+    pub mode: ReviewMode,
+    /// Confidence threshold for arbiter mode.
+    #[serde(default = "default_confidence_threshold")]
+    pub confidence_threshold: f64,
+}
+
+fn default_review_parallel() -> bool {
+    true
+}
+
+fn default_confidence_threshold() -> f64 {
+    crate::review::arbiter::DEFAULT_CONFIDENCE_THRESHOLD
+}
+
+impl Default for ReviewsSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            specialists: Vec::new(),
+            parallel: true,
+            mode: ReviewMode::default(),
+            confidence_threshold: default_confidence_threshold(),
+        }
+    }
+}
+
+/// Resolution mode for review failures.
+/// This mirrors ResolutionMode from the review module for configuration purposes.
+#[derive(Debug, Clone, Default, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReviewMode {
+    /// Always pause for user input.
+    #[default]
+    Manual,
+    /// Attempt auto-fix, retry up to N times.
+    Auto,
+    /// LLM arbiter decides based on severity and context.
+    Arbiter,
+}
+
+impl ReviewMode {
+    /// Convert to ResolutionMode for use with the arbiter.
+    pub fn to_resolution_mode(self) -> crate::review::ResolutionMode {
+        match self {
+            ReviewMode::Manual => crate::review::ResolutionMode::manual(),
+            ReviewMode::Auto => crate::review::ResolutionMode::auto(2), // default max attempts
+            ReviewMode::Arbiter => crate::review::ResolutionMode::arbiter(),
+        }
+    }
+}
+
+/// Configuration for a single review specialist in forge.toml.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewSpecialistConfig {
+    /// Type of specialist (security, performance, architecture, simplicity, or custom).
+    #[serde(rename = "type")]
+    pub specialist_type: String,
+    /// Whether this review gates phase completion.
+    #[serde(default)]
+    pub gate: bool,
+    /// Custom focus areas (optional).
+    #[serde(default)]
+    pub focus_areas: Vec<String>,
+}
+
+/// Decomposition configuration section.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecompositionSection {
+    /// Whether dynamic decomposition is enabled.
+    #[serde(default = "default_decomposition_enabled")]
+    pub enabled: bool,
+    /// Budget percentage threshold that triggers decomposition.
+    #[serde(default = "default_decomposition_budget_threshold")]
+    pub budget_threshold: u32,
+    /// Progress percentage below which decomposition is considered.
+    #[serde(default = "default_decomposition_progress_threshold")]
+    pub progress_threshold: u32,
+    /// Whether to respect explicit decomposition requests from Claude.
+    #[serde(default = "default_allow_explicit_request")]
+    pub allow_explicit_request: bool,
+    /// Whether to detect complexity signals in blocker tags.
+    #[serde(default = "default_detect_complexity_signals")]
+    pub detect_complexity_signals: bool,
+    /// Minimum tasks required for valid decomposition.
+    #[serde(default = "default_min_tasks")]
+    pub min_tasks: usize,
+    /// Maximum tasks allowed in decomposition.
+    #[serde(default = "default_max_tasks")]
+    pub max_tasks: usize,
+    /// Budget buffer percentage to reserve for unexpected issues.
+    #[serde(default = "default_budget_buffer")]
+    pub budget_buffer: u32,
+}
+
+fn default_decomposition_enabled() -> bool {
+    true
+}
+
+fn default_decomposition_budget_threshold() -> u32 {
+    50
+}
+
+fn default_decomposition_progress_threshold() -> u32 {
+    30
+}
+
+fn default_allow_explicit_request() -> bool {
+    true
+}
+
+fn default_detect_complexity_signals() -> bool {
+    true
+}
+
+fn default_min_tasks() -> usize {
+    2
+}
+
+fn default_max_tasks() -> usize {
+    10
+}
+
+fn default_budget_buffer() -> u32 {
+    10
+}
+
+impl Default for DecompositionSection {
+    fn default() -> Self {
+        Self {
+            enabled: default_decomposition_enabled(),
+            budget_threshold: default_decomposition_budget_threshold(),
+            progress_threshold: default_decomposition_progress_threshold(),
+            allow_explicit_request: default_allow_explicit_request(),
+            detect_complexity_signals: default_detect_complexity_signals(),
+            min_tasks: default_min_tasks(),
+            max_tasks: default_max_tasks(),
+            budget_buffer: default_budget_buffer(),
+        }
+    }
+}
+
+impl DecompositionSection {
+    /// Convert to DecompositionConfig for use with the decomposition system.
+    pub fn to_decomposition_config(&self) -> crate::decomposition::DecompositionConfig {
+        crate::decomposition::DecompositionConfig {
+            enabled: self.enabled,
+            budget_threshold_percent: self.budget_threshold,
+            progress_threshold_percent: self.progress_threshold,
+            allow_explicit_request: self.allow_explicit_request,
+            detect_complexity_signals: self.detect_complexity_signals,
+            complexity_keywords: crate::decomposition::default_complexity_keywords(),
+            min_tasks: self.min_tasks,
+            max_tasks: self.max_tasks,
+            require_integration_task: false,
+            budget_buffer_percent: self.budget_buffer,
+        }
+    }
+}
+
 /// The complete forge.toml configuration structure.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ForgeToml {
@@ -200,6 +397,12 @@ pub struct ForgeToml {
     /// Skills configuration
     #[serde(default)]
     pub skills: SkillsSection,
+    /// Review configuration
+    #[serde(default)]
+    pub reviews: ReviewsSection,
+    /// Decomposition configuration
+    #[serde(default)]
+    pub decomposition: DecompositionSection,
 }
 
 impl ForgeToml {
@@ -881,5 +1084,194 @@ auto_approve_threshold = 10
         assert!(flags.contains(&"--output-format".to_string()));
         assert!(flags.contains(&"stream-json".to_string()));
         assert!(flags.contains(&"--verbose".to_string()));
+    }
+
+    // =========================================
+    // Review configuration tests
+    // =========================================
+
+    #[test]
+    fn test_reviews_section_default() {
+        let reviews = ReviewsSection::default();
+        assert!(!reviews.enabled);
+        assert!(reviews.specialists.is_empty());
+        assert!(reviews.parallel);
+        assert_eq!(reviews.mode, ReviewMode::Manual);
+        assert!((reviews.confidence_threshold - 0.7).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_reviews_section_parse() {
+        let content = r#"
+[reviews]
+enabled = true
+parallel = true
+mode = "arbiter"
+confidence_threshold = 0.8
+
+[[reviews.specialists]]
+type = "security"
+gate = true
+
+[[reviews.specialists]]
+type = "performance"
+gate = false
+focus_areas = ["N+1 queries", "memory"]
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+
+        assert!(toml.reviews.enabled);
+        assert!(toml.reviews.parallel);
+        assert_eq!(toml.reviews.mode, ReviewMode::Arbiter);
+        assert!((toml.reviews.confidence_threshold - 0.8).abs() < f64::EPSILON);
+        assert_eq!(toml.reviews.specialists.len(), 2);
+
+        let security = &toml.reviews.specialists[0];
+        assert_eq!(security.specialist_type, "security");
+        assert!(security.gate);
+        assert!(security.focus_areas.is_empty());
+
+        let performance = &toml.reviews.specialists[1];
+        assert_eq!(performance.specialist_type, "performance");
+        assert!(!performance.gate);
+        assert_eq!(performance.focus_areas.len(), 2);
+    }
+
+    #[test]
+    fn test_review_mode_serialization() {
+        assert_eq!(
+            serde_json::to_string(&ReviewMode::Manual).unwrap(),
+            "\"manual\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ReviewMode::Auto).unwrap(),
+            "\"auto\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ReviewMode::Arbiter).unwrap(),
+            "\"arbiter\""
+        );
+    }
+
+    #[test]
+    fn test_review_mode_deserialization() {
+        assert_eq!(
+            serde_json::from_str::<ReviewMode>("\"manual\"").unwrap(),
+            ReviewMode::Manual
+        );
+        assert_eq!(
+            serde_json::from_str::<ReviewMode>("\"auto\"").unwrap(),
+            ReviewMode::Auto
+        );
+        assert_eq!(
+            serde_json::from_str::<ReviewMode>("\"arbiter\"").unwrap(),
+            ReviewMode::Arbiter
+        );
+    }
+
+    #[test]
+    fn test_reviews_section_disabled_by_default() {
+        let toml = ForgeToml::default();
+        assert!(!toml.reviews.enabled);
+    }
+
+    #[test]
+    fn test_reviews_section_empty_specialists() {
+        let content = r#"
+[reviews]
+enabled = true
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+        assert!(toml.reviews.enabled);
+        assert!(toml.reviews.specialists.is_empty());
+    }
+
+    // =========================================
+    // Decomposition configuration tests
+    // =========================================
+
+    #[test]
+    fn test_decomposition_section_default() {
+        let decomposition = DecompositionSection::default();
+        assert!(decomposition.enabled);
+        assert_eq!(decomposition.budget_threshold, 50);
+        assert_eq!(decomposition.progress_threshold, 30);
+        assert!(decomposition.allow_explicit_request);
+        assert!(decomposition.detect_complexity_signals);
+        assert_eq!(decomposition.min_tasks, 2);
+        assert_eq!(decomposition.max_tasks, 10);
+        assert_eq!(decomposition.budget_buffer, 10);
+    }
+
+    #[test]
+    fn test_decomposition_section_parse() {
+        let content = r#"
+[decomposition]
+enabled = false
+budget_threshold = 60
+progress_threshold = 25
+allow_explicit_request = false
+detect_complexity_signals = false
+min_tasks = 3
+max_tasks = 8
+budget_buffer = 15
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+
+        assert!(!toml.decomposition.enabled);
+        assert_eq!(toml.decomposition.budget_threshold, 60);
+        assert_eq!(toml.decomposition.progress_threshold, 25);
+        assert!(!toml.decomposition.allow_explicit_request);
+        assert!(!toml.decomposition.detect_complexity_signals);
+        assert_eq!(toml.decomposition.min_tasks, 3);
+        assert_eq!(toml.decomposition.max_tasks, 8);
+        assert_eq!(toml.decomposition.budget_buffer, 15);
+    }
+
+    #[test]
+    fn test_decomposition_section_partial_config() {
+        let content = r#"
+[decomposition]
+enabled = true
+budget_threshold = 70
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+
+        assert!(toml.decomposition.enabled);
+        assert_eq!(toml.decomposition.budget_threshold, 70);
+        // Other fields should have defaults
+        assert_eq!(toml.decomposition.progress_threshold, 30);
+        assert!(toml.decomposition.allow_explicit_request);
+    }
+
+    #[test]
+    fn test_decomposition_section_to_config() {
+        let section = DecompositionSection {
+            enabled: true,
+            budget_threshold: 60,
+            progress_threshold: 25,
+            allow_explicit_request: true,
+            detect_complexity_signals: true,
+            min_tasks: 2,
+            max_tasks: 10,
+            budget_buffer: 10,
+        };
+
+        let config = section.to_decomposition_config();
+
+        assert!(config.enabled);
+        assert_eq!(config.budget_threshold_percent, 60);
+        assert_eq!(config.progress_threshold_percent, 25);
+        assert!(config.allow_explicit_request);
+        assert!(config.detect_complexity_signals);
+        assert_eq!(config.min_tasks, 2);
+        assert_eq!(config.max_tasks, 10);
+        assert_eq!(config.budget_buffer_percent, 10);
+    }
+
+    #[test]
+    fn test_decomposition_enabled_by_default_in_forge_toml() {
+        let toml = ForgeToml::default();
+        assert!(toml.decomposition.enabled);
     }
 }

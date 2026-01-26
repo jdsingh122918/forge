@@ -100,6 +100,10 @@ pub enum HookType {
     /// Claude CLI is invoked with the hook's prompt and context, and the response
     /// is parsed for an action (continue, block, skip, approve, reject, modify).
     Prompt,
+    /// Swarm hook: invokes the SwarmExecutor to run a Claude Code swarm for complex
+    /// parallel task execution. The swarm can coordinate multiple agents, decompose
+    /// tasks, and run review specialists.
+    Swarm,
 }
 
 /// The action a hook can instruct the orchestrator to take.

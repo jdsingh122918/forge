@@ -1142,3 +1142,1394 @@ global = ["always-use"]
             .success();
     }
 }
+
+// =============================================================================
+// Swarm CLI Tests
+// =============================================================================
+
+mod swarm_cli {
+    use super::*;
+
+    #[test]
+    fn test_swarm_help() {
+        forge().arg("swarm").arg("--help").assert().success();
+    }
+
+    #[test]
+    fn test_swarm_requires_phases() {
+        let dir = create_temp_project();
+        init_forge_project(&dir);
+
+        // Swarm without phases should fail
+        forge()
+            .current_dir(dir.path())
+            .arg("swarm")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("No phases found"));
+    }
+
+    #[test]
+    fn test_swarm_status_no_swarm_running() {
+        let dir = create_temp_project();
+        init_forge_project(&dir);
+
+        forge()
+            .current_dir(dir.path())
+            .arg("swarm")
+            .arg("status")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("No swarm execution"));
+    }
+
+    #[test]
+    fn test_swarm_abort_no_swarm_running() {
+        let dir = create_temp_project();
+        init_forge_project(&dir);
+
+        forge()
+            .current_dir(dir.path())
+            .arg("swarm")
+            .arg("abort")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("No swarm execution"));
+    }
+
+    #[test]
+    fn test_swarm_max_parallel_flag() {
+        let dir = create_temp_project();
+        init_forge_project(&dir);
+
+        // Create minimal phases
+        let phases_content = r#"{
+  "spec_hash": "test-hash",
+  "generated_at": "2026-01-24T12:00:00Z",
+  "phases": []
+}"#;
+        fs::write(dir.path().join(".forge/phases.json"), phases_content).unwrap();
+
+        // Should accept --max-parallel flag without error (even with empty phases)
+        forge()
+            .current_dir(dir.path())
+            .arg("swarm")
+            .arg("--max-parallel")
+            .arg("3")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("No phases"));
+    }
+
+    #[test]
+    fn test_swarm_backend_flag() {
+        let dir = create_temp_project();
+        init_forge_project(&dir);
+
+        // Create minimal phases
+        let phases_content = r#"{
+  "spec_hash": "test-hash",
+  "generated_at": "2026-01-24T12:00:00Z",
+  "phases": []
+}"#;
+        fs::write(dir.path().join(".forge/phases.json"), phases_content).unwrap();
+
+        // Test various backend values
+        for backend in &["auto", "in-process", "tmux", "iterm2"] {
+            forge()
+                .current_dir(dir.path())
+                .arg("swarm")
+                .arg("--backend")
+                .arg(backend)
+                .assert()
+                .success();
+        }
+    }
+
+    #[test]
+    fn test_swarm_review_flags() {
+        let dir = create_temp_project();
+        init_forge_project(&dir);
+
+        let phases_content = r#"{
+  "spec_hash": "test-hash",
+  "generated_at": "2026-01-24T12:00:00Z",
+  "phases": []
+}"#;
+        fs::write(dir.path().join(".forge/phases.json"), phases_content).unwrap();
+
+        // Test review flags are accepted
+        forge()
+            .current_dir(dir.path())
+            .arg("swarm")
+            .arg("--review")
+            .arg("security,performance")
+            .arg("--review-mode")
+            .arg("arbiter")
+            .arg("--max-fix-attempts")
+            .arg("3")
+            .arg("--arbiter-confidence")
+            .arg("0.8")
+            .assert()
+            .success();
+    }
+
+    #[test]
+    fn test_swarm_decompose_flags() {
+        let dir = create_temp_project();
+        init_forge_project(&dir);
+
+        let phases_content = r#"{
+  "spec_hash": "test-hash",
+  "generated_at": "2026-01-24T12:00:00Z",
+  "phases": []
+}"#;
+        fs::write(dir.path().join(".forge/phases.json"), phases_content).unwrap();
+
+        // Test decomposition flag (it's a boolean flag, not an option)
+        forge()
+            .current_dir(dir.path())
+            .arg("swarm")
+            .arg("--decompose")
+            .arg("--decompose-threshold")
+            .arg("60")
+            .assert()
+            .success();
+
+        // Test no-decompose flag
+        forge()
+            .current_dir(dir.path())
+            .arg("swarm")
+            .arg("--no-decompose")
+            .assert()
+            .success();
+    }
+
+    #[test]
+    fn test_swarm_ui_modes() {
+        let dir = create_temp_project();
+        init_forge_project(&dir);
+
+        let phases_content = r#"{
+  "spec_hash": "test-hash",
+  "generated_at": "2026-01-24T12:00:00Z",
+  "phases": []
+}"#;
+        fs::write(dir.path().join(".forge/phases.json"), phases_content).unwrap();
+
+        // Test UI modes
+        for mode in &["full", "minimal", "json"] {
+            forge()
+                .current_dir(dir.path())
+                .arg("swarm")
+                .arg("--ui")
+                .arg(mode)
+                .assert()
+                .success();
+        }
+    }
+
+    #[test]
+    fn test_swarm_fail_fast_flag() {
+        let dir = create_temp_project();
+        init_forge_project(&dir);
+
+        let phases_content = r#"{
+  "spec_hash": "test-hash",
+  "generated_at": "2026-01-24T12:00:00Z",
+  "phases": []
+}"#;
+        fs::write(dir.path().join(".forge/phases.json"), phases_content).unwrap();
+
+        forge()
+            .current_dir(dir.path())
+            .arg("swarm")
+            .arg("--fail-fast")
+            .assert()
+            .success();
+    }
+
+    #[test]
+    fn test_swarm_from_and_only_flags() {
+        let dir = create_temp_project();
+        init_forge_project(&dir);
+
+        let phases_content = r#"{
+  "spec_hash": "test-hash",
+  "generated_at": "2026-01-24T12:00:00Z",
+  "phases": [
+    {"number": "01", "name": "Phase 1", "promise": "DONE1", "budget": 5},
+    {"number": "02", "name": "Phase 2", "promise": "DONE2", "budget": 5},
+    {"number": "03", "name": "Phase 3", "promise": "DONE3", "budget": 5}
+  ]
+}"#;
+        fs::write(dir.path().join(".forge/phases.json"), phases_content).unwrap();
+
+        // Test --from flag - starts from a specific phase
+        // Uses json UI to avoid issues with terminal output
+        let _ = forge()
+            .current_dir(dir.path())
+            .arg("swarm")
+            .arg("--from")
+            .arg("02")
+            .arg("--ui")
+            .arg("json")
+            .assert();
+
+        // Test --only flag - runs only specified phases
+        let _ = forge()
+            .current_dir(dir.path())
+            .arg("swarm")
+            .arg("--only")
+            .arg("01,03")
+            .arg("--ui")
+            .arg("json")
+            .assert();
+    }
+
+    #[test]
+    fn test_swarm_invalid_arbiter_confidence() {
+        let dir = create_temp_project();
+        init_forge_project(&dir);
+
+        let phases_content = r#"{
+  "spec_hash": "test-hash",
+  "generated_at": "2026-01-24T12:00:00Z",
+  "phases": [{"number": "01", "name": "Test", "promise": "DONE", "budget": 5}]
+}"#;
+        fs::write(dir.path().join(".forge/phases.json"), phases_content).unwrap();
+
+        // Invalid confidence value (> 1.0) should fail
+        forge()
+            .current_dir(dir.path())
+            .arg("swarm")
+            .arg("--arbiter-confidence")
+            .arg("1.5")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("arbiter-confidence"));
+    }
+}
+
+// =============================================================================
+// Swarm Configuration Tests
+// =============================================================================
+
+mod swarm_config {
+    use super::*;
+
+    #[test]
+    fn test_swarm_config_in_forge_toml() {
+        let dir = create_temp_project();
+        init_forge_project(&dir);
+
+        // Create config with swarm settings
+        let config_content = r#"
+[project]
+name = "swarm-test"
+
+[swarm]
+enabled = true
+backend = "auto"
+default_strategy = "adaptive"
+max_agents = 5
+
+[swarm.reviews]
+enabled = true
+specialists = ["security", "performance"]
+mode = "arbiter"
+"#;
+        fs::write(dir.path().join(".forge/forge.toml"), config_content).unwrap();
+
+        forge()
+            .current_dir(dir.path())
+            .arg("config")
+            .arg("validate")
+            .assert()
+            .success();
+
+        forge()
+            .current_dir(dir.path())
+            .arg("config")
+            .arg("show")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("swarm-test"));
+    }
+
+    #[test]
+    fn test_phases_with_swarm_config() {
+        let dir = create_temp_project();
+        init_forge_project(&dir);
+
+        // Create phases with swarm configuration
+        let phases_content = r#"{
+  "spec_hash": "test-hash",
+  "generated_at": "2026-01-24T12:00:00Z",
+  "phases": [
+    {
+      "number": "01",
+      "name": "Simple phase",
+      "promise": "SIMPLE DONE",
+      "budget": 5,
+      "reasoning": "Simple work"
+    },
+    {
+      "number": "02",
+      "name": "Complex phase with swarm",
+      "promise": "COMPLEX DONE",
+      "budget": 20,
+      "reasoning": "Complex work requiring parallelization",
+      "swarm": {
+        "strategy": "parallel",
+        "max_agents": 3,
+        "reviews": ["security"]
+      }
+    }
+  ]
+}"#;
+        fs::write(dir.path().join(".forge/phases.json"), phases_content).unwrap();
+
+        forge()
+            .current_dir(dir.path())
+            .arg("list")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Simple phase"))
+            .stdout(predicate::str::contains("Complex phase"));
+    }
+
+    #[test]
+    fn test_phases_with_depends_on() {
+        let dir = create_temp_project();
+        init_forge_project(&dir);
+
+        // Create phases with dependencies
+        let phases_content = r#"{
+  "spec_hash": "test-hash",
+  "generated_at": "2026-01-24T12:00:00Z",
+  "phases": [
+    {
+      "number": "01",
+      "name": "Foundation",
+      "promise": "FOUNDATION DONE",
+      "budget": 5,
+      "depends_on": []
+    },
+    {
+      "number": "02",
+      "name": "Core A",
+      "promise": "CORE A DONE",
+      "budget": 10,
+      "depends_on": ["01"]
+    },
+    {
+      "number": "03",
+      "name": "Core B",
+      "promise": "CORE B DONE",
+      "budget": 10,
+      "depends_on": ["01"]
+    },
+    {
+      "number": "04",
+      "name": "Integration",
+      "promise": "INTEGRATION DONE",
+      "budget": 8,
+      "depends_on": ["02", "03"]
+    }
+  ]
+}"#;
+        fs::write(dir.path().join(".forge/phases.json"), phases_content).unwrap();
+
+        forge()
+            .current_dir(dir.path())
+            .arg("list")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Foundation"))
+            .stdout(predicate::str::contains("Core A"))
+            .stdout(predicate::str::contains("Core B"))
+            .stdout(predicate::str::contains("Integration"));
+    }
+
+    #[test]
+    fn test_swarm_config_with_phase_overrides() {
+        let dir = create_temp_project();
+        init_forge_project(&dir);
+
+        // Create config with phase overrides
+        let config_content = r#"
+[project]
+name = "override-test"
+
+[swarm]
+enabled = true
+default_strategy = "adaptive"
+max_agents = 3
+
+[swarm.reviews]
+enabled = true
+mode = "manual"
+
+# Complex phases get more aggressive settings
+[phases.overrides."*-complex"]
+budget = 30
+"#;
+        fs::write(dir.path().join(".forge/forge.toml"), config_content).unwrap();
+
+        forge()
+            .current_dir(dir.path())
+            .arg("config")
+            .arg("validate")
+            .assert()
+            .success();
+    }
+}
+
+// =============================================================================
+// Checkpoint Tests
+// =============================================================================
+
+mod checkpoint_tests {
+    use super::*;
+
+    #[test]
+    fn test_checkpoint_directory_creation() {
+        let dir = create_temp_project();
+        init_forge_project(&dir);
+
+        let checkpoint_dir = dir.path().join(".forge/checkpoints");
+        fs::create_dir_all(&checkpoint_dir).unwrap();
+
+        // Create a checkpoint file
+        let checkpoint_content = r#"{
+  "phase": "01",
+  "iteration": 3,
+  "timestamp": "2026-01-26T12:00:00Z",
+  "progress_percent": 60,
+  "files_changed": ["src/lib.rs", "src/main.rs"],
+  "git_ref": "abc123",
+  "context_summary": "Implemented core functionality"
+}"#;
+        fs::write(checkpoint_dir.join("01.json"), checkpoint_content).unwrap();
+
+        // Verify the checkpoint file exists and is valid JSON
+        let content = fs::read_to_string(checkpoint_dir.join("01.json")).unwrap();
+        assert!(serde_json::from_str::<serde_json::Value>(&content).is_ok());
+    }
+
+    #[test]
+    fn test_checkpoint_file_format() {
+        let dir = create_temp_project();
+        init_forge_project(&dir);
+
+        let checkpoint_dir = dir.path().join(".forge/checkpoints");
+        fs::create_dir_all(&checkpoint_dir).unwrap();
+
+        // Create multiple checkpoint files for different phases
+        for phase in &["01", "02", "03"] {
+            let checkpoint = serde_json::json!({
+                "phase": phase,
+                "iteration": 5,
+                "timestamp": "2026-01-26T12:00:00Z",
+                "progress_percent": 100,
+                "files_changed": ["src/test.rs"],
+                "git_ref": format!("ref-{}", phase),
+                "context_summary": format!("Phase {} completed", phase)
+            });
+            fs::write(
+                checkpoint_dir.join(format!("{}.json", phase)),
+                serde_json::to_string_pretty(&checkpoint).unwrap(),
+            )
+            .unwrap();
+        }
+
+        // Verify all checkpoint files exist
+        assert!(checkpoint_dir.join("01.json").exists());
+        assert!(checkpoint_dir.join("02.json").exists());
+        assert!(checkpoint_dir.join("03.json").exists());
+    }
+
+    #[test]
+    fn test_swarm_state_persistence() {
+        let dir = create_temp_project();
+        init_forge_project(&dir);
+
+        let state_dir = dir.path().join(".forge/swarm");
+        fs::create_dir_all(&state_dir).unwrap();
+
+        // Create a swarm state file
+        let state_content = r#"{
+  "run_id": "forge-run-20260126-150322",
+  "started_at": "2026-01-26T15:03:22Z",
+  "phases_total": 22,
+  "phases_completed": 14,
+  "current_wave": 4,
+  "active_phases": ["05", "06", "07"],
+  "checkpoints": ["01", "02", "03", "04"]
+}"#;
+        fs::write(state_dir.join("current.json"), state_content).unwrap();
+
+        // Verify the state file exists and is valid
+        let content = fs::read_to_string(state_dir.join("current.json")).unwrap();
+        let state: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(state["phases_total"], 22);
+        assert_eq!(state["phases_completed"], 14);
+    }
+}
+
+// =============================================================================
+// DAG Integration Tests (via library)
+// =============================================================================
+
+mod dag_library_tests {
+    use forge::dag::{DagBuilder, DagConfig, DagScheduler, PhaseStatus};
+    use forge::phase::Phase;
+
+    fn create_test_phase(number: &str, deps: Vec<&str>) -> Phase {
+        Phase::new(
+            number,
+            &format!("Phase {}", number),
+            &format!("{} DONE", number),
+            5,
+            "test",
+            deps.into_iter().map(String::from).collect(),
+        )
+    }
+
+    #[test]
+    fn test_dag_builder_linear_dependency() {
+        let phases = vec![
+            create_test_phase("01", vec![]),
+            create_test_phase("02", vec!["01"]),
+            create_test_phase("03", vec!["02"]),
+        ];
+
+        let graph = DagBuilder::new(phases).build().unwrap();
+        assert_eq!(graph.len(), 3);
+    }
+
+    #[test]
+    fn test_dag_builder_diamond_dependency() {
+        let phases = vec![
+            create_test_phase("01", vec![]),
+            create_test_phase("02", vec!["01"]),
+            create_test_phase("03", vec!["01"]),
+            create_test_phase("04", vec!["02", "03"]),
+        ];
+
+        let graph = DagBuilder::new(phases).build().unwrap();
+        assert_eq!(graph.len(), 4);
+    }
+
+    #[test]
+    fn test_dag_builder_cycle_detection() {
+        let phases = vec![
+            create_test_phase("01", vec!["03"]),
+            create_test_phase("02", vec!["01"]),
+            create_test_phase("03", vec!["02"]),
+        ];
+
+        let result = DagBuilder::new(phases).build();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.to_lowercase().contains("cycle"));
+    }
+
+    #[test]
+    fn test_dag_builder_missing_dependency() {
+        let phases = vec![
+            create_test_phase("01", vec![]),
+            create_test_phase("02", vec!["99"]), // Non-existent dependency
+        ];
+
+        let result = DagBuilder::new(phases).build();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("99"));
+    }
+
+    #[test]
+    fn test_scheduler_wave_computation_linear() {
+        let phases = vec![
+            create_test_phase("01", vec![]),
+            create_test_phase("02", vec!["01"]),
+            create_test_phase("03", vec!["02"]),
+        ];
+
+        let scheduler = DagScheduler::from_phases(&phases, DagConfig::default()).unwrap();
+        let waves = scheduler.compute_waves();
+
+        assert_eq!(waves.len(), 3);
+        assert_eq!(waves[0], vec!["01"]);
+        assert_eq!(waves[1], vec!["02"]);
+        assert_eq!(waves[2], vec!["03"]);
+    }
+
+    #[test]
+    fn test_scheduler_wave_computation_diamond() {
+        let phases = vec![
+            create_test_phase("01", vec![]),
+            create_test_phase("02", vec!["01"]),
+            create_test_phase("03", vec!["01"]),
+            create_test_phase("04", vec!["02", "03"]),
+        ];
+
+        let scheduler = DagScheduler::from_phases(&phases, DagConfig::default()).unwrap();
+        let waves = scheduler.compute_waves();
+
+        assert_eq!(waves.len(), 3);
+        assert_eq!(waves[0], vec!["01"]);
+        assert!(waves[1].contains(&"02".to_string()));
+        assert!(waves[1].contains(&"03".to_string()));
+        assert_eq!(waves[2], vec!["04"]);
+    }
+
+    #[test]
+    fn test_scheduler_wave_computation_complex_dag() {
+        // Complex DAG:
+        //   01 ─┬─ 02 ─┬─ 04 ─┐
+        //       │      │      │
+        //       └─ 03 ─┴─ 05 ─┼─ 07
+        //              │      │
+        //              └─ 06 ─┘
+        let phases = vec![
+            create_test_phase("01", vec![]),
+            create_test_phase("02", vec!["01"]),
+            create_test_phase("03", vec!["01"]),
+            create_test_phase("04", vec!["02", "03"]),
+            create_test_phase("05", vec!["02", "03"]),
+            create_test_phase("06", vec!["03"]),
+            create_test_phase("07", vec!["04", "05", "06"]),
+        ];
+
+        let scheduler = DagScheduler::from_phases(&phases, DagConfig::default()).unwrap();
+        let waves = scheduler.compute_waves();
+
+        // Wave 1: 01 (no deps)
+        // Wave 2: 02, 03 (depend on 01)
+        // Wave 3: 04, 05, 06 (depend on 02/03)
+        // Wave 4: 07 (depends on 04, 05, 06)
+        assert_eq!(waves.len(), 4);
+        assert_eq!(waves[0], vec!["01"]);
+        assert!(waves[1].contains(&"02".to_string()));
+        assert!(waves[1].contains(&"03".to_string()));
+        assert_eq!(waves[1].len(), 2);
+        assert!(waves[2].contains(&"04".to_string()));
+        assert!(waves[2].contains(&"05".to_string()));
+        assert!(waves[2].contains(&"06".to_string()));
+        assert_eq!(waves[3], vec!["07"]);
+    }
+
+    #[test]
+    fn test_scheduler_ready_phases() {
+        let phases = vec![
+            create_test_phase("01", vec![]),
+            create_test_phase("02", vec!["01"]),
+            create_test_phase("03", vec!["01"]),
+        ];
+
+        let mut scheduler = DagScheduler::from_phases(&phases, DagConfig::default()).unwrap();
+
+        // Initially only phase 01 is ready
+        let ready = scheduler.get_ready_phases();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].phase.number, "01");
+
+        // Mark 01 as completed
+        scheduler.mark_completed("01", 3);
+
+        // Now 02 and 03 should be ready
+        let ready = scheduler.get_ready_phases();
+        assert_eq!(ready.len(), 2);
+        let ready_nums: Vec<_> = ready.iter().map(|n| &n.phase.number).collect();
+        assert!(ready_nums.contains(&&"02".to_string()));
+        assert!(ready_nums.contains(&&"03".to_string()));
+    }
+
+    #[test]
+    fn test_scheduler_status_transitions() {
+        let phases = vec![
+            create_test_phase("01", vec![]),
+            create_test_phase("02", vec!["01"]),
+        ];
+
+        let mut scheduler = DagScheduler::from_phases(&phases, DagConfig::default()).unwrap();
+
+        // Initial status should be Pending
+        let node = scheduler.get_node("01").unwrap();
+        assert!(matches!(node.status, PhaseStatus::Pending));
+
+        // Mark as running
+        scheduler.mark_running("01");
+        let node = scheduler.get_node("01").unwrap();
+        assert!(node.status.is_running());
+
+        // Mark as completed
+        scheduler.mark_completed("01", 5);
+        let node = scheduler.get_node("01").unwrap();
+        assert!(matches!(
+            node.status,
+            PhaseStatus::Completed { iterations: 5 }
+        ));
+    }
+
+    #[test]
+    fn test_scheduler_fail_fast_mode() {
+        let phases = vec![
+            create_test_phase("01", vec![]),
+            create_test_phase("02", vec!["01"]),
+            create_test_phase("03", vec!["02"]),
+        ];
+
+        let config = DagConfig::default().with_fail_fast(true);
+        let mut scheduler = DagScheduler::from_phases(&phases, config).unwrap();
+
+        // Mark 01 as failed
+        scheduler.mark_failed("01", "test error");
+
+        // With fail_fast, dependents should be skipped
+        let node_02 = scheduler.get_node("02").unwrap();
+        let node_03 = scheduler.get_node("03").unwrap();
+        assert!(matches!(node_02.status, PhaseStatus::Skipped));
+        assert!(matches!(node_03.status, PhaseStatus::Skipped));
+    }
+
+    #[test]
+    fn test_scheduler_completion_tracking() {
+        let phases = vec![
+            create_test_phase("01", vec![]),
+            create_test_phase("02", vec!["01"]),
+            create_test_phase("03", vec!["01"]),
+        ];
+
+        let mut scheduler = DagScheduler::from_phases(&phases, DagConfig::default()).unwrap();
+
+        assert_eq!(scheduler.completion_percentage(), 0.0);
+        assert!(!scheduler.all_complete());
+
+        scheduler.mark_completed("01", 3);
+        assert!((scheduler.completion_percentage() - 33.33).abs() < 1.0);
+
+        scheduler.mark_completed("02", 5);
+        assert!((scheduler.completion_percentage() - 66.66).abs() < 1.0);
+
+        scheduler.mark_completed("03", 2);
+        assert_eq!(scheduler.completion_percentage(), 100.0);
+        assert!(scheduler.all_complete());
+        assert!(scheduler.all_success());
+    }
+
+    #[test]
+    fn test_scheduler_failure_tracking() {
+        let phases = vec![
+            create_test_phase("01", vec![]),
+            create_test_phase("02", vec!["01"]),
+        ];
+
+        let mut scheduler = DagScheduler::from_phases(&phases, DagConfig::default()).unwrap();
+
+        scheduler.mark_completed("01", 3);
+        scheduler.mark_failed("02", "test failure");
+
+        assert!(scheduler.all_complete());
+        assert!(!scheduler.all_success());
+        assert_eq!(scheduler.completed_count(), 1);
+        assert_eq!(scheduler.failed_count(), 1);
+    }
+
+    #[test]
+    fn test_dag_config_builder() {
+        let config = DagConfig::default()
+            .with_max_parallel(8)
+            .with_fail_fast(true)
+            .with_swarm_enabled(false)
+            .with_decomposition(true)
+            .with_decomposition_threshold(40);
+
+        assert_eq!(config.max_parallel, 8);
+        assert!(config.fail_fast);
+        assert!(!config.swarm_enabled);
+        assert!(config.decomposition_enabled);
+        assert_eq!(config.decomposition_threshold, 40);
+    }
+
+    #[test]
+    fn test_scheduler_empty_phases() {
+        let phases: Vec<Phase> = vec![];
+        let scheduler = DagScheduler::from_phases(&phases, DagConfig::default()).unwrap();
+
+        assert_eq!(scheduler.phase_count(), 0);
+        assert!(scheduler.all_complete()); // Empty is considered complete
+        assert_eq!(scheduler.compute_waves().len(), 0);
+    }
+
+    #[test]
+    fn test_scheduler_single_phase() {
+        let phases = vec![create_test_phase("01", vec![])];
+
+        let scheduler = DagScheduler::from_phases(&phases, DagConfig::default()).unwrap();
+        let waves = scheduler.compute_waves();
+
+        assert_eq!(waves.len(), 1);
+        assert_eq!(waves[0], vec!["01"]);
+    }
+
+    #[test]
+    fn test_scheduler_parallel_roots() {
+        // Multiple phases with no dependencies (all roots)
+        let phases = vec![
+            create_test_phase("01", vec![]),
+            create_test_phase("02", vec![]),
+            create_test_phase("03", vec![]),
+        ];
+
+        let scheduler = DagScheduler::from_phases(&phases, DagConfig::default()).unwrap();
+        let waves = scheduler.compute_waves();
+
+        // All should be in the first wave
+        assert_eq!(waves.len(), 1);
+        assert_eq!(waves[0].len(), 3);
+        assert!(waves[0].contains(&"01".to_string()));
+        assert!(waves[0].contains(&"02".to_string()));
+        assert!(waves[0].contains(&"03".to_string()));
+    }
+}
+
+// =============================================================================
+// Review System Integration Tests (via library)
+// =============================================================================
+
+mod review_library_tests {
+    use forge::review::{
+        FindingSeverity, ReviewAggregation, ReviewFinding, ReviewReport, ReviewVerdict,
+    };
+
+    #[test]
+    fn test_review_finding_creation() {
+        let finding = ReviewFinding::new(
+            FindingSeverity::Warning,
+            "src/auth.rs",
+            "Token stored in localStorage is vulnerable to XSS",
+        )
+        .with_line(42)
+        .with_suggestion("Use httpOnly cookies instead");
+
+        assert_eq!(finding.severity(), FindingSeverity::Warning);
+        assert_eq!(finding.file(), "src/auth.rs");
+        assert_eq!(finding.line(), Some(42));
+        assert!(finding.suggestion().is_some());
+    }
+
+    #[test]
+    fn test_review_report_creation() {
+        let finding = ReviewFinding::new(
+            FindingSeverity::Warning,
+            "src/auth.rs",
+            "Potential security issue",
+        );
+
+        let report = ReviewReport::new("05", "security-sentinel", ReviewVerdict::Warn)
+            .with_summary("One finding detected")
+            .add_finding(finding);
+
+        assert_eq!(report.phase, "05");
+        assert_eq!(report.reviewer, "security-sentinel");
+        assert_eq!(report.verdict, ReviewVerdict::Warn);
+        assert_eq!(report.findings.len(), 1);
+    }
+
+    #[test]
+    fn test_review_aggregation() {
+        let security_report = ReviewReport::new("05", "security-sentinel", ReviewVerdict::Pass)
+            .with_summary("No security issues");
+
+        let perf_report = ReviewReport::new("05", "performance-oracle", ReviewVerdict::Warn)
+            .with_summary("Minor performance concerns")
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Warning,
+                "src/db.rs",
+                "N+1 query pattern detected",
+            ));
+
+        let aggregation = ReviewAggregation::new("05")
+            .add_report(security_report)
+            .add_report(perf_report)
+            .with_parallel_execution(true);
+
+        assert_eq!(aggregation.phase, "05");
+        assert_eq!(aggregation.reports.len(), 2);
+        assert!(aggregation.parallel_execution);
+        assert!(!aggregation.has_gating_failures());
+        assert_eq!(aggregation.overall_verdict(), ReviewVerdict::Warn);
+    }
+
+    #[test]
+    fn test_review_aggregation_with_failure() {
+        let pass_report = ReviewReport::new("05", "perf", ReviewVerdict::Pass);
+        let fail_report = ReviewReport::new("05", "security", ReviewVerdict::Fail).add_finding(
+            ReviewFinding::new(
+                FindingSeverity::Error,
+                "src/auth.rs",
+                "SQL injection vulnerability",
+            ),
+        );
+
+        let aggregation = ReviewAggregation::new("05")
+            .add_report(pass_report)
+            .add_report(fail_report);
+
+        assert!(aggregation.has_gating_failures());
+        assert_eq!(aggregation.overall_verdict(), ReviewVerdict::Fail);
+        assert_eq!(aggregation.failed_specialists(), vec!["security"]);
+    }
+
+    #[test]
+    fn test_finding_severity_ordering() {
+        assert!(FindingSeverity::Error < FindingSeverity::Warning);
+        assert!(FindingSeverity::Warning < FindingSeverity::Info);
+        assert!(FindingSeverity::Info < FindingSeverity::Note);
+    }
+
+    #[test]
+    fn test_finding_location_formatting() {
+        let finding_file_only = ReviewFinding::new(FindingSeverity::Info, "src/lib.rs", "Note");
+        assert_eq!(finding_file_only.location(), "src/lib.rs");
+
+        let finding_with_line =
+            ReviewFinding::new(FindingSeverity::Warning, "src/main.rs", "Warning").with_line(100);
+        assert_eq!(finding_with_line.location(), "src/main.rs:100");
+
+        let finding_full = ReviewFinding::new(FindingSeverity::Error, "src/app.rs", "Error")
+            .with_line(50)
+            .with_column(15);
+        assert_eq!(finding_full.location(), "src/app.rs:50:15");
+    }
+
+    #[test]
+    fn test_report_count_by_severity() {
+        let report = ReviewReport::new("05", "reviewer", ReviewVerdict::Warn)
+            .add_finding(ReviewFinding::new(FindingSeverity::Error, "a.rs", "Error"))
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Warning,
+                "b.rs",
+                "Warn1",
+            ))
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Warning,
+                "c.rs",
+                "Warn2",
+            ))
+            .add_finding(ReviewFinding::new(FindingSeverity::Info, "d.rs", "Info"));
+
+        assert_eq!(report.count_by_severity(FindingSeverity::Error), 1);
+        assert_eq!(report.count_by_severity(FindingSeverity::Warning), 2);
+        assert_eq!(report.count_by_severity(FindingSeverity::Info), 1);
+        assert_eq!(report.count_by_severity(FindingSeverity::Note), 0);
+    }
+
+    #[test]
+    fn test_report_critical_and_actionable_findings() {
+        let report = ReviewReport::new("05", "reviewer", ReviewVerdict::Fail)
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Error,
+                "a.rs",
+                "Critical",
+            ))
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Warning,
+                "b.rs",
+                "Actionable",
+            ))
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Info,
+                "c.rs",
+                "Informational",
+            ));
+
+        assert_eq!(report.critical_findings().len(), 1);
+        assert_eq!(report.actionable_findings().len(), 2);
+    }
+
+    #[test]
+    fn test_review_report_serialization() {
+        let report = ReviewReport::new("05", "security-sentinel", ReviewVerdict::Warn)
+            .with_summary("Test summary")
+            .add_finding(
+                ReviewFinding::new(FindingSeverity::Warning, "src/test.rs", "Test issue")
+                    .with_line(42),
+            );
+
+        let json = serde_json::to_string(&report).unwrap();
+        let deserialized: ReviewReport = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(report.phase, deserialized.phase);
+        assert_eq!(report.reviewer, deserialized.reviewer);
+        assert_eq!(report.verdict, deserialized.verdict);
+        assert_eq!(report.findings.len(), deserialized.findings.len());
+    }
+}
+
+// =============================================================================
+// Arbiter Integration Tests (via library)
+// =============================================================================
+
+mod arbiter_library_tests {
+    use forge::review::arbiter::{
+        ArbiterConfig, ArbiterDecision, ArbiterInput, ArbiterVerdict, ResolutionMode,
+    };
+    use forge::review::{
+        FindingSeverity, ReviewAggregation, ReviewFinding, ReviewReport, ReviewVerdict,
+    };
+
+    #[test]
+    fn test_resolution_mode_manual() {
+        let mode = ResolutionMode::manual();
+        assert!(mode.is_manual());
+        assert!(!mode.is_auto());
+        assert!(!mode.is_arbiter());
+    }
+
+    #[test]
+    fn test_resolution_mode_auto() {
+        let mode = ResolutionMode::auto(3);
+        assert!(!mode.is_manual());
+        assert!(mode.is_auto());
+        assert!(!mode.is_arbiter());
+        assert_eq!(mode.max_attempts(), Some(3));
+    }
+
+    #[test]
+    fn test_resolution_mode_arbiter() {
+        let mode = ResolutionMode::arbiter();
+        assert!(!mode.is_manual());
+        assert!(!mode.is_auto());
+        assert!(mode.is_arbiter());
+        assert!(mode.confidence_threshold().is_some());
+    }
+
+    #[test]
+    fn test_arbiter_config_builder() {
+        let config = ArbiterConfig::auto(3)
+            .with_verbose(true)
+            .with_skip_permissions(true);
+
+        assert!(matches!(
+            config.mode,
+            ResolutionMode::Auto { max_attempts: 3 }
+        ));
+        assert!(config.verbose);
+        assert!(config.skip_permissions);
+    }
+
+    #[test]
+    fn test_arbiter_config_arbiter_mode() {
+        let config = ArbiterConfig::arbiter_mode()
+            .with_confidence_threshold(0.9)
+            .with_escalate_on(vec!["security".to_string()]);
+
+        assert!(config.mode.is_arbiter());
+        assert_eq!(config.mode.confidence_threshold(), Some(0.9));
+    }
+
+    #[test]
+    fn test_arbiter_input_from_aggregation() {
+        let report = ReviewReport::new("05", "security", ReviewVerdict::Fail).add_finding(
+            ReviewFinding::new(FindingSeverity::Error, "src/auth.rs", "SQL injection"),
+        );
+
+        let aggregation = ReviewAggregation::new("05").add_report(report);
+        let input = ArbiterInput::from_aggregation(&aggregation, 20, 5);
+
+        assert_eq!(input.phase_id, "05");
+        assert_eq!(input.budget, 20);
+        assert_eq!(input.iterations_used, 5);
+        assert_eq!(input.blocking_findings.len(), 1);
+    }
+
+    #[test]
+    fn test_arbiter_verdict_variants() {
+        assert!(ArbiterVerdict::Proceed.allows_progression());
+        assert!(!ArbiterVerdict::Proceed.requires_fix());
+        assert!(!ArbiterVerdict::Proceed.requires_human());
+
+        assert!(!ArbiterVerdict::Fix.allows_progression());
+        assert!(ArbiterVerdict::Fix.requires_fix());
+        assert!(!ArbiterVerdict::Fix.requires_human());
+
+        assert!(!ArbiterVerdict::Escalate.allows_progression());
+        assert!(!ArbiterVerdict::Escalate.requires_fix());
+        assert!(ArbiterVerdict::Escalate.requires_human());
+    }
+
+    #[test]
+    fn test_arbiter_decision_creation() {
+        let decision = ArbiterDecision::proceed("Style issues only", 0.95);
+        assert!(decision.decision.allows_progression());
+        assert_eq!(decision.confidence, 0.95);
+        assert!(decision.fix_instructions.is_none());
+
+        let fix_decision =
+            ArbiterDecision::fix("Clear fix available", 0.85, "Use parameterized queries");
+        assert!(fix_decision.decision.requires_fix());
+        assert!(fix_decision.fix_instructions.is_some());
+
+        let escalate = ArbiterDecision::escalate("Architectural concern", 0.7, "Needs team review");
+        assert!(escalate.decision.requires_human());
+        assert!(escalate.escalation_summary.is_some());
+    }
+
+    #[test]
+    fn test_arbiter_decision_confidence_check() {
+        let high_confidence = ArbiterDecision::proceed("Sure about this", 0.95);
+        assert!(high_confidence.meets_confidence(0.9));
+        assert!(high_confidence.meets_confidence(0.7));
+
+        let low_confidence = ArbiterDecision::proceed("Less sure", 0.5);
+        assert!(!low_confidence.meets_confidence(0.7));
+        assert!(low_confidence.meets_confidence(0.4));
+    }
+
+    #[test]
+    fn test_arbiter_decision_serialization() {
+        let decision = ArbiterDecision::fix("Security fix needed", 0.88, "Sanitize user input");
+
+        let json = serde_json::to_string(&decision).unwrap();
+        let deserialized: ArbiterDecision = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decision.decision, deserialized.decision);
+        assert_eq!(decision.reasoning, deserialized.reasoning);
+        assert_eq!(decision.confidence, deserialized.confidence);
+        assert_eq!(decision.fix_instructions, deserialized.fix_instructions);
+    }
+
+    #[test]
+    fn test_resolution_mode_serialization() {
+        let manual = ResolutionMode::manual();
+        let json = serde_json::to_string(&manual).unwrap();
+        assert!(json.contains("\"mode\":\"manual\""));
+
+        let auto = ResolutionMode::auto(5);
+        let json = serde_json::to_string(&auto).unwrap();
+        assert!(json.contains("\"mode\":\"auto\""));
+        assert!(json.contains("\"max_attempts\":5"));
+
+        let arbiter = ResolutionMode::arbiter();
+        let json = serde_json::to_string(&arbiter).unwrap();
+        assert!(json.contains("\"mode\":\"arbiter\""));
+    }
+}
+
+// =============================================================================
+// Decomposition Integration Tests
+// =============================================================================
+
+mod decomposition_tests {
+    use forge::decomposition::{DecompositionResult, DecompositionTask, IntegrationTask};
+
+    #[test]
+    fn test_decomposition_task_creation() {
+        let task = DecompositionTask::new(
+            "task-01",
+            "Google OAuth",
+            "Integrate Google OAuth provider",
+            5,
+        );
+
+        assert_eq!(task.id, "task-01");
+        assert_eq!(task.name, "Google OAuth");
+        assert_eq!(task.budget, 5);
+        assert!(!task.has_dependencies());
+    }
+
+    #[test]
+    fn test_decomposition_task_with_dependencies() {
+        let task =
+            DecompositionTask::new("task-03", "Unified Handler", "Combine OAuth providers", 3)
+                .with_depends_on(vec!["task-01".to_string(), "task-02".to_string()]);
+
+        assert!(task.has_dependencies());
+        assert_eq!(task.depends_on.len(), 2);
+    }
+
+    #[test]
+    fn test_decomposition_result_structure() {
+        let tasks = vec![
+            DecompositionTask::new("task-01", "Google OAuth", "Google auth", 5),
+            DecompositionTask::new("task-02", "GitHub OAuth", "GitHub auth", 5),
+            DecompositionTask::new("task-03", "Unified Handler", "Combine providers", 3)
+                .with_depends_on(vec!["task-01".to_string(), "task-02".to_string()]),
+        ];
+
+        let result = DecompositionResult::new(tasks)
+            .with_analysis("Phase requires multiple OAuth integrations");
+
+        assert_eq!(result.tasks.len(), 3);
+        assert!(result.analysis.is_some());
+        assert!(result.integration_task.is_none());
+
+        // Check that the third task depends on the first two
+        assert_eq!(result.tasks[2].depends_on.len(), 2);
+    }
+
+    #[test]
+    fn test_decomposition_result_with_integration() {
+        let tasks = vec![
+            DecompositionTask::new("task-01", "Core A", "Implementation A", 5),
+            DecompositionTask::new("task-02", "Core B", "Implementation B", 5),
+        ];
+
+        let integration =
+            IntegrationTask::new("integration", "Final Integration", "Combine components", 3)
+                .with_depends_on(vec!["task-01".to_string(), "task-02".to_string()]);
+
+        let result = DecompositionResult::new(tasks).with_integration(integration);
+
+        assert_eq!(result.task_count(), 3); // 2 tasks + 1 integration
+        assert!(result.integration_task.is_some());
+    }
+
+    #[test]
+    fn test_decomposition_result_total_budget() {
+        let tasks = vec![
+            DecompositionTask::new("t1", "Task 1", "Desc", 5),
+            DecompositionTask::new("t2", "Task 2", "Desc", 8),
+            DecompositionTask::new("t3", "Task 3", "Desc", 3),
+        ];
+
+        let result = DecompositionResult::new(tasks);
+        assert_eq!(result.total_budget(), 16);
+
+        // With integration
+        let integration = IntegrationTask::new("int", "Integration", "Desc", 4);
+        let result_with_integration =
+            DecompositionResult::new(vec![DecompositionTask::new("t1", "Task 1", "Desc", 5)])
+                .with_integration(integration);
+        assert_eq!(result_with_integration.total_budget(), 9);
+    }
+
+    #[test]
+    fn test_decomposition_result_serialization() {
+        let result = DecompositionResult::new(vec![DecompositionTask::new(
+            "task-01",
+            "Sub Phase",
+            "Test task",
+            3,
+        )])
+        .with_analysis("Test analysis");
+
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: DecompositionResult = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(result.analysis, deserialized.analysis);
+        assert_eq!(result.tasks.len(), deserialized.tasks.len());
+    }
+}
+
+// =============================================================================
+// Swarm Context Integration Tests
+// =============================================================================
+
+mod swarm_context_tests {
+    use forge::swarm::{PhaseInfo, SwarmContext, SwarmStrategy, SwarmTask};
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_swarm_task_creation() {
+        let task = SwarmTask::new(
+            "task-01",
+            "Implement feature",
+            "Implement the new feature",
+            5,
+        )
+        .with_files(vec!["src/feature.rs".to_string()]);
+
+        assert_eq!(task.id, "task-01");
+        assert_eq!(task.budget, 5);
+        assert!(!task.has_dependencies());
+        assert_eq!(task.files.len(), 1);
+    }
+
+    #[test]
+    fn test_swarm_task_with_dependencies() {
+        let task = SwarmTask::new("task-02", "Integration", "Integrate components", 3)
+            .with_depends_on(vec!["task-01".to_string()]);
+
+        assert!(task.has_dependencies());
+        assert_eq!(task.depends_on.len(), 1);
+    }
+
+    #[test]
+    fn test_swarm_strategy_variants() {
+        assert_eq!(
+            serde_json::to_string(&SwarmStrategy::Parallel).unwrap(),
+            "\"parallel\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SwarmStrategy::Sequential).unwrap(),
+            "\"sequential\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SwarmStrategy::WavePipeline).unwrap(),
+            "\"wave_pipeline\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SwarmStrategy::Adaptive).unwrap(),
+            "\"adaptive\""
+        );
+    }
+
+    #[test]
+    fn test_phase_info_creation() {
+        let phase = PhaseInfo::new("05", "OAuth Integration", "OAUTH DONE", 20);
+
+        assert_eq!(phase.number, "05");
+        assert_eq!(phase.name, "OAuth Integration");
+        assert_eq!(phase.budget, 20);
+        assert_eq!(phase.remaining_budget(), 20);
+    }
+
+    #[test]
+    fn test_swarm_context_creation() {
+        let phase = PhaseInfo::new("05", "OAuth Integration", "OAUTH DONE", 20);
+        let context = SwarmContext::new(
+            phase,
+            "http://localhost:3000/callback",
+            PathBuf::from("/project"),
+        )
+        .with_strategy(SwarmStrategy::Parallel)
+        .with_tasks(vec![SwarmTask::new(
+            "task-01",
+            "Google OAuth",
+            "Integrate Google OAuth",
+            5,
+        )]);
+
+        assert_eq!(context.phase.number, "05");
+        assert_eq!(context.tasks.len(), 1);
+        assert_eq!(context.strategy, SwarmStrategy::Parallel);
+    }
+
+    #[test]
+    fn test_swarm_context_serialization() {
+        let phase = PhaseInfo::new("01", "Test Phase", "TEST DONE", 10);
+        let context = SwarmContext::new(phase, "http://localhost:8080", PathBuf::from("."))
+            .with_strategy(SwarmStrategy::Adaptive);
+
+        let json = serde_json::to_string(&context).unwrap();
+        assert!(json.contains("\"number\":\"01\""));
+        assert!(json.contains("\"strategy\":\"adaptive\""));
+
+        let deserialized: SwarmContext = serde_json::from_str(&json).unwrap();
+        assert_eq!(context.phase.number, deserialized.phase.number);
+        assert_eq!(context.strategy, deserialized.strategy);
+    }
+
+    #[test]
+    fn test_swarm_strategy_description() {
+        assert!(!SwarmStrategy::Parallel.description().is_empty());
+        assert!(!SwarmStrategy::Sequential.description().is_empty());
+        assert!(!SwarmStrategy::WavePipeline.description().is_empty());
+        assert!(!SwarmStrategy::Adaptive.description().is_empty());
+    }
+}

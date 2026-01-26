@@ -310,13 +310,16 @@ Patterns capture:
 
 ## Directory Structure
 
+### Project Directory
+
 ```
 .forge/
 ├── forge.toml       # Configuration (optional)
 ├── hooks.toml       # Hooks (optional, can also be in forge.toml)
 ├── spec.md          # Project specification
-├── phases.json      # Generated phases
-├── state            # Execution state
+├── phases.json      # Generated phases with dependencies
+├── state            # Execution state (append-only)
+├── checkpoints/     # Swarm checkpoint files for recovery
 ├── audit/
 │   ├── runs/        # Completed run logs (JSON)
 │   └── current-run.json
@@ -326,6 +329,52 @@ Patterns capture:
     ├── skill-name/
     │   └── SKILL.md
     └── ...
+```
+
+### Source Code Structure
+
+```
+src/
+├── main.rs              # CLI entry point
+├── lib.rs               # Library exports
+├── phase.rs             # Phase definitions
+├── forge_config.rs      # Configuration parsing
+│
+├── orchestrator/        # Core orchestration
+│   ├── runner.rs        # Phase execution loop
+│   ├── state.rs         # State persistence
+│   └── review_integration.rs
+│
+├── dag/                 # DAG scheduler (swarm)
+│   ├── builder.rs       # Graph construction
+│   ├── scheduler.rs     # Wave computation
+│   ├── executor.rs      # Parallel dispatch
+│   └── state.rs         # Execution tracking
+│
+├── swarm/               # Swarm integration
+│   ├── executor.rs      # Swarm orchestration
+│   ├── context.rs       # Swarm types
+│   ├── callback.rs      # HTTP callback server
+│   └── prompts.rs       # Orchestration prompts
+│
+├── review/              # Review system
+│   ├── specialists.rs   # Specialist definitions
+│   ├── dispatcher.rs    # Review coordination
+│   ├── arbiter.rs       # LLM resolution
+│   └── findings.rs      # Finding types
+│
+├── decomposition/       # Dynamic decomposition
+│   ├── config.rs        # Decomposition configuration
+│   ├── detector.rs      # Complexity detection
+│   ├── parser.rs        # Decomposition parsing
+│   ├── executor.rs      # Sub-task execution
+│   └── types.rs         # Decomposition types
+│
+├── hooks/               # Hook system
+├── skills/              # Skills management
+├── context/             # Context management
+├── tracker/             # Git operations
+└── ui/                  # Progress display
 ```
 
 ## Example Session
@@ -376,10 +425,313 @@ $ forge patterns
 No patterns found. Complete a project and run 'forge learn'.
 ```
 
+## Swarm Orchestration
+
+Forge supports parallel phase execution through a hybrid swarm architecture that combines native Rust DAG scheduling with Claude Code's agent coordination capabilities.
+
+### Overview
+
+The swarm system provides:
+
+- **Parallel Phase Execution**: Run independent phases simultaneously via DAG scheduling
+- **Review Specialists**: Automated code review with security, performance, and architecture analysis
+- **Dynamic Decomposition**: Automatically split complex phases into smaller tasks
+- **LLM Arbiter**: Autonomous resolution of review failures without human intervention
+- **Checkpoint Recovery**: Resume interrupted runs from saved state
+
+### Swarm Commands
+
+| Command | Description |
+|---------|-------------|
+| `forge swarm` | Execute phases in parallel using DAG scheduler |
+| `forge swarm --from 05` | Start parallel execution from phase 05 |
+| `forge swarm --only 07` | Run only phase 07 |
+| `forge swarm status` | Show current swarm execution status |
+| `forge swarm abort` | Gracefully stop running swarm |
+
+### Swarm Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--max-parallel <N>` | Maximum concurrent phases | 4 |
+| `--backend <TYPE>` | Execution backend: auto, in-process, tmux, iterm2 | auto |
+| `--review <SPECIALISTS>` | Enable review: security, performance, architecture, simplicity, all | none |
+| `--review-mode <MODE>` | Resolution mode: manual, auto, arbiter | manual |
+| `--max-fix-attempts <N>` | Maximum auto-fix attempts | 2 |
+| `--escalate-on <TYPES>` | Always escalate these finding types (comma-separated) | none |
+| `--arbiter-confidence <N>` | Minimum confidence for arbiter (0.0-1.0) | 0.7 |
+| `--decompose` | Enable dynamic decomposition | true |
+| `--no-decompose` | Disable dynamic decomposition | |
+| `--decompose-threshold <N>` | Budget percentage to trigger decomposition | 50 |
+| `--permission-mode <MODE>` | Permission mode: strict, standard, autonomous | standard |
+| `--ui <MODE>` | Output format: full, minimal, json | full |
+| `--fail-fast` | Stop all phases on first failure | disabled |
+
+### How DAG Scheduling Works
+
+Forge analyzes phase dependencies and computes execution waves:
+
+```
+phases.json with dependencies:
+  01 (no deps) ─┐
+  02 → [01]     │ Wave 1: [01]
+  03 → [01]     ├ Wave 2: [02, 03, 04]
+  04 → [01]     │ Wave 3: [05, 06]
+  05 → [02, 03] │ Wave 4: [07]
+  06 → [03, 04] │
+  07 → [05, 06] ┘
+
+Phases in the same wave run in parallel (up to --max-parallel).
+```
+
+### Phase Dependencies
+
+Define dependencies in `phases.json`:
+
+```json
+{
+  "number": "05",
+  "name": "OAuth integration",
+  "promise": "OAUTH COMPLETE",
+  "budget": 10,
+  "depends_on": ["02", "03"]
+}
+```
+
+### Review Specialists
+
+Review specialists automatically analyze completed phases:
+
+| Specialist | Focus Areas | Gate |
+|------------|-------------|------|
+| `security` | Injection risks, auth issues, secrets exposure | Yes |
+| `performance` | N+1 queries, memory leaks, algorithmic complexity | No |
+| `architecture` | SOLID violations, coupling, separation of concerns | Yes |
+| `simplicity` | Over-engineering, premature abstraction, YAGNI | No |
+
+**Gating reviews** block phase completion until issues are resolved.
+**Advisory reviews** report findings but don't block progress.
+
+Enable reviews:
+
+```bash
+# Single specialist
+forge swarm --review security
+
+# Multiple specialists
+forge swarm --review security,performance
+
+# All specialists
+forge swarm --review all
+```
+
+### Review Output
+
+```json
+{
+  "phase": "05",
+  "reviewer": "security-sentinel",
+  "verdict": "warn",
+  "findings": [
+    {
+      "severity": "warning",
+      "file": "src/auth/oauth.rs",
+      "line": 142,
+      "issue": "Token stored in localStorage is vulnerable to XSS",
+      "suggestion": "Use httpOnly cookies instead"
+    }
+  ]
+}
+```
+
+### Resolution Modes
+
+When a gating review fails, three resolution modes are available:
+
+| Mode | Behavior |
+|------|----------|
+| `manual` | Always pause for user input |
+| `auto` | Attempt auto-fix, retry up to 2 times |
+| `arbiter` | LLM decides based on severity and context |
+
+The **arbiter** mode uses an LLM to analyze findings and decide:
+
+- **PROCEED**: Continue despite findings (style issues, false positives)
+- **FIX**: Spawn fix agent and retry (clear fix path exists)
+- **ESCALATE**: Require human decision (architectural concerns)
+
+```bash
+# Use arbiter with 80% confidence threshold
+forge swarm --review security --review-mode arbiter --arbiter-confidence 0.8
+```
+
+### Dynamic Decomposition
+
+When a phase is too complex, Forge can automatically decompose it:
+
+**Triggers:**
+- Worker emits `<blocker>` with complexity signal
+- Iterations exceed 50% budget with progress < 30%
+- Worker requests: `<request-decomposition/>`
+
+**Example decomposition:**
+
+```
+Phase 05: OAuth Integration (budget: 20)
+         │
+         │ Detected: "3 separate provider integrations needed"
+         ▼
+┌────────────────────────────────────────┐
+│ Decomposition produces:                │
+│ ├── 05.1: Google OAuth (budget: 5) ─┐  │
+│ ├── 05.2: GitHub OAuth (budget: 5) ─┼─ parallel
+│ ├── 05.3: Auth0 OAuth  (budget: 5) ─┘  │
+│ └── 05.4: Unified handler (budget: 3)  │
+│           depends_on: [05.1-3]         │
+└────────────────────────────────────────┘
+```
+
+### Swarm Configuration
+
+Configure swarm behavior in `forge.toml`:
+
+```toml
+[swarm]
+enabled = true
+backend = "auto"                    # auto, in-process, tmux, iterm2
+default_strategy = "adaptive"
+max_agents = 5
+
+[swarm.reviews]
+enabled = true
+specialists = ["security", "performance"]
+mode = "arbiter"                    # manual, auto, arbiter
+
+# Per-phase swarm overrides
+[phases.overrides."*-complex"]
+swarm = { strategy = "parallel", max_agents = 4 }
+
+[phases.overrides."*-refactor"]
+swarm = { strategy = "wave_pipeline", reviews = ["architecture"] }
+```
+
+### Per-Phase Swarm Config
+
+Enable swarm execution for specific phases:
+
+```json
+{
+  "number": "05",
+  "name": "OAuth integration",
+  "promise": "OAUTH COMPLETE",
+  "budget": 15,
+  "swarm": {
+    "strategy": "parallel",
+    "max_agents": 4,
+    "reviews": ["security"]
+  }
+}
+```
+
+### Checkpoint & Recovery
+
+Forge automatically checkpoints progress during swarm execution:
+
+```bash
+# Resume interrupted run
+$ forge swarm
+Detected incomplete run: forge-run-20260126-150322
+  Progress: 14/22 phases
+  Checkpoints: 3 phases resumable
+
+Resume? [Y/n] y
+
+Recovering...
+  ✓ Loaded checkpoints
+  ✓ Reconciled state
+  ✓ Respawning 3 phases
+
+Continuing from Wave 4...
+```
+
+### Example Swarm Session
+
+```bash
+$ forge swarm --review security --max-parallel 3
+
+Analyzing phase dependencies...
+  22 phases, 8 execution waves
+
+Wave 1: [01] ████████████ 100%  (3 iterations)
+
+Wave 2: [02] ████████░░░░  67%
+        [03] ████████████ 100%
+        [06] ████████████ 100%
+
+Reviews for [03]:
+  ✓ security-sentinel: PASS
+
+Wave 2: [02] ████████████ 100%  (10 iterations)
+
+Reviews for [02]:
+  ⚠ security-sentinel: WARN (1 finding)
+    └─ src/db/queries.rs:42 - Consider parameterized query
+
+Continuing (non-gating)...
+
+Wave 3: [04] ████░░░░░░░░  33%
+        [05*] Starting swarm...
+              └─ Spawning 3 agents for OAuth integration
+        [07] ████████████ 100%
+
+All phases complete!
+  Total time: 12m 34s
+  Phases: 22/22
+  Reviews: 8 passed, 1 warning
+```
+
+### Troubleshooting
+
+#### Swarm won't start
+
+```
+Error: No phases.json found
+```
+
+Run `forge generate` first to create phases from your spec.
+
+#### Phase stuck in "Blocked" state
+
+Check dependencies with `forge list --deps`. A phase stays blocked until all its dependencies complete successfully.
+
+#### Review keeps failing
+
+1. Check the review findings in the output
+2. Try `--review-mode auto` to attempt automatic fixes
+3. Use `--review-mode arbiter` for LLM-assisted resolution
+4. Lower the gating threshold or remove the specialist from gating
+
+#### Out of memory during parallel execution
+
+Reduce `--max-parallel` to limit concurrent Claude instances:
+
+```bash
+forge swarm --max-parallel 2
+```
+
+#### Checkpoint recovery fails
+
+Clear checkpoints and restart:
+
+```bash
+rm -rf .forge/checkpoints/
+forge swarm
+```
+
 ## Testing
 
 ```bash
-# Run all tests (427 total)
+# Run all tests
 cargo test
 
 # Unit tests only

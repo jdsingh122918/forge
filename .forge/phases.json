@@ -1,86 +1,298 @@
 {
-  "spec_hash": "forge-evolution-v1",
-  "generated_at": "2026-01-24T12:00:00Z",
+  "spec_hash": "2e9eb3f7df5b",
+  "generated_at": "2026-01-26T15:12:05.604711+00:00",
   "phases": [
     {
       "number": "01",
-      "name": "Configuration Unification Foundation",
-      "promise": "CONFIG COMPLETE",
+      "name": "Core Dependencies & Module Structure",
+      "promise": "MODULE STRUCTURE COMPLETE",
       "budget": 8,
-      "reasoning": "Establish the unified forge.toml configuration system as the foundation. This must come first because all other features (hooks, skills, permission modes) will read from this config. Includes parsing, validation, and migration from any existing scattered settings.",
-      "depends_on": []
+      "reasoning": "Add petgraph, axum, notify, and tokio-stream dependencies to Cargo.toml. Create the new module directories (dag/, swarm/, review/, checkpoint/) with mod.rs files and wire them into lib.rs. This foundational work must be done first as all other phases depend on these modules existing.",
+      "depends_on": [],
+      "skills": [],
+      "permission_mode": "standard"
     },
     {
       "number": "02",
-      "name": "Hook System Core",
-      "promise": "HOOKS COMPLETE",
-      "budget": 15,
-      "reasoning": "Implement the hook event system as the foundation for extensibility. This enables PrePhase, PostPhase, PreIteration, PostIteration, OnFailure, and OnApproval events. Command hooks execute bash scripts with JSON input/output. This is prioritized because other features can leverage hooks for their behavior.",
-      "depends_on": ["01"]
+      "name": "DAG Data Structures",
+      "promise": "DAG TYPES COMPLETE",
+      "budget": 10,
+      "reasoning": "Implement PhaseNode, PhaseStatus, DagState, DagConfig, and SwarmBackend types in dag/mod.rs. These core data structures define the execution model and must exist before the scheduler logic can be built.",
+      "depends_on": [
+        "01"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
     },
     {
       "number": "03",
-      "name": "Prompt Hooks Integration",
-      "promise": "PROMPT_HOOKS COMPLETE",
-      "budget": 10,
-      "reasoning": "Extend the hook system to support prompt-type hooks that use a small LLM to evaluate conditions and return decisions. This enables intelligent automation of approval and continuation decisions.",
-      "depends_on": ["02"]
+      "name": "Phase Schema Extension",
+      "promise": "PHASE SCHEMA COMPLETE",
+      "budget": 8,
+      "reasoning": "Extend src/phase.rs to add the optional swarm field with SwarmConfig, SwarmStrategy, and SwarmTask types. Also add new hook events (SwarmDispatch, SwarmTaskComplete, SwarmReview) to hooks/types.rs. Required before swarm execution can reference these configurations.",
+      "depends_on": [
+        "01"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
     },
     {
       "number": "04",
-      "name": "Skills and Templates System",
-      "promise": "SKILLS COMPLETE",
-      "budget": 12,
-      "reasoning": "Implement the skills loading system for reusable prompt fragments. Skills are loaded from .forge/skills/ directories and injected into phase prompts when referenced. This provides immediate productivity gains by reducing prompt repetition.",
-      "depends_on": ["01"]
+      "name": "Configuration Extension",
+      "promise": "CONFIG EXTENSION COMPLETE",
+      "budget": 10,
+      "reasoning": "Extend forge_config.rs to parse the new [swarm] section with enabled, backend, default_strategy, max_agents settings, plus [swarm.reviews] and [phases.overrides] sections. Configuration must be parseable before execution logic can use it.",
+      "depends_on": [
+        "02",
+        "03"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
     },
     {
       "number": "05",
-      "name": "Progress Signaling",
-      "promise": "PROGRESS COMPLETE",
-      "budget": 10,
-      "reasoning": "Implement intermediate progress signals beyond binary promise detection. Parse and respond to <progress>, <blocker>, and <pivot> tags. Blockers pause execution and prompt user. Progress updates display in UI. Pivots are logged for pattern analysis.",
-      "depends_on": ["01"]
+      "name": "DAG Builder",
+      "promise": "DAG BUILDER COMPLETE",
+      "budget": 12,
+      "reasoning": "Implement dag/builder.rs with DagScheduler::from_phases() to construct the directed graph from phases.json, add dependency edges, and verify no cycles using petgraph's toposort. Also implement compute_waves() to determine parallel execution groups. Core scheduling logic depends on this.",
+      "depends_on": [
+        "02"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
     },
     {
       "number": "06",
-      "name": "Permission Modes",
-      "promise": "PERMISSIONS COMPLETE",
-      "budget": 12,
-      "reasoning": "Implement the dynamic permission mode system with strict, standard, autonomous, and readonly modes. Phases can specify their permission level, and the orchestrator adjusts oversight accordingly. Integrates with the hook system for OnApproval events.",
-      "depends_on": ["02", "05"]
+      "name": "DAG State Tracking",
+      "promise": "DAG STATE COMPLETE",
+      "budget": 10,
+      "reasoning": "Implement dag/state.rs with methods to track phase status transitions (Pending → Ready → Running → Completed/Failed), progress percentages, and execution results. The parallel executor needs state tracking to coordinate phases.",
+      "depends_on": [
+        "05"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
     },
     {
       "number": "07",
-      "name": "Context Compaction",
-      "promise": "COMPACTION COMPLETE",
-      "budget": 15,
-      "reasoning": "Implement context size tracking and automatic summarization to prevent context overflow during long-running phases. Add --context-limit flag and forge compact command. Preserve critical context while discarding verbose intermediate outputs.",
-      "depends_on": ["01", "05"]
+      "name": "Checkpoint Writer",
+      "promise": "CHECKPOINT WRITER COMPLETE",
+      "budget": 10,
+      "reasoning": "Implement checkpoint/mod.rs and checkpoint/writer.rs with Checkpoint struct and save/load methods. Checkpoints capture phase, iteration, progress, files changed, and git ref. Required for crash recovery and resume functionality.",
+      "depends_on": [
+        "01"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
     },
     {
       "number": "08",
-      "name": "Pattern Learning Improvements",
-      "promise": "PATTERNS COMPLETE",
-      "budget": 18,
-      "reasoning": "Enhance pattern learning to capture phase type classification, iteration counts, failure modes, file change patterns, and effective prompt structures. Apply patterns to suggest budgets, warn on divergence, and recommend skills. Builds on existing pattern system.",
-      "depends_on": ["01", "04", "05"]
+      "name": "Checkpoint Recovery",
+      "promise": "CHECKPOINT RECOVERY COMPLETE",
+      "budget": 12,
+      "reasoning": "Implement checkpoint/recovery.rs to detect incomplete runs, reconcile state from checkpoint files, and determine resumable phases. Works with the checkpoint writer to enable crash recovery.",
+      "depends_on": [
+        "07"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
     },
     {
       "number": "09",
-      "name": "Sub-Phase Delegation",
-      "promise": "SUBPHASES COMPLETE",
-      "budget": 20,
-      "reasoning": "Implement sub-phase spawning for handling scope discovery. Sub-phases inherit parent git snapshots, have independent budgets carved from parent, and maintain hierarchical audit trails. Parent completes only when all sub-phases complete. This is the most complex feature.",
-      "depends_on": ["02", "05", "06"]
+      "name": "DAG Parallel Executor",
+      "promise": "DAG EXECUTOR COMPLETE",
+      "budget": 18,
+      "reasoning": "Implement dag/executor.rs with the main execute() method using tokio semaphores for concurrency limits, mpsc channels for phase events, and JoinHandles for parallel task management. This is the core parallel execution engine and requires careful async coordination.",
+      "depends_on": [
+        "06",
+        "08"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
     },
     {
       "number": "10",
-      "name": "Integration Testing and Polish",
-      "promise": "INTEGRATION COMPLETE",
+      "name": "Swarm Context Types",
+      "promise": "SWARM CONTEXT COMPLETE",
+      "budget": 8,
+      "reasoning": "Implement swarm/context.rs with SwarmContext, SwarmTask, and SwarmStrategy types. These define the data passed to Claude Code swarms and must exist before the swarm executor can be built.",
+      "depends_on": [
+        "03"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
+    },
+    {
+      "number": "11",
+      "name": "Callback HTTP Server",
+      "promise": "CALLBACK SERVER COMPLETE",
       "budget": 12,
-      "reasoning": "Comprehensive integration testing of all new features working together. Ensure backward compatibility with existing .forge/ structures. Verify audit trail exports, CLI interface additions, and documentation updates. Final polish pass.",
-      "depends_on": ["03", "04", "06", "07", "08", "09"]
+      "reasoning": "Implement swarm/callback.rs using axum to create a lightweight HTTP server that receives progress updates from swarm agents. Endpoints include /progress for task updates. The swarm executor uses this for monitoring.",
+      "depends_on": [
+        "10"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
+    },
+    {
+      "number": "12",
+      "name": "Swarm Orchestration Prompts",
+      "promise": "SWARM PROMPTS COMPLETE",
+      "budget": 10,
+      "reasoning": "Implement swarm/prompts.rs with template functions that generate the orchestration prompts sent to Claude Code. Includes team creation, worker spawning, progress reporting, and completion signal formats.",
+      "depends_on": [
+        "10"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
+    },
+    {
+      "number": "13",
+      "name": "Swarm Executor",
+      "promise": "SWARM EXECUTOR COMPLETE",
+      "budget": 18,
+      "reasoning": "Implement swarm/executor.rs with SwarmExecutor that spawns Claude Code with the orchestration prompt, monitors execution via the callback server, and parses the swarm_complete signal. This is the bridge between Forge and Claude Code swarms.",
+      "depends_on": [
+        "11",
+        "12"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
+    },
+    {
+      "number": "14",
+      "name": "Review Specialist Types",
+      "promise": "REVIEW TYPES COMPLETE",
+      "budget": 8,
+      "reasoning": "Implement review/specialists.rs with ReviewSpecialist, SpecialistType enum (SecuritySentinel, PerformanceOracle, ArchitectureStrategist, SimplicityReviewer, Custom), and focus_areas() method. Defines the review specialist vocabulary.",
+      "depends_on": [
+        "01"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
+    },
+    {
+      "number": "15",
+      "name": "Review Findings Types",
+      "promise": "REVIEW FINDINGS COMPLETE",
+      "budget": 8,
+      "reasoning": "Implement review/findings.rs with ReviewOutput, Finding, and Verdict types. Defines the structured format for review results including severity, file location, issue description, and suggestions.",
+      "depends_on": [
+        "14"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
+    },
+    {
+      "number": "16",
+      "name": "LLM Arbiter",
+      "promise": "ARBITER COMPLETE",
+      "budget": 15,
+      "reasoning": "Implement review/arbiter.rs with ResolutionMode enum (Manual, Auto, Arbiter), ArbiterDecision, and ArbiterVerdict types. Includes the arbiter prompt template and decision logic for PROCEED/FIX/ESCALATE verdicts.",
+      "depends_on": [
+        "15"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
+    },
+    {
+      "number": "17",
+      "name": "Review Module Integration",
+      "promise": "REVIEW MODULE COMPLETE",
+      "budget": 12,
+      "reasoning": "Implement review/mod.rs to coordinate review specialists, aggregate findings, apply gating logic, and invoke the arbiter when gating reviews fail. Ties together specialists, findings, and arbiter into a cohesive review system.",
+      "depends_on": [
+        "16"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
+    },
+    {
+      "number": "18",
+      "name": "Hook Swarm Executor",
+      "promise": "HOOK SWARM COMPLETE",
+      "budget": 12,
+      "reasoning": "Extend hooks/executor.rs to handle the new Swarm hook type by invoking the SwarmExecutor. Connects the existing hook system to the new swarm capabilities.",
+      "depends_on": [
+        "13"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
+    },
+    {
+      "number": "19",
+      "name": "DAG Review Integration",
+      "promise": "DAG REVIEW COMPLETE",
+      "budget": 12,
+      "reasoning": "Integrate the review module with the DAG executor so that reviews are triggered after phase completion. Implements the review flow where gating failures invoke the arbiter or pause for human input.",
+      "depends_on": [
+        "09",
+        "17"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
+    },
+    {
+      "number": "20",
+      "name": "CLI Swarm Subcommand",
+      "promise": "CLI SWARM COMPLETE",
+      "budget": 15,
+      "reasoning": "Add the 'forge swarm' subcommand to main.rs with all flags: --from, --only, --max-parallel, --backend, --review, --review-mode, --max-fix-attempts, --escalate-on, --arbiter-confidence, --decompose, --decompose-threshold, --yes, --permission-mode, --ui. Also add 'forge swarm status' and 'forge swarm abort'.",
+      "depends_on": [
+        "04",
+        "19"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
+    },
+    {
+      "number": "21",
+      "name": "Progress UI",
+      "promise": "PROGRESS UI COMPLETE",
+      "budget": 12,
+      "reasoning": "Implement the terminal UI that displays wave progress, phase status bars, swarm activity, and review results. Supports full, minimal, and json output modes. Provides visibility into parallel execution.",
+      "depends_on": [
+        "20"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
+    },
+    {
+      "number": "22",
+      "name": "Dynamic Decomposition",
+      "promise": "DECOMPOSITION COMPLETE",
+      "budget": 15,
+      "reasoning": "Implement swarm/decomposition.rs with DecompositionResult and SubPhaseSpec types. Add detection of decomposition triggers (blocker signal, low progress, explicit request) and spawning of the decomposition agent.",
+      "depends_on": [
+        "13"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
+    },
+    {
+      "number": "23",
+      "name": "Integration Tests",
+      "promise": "INTEGRATION TESTS COMPLETE",
+      "budget": 20,
+      "reasoning": "Write comprehensive integration tests covering: DAG construction and wave computation, parallel execution with mocked phases, swarm hook invocation, review flow with arbiter, checkpoint save/restore, and CLI argument parsing.",
+      "depends_on": [
+        "21",
+        "22"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
+    },
+    {
+      "number": "24",
+      "name": "Documentation & Polish",
+      "promise": "DOCUMENTATION COMPLETE",
+      "budget": 10,
+      "reasoning": "Update README.md with swarm command documentation, add inline documentation to new modules, and ensure error messages are helpful. Final polish pass before release.",
+      "depends_on": [
+        "23"
+      ],
+      "skills": [],
+      "permission_mode": "standard"
     }
   ]
 }
