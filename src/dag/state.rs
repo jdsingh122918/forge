@@ -58,6 +58,12 @@ pub struct PhaseResult {
     /// Duration of the phase execution
     #[serde(with = "duration_serde")]
     pub duration: Duration,
+    /// Additional note about the phase result
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Whether the phase was decomposed into sub-tasks
+    #[serde(default)]
+    pub decomposed: bool,
 }
 
 impl PhaseResult {
@@ -76,6 +82,8 @@ impl PhaseResult {
             review_result: None,
             error: None,
             duration,
+            note: None,
+            decomposed: false,
         }
     }
 
@@ -89,12 +97,26 @@ impl PhaseResult {
             review_result: None,
             error: Some(error.to_string()),
             duration,
+            note: None,
+            decomposed: false,
         }
     }
 
     /// Add review result to this phase result.
     pub fn with_review(mut self, review_result: DispatchResult) -> Self {
         self.review_result = Some(review_result);
+        self
+    }
+
+    /// Add a note to this phase result.
+    pub fn with_note(mut self, note: &str) -> Self {
+        self.note = Some(note.to_string());
+        self
+    }
+
+    /// Mark this result as decomposed.
+    pub fn with_decomposition(mut self) -> Self {
+        self.decomposed = true;
         self
     }
 
@@ -113,6 +135,11 @@ impl PhaseResult {
         self.review_result
             .as_ref()
             .is_some_and(|r| !r.can_proceed())
+    }
+
+    /// Check if this phase was decomposed.
+    pub fn was_decomposed(&self) -> bool {
+        self.decomposed
     }
 }
 
@@ -250,6 +277,49 @@ mod tests {
         assert!(!result.success);
         assert!(!result.can_proceed());
         assert_eq!(result.error.as_deref(), Some("Budget exhausted"));
+    }
+
+    #[test]
+    fn test_phase_result_decomposition() {
+        let result = PhaseResult::success(
+            "05",
+            8,
+            FileChangeSummary::default(),
+            Duration::from_secs(30),
+        )
+        .with_decomposition();
+
+        assert!(result.was_decomposed());
+        assert!(result.success);
+        assert!(result.can_proceed());
+    }
+
+    #[test]
+    fn test_phase_result_no_decomposition() {
+        let result = PhaseResult::success(
+            "01",
+            5,
+            FileChangeSummary::default(),
+            Duration::from_secs(10),
+        );
+
+        assert!(!result.was_decomposed());
+    }
+
+    #[test]
+    fn test_phase_result_with_note() {
+        let result = PhaseResult::success(
+            "05",
+            8,
+            FileChangeSummary::default(),
+            Duration::from_secs(30),
+        )
+        .with_note("Phase was decomposed into sub-tasks");
+
+        assert_eq!(
+            result.note.as_deref(),
+            Some("Phase was decomposed into sub-tasks")
+        );
     }
 
     #[test]

@@ -6,6 +6,10 @@
 use crate::config::Config;
 use crate::dag::scheduler::{DagConfig, DagScheduler};
 use crate::dag::state::{DagState, DagSummary, ExecutionTimer, PhaseResult};
+use crate::decomposition::{
+    parse_decomposition_output, parse_decomposition_request, DecompositionConfig,
+    DecompositionDetector, DecompositionExecutor, ExecutionSignals,
+};
 use crate::orchestrator::review_integration::{ReviewIntegration, ReviewIntegrationConfig};
 use crate::orchestrator::ClaudeRunner;
 use crate::phase::Phase;
@@ -66,6 +70,30 @@ pub enum PhaseEvent {
         success: bool,
         summary: DagSummary,
     },
+    /// A phase is being decomposed.
+    DecompositionStarted {
+        phase: String,
+        reason: String,
+    },
+    /// A phase decomposition completed.
+    DecompositionCompleted {
+        phase: String,
+        task_count: usize,
+        total_budget: u32,
+    },
+    /// A decomposed sub-task started.
+    SubTaskStarted {
+        phase: String,
+        task_id: String,
+        task_name: String,
+    },
+    /// A decomposed sub-task completed.
+    SubTaskCompleted {
+        phase: String,
+        task_id: String,
+        success: bool,
+        iterations: u32,
+    },
 }
 
 /// Result of DAG execution.
@@ -96,6 +124,8 @@ pub struct ExecutorConfig {
     pub verbose: bool,
     /// Review integration config.
     pub review_config: ReviewIntegrationConfig,
+    /// Decomposition config.
+    pub decomposition_config: DecompositionConfig,
 }
 
 impl ExecutorConfig {
@@ -108,6 +138,7 @@ impl ExecutorConfig {
             auto_approve: false,
             verbose: config.verbose,
             review_config: ReviewIntegrationConfig::default(),
+            decomposition_config: DecompositionConfig::default(),
         }
     }
 
@@ -120,6 +151,12 @@ impl ExecutorConfig {
     /// Enable auto-approve mode.
     pub fn with_auto_approve(mut self, auto_approve: bool) -> Self {
         self.auto_approve = auto_approve;
+        self
+    }
+
+    /// Set decomposition configuration.
+    pub fn with_decomposition_config(mut self, config: DecompositionConfig) -> Self {
+        self.decomposition_config = config;
         self
     }
 }
@@ -385,7 +422,7 @@ impl DagExecutor {
     }
 }
 
-/// Execute a single phase with review integration.
+/// Execute a single phase with review integration and decomposition support.
 async fn execute_single_phase(
     phase: &Phase,
     config: &ExecutorConfig,
@@ -437,9 +474,15 @@ async fn execute_single_phase(
         }
     };
 
+    // Initialize decomposition tracking if enabled
+    let decomposition_detector = DecompositionDetector::new(config.decomposition_config.clone());
+    let decomposition_executor = DecompositionExecutor::new(config.decomposition_config.clone());
+    let mut accumulated_signals = ExecutionSignals::new();
+
     // Run iterations until complete or budget exhausted
     let mut completed = false;
     let mut iteration = 0;
+    let mut decomposition_triggered = false;
 
     for iter in 1..=phase.budget {
         iteration = iter;
@@ -466,6 +509,82 @@ async fn execute_single_phase(
                     break;
                 }
 
+                // Accumulate signals for decomposition detection
+                accumulated_signals.add_iteration(&output.signals);
+                let progress = accumulated_signals.latest_progress().unwrap_or(0) as u32;
+
+                // Check for explicit decomposition request in output
+                if dag_config.decomposition_enabled && parse_decomposition_request(&output.output) {
+                    accumulated_signals.add_decomposition_request();
+                }
+
+                // Check for decomposition trigger
+                if dag_config.decomposition_enabled {
+                    let trigger = decomposition_detector.check_trigger_with_signals(
+                        phase,
+                        &accumulated_signals,
+                        iter,
+                        progress,
+                    );
+
+                    if trigger.should_decompose() {
+                        // Try to parse decomposition from output
+                        if let Ok(Some(decomposition)) = parse_decomposition_output(&output.output) {
+                            // Emit decomposition started event
+                            if let Some(ref tx) = event_tx {
+                                tx.send(PhaseEvent::DecompositionStarted {
+                                    phase: phase.number.clone(),
+                                    reason: trigger.description(),
+                                })
+                                .await
+                                .ok();
+                            }
+
+                            // Validate and log decomposition
+                            match decomposition_executor.convert_to_subphases(
+                                phase,
+                                decomposition.clone(),
+                                iter,
+                                &trigger.description(),
+                            ) {
+                                Ok(_decomposed) => {
+                                    // Emit decomposition completed event
+                                    if let Some(ref tx) = event_tx {
+                                        tx.send(PhaseEvent::DecompositionCompleted {
+                                            phase: phase.number.clone(),
+                                            task_count: decomposition.task_count(),
+                                            total_budget: decomposition.total_budget(),
+                                        })
+                                        .await
+                                        .ok();
+                                    }
+
+                                    if config.verbose {
+                                        eprintln!(
+                                            "Phase {} decomposed into {} tasks (budget: {})",
+                                            phase.number,
+                                            decomposition.task_count(),
+                                            decomposition.total_budget()
+                                        );
+                                    }
+
+                                    decomposition_triggered = true;
+                                    break;
+                                }
+                                Err(e) => {
+                                    if config.verbose {
+                                        eprintln!(
+                                            "Failed to convert decomposition for phase {}: {}",
+                                            phase.number, e
+                                        );
+                                    }
+                                    // Continue execution without decomposition
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Emit progress with percentage if available
                 if let Some(pct) = output.signals.latest_progress()
                     && let Some(ref tx) = event_tx
@@ -487,6 +606,19 @@ async fn execute_single_phase(
 
         // Small delay between iterations
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    }
+
+    // Handle decomposition - for now we report it as a special state
+    // A full implementation would execute sub-phases recursively here
+    if decomposition_triggered {
+        // Compute changes so far
+        let files_changed = tracker.compute_changes(&snapshot_sha).unwrap_or_default();
+
+        // Return a result indicating decomposition occurred
+        // The caller can choose how to handle this (e.g., spawn sub-phase execution)
+        return PhaseResult::success(&phase.number, iteration, files_changed, timer.elapsed())
+            .with_note("Phase was decomposed into sub-tasks")
+            .with_decomposition();
     }
 
     // Compute changes
@@ -576,10 +708,26 @@ mod tests {
             auto_approve: false,
             verbose: false,
             review_config: ReviewIntegrationConfig::default(),
+            decomposition_config: DecompositionConfig::default(),
         };
 
         assert_eq!(config.project_dir, PathBuf::from("/test"));
         assert!(config.skip_permissions);
+    }
+
+    #[test]
+    fn test_executor_config_with_decomposition() {
+        let config = ExecutorConfig {
+            project_dir: PathBuf::from("/test"),
+            claude_cmd: "claude".to_string(),
+            skip_permissions: true,
+            auto_approve: false,
+            verbose: false,
+            review_config: ReviewIntegrationConfig::default(),
+            decomposition_config: DecompositionConfig::disabled(),
+        };
+
+        assert!(!config.decomposition_config.enabled);
     }
 
     #[test]
@@ -592,6 +740,29 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("started"));
         assert!(json.contains("01"));
+    }
+
+    #[test]
+    fn test_decomposition_event_serialization() {
+        let event = PhaseEvent::DecompositionStarted {
+            phase: "05".to_string(),
+            reason: "Budget exhausted".to_string(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("decomposition_started"));
+        assert!(json.contains("05"));
+        assert!(json.contains("Budget exhausted"));
+
+        let completed = PhaseEvent::DecompositionCompleted {
+            phase: "05".to_string(),
+            task_count: 3,
+            total_budget: 15,
+        };
+
+        let json = serde_json::to_string(&completed).unwrap();
+        assert!(json.contains("decomposition_completed"));
+        assert!(json.contains("\"task_count\":3"));
     }
 
     #[test]

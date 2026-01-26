@@ -214,6 +214,31 @@ impl DagUI {
             PhaseEvent::DagCompleted { success, summary } => {
                 self.on_dag_completed(*success, summary);
             }
+            PhaseEvent::DecompositionStarted { phase, reason } => {
+                self.on_decomposition_started(phase, reason);
+            }
+            PhaseEvent::DecompositionCompleted {
+                phase,
+                task_count,
+                total_budget,
+            } => {
+                self.on_decomposition_completed(phase, *task_count, *total_budget);
+            }
+            PhaseEvent::SubTaskStarted {
+                phase,
+                task_id,
+                task_name,
+            } => {
+                self.on_subtask_started(phase, task_id, task_name);
+            }
+            PhaseEvent::SubTaskCompleted {
+                phase,
+                task_id,
+                success,
+                iterations,
+            } => {
+                self.on_subtask_completed(phase, task_id, *success, *iterations);
+            }
         }
     }
 
@@ -602,6 +627,66 @@ impl DagUI {
         self.multi.println("").ok();
     }
 
+    /// Handle decomposition started event.
+    fn on_decomposition_started(&self, phase: &str, reason: &str) {
+        self.multi
+            .println(format!(
+                "  {} Phase {} triggering decomposition: {}",
+                style("🔀").cyan(),
+                style(phase).yellow().bold(),
+                style(reason).dim()
+            ))
+            .ok();
+    }
+
+    /// Handle decomposition completed event.
+    fn on_decomposition_completed(&self, phase: &str, task_count: usize, total_budget: u32) {
+        self.multi
+            .println(format!(
+                "  {} Phase {} decomposed into {} sub-tasks (budget: {})",
+                style("✂").green(),
+                style(phase).yellow(),
+                style(task_count).green().bold(),
+                style(total_budget).cyan()
+            ))
+            .ok();
+    }
+
+    /// Handle sub-task started event.
+    fn on_subtask_started(&self, phase: &str, task_id: &str, task_name: &str) {
+        if self.verbose {
+            self.multi
+                .println(format!(
+                    "    {} Sub-task {}/{}: {} starting...",
+                    style("▶").cyan(),
+                    phase,
+                    style(task_id).dim(),
+                    style(task_name).yellow()
+                ))
+                .ok();
+        }
+    }
+
+    /// Handle sub-task completed event.
+    fn on_subtask_completed(&self, phase: &str, task_id: &str, success: bool, iterations: u32) {
+        let emoji = if success { CHECK } else { CROSS };
+        let status = if success {
+            style("complete").green()
+        } else {
+            style("failed").red()
+        };
+
+        self.multi
+            .println(format!(
+                "    {} Sub-task {}/{} {} ({} iterations)",
+                emoji,
+                phase,
+                style(task_id).dim(),
+                status,
+                iterations
+            ))
+            .ok();
+    }
 }
 
 /// Format a duration for display.

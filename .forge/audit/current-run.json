@@ -289,6 +289,34 @@
         "total_lines_added": 22,
         "total_lines_removed": 193
       }
+    },
+    {
+      "phase_number": "22",
+      "description": "Dynamic Decomposition",
+      "promise": "DECOMPOSITION COMPLETE",
+      "started_at": "2026-01-26T17:30:44.209028Z",
+      "ended_at": "2026-01-26T17:48:41.654176Z",
+      "iterations": [],
+      "outcome": {
+        "Completed": {
+          "iteration": 1
+        }
+      },
+      "file_changes": {
+        "files_added": [
+          "src/decomposition/"
+        ],
+        "files_modified": [
+          "src/dag/executor.rs",
+          "src/dag/state.rs",
+          "src/forge_config.rs",
+          "src/lib.rs",
+          "src/ui/dag_progress.rs"
+        ],
+        "files_deleted": [],
+        "total_lines_added": 524,
+        "total_lines_removed": 1
+      }
     }
   ]
 }
