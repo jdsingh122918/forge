@@ -1,21 +1,13 @@
 use crate::audit::{ChangeType, FileChangeSummary};
 use crate::signals::IterationSignals;
-use console::{Emoji, style};
+use crate::ui::icons::{
+    BLOCKER, CHECK, CROSS, FILE_DEL, FILE_MOD, FILE_NEW, FOLDER, PIVOT, PROGRESS, SPARKLE,
+};
+use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
-
-static CHECK: Emoji<'_, '_> = Emoji("✅ ", "[OK]");
-static CROSS: Emoji<'_, '_> = Emoji("❌ ", "[ERR]");
-static SPARKLE: Emoji<'_, '_> = Emoji("✨ ", "*");
-static FOLDER: Emoji<'_, '_> = Emoji("📁 ", "");
-static FILE_NEW: Emoji<'_, '_> = Emoji("📄 ", "+");
-static FILE_MOD: Emoji<'_, '_> = Emoji("📝 ", "~");
-static FILE_DEL: Emoji<'_, '_> = Emoji("🗑️  ", "-");
-static PROGRESS: Emoji<'_, '_> = Emoji("📊 ", "[PROG]");
-static BLOCKER: Emoji<'_, '_> = Emoji("🚧 ", "[BLOCK]");
-static PIVOT: Emoji<'_, '_> = Emoji("🔄 ", "[PIVOT]");
 
 pub struct OrchestratorUI {
     multi: MultiProgress,

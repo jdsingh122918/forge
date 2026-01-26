@@ -1961,6 +1961,7 @@ async fn cmd_swarm(
     use forge::init::get_forge_dir;
     use forge::orchestrator::review_integration::{DefaultSpecialist, ReviewIntegrationConfig};
     use forge::phase::load_phases_or_default;
+    use forge::ui::{DagUI, UiMode};
     use tokio::sync::mpsc;
 
     check_run_prerequisites(project_dir)?;
@@ -2084,172 +2085,27 @@ async fn cmd_swarm(
     // Create event channel for progress display
     let (event_tx, mut event_rx) = mpsc::channel::<PhaseEvent>(100);
 
-    // Parse UI mode
-    let ui_mode_parsed = ui_mode.to_lowercase();
-    let is_json = ui_mode_parsed == "json";
-    let is_minimal = ui_mode_parsed == "minimal";
+    // Parse UI mode and create DagUI
+    let parsed_ui_mode = UiMode::parse(ui_mode);
+    let dag_ui = std::sync::Arc::new(DagUI::new(phases.len(), parsed_ui_mode, cli.verbose));
 
-    // Spawn progress display task
-    let verbose = cli.verbose;
+    // Spawn progress display task using DagUI
+    let dag_ui_clone = dag_ui.clone();
     let display_handle = tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
-            // JSON mode: output each event as JSON
-            if is_json {
-                if let Ok(json) = serde_json::to_string(&event) {
-                    println!("{}", json);
-                }
-                continue;
-            }
-
-            match event {
-                PhaseEvent::WaveStarted { wave, phases } => {
-                    if !is_minimal {
-                        println!();
-                        println!(
-                            "{}",
-                            console::style(format!("Wave {} starting: {:?}", wave, phases)).bold()
-                        );
-                    }
-                }
-                PhaseEvent::Started { phase, wave: _ } => {
-                    if !is_minimal {
-                        println!(
-                            "  {} Phase {} starting",
-                            console::style("▶").cyan(),
-                            phase
-                        );
-                    }
-                }
-                PhaseEvent::Progress {
-                    phase,
-                    iteration,
-                    budget,
-                    percent,
-                } => {
-                    if verbose && !is_minimal {
-                        let pct_str = percent
-                            .map(|p| format!(" ({}%)", p))
-                            .unwrap_or_default();
-                        println!(
-                            "    {} Phase {} iteration {}/{}{}",
-                            console::style("·").dim(),
-                            phase,
-                            iteration,
-                            budget,
-                            pct_str
-                        );
-                    }
-                }
-                PhaseEvent::Completed { phase, result } => {
-                    if result.success {
-                        if is_minimal {
-                            println!("✓ {}", phase);
-                        } else {
-                            println!(
-                                "  {} Phase {} completed in {} iterations",
-                                console::style("✓").green(),
-                                phase,
-                                result.iterations
-                            );
-                        }
-                    } else {
-                        let err = result.error.as_deref().unwrap_or("Unknown error");
-                        if is_minimal {
-                            println!("✗ {} - {}", phase, err);
-                        } else {
-                            println!(
-                                "  {} Phase {} failed: {}",
-                                console::style("✗").red(),
-                                phase,
-                                err
-                            );
-                        }
-                    }
-                }
-                PhaseEvent::ReviewStarted { phase } => {
-                    if !is_minimal {
-                        println!(
-                            "    {} Running reviews for phase {}...",
-                            console::style("◎").yellow(),
-                            phase
-                        );
-                    }
-                }
-                PhaseEvent::ReviewCompleted {
-                    phase: _,
-                    passed,
-                    findings_count,
-                } => {
-                    if !is_minimal {
-                        if passed {
-                            println!(
-                                "    {} Reviews passed ({} findings)",
-                                console::style("✓").green(),
-                                findings_count
-                            );
-                        } else {
-                            println!(
-                                "    {} Reviews FAILED ({} findings)",
-                                console::style("✗").red(),
-                                findings_count
-                            );
-                        }
-                    }
-                }
-                PhaseEvent::WaveCompleted {
-                    wave,
-                    success_count,
-                    failed_count,
-                } => {
-                    if !is_minimal {
-                        println!(
-                            "{} Wave {} completed: {} success, {} failed",
-                            console::style("─").dim(),
-                            wave,
-                            success_count,
-                            failed_count
-                        );
-                    }
-                }
-                PhaseEvent::DagCompleted { success, summary } => {
-                    if is_minimal {
-                        println!("Done: {}/{}", summary.completed, summary.total_phases);
-                    } else {
-                        println!();
-                        if success {
-                            println!(
-                                "{}",
-                                console::style("All phases completed successfully!").green().bold()
-                            );
-                        } else {
-                            println!(
-                                "{}",
-                                console::style(format!(
-                                    "Execution finished: {}/{} phases succeeded",
-                                    summary.completed, summary.total_phases
-                                ))
-                                .yellow()
-                                .bold()
-                            );
-                        }
-                    }
-                }
-            }
+            dag_ui_clone.handle_event(&event);
         }
     });
 
     // Create executor and run
     let executor = DagExecutor::new(executor_config, dag_config).with_event_channel(event_tx);
 
-    // Parse UI mode for header/footer
-    let show_full_ui = ui_mode != "json" && ui_mode != "minimal";
-
     // Compute waves for display
     let scheduler = DagScheduler::from_phases(&phases, DagConfig::default())?;
     let waves = scheduler.compute_waves();
 
-    // Show DAG analysis (unless json or minimal mode)
-    if show_full_ui {
+    // Show DAG analysis header using DagUI
+    if parsed_ui_mode == UiMode::Full {
         println!();
         println!(
             "{}",
@@ -2269,12 +2125,9 @@ async fn cmd_swarm(
         if fail_fast {
             println!("Mode: fail-fast");
         }
-        println!();
-        println!("Execution plan ({} waves):", waves.len());
-        for (i, wave) in waves.iter().enumerate() {
-            println!("  Wave {}: {:?}", i, wave);
-        }
-    } else if ui_mode == "json" {
+        // Use DagUI for wave visualization
+        dag_ui.print_dag_analysis(phases.len(), &waves);
+    } else if parsed_ui_mode == UiMode::Json {
         // Output initial state as JSON
         let init_state = serde_json::json!({
             "type": "init",
@@ -2313,28 +2166,9 @@ async fn cmd_swarm(
     let abort_file = forge_dir.join("swarm.abort");
     let _ = std::fs::remove_file(&abort_file);
 
-    // Summary
-    if show_full_ui {
-        println!();
-        println!("─────────────────────────");
-        println!(
-            "Duration: {:.1}s",
-            result.duration.as_secs_f64()
-        );
-        println!(
-            "Completed: {}/{}",
-            result.summary.completed, result.summary.total_phases
-        );
-        if result.summary.failed > 0 {
-            println!(
-                "Failed: {}",
-                console::style(result.summary.failed).red()
-            );
-        }
-        if result.summary.skipped > 0 {
-            println!("Skipped: {}", result.summary.skipped);
-        }
-    } else if ui_mode == "json" {
+    // Final summary (DagUI handles the detailed display via DagCompleted event,
+    // but we output JSON final state explicitly for json mode)
+    if parsed_ui_mode == UiMode::Json {
         let final_state = serde_json::json!({
             "type": "final",
             "success": result.success,
