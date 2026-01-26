@@ -7,32 +7,34 @@
 //!
 //! - [`callback`]: HTTP server for receiving progress updates from swarm agents
 //! - [`context`]: Data types for swarm execution configuration
+//! - [`executor`]: SwarmExecutor for orchestrating Claude Code swarm execution
 //! - [`prompts`]: Prompt templates for orchestrating Claude Code swarms
 //!
 //! ## Usage
 //!
 //! ```no_run
-//! use forge::swarm::{CallbackServer, SwarmContext, PhaseInfo};
-//! use forge::swarm::prompts::build_orchestration_prompt;
+//! use forge::swarm::{SwarmContext, PhaseInfo, SwarmExecutor, SwarmConfig};
 //! use std::path::PathBuf;
 //!
 //! # async fn example() -> anyhow::Result<()> {
 //! // Create context for swarm execution
 //! let phase = PhaseInfo::new("05", "OAuth Integration", "OAUTH COMPLETE", 20);
-//! let mut server = CallbackServer::new();
-//! let callback_url = server.start().await?;
-//! let context = SwarmContext::new(phase, &callback_url, PathBuf::from("/project"));
+//! let config = SwarmConfig::default();
+//! let executor = SwarmExecutor::new(config);
 //!
-//! // Generate orchestration prompt
-//! let prompt = build_orchestration_prompt(&context);
+//! let context = SwarmContext::new(phase, "", PathBuf::from("/project"));
+//! let result = executor.execute(context).await?;
 //!
-//! // Pass prompt to Claude Code...
+//! if result.success {
+//!     println!("Phase completed: {:?}", result.tasks_completed);
+//! }
 //! # Ok(())
 //! # }
 //! ```
 
 pub mod callback;
 pub mod context;
+pub mod executor;
 pub mod prompts;
 
 // Re-export callback types
@@ -45,6 +47,9 @@ pub use context::{
     PhaseInfo, ReviewConfig, ReviewSpecialistConfig, ReviewSpecialistType, SwarmContext,
     SwarmStrategy, SwarmTask,
 };
+
+// Re-export executor types
+pub use executor::{ReviewOutcome, SwarmConfig, SwarmExecutor, SwarmResult};
 
 // Re-export prompt parsing types
 pub use prompts::{ReviewResult, SwarmCompletionResult};

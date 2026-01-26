@@ -116,14 +116,17 @@ pub enum SwarmEvent {
 }
 
 /// Internal state shared between handlers.
+///
+/// This is exposed with crate visibility to allow the SwarmExecutor
+/// to poll for new events during execution.
 #[derive(Debug)]
-struct ServerState {
+pub(crate) struct ServerState {
     /// Accumulated events
-    events: Vec<SwarmEvent>,
+    pub(crate) events: Vec<SwarmEvent>,
     /// Whether the server is running
-    running: bool,
+    pub(crate) running: bool,
     /// Maximum number of events to retain
-    max_events: usize,
+    pub(crate) max_events: usize,
 }
 
 impl Default for ServerState {
@@ -153,8 +156,8 @@ impl ServerState {
 /// for swarm agents to report progress. Events are accumulated and can be
 /// polled by the orchestrator.
 pub struct CallbackServer {
-    /// Shared state
-    state: Arc<RwLock<ServerState>>,
+    /// Shared state (exposed for polling by SwarmExecutor)
+    pub(crate) state: Arc<RwLock<ServerState>>,
     /// Shutdown signal sender
     shutdown_tx: Option<oneshot::Sender<()>>,
     /// Server address once started
@@ -278,6 +281,13 @@ impl CallbackServer {
     pub async fn clear_events(&self) {
         let mut state = self.state.write().await;
         state.events.clear();
+    }
+
+    /// Get a clone of the internal state for polling.
+    ///
+    /// This is used by SwarmExecutor to poll for new events during execution.
+    pub(crate) fn state_clone(&self) -> Arc<RwLock<ServerState>> {
+        self.state.clone()
     }
 }
 
