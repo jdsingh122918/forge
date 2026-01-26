@@ -3,19 +3,18 @@
 **Date:** 2026-01-26
 **Status:** Draft
 **Author:** Claude + User
+**Approach:** Hybrid (Native DAG + Swarm Hooks)
 
 ---
 
 ## Executive Summary
 
-This document describes the design for integrating Claude Code's swarm orchestration capabilities into Forge. The chosen approach (Approach B: Claude-as-Orchestrator) positions Forge as a **blueprint generator and monitor** while Claude Code handles the actual multi-agent coordination.
+This document describes the design for integrating parallel execution and swarm orchestration into Forge. The chosen approach is a **hybrid architecture**:
 
-This enables:
-- **Parallel phase execution** based on dependency graph analysis
-- **Quality gates** via parallel review specialists (security, performance, architecture)
-- **Dynamic decomposition** when phases prove more complex than expected
-- **LLM-driven decisions** for autonomous resolution of review failures
-- **Robust recovery** from crashes and failures via checkpointing
+- **Native Rust DAG scheduler** for phase-level parallelism (fast, predictable, testable)
+- **Swarm hooks** that delegate to Claude Code's TeammateTool for within-phase complexity
+
+This gives us the best of both worlds: disciplined orchestration where Forge excels, and sophisticated agent coordination where Claude Code excels.
 
 ---
 
@@ -23,16 +22,14 @@ This enables:
 
 1. [Goals & Non-Goals](#goals--non-goals)
 2. [Architecture Overview](#architecture-overview)
-3. [Blueprint Format](#blueprint-format)
-4. [Orchestration Prompt](#orchestration-prompt)
-5. [Monitoring & State Sync](#monitoring--state-sync)
-6. [Review Specialist Integration](#review-specialist-integration)
-7. [LLM Arbiter](#llm-arbiter)
-8. [Dynamic Decomposition](#dynamic-decomposition)
-9. [CLI Interface](#cli-interface)
-10. [Error Handling & Recovery](#error-handling--recovery)
-11. [Implementation Plan](#implementation-plan)
-12. [Alternatives Considered](#alternatives-considered)
+3. [Native DAG Scheduler](#native-dag-scheduler)
+4. [Swarm Hook System](#swarm-hook-system)
+5. [Review Specialist Integration](#review-specialist-integration)
+6. [LLM Arbiter](#llm-arbiter)
+7. [Dynamic Decomposition](#dynamic-decomposition)
+8. [CLI Interface](#cli-interface)
+9. [Error Handling & Recovery](#error-handling--recovery)
+10. [Implementation Plan](#implementation-plan)
 
 ---
 
@@ -40,17 +37,18 @@ This enables:
 
 ### Goals
 
-1. **Faster execution** - Run independent phases in parallel to reduce wall-clock time
-2. **Better quality** - Parallel review agents gate phase completion
-3. **Smarter decomposition** - Automatically split complex phases
+1. **Faster execution** - Run independent phases in parallel via native DAG scheduling
+2. **Better quality** - Swarm-based parallel review specialists gate phase completion
+3. **Smarter decomposition** - Automatically split complex phases using Claude agents
 4. **Autonomous operation** - LLM arbiter can resolve review failures without human intervention
-5. **Resilience** - Recover gracefully from crashes and failures
-6. **Backwards compatibility** - Existing `forge run` continues to work
+5. **Resilience** - Recover gracefully from crashes via checkpointing
+6. **Predictable behavior** - Native scheduling eliminates LLM latency variance in critical path
+7. **Backwards compatibility** - Existing `forge run` continues to work
 
 ### Non-Goals
 
-- Replacing Claude Code's swarm implementation with a native one
-- Supporting non-Claude LLM backends
+- Replacing Claude Code's swarm primitives with native implementations
+- Supporting non-Claude LLM backends (initially)
 - Real-time collaboration between human and swarm
 - Distributed execution across multiple machines
 
@@ -58,350 +56,643 @@ This enables:
 
 ## Architecture Overview
 
-Forge becomes a **swarm blueprint generator and monitor**. Instead of running Claude directly for each phase, Forge:
-
-1. **Analyzes** the phase DAG to identify parallelization opportunities
-2. **Generates** a structured swarm blueprint (team configuration, tasks, dependencies)
-3. **Launches** Claude Code with an orchestration prompt that uses TeammateTool
-4. **Monitors** the swarm execution via team files and inboxes
-5. **Aggregates** results back into Forge's state system
+The hybrid architecture splits responsibilities clearly:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         FORGE CLI                                │
-│                                                                  │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐       │
-│  │   Analyzer   │───▶│  Blueprint   │───▶│   Launcher   │       │
-│  │              │    │  Generator   │    │              │       │
-│  │ - Parse DAG  │    │ - Team spec  │    │ - Spawn CC   │       │
-│  │ - Find ||    │    │ - Task list  │    │ - Pass stdin │       │
-│  │ - Group work │    │ - Reviewers  │    │ - Monitor    │       │
-│  └──────────────┘    └──────────────┘    └──────────────┘       │
-│                                                 │                │
-│                                                 ▼                │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │                   CLAUDE CODE SWARM                       │   │
-│  │                                                           │   │
-│  │   Leader (orchestrator)                                   │   │
-│  │      ├── Phase Workers (parallel execution)               │   │
-│  │      ├── Review Specialists (quality gates)               │   │
-│  │      └── Decomposition Agents (dynamic splitting)         │   │
-│  │                                                           │   │
-│  │   Communicates via: TeammateTool, TaskCreate/Update       │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                 │                │
-│                                                 ▼                │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐       │
-│  │    Inbox     │───▶│    State     │───▶│    Audit     │       │
-│  │   Watcher    │    │   Updater    │    │   Logger     │       │
-│  └──────────────┘    └──────────────┘    └──────────────┘       │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                            FORGE (Native Rust)                           │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │                        DAG SCHEDULER                                │ │
+│  │                                                                     │ │
+│  │   phases.json ──▶ [Build Graph] ──▶ [Compute Waves] ──▶ [Dispatch] │ │
+│  │                                                                     │ │
+│  │   Wave 1: [01]──────────────────────────────────────────────────┐  │ │
+│  │   Wave 2: [02]─────┬─────[03]─────┬─────[06]────────────────────┤  │ │
+│  │   Wave 3: [04]─────┴─────[05*]────┴─────[07]────────────────────┤  │ │
+│  │   Wave 4: [08]──────────────────────────────────────────────────┘  │ │
+│  │                        (* = swarm-enabled)                          │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                    │                                     │
+│                    ┌───────────────┼───────────────┐                    │
+│                    ▼               ▼               ▼                    │
+│             ┌───────────┐   ┌───────────┐   ┌───────────┐              │
+│             │  Worker   │   │  Worker   │   │  Swarm    │              │
+│             │ (Claude)  │   │ (Claude)  │   │  Hook     │              │
+│             └───────────┘   └───────────┘   └─────┬─────┘              │
+│                                                   │                     │
+└───────────────────────────────────────────────────┼─────────────────────┘
+                                                    │
+                    ┌───────────────────────────────┘
+                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         CLAUDE CODE SWARM                                │
+│                                                                          │
+│   Leader Agent                                                          │
+│      ├── Review Specialists (security, performance, architecture)       │
+│      ├── Decomposition Agent (splits complex work)                      │
+│      └── Task Workers (parallel execution within phase)                 │
+│                                                                          │
+│   Communicates via: TeammateTool, TaskCreate/Update, Inboxes            │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Key insight:** Forge doesn't need to understand *how* Claude Code coordinates agents—it just needs to express *what* should happen and monitor *that* it happened.
+### Responsibility Split
+
+| Responsibility | Forge (Native) | Claude Code (Swarm) |
+|----------------|----------------|---------------------|
+| Phase-level parallelism | ✓ | |
+| Dependency ordering | ✓ | |
+| Progress tracking | ✓ | |
+| State persistence | ✓ | |
+| Error recovery | ✓ | |
+| Agent coordination | | ✓ |
+| Task decomposition | | ✓ |
+| Review orchestration | | ✓ |
+| Inter-agent messaging | | ✓ |
 
 ---
 
-## Blueprint Format
+## Native DAG Scheduler
 
-The blueprint is a structured JSON document that Forge generates and passes to Claude Code.
+### Core Data Structures
 
-```json
-{
-  "version": "1.0",
-  "project": {
-    "name": "my-project",
-    "spec_hash": "abc123",
-    "working_dir": "/path/to/project"
-  },
-  "team": {
-    "name": "forge-run-20260126-143022",
-    "description": "Forge orchestrated run for my-project"
-  },
-  "execution": {
-    "mode": "parallel",
-    "max_concurrent": 4,
-    "backend": "auto"
-  },
-  "phases": [
-    {
-      "id": "01",
-      "name": "Project scaffolding",
-      "promise": "SCAFFOLD COMPLETE",
-      "budget": 12,
-      "depends_on": [],
-      "skills": ["rust-conventions"],
-      "permission_mode": "standard",
-      "agent_type": "general-purpose"
-    },
-    {
-      "id": "02",
-      "name": "Database schema",
-      "promise": "DB COMPLETE",
-      "budget": 15,
-      "depends_on": ["01"],
-      "skills": ["sql-best-practices"],
-      "permission_mode": "strict",
-      "agent_type": "general-purpose"
-    },
-    {
-      "id": "03",
-      "name": "Config module",
-      "promise": "CONFIG COMPLETE",
-      "budget": 10,
-      "depends_on": ["01"],
-      "skills": [],
-      "permission_mode": "standard",
-      "agent_type": "general-purpose"
-    }
-  ],
-  "reviews": {
-    "enabled": true,
-    "trigger": "phase_complete",
-    "specialists": [
-      {"type": "security-sentinel", "gate": true},
-      {"type": "performance-oracle", "gate": false}
-    ],
-    "resolution": {
-      "mode": "arbiter",
-      "arbiter_config": {
-        "model": "sonnet",
-        "max_fix_attempts": 2,
-        "escalate_on": ["critical_security", "data_loss_risk"],
-        "auto_proceed_on": ["style", "minor_performance"]
-      }
-    }
-  },
-  "decomposition": {
-    "enabled": true,
-    "threshold": "budget > 15 OR complexity_signals"
-  },
-  "callbacks": {
-    "on_phase_complete": "forge callback phase-complete",
-    "on_review_finding": "forge callback review-finding",
-    "on_blocker": "forge callback blocker"
-  }
+```rust
+// src/dag/mod.rs
+
+use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::algo::toposort;
+use std::collections::{HashMap, HashSet};
+use tokio::sync::mpsc;
+
+/// The DAG scheduler manages parallel phase execution
+pub struct DagScheduler {
+    /// Directed graph of phase dependencies
+    graph: DiGraph<PhaseNode, ()>,
+    /// Map from phase number to graph node index
+    node_map: HashMap<String, NodeIndex>,
+    /// Current execution state
+    state: DagState,
+    /// Configuration
+    config: DagConfig,
+}
+
+/// A node in the phase DAG
+pub struct PhaseNode {
+    pub phase: Phase,
+    pub status: PhaseStatus,
+    pub result: Option<PhaseResult>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PhaseStatus {
+    Pending,
+    Blocked { waiting_on: Vec<String> },
+    Ready,
+    Running { started_at: Instant },
+    Completed { iterations: u32 },
+    Failed { error: String },
+    Skipped,
+}
+
+pub struct DagConfig {
+    /// Maximum phases to run in parallel
+    pub max_parallel: usize,
+    /// Stop all phases on first failure
+    pub fail_fast: bool,
+    /// Enable swarm hooks for marked phases
+    pub swarm_enabled: bool,
+    /// Backend for swarm execution
+    pub swarm_backend: SwarmBackend,
+}
+
+#[derive(Debug, Clone)]
+pub enum SwarmBackend {
+    Auto,
+    InProcess,
+    Tmux,
+    Iterm2,
 }
 ```
 
-### Key Fields
+### DAG Construction
 
-- **phases**: Directly maps from `phases.json` with DAG encoded in `depends_on`
-- **reviews**: Configures parallel review specialists and whether they gate progress
-- **decomposition**: Enables dynamic phase splitting when complexity is detected
-- **callbacks**: Shell commands Forge uses to receive real-time updates
+```rust
+// src/dag/builder.rs
+
+impl DagScheduler {
+    /// Build DAG from phases.json
+    pub fn from_phases(phases: &[Phase], config: DagConfig) -> Result<Self> {
+        let mut graph = DiGraph::new();
+        let mut node_map = HashMap::new();
+
+        // Add all phases as nodes
+        for phase in phases {
+            let node = PhaseNode {
+                phase: phase.clone(),
+                status: PhaseStatus::Pending,
+                result: None,
+            };
+            let idx = graph.add_node(node);
+            node_map.insert(phase.number.clone(), idx);
+        }
+
+        // Add dependency edges
+        for phase in phases {
+            let to_idx = node_map[&phase.number];
+            for dep in &phase.depends_on {
+                let from_idx = node_map.get(dep)
+                    .ok_or_else(|| anyhow!("Unknown dependency: {}", dep))?;
+                graph.add_edge(*from_idx, to_idx, ());
+            }
+        }
+
+        // Verify no cycles
+        toposort(&graph, None)
+            .map_err(|_| anyhow!("Cycle detected in phase dependencies"))?;
+
+        Ok(Self {
+            graph,
+            node_map,
+            state: DagState::Idle,
+            config,
+        })
+    }
+
+    /// Compute execution waves (phases that can run in parallel)
+    pub fn compute_waves(&self) -> Vec<Vec<String>> {
+        let mut waves = Vec::new();
+        let mut completed: HashSet<String> = HashSet::new();
+
+        loop {
+            // Find all phases whose dependencies are satisfied
+            let ready: Vec<String> = self.graph.node_indices()
+                .filter_map(|idx| {
+                    let node = &self.graph[idx];
+                    let phase_num = &node.phase.number;
+
+                    if completed.contains(phase_num) {
+                        return None;
+                    }
+
+                    let deps_satisfied = node.phase.depends_on.iter()
+                        .all(|dep| completed.contains(dep));
+
+                    if deps_satisfied {
+                        Some(phase_num.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if ready.is_empty() {
+                break;
+            }
+
+            completed.extend(ready.iter().cloned());
+            waves.push(ready);
+        }
+
+        waves
+    }
+}
+```
+
+### Parallel Executor
+
+```rust
+// src/dag/executor.rs
+
+impl DagScheduler {
+    /// Execute all phases respecting dependencies and parallelism limits
+    pub async fn execute(&mut self, runner: &ClaudeRunner) -> Result<DagResult> {
+        self.state = DagState::Running;
+
+        let (tx, mut rx) = mpsc::channel::<PhaseEvent>(100);
+        let semaphore = Arc::new(Semaphore::new(self.config.max_parallel));
+
+        // Track active tasks
+        let mut active_tasks: HashMap<String, JoinHandle<PhaseResult>> = HashMap::new();
+
+        loop {
+            // Find phases ready to run
+            let ready = self.get_ready_phases();
+
+            // Spawn tasks for ready phases (respecting semaphore)
+            for phase_num in ready {
+                let permit = semaphore.clone().acquire_owned().await?;
+                let phase = self.get_phase(&phase_num).clone();
+                let runner = runner.clone();
+                let tx = tx.clone();
+                let swarm_enabled = self.is_swarm_phase(&phase_num);
+
+                let handle = tokio::spawn(async move {
+                    let _permit = permit; // Hold until complete
+
+                    let result = if swarm_enabled {
+                        execute_swarm_phase(&phase, &runner).await
+                    } else {
+                        execute_standard_phase(&phase, &runner).await
+                    };
+
+                    tx.send(PhaseEvent::Completed {
+                        phase: phase.number.clone(),
+                        result: result.clone(),
+                    }).await.ok();
+
+                    result
+                });
+
+                active_tasks.insert(phase_num.clone(), handle);
+                self.mark_running(&phase_num);
+            }
+
+            // Wait for any phase to complete
+            if active_tasks.is_empty() && self.all_complete() {
+                break;
+            }
+
+            match rx.recv().await {
+                Some(PhaseEvent::Completed { phase, result }) => {
+                    active_tasks.remove(&phase);
+                    self.record_result(&phase, result)?;
+
+                    if self.config.fail_fast && result.is_err() {
+                        self.cancel_all(&mut active_tasks).await;
+                        break;
+                    }
+                }
+                Some(PhaseEvent::Progress { phase, percent }) => {
+                    self.update_progress(&phase, percent);
+                }
+                None => break,
+            }
+        }
+
+        self.state = DagState::Completed;
+        Ok(self.build_result())
+    }
+
+    fn get_ready_phases(&self) -> Vec<String> {
+        self.graph.node_indices()
+            .filter_map(|idx| {
+                let node = &self.graph[idx];
+
+                if !matches!(node.status, PhaseStatus::Pending) {
+                    return None;
+                }
+
+                let deps_done = node.phase.depends_on.iter().all(|dep| {
+                    matches!(
+                        self.get_status(dep),
+                        PhaseStatus::Completed { .. } | PhaseStatus::Skipped
+                    )
+                });
+
+                if deps_done {
+                    Some(node.phase.number.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+}
+```
 
 ---
 
-## Orchestration Prompt
+## Swarm Hook System
 
-When Forge launches Claude Code, it passes a carefully crafted prompt that instructs the leader agent how to execute the blueprint.
+### New Hook Event and Type
 
-```markdown
+```rust
+// src/hooks/types.rs (extensions)
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookEvent {
+    // Existing events
+    PrePhase,
+    PostPhase,
+    PreIteration,
+    PostIteration,
+    OnFailure,
+    OnApproval,
+    // New swarm events
+    SwarmDispatch,      // When a phase needs swarm execution
+    SwarmTaskComplete,  // When a swarm task finishes
+    SwarmReview,        // When reviews are triggered
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HookType {
+    Command,
+    Prompt,
+    Swarm,  // New type
+}
+```
+
+### Swarm Context
+
+```rust
+// src/swarm/context.rs
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SwarmContext {
+    /// Phase being executed
+    pub phase: PhaseInfo,
+    /// Tasks to distribute (if decomposed)
+    pub tasks: Vec<SwarmTask>,
+    /// Execution strategy
+    pub strategy: SwarmStrategy,
+    /// Review configuration
+    pub reviews: Option<ReviewConfig>,
+    /// Callback endpoint for progress
+    pub callback_url: String,
+    /// Working directory
+    pub working_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SwarmTask {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub files: Vec<String>,
+    pub depends_on: Vec<String>,
+    pub budget: u32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwarmStrategy {
+    /// All tasks run simultaneously
+    Parallel,
+    /// Tasks run one at a time
+    Sequential,
+    /// Dependency-ordered waves
+    WavePipeline,
+    /// Let the swarm leader decide
+    Adaptive,
+}
+```
+
+### Swarm Executor
+
+```rust
+// src/swarm/executor.rs
+
+pub struct SwarmExecutor {
+    claude_cmd: String,
+    backend: SwarmBackend,
+    callback_server: CallbackServer,
+}
+
+impl SwarmExecutor {
+    pub async fn execute(&self, context: SwarmContext) -> Result<SwarmResult> {
+        // 1. Start callback server for progress updates
+        let callback_url = self.callback_server.start().await?;
+
+        // 2. Generate the orchestration prompt
+        let prompt = self.build_orchestration_prompt(&context, &callback_url)?;
+
+        // 3. Invoke Claude Code with swarm capabilities
+        let mut cmd = Command::new(&self.claude_cmd);
+        cmd.arg("--print")
+           .arg("--dangerously-skip-permissions")
+           .arg("--output-format").arg("stream-json")
+           .current_dir(&context.working_dir);
+
+        let mut child = cmd
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        // 4. Send prompt via stdin
+        child.stdin.take().unwrap()
+            .write_all(prompt.as_bytes()).await?;
+
+        // 5. Monitor execution via callbacks and stdout
+        let result = self.monitor_execution(child, &context).await?;
+
+        // 6. Cleanup
+        self.callback_server.stop().await?;
+
+        Ok(result)
+    }
+
+    fn build_orchestration_prompt(
+        &self,
+        context: &SwarmContext,
+        callback_url: &str,
+    ) -> Result<String> {
+        Ok(format!(r#"
 # Forge Swarm Orchestrator
 
-You are the leader agent for a Forge orchestration run. Your job is to execute
-the phases in the attached blueprint using Claude Code's swarm capabilities.
+You are coordinating a swarm for Forge phase {phase_num}: {phase_name}
 
-## Blueprint
-<blueprint>
-{blueprint_json}
-</blueprint>
+## Context
+{context_json}
 
 ## Your Responsibilities
 
-1. **Create the team**: `Teammate({ operation: "spawnTeam", team_name: "{team_name}" })`
+1. **Create team**: `Teammate({{ operation: "spawnTeam", team_name: "forge-{phase_num}" }})`
 
-2. **Create tasks from phases**: For each phase, create a task with proper dependencies
-   - Use `TaskCreate` for each phase
-   - Set up `blockedBy` relationships matching `depends_on`
-
-3. **Spawn phase workers**: For phases with satisfied dependencies, spawn workers
-   - Use `Task` with `team_name`, `name`, `subagent_type`, `run_in_background: true`
-   - Worker prompt must include: phase goal, promise tag, skills content, budget
-   - Workers report completion via `Teammate({ operation: "write", target_agent_id: "leader" })`
-
-4. **Monitor and coordinate**:
-   - Watch your inbox for completion messages
-   - When a phase completes, check if blocked phases can now start
-   - Spawn newly-unblocked phases immediately
-
-5. **Run reviews** (if enabled): After each phase completes
-   - Spawn review specialists in parallel
-   - Collect findings
-   - If any gating review fails, pause and report via callback
-
-6. **Handle decomposition**: If a worker signals complexity
-   - Receive `<spawn-subphase>` signals
-   - Create sub-tasks with proper dependencies
-   - Spawn sub-phase workers
-
-7. **Report progress**: Call callbacks for Forge monitoring
-   ```bash
-   {callback_on_phase_complete} --phase {id} --status {status}
+2. **Spawn workers** for each task:
+   ```javascript
+   Task({{
+     team_name: "forge-{phase_num}",
+     name: "task-{{id}}",
+     subagent_type: "general-purpose",
+     prompt: "Execute task: {{description}}",
+     run_in_background: true
+   }})
    ```
 
-8. **Shutdown cleanly**: When all phases complete
-   - `requestShutdown` all teammates
-   - Wait for approvals
-   - `cleanup` the team
-   - Output final summary
+3. **Monitor completion** via inbox messages
 
-## Worker Prompt Template
+4. **Report progress** to Forge:
+   ```bash
+   curl -X POST {callback_url}/progress -d '{{"task": "...", "status": "..."}}'
+   ```
 
-When spawning a phase worker, use this prompt structure:
+5. **Run reviews** if configured (spawn review specialists in parallel)
 
-```
-You are executing phase {number}: {name}
+6. **Shutdown cleanly** when all tasks complete
 
-## Goal
-{phase_description}
+## Completion Signal
 
-## Skills
-{skills_content}
-
-## Rules
-- Budget: {budget} iterations max
-- Output `<promise>{promise}</promise>` ONLY when fully complete
-- Use `<progress>N%</progress>` for intermediate status
-- Use `<blocker>description</blocker>` if stuck
-- Send completion message to leader when done
-
-## When Complete
-Teammate({ operation: "write", target_agent_id: "leader", value: "PHASE {id} COMPLETE" })
+When finished, output:
+```xml
+<swarm_complete>
+{{"success": true, "tasks_completed": [...], "reviews": [...]}}
+</swarm_complete>
 ```
 
-## Execution Order
-
-Analyze the dependency graph and execute in waves:
-- Wave 1: Phases with no dependencies (can run in parallel)
-- Wave 2: Phases whose dependencies are all in Wave 1 (run when Wave 1 completes)
-- Continue until all phases complete
-
-Begin execution now.
-```
-
----
-
-## Monitoring & State Sync
-
-While Claude Code runs the swarm, Forge actively monitors execution and keeps its state synchronized.
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    FORGE MONITOR LOOP                            │
-│                                                                  │
-│   ┌─────────────┐     ┌─────────────┐     ┌─────────────┐       │
-│   │   Callback  │     │   Inbox     │     │   File      │       │
-│   │   Server    │     │   Watcher   │     │   Watcher   │       │
-│   │   (HTTP)    │     │   (poll)    │     │   (notify)  │       │
-│   └──────┬──────┘     └──────┬──────┘     └──────┬──────┘       │
-│          │                   │                   │               │
-│          └───────────────────┼───────────────────┘               │
-│                              ▼                                   │
-│                    ┌─────────────────┐                          │
-│                    │  Event Router   │                          │
-│                    └────────┬────────┘                          │
-│                             │                                    │
-│          ┌──────────────────┼──────────────────┐                │
-│          ▼                  ▼                  ▼                │
-│   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐        │
-│   │   State     │    │   Audit     │    │    UI       │        │
-│   │   Updater   │    │   Logger    │    │   Display   │        │
-│   └─────────────┘    └─────────────┘    └─────────────┘        │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Three Monitoring Channels
-
-1. **Callback Server** - Forge starts a lightweight HTTP server on a random port
-2. **Inbox Watcher** - Polls `~/.claude/teams/{team}/inboxes/leader.json` for messages
-3. **File Watcher** - Monitors project directory for file changes
-
-### State Synchronization
-
-```rust
-pub struct SwarmMonitor {
-    team_name: String,
-    callback_port: u16,
-    state_manager: StateManager,
-    audit_logger: AuditLogger,
-}
-
-impl SwarmMonitor {
-    pub async fn run(&self) -> Result<SwarmResult> {
-        let (tx, mut rx) = mpsc::channel(100);
-
-        tokio::select! {
-            _ = self.run_callback_server(tx.clone()) => {},
-            _ = self.watch_inbox(tx.clone()) => {},
-            _ = self.watch_files(tx.clone()) => {},
-            result = self.process_events(&mut rx) => return result,
-        }
+Begin now.
+"#,
+            phase_num = context.phase.number,
+            phase_name = context.phase.name,
+            context_json = serde_json::to_string_pretty(&context)?,
+            callback_url = callback_url,
+        ))
     }
 }
+```
+
+### Phase Configuration for Swarm
+
+```rust
+// Extension to src/phase.rs
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Phase {
+    // ... existing fields ...
+
+    /// Enable swarm execution for this phase
+    #[serde(default)]
+    pub swarm: Option<SwarmConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmConfig {
+    /// Execution strategy
+    pub strategy: SwarmStrategy,
+    /// Maximum agents to spawn
+    pub max_agents: u32,
+    /// Pre-defined task breakdown (optional)
+    pub tasks: Option<Vec<SwarmTask>>,
+    /// Enable review specialists
+    pub reviews: Option<Vec<ReviewSpecialist>>,
+}
+```
+
+### Configuration
+
+```toml
+# forge.toml
+
+[swarm]
+enabled = true
+backend = "auto"                    # auto, in-process, tmux, iterm2
+default_strategy = "adaptive"
+max_agents = 5
+
+[swarm.reviews]
+enabled = true
+specialists = ["security", "performance"]
+mode = "arbiter"                    # manual, auto, arbiter
+
+# Per-phase swarm configuration
+[phases.overrides."*-complex"]
+swarm = { strategy = "parallel", max_agents = 4 }
+
+[phases.overrides."*-refactor"]
+swarm = { strategy = "wave_pipeline", reviews = ["architecture"] }
 ```
 
 ---
 
 ## Review Specialist Integration
 
-After each phase completes, review specialists analyze the changes in parallel.
+### Review Flow
 
 ```
-Phase Complete
+Phase Complete (or Swarm Complete)
        │
        ▼
 ┌──────────────────────────────────────────────────────────┐
-│                  REVIEW DISPATCH                          │
+│  SWARM REVIEW DISPATCH (within Claude Code swarm)        │
+│                                                          │
+│  Leader spawns review agents in parallel:                │
 │                                                          │
 │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐        │
 │  │  Security   │ │ Performance │ │Architecture │        │
 │  │  Sentinel   │ │   Oracle    │ │ Strategist  │        │
-│  │  gate: true │ │ gate: false │ │ gate: false │        │
+│  │  gate: true │ │ gate: false │ │ gate: true  │        │
 │  └──────┬──────┘ └──────┬──────┘ └──────┬──────┘        │
 │         └───────────────┼───────────────┘                │
 │                         ▼                                │
 │              ┌─────────────────┐                        │
-│              │ Findings Aggreg │                        │
+│              │   Aggregate     │                        │
+│              │   Findings      │                        │
 │              └────────┬────────┘                        │
 │                       │                                  │
 │         ┌─────────────┴─────────────┐                   │
 │         ▼                           ▼                   │
-│  ┌─────────────┐            ┌─────────────┐            │
-│  │ Gate: PASS  │            │ Gate: FAIL  │            │
-│  │ Continue    │            │ Apply       │            │
-│  │             │            │ Resolution  │            │
-│  └─────────────┘            └─────────────┘            │
+│     Gate PASS                   Gate FAIL               │
+│     (continue)                  (resolve)               │
 └──────────────────────────────────────────────────────────┘
 ```
 
-### Specialist Types
+### Review Specialist Types
 
-| Specialist | Focus |
-|------------|-------|
-| `security-sentinel` | SQL injection, XSS, auth bypass, secrets exposure |
-| `performance-oracle` | N+1 queries, missing indexes, memory leaks |
-| `architecture-strategist` | SOLID violations, coupling, layering |
-| `simplicity-reviewer` | Over-engineering, premature abstraction |
+```rust
+// src/review/specialists.rs
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewSpecialist {
+    pub specialist_type: SpecialistType,
+    pub gate: bool,
+    pub focus_areas: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpecialistType {
+    SecuritySentinel,
+    PerformanceOracle,
+    ArchitectureStrategist,
+    SimplicityReviewer,
+    Custom(String),
+}
+
+impl SpecialistType {
+    pub fn focus_areas(&self) -> Vec<&str> {
+        match self {
+            Self::SecuritySentinel => vec![
+                "SQL injection", "XSS", "auth bypass",
+                "secrets exposure", "input validation"
+            ],
+            Self::PerformanceOracle => vec![
+                "N+1 queries", "missing indexes",
+                "memory leaks", "algorithmic complexity"
+            ],
+            Self::ArchitectureStrategist => vec![
+                "SOLID violations", "coupling",
+                "layering", "separation of concerns"
+            ],
+            Self::SimplicityReviewer => vec![
+                "over-engineering", "premature abstraction",
+                "YAGNI violations", "unnecessary complexity"
+            ],
+            Self::Custom(_) => vec![],
+        }
+    }
+}
+```
 
 ### Review Output Format
 
 ```json
 {
-  "phase": "02",
+  "phase": "05",
   "reviewer": "security-sentinel",
-  "verdict": "pass|warn|fail",
+  "verdict": "warn",
   "findings": [
     {
-      "severity": "critical|warning|info",
-      "file": "path/to/file.rs",
-      "line": 42,
-      "issue": "Description of the issue",
-      "suggestion": "How to fix it"
+      "severity": "warning",
+      "file": "src/auth/oauth.rs",
+      "line": 142,
+      "issue": "Token stored in localStorage is vulnerable to XSS",
+      "suggestion": "Use httpOnly cookies instead"
     }
   ],
-  "summary": "Overall assessment"
+  "summary": "One medium-severity finding related to token storage"
 }
 ```
 
@@ -413,58 +704,93 @@ When a gating review fails, three resolution modes are available:
 
 ### Resolution Modes
 
-1. **Manual** (`--review-mode manual`) - Always pause for user input
-2. **Auto** (`--review-mode auto`) - Spawn fix agent, retry automatically
-3. **Arbiter** (`--review-mode arbiter`) - LLM judges severity and decides
+```rust
+// src/review/arbiter.rs
 
-### Arbiter Decision Flow
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolutionMode {
+    /// Always pause for user input
+    Manual,
+    /// Attempt auto-fix, retry up to N times
+    Auto { max_attempts: u32 },
+    /// LLM decides based on severity and context
+    Arbiter {
+        model: String,
+        confidence_threshold: f64,
+        escalate_on: Vec<String>,
+        auto_proceed_on: Vec<String>,
+    },
+}
 
-```
-Review Gate: FAIL
-       │
-       ▼
-┌─────────────────┐
-│ Arbiter Prompt  │
-│                 │
-│ Analyzes:       │
-│ - Findings      │
-│ - Risk profile  │
-│ - Budget left   │
-└────────┬────────┘
-         │
-   ┌─────┴─────┬─────────────┐
-   ▼           ▼             ▼
-PROCEED       FIX        ESCALATE
-(continue)  (auto-fix)   (human)
-```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArbiterDecision {
+    pub decision: ArbiterVerdict,
+    pub reasoning: String,
+    pub confidence: f64,
+    pub fix_instructions: Option<String>,
+    pub escalation_summary: Option<String>,
+}
 
-### Arbiter Output
-
-```json
-{
-  "decision": "PROCEED|FIX|ESCALATE",
-  "reasoning": "Why this decision",
-  "confidence": 0.0-1.0,
-  "fix_instructions": "If FIX: specific instructions",
-  "escalation_summary": "If ESCALATE: summary for human"
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum ArbiterVerdict {
+    Proceed,   // Continue despite findings
+    Fix,       // Spawn fix agent, retry
+    Escalate,  // Require human decision
 }
 ```
 
-### Configuration
+### Arbiter Prompt
 
-```toml
-[swarm.reviews]
-mode = "arbiter"
-arbiter_confidence = 0.8
-escalate_on = ["critical_security", "data_loss_risk"]
-auto_proceed_on = ["style", "minor_performance"]
+```markdown
+# Review Arbiter
+
+You are deciding how to handle review findings that would block progress.
+
+## Context
+- Phase: {phase_id} - {phase_name}
+- Budget used: {iterations_used}/{budget}
+
+## Blocking Findings
+```json
+{findings_json}
+```
+
+## Decision Criteria
+
+**PROCEED** when:
+- Style issues only
+- Minor warnings
+- False positives
+- Acceptable trade-offs for MVP
+
+**FIX** when:
+- Clear fix path exists
+- Security/correctness issues
+- Within remaining budget
+
+**ESCALATE** when:
+- Architectural concerns
+- Ambiguous risk
+- Out of budget
+- Policy decisions needed
+
+## Output
+```json
+{
+  "decision": "PROCEED|FIX|ESCALATE",
+  "reasoning": "...",
+  "confidence": 0.0-1.0,
+  "fix_instructions": "if FIX",
+  "escalation_summary": "if ESCALATE"
+}
+```
 ```
 
 ---
 
 ## Dynamic Decomposition
-
-When a phase worker detects scope is larger than expected, decomposition is triggered.
 
 ### Trigger Conditions
 
@@ -472,68 +798,75 @@ When a phase worker detects scope is larger than expected, decomposition is trig
 - Iterations > 50% budget with progress < 30%
 - Worker explicitly requests: `<request-decomposition/>`
 
-### Decomposition Flow
+### Decomposition Agent
 
-```
-Worker signals complexity
-       │
-       ▼
-┌──────────────────┐
-│ Decomposition    │
-│ Agent analyzes:  │
-│ - Original goal  │
-│ - Work done      │
-│ - Remaining work │
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────────────────────────┐
-│ New Sub-Phase Structure              │
-│                                      │
-│ Phase 05 (paused)                    │
-│   ├── 05.1: Google OAuth ──┐         │
-│   ├── 05.2: GitHub OAuth ──┼─ ||     │
-│   ├── 05.3: Auth0 OAuth  ──┘         │
-│   └── 05.4: Unified handler          │
-│            depends_on: [05.1-3]      │
-└──────────────────────────────────────┘
-```
+The swarm leader spawns a decomposition agent when triggered:
 
-### Decomposition Output
+```rust
+// src/swarm/decomposition.rs
 
-```json
-{
-  "analysis": "OAuth requires 3 separate provider integrations",
-  "sub_phases": [
-    {
-      "number": "05.1",
-      "name": "Google OAuth integration",
-      "promise": "GOOGLE_OAUTH_COMPLETE",
-      "budget": 5,
-      "depends_on": [],
-      "can_parallel": true
-    }
-  ],
-  "integration_phase": {
-    "number": "05.4",
-    "name": "Unified OAuth callback handler",
-    "promise": "OAUTH_UNIFIED_COMPLETE",
-    "budget": 3,
-    "depends_on": ["05.1", "05.2", "05.3"]
-  }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecompositionResult {
+    pub analysis: String,
+    pub sub_phases: Vec<SubPhaseSpec>,
+    pub integration_phase: Option<SubPhaseSpec>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubPhaseSpec {
+    pub number: String,
+    pub name: String,
+    pub promise: String,
+    pub budget: u32,
+    pub depends_on: Vec<String>,
+    pub can_parallel: bool,
+    pub reasoning: String,
+}
+```
+
+### Example Decomposition
+
+```
+Phase 05: OAuth Integration (budget: 20)
+         │
+         │ Worker: "This requires 3 separate provider integrations"
+         ▼
+┌────────────────────────────────────────┐
+│ Decomposition Agent analyzes...        │
+│                                        │
+│ Output:                                │
+│ ├── 05.1: Google OAuth (budget: 5) ─┐  │
+│ ├── 05.2: GitHub OAuth (budget: 5) ─┼─ parallel
+│ ├── 05.3: Auth0 OAuth  (budget: 5) ─┘  │
+│ └── 05.4: Unified handler (budget: 3)  │
+│           depends_on: [05.1-3]         │
+└────────────────────────────────────────┘
 ```
 
 ---
 
 ## CLI Interface
 
-### New Commands
+### Commands
 
 ```bash
-forge swarm [OPTIONS]           # Parallel swarm execution
-forge swarm status              # Monitor running swarm
-forge swarm abort               # Gracefully stop swarm
+# Existing (unchanged)
+forge run                         # Sequential execution
+forge run --phase 05              # Single phase
+
+# New parallel/swarm commands
+forge swarm                       # Parallel DAG execution
+forge swarm --from 05             # Start from phase
+forge swarm --max-parallel 3      # Limit concurrency
+forge swarm --review security,performance
+forge swarm --review-mode arbiter --yes
+
+# Monitoring
+forge swarm status                # Show running swarm
+forge swarm abort                 # Graceful stop
+
+# Backwards compatibility
+forge run --parallel              # Alias for 'forge swarm'
 ```
 
 ### Full Flag Reference
@@ -542,41 +875,60 @@ forge swarm abort               # Gracefully stop swarm
 forge swarm [OPTIONS]
 
 EXECUTION:
-    --from <PHASE>              Start from specific phase number
-    --only <PHASES>             Run only specified phases
-    --max-concurrent <N>        Maximum parallel workers [default: 4]
+    --from <PHASE>              Start from specific phase
+    --only <PHASES>             Run only these phases (comma-separated)
+    --max-parallel <N>          Max concurrent phases [default: 4]
     --backend <TYPE>            auto, in-process, tmux, iterm2
 
 REVIEWS:
     --review <SPECIALISTS>      security, performance, architecture, all
-    --review-mode <MODE>        manual, auto, arbiter
-    --max-fix-attempts <N>      Max auto-fix attempts [default: 2]
-    --escalate-on <TYPES>       Always escalate these finding types
-    --arbiter-confidence <N>    Min confidence threshold [default: 0.7]
+    --review-mode <MODE>        manual, auto, arbiter [default: manual]
+    --max-fix-attempts <N>      Auto-fix attempts [default: 2]
+    --escalate-on <TYPES>       Always escalate these findings
+    --arbiter-confidence <N>    Min confidence [default: 0.7]
 
 DECOMPOSITION:
-    --decompose                 Enable dynamic decomposition [default]
+    --decompose                 Enable decomposition [default]
     --no-decompose              Disable decomposition
-    --decompose-threshold <N>   Budget % to trigger [default: 50]
+    --decompose-threshold <N>   Budget % trigger [default: 50]
 
 APPROVAL:
     --yes                       Auto-approve all prompts
     --permission-mode <MODE>    strict, standard, autonomous
 
-BLUEPRINT:
-    --dry-run                   Generate blueprint only
-    --output <FILE>             Output blueprint to file
-    --blueprint <FILE>          Use existing blueprint
-
 MONITORING:
     --ui <MODE>                 full, minimal, json [default: full]
 ```
 
-### Backwards Compatibility
+### Example Session
 
 ```bash
-forge run                    # Sequential (unchanged)
-forge run --parallel         # Alias for 'forge swarm'
+$ forge swarm --review security --max-parallel 3
+
+Analyzing phase dependencies...
+  22 phases, 8 execution waves
+
+Wave 1: [01] ████████████ 100%  (3 iterations)
+
+Wave 2: [02] ████████░░░░  67%
+        [03] ████████████ 100%
+        [06] ████████████ 100%
+
+Reviews for [03]:
+  ✓ security-sentinel: PASS
+
+Wave 2: [02] ████████████ 100%  (10 iterations)
+
+Reviews for [02]:
+  ⚠ security-sentinel: WARN (1 finding)
+    └─ src/db/queries.rs:42 - Consider parameterized query
+
+Continuing (non-gating)...
+
+Wave 3: [04] ████░░░░░░░░  33%
+        [05*] Starting swarm...
+              └─ Spawning 3 agents for OAuth integration
+        [07] ████████████ 100%
 ```
 
 ---
@@ -585,61 +937,68 @@ forge run --parallel         # Alias for 'forge swarm'
 
 ### Failure Taxonomy
 
-| Category | Failure | Response |
-|----------|---------|----------|
-| Worker | Budget exhausted | Mark failed, continue others |
-| Worker | Crashed | Respawn from checkpoint |
-| Worker | Heartbeat timeout | Reassign task |
-| Review | Timeout | Retry once, then skip |
-| Review | Gating failure | Apply resolution mode |
-| Coordination | Leader crashed | Forge detects, can resume |
-| Coordination | Callback unreachable | Fallback to inbox polling |
-| Infrastructure | API error | Exponential backoff |
+| Category | Failure | Detection | Recovery |
+|----------|---------|-----------|----------|
+| Phase | Budget exhausted | Native | Mark failed, continue DAG |
+| Phase | Promise not found | Native | Retry with hints |
+| Swarm | Agent crash | Callback timeout | Respawn from checkpoint |
+| Swarm | Leader crash | Process monitor | Resume with state |
+| Review | Timeout | Native | Retry once, then skip |
+| Review | Gate failure | Native | Apply resolution mode |
+| Infra | Claude API error | HTTP status | Exponential backoff |
 
 ### Checkpoint System
 
-```json
-{
-  "phase": "05",
-  "worker": "phase-05-worker",
-  "iteration": 7,
-  "timestamp": "2026-01-26T15:30:00Z",
-  "progress_percent": 60,
-  "files_changed": ["src/auth/oauth.rs"],
-  "git_ref": "abc123f",
-  "last_output_summary": "Implemented Google OAuth...",
-  "context_size": 125000
+```rust
+// src/checkpoint/mod.rs
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Checkpoint {
+    pub phase: String,
+    pub iteration: u32,
+    pub timestamp: DateTime<Utc>,
+    pub progress_percent: u32,
+    pub files_changed: Vec<String>,
+    pub git_ref: String,
+    pub context_summary: String,
+}
+
+impl Checkpoint {
+    pub fn save(&self, checkpoint_dir: &Path) -> Result<()> {
+        let path = checkpoint_dir.join(format!("{}.json", self.phase));
+        let content = serde_json::to_string_pretty(self)?;
+        fs::write(&path, content)?;
+        Ok(())
+    }
+
+    pub fn load(checkpoint_dir: &Path, phase: &str) -> Result<Option<Self>> {
+        let path = checkpoint_dir.join(format!("{}.json", phase));
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = fs::read_to_string(&path)?;
+        Ok(Some(serde_json::from_str(&content)?))
+    }
 }
 ```
 
-### Recovery Commands
+### Recovery Flow
 
 ```bash
 # Automatic resume detection
-forge swarm
+$ forge swarm
+Detected incomplete run: forge-run-20260126-150322
+  Progress: 14/22 phases
+  Checkpoints: 3 phases resumable
 
-# Explicit resume
-forge swarm --resume forge-run-20260126-150322
+Resume? [Y/n] y
 
-# Fresh start
-forge swarm --fresh
+Recovering...
+  ✓ Loaded checkpoints
+  ✓ Reconciled state
+  ✓ Respawning 3 phases
 
-# Reconcile state after crash
-forge swarm --reconcile
-```
-
-### Graceful Shutdown
-
-```
-^C
-Graceful shutdown initiated...
-Signaling workers to complete current iteration...
-Saving checkpoints...
-Requesting teammate shutdowns...
-Cleaning up team...
-
-Progress saved. Resume with:
-  forge swarm --resume forge-run-20260126-150322
+Continuing from Wave 4...
 ```
 
 ---
@@ -650,124 +1009,102 @@ Progress saved. Resume with:
 
 ```
 src/
-├── swarm/
-│   ├── mod.rs
-│   ├── blueprint.rs       # Blueprint generation
-│   ├── analyzer.rs        # DAG analysis
-│   ├── launcher.rs        # Claude Code spawning
-│   ├── monitor.rs         # Callback server, watchers
-│   ├── reconcile.rs       # State reconciliation
-│   └── prompts.rs         # Prompt templates
+├── main.rs                      # Add swarm subcommand
+├── lib.rs                       # Export new modules
 │
-├── review/
+├── dag/                         # NEW: DAG scheduler
 │   ├── mod.rs
-│   ├── specialists.rs     # Specialist definitions
-│   ├── arbiter.rs         # LLM decision maker
-│   └── findings.rs        # Finding aggregation
+│   ├── builder.rs               # Build graph from phases
+│   ├── scheduler.rs             # Core scheduling logic
+│   ├── executor.rs              # Parallel execution
+│   └── state.rs                 # Execution state tracking
 │
-├── checkpoint/
+├── swarm/                       # NEW: Swarm integration
 │   ├── mod.rs
-│   ├── writer.rs          # Persistence
-│   └── recovery.rs        # Recovery strategies
+│   ├── executor.rs              # Swarm hook executor
+│   ├── context.rs               # SwarmContext types
+│   ├── callback.rs              # HTTP callback server
+│   └── prompts.rs               # Orchestration prompts
+│
+├── review/                      # NEW: Review system
+│   ├── mod.rs
+│   ├── specialists.rs           # Specialist definitions
+│   ├── arbiter.rs               # LLM decision maker
+│   └── findings.rs              # Finding types
+│
+├── checkpoint/                  # NEW: Checkpointing
+│   ├── mod.rs
+│   ├── writer.rs
+│   └── recovery.rs
+│
+├── hooks/
+│   ├── types.rs                 # MODIFY: Add SwarmDispatch event
+│   └── executor.rs              # MODIFY: Add swarm execution
+│
+├── phase.rs                     # MODIFY: Add swarm config
+└── forge_config.rs              # MODIFY: Add swarm section
+```
+
+### Dependencies
+
+```toml
+# Cargo.toml additions
+
+[dependencies]
+petgraph = "0.6"          # DAG operations
+axum = "0.7"              # Callback HTTP server
+notify = "6.0"            # File watching
+tokio-stream = "0.1"      # Async streaming
 ```
 
 ### Timeline
 
 | Phase | Duration | Deliverables |
 |-------|----------|--------------|
-| 1. Foundation | Week 1-2 | Blueprint, DAG analyzer, CLI |
-| 2. Core Swarm | Week 3-4 | Launcher, monitor, state sync |
-| 3. Reviews | Week 5-6 | Specialists, arbiter |
-| 4. Resilience | Week 7-8 | Checkpoints, recovery |
-| 5. Decomposition | Week 9-10 | Dynamic splitting |
-| 6. Polish | Week 11-12 | UI, docs, testing |
-
-### Dependencies
-
-```toml
-[dependencies]
-axum = "0.7"              # Callback HTTP server
-tokio-stream = "0.1"      # Async file watching
-notify = "6.0"            # File system notifications
-petgraph = "0.6"          # DAG operations
-```
+| 1. DAG Core | Week 1-2 | Graph builder, wave computation, basic executor |
+| 2. Parallel Execution | Week 3-4 | Tokio-based parallel dispatch, state tracking |
+| 3. Swarm Hooks | Week 5-6 | SwarmContext, executor, callback server |
+| 4. Reviews | Week 7-8 | Specialists, findings, arbiter |
+| 5. Checkpoints | Week 9-10 | Persistence, recovery, reconciliation |
+| 6. Polish | Week 11-12 | CLI, UI, documentation, testing |
 
 ### Estimated Scope
 
 | Module | LOC |
 |--------|-----|
-| `swarm/` | ~1,500 |
-| `review/` | ~800 |
-| `checkpoint/` | ~500 |
+| `dag/` | ~800 |
+| `swarm/` | ~700 |
+| `review/` | ~600 |
+| `checkpoint/` | ~400 |
 | Config/CLI | ~300 |
 | Tests | ~1,000 |
-| **Total** | **~4,100** |
-
----
-
-## Alternatives Considered
-
-### Approach A: Native Parallel DAG + Hook-Based Swarms
-
-Build parallel DAG execution natively in Rust, integrate swarms via hooks.
-
-**Pros:**
-- Faster (native scheduling)
-- More control
-- Less dependency on Claude Code internals
-
-**Cons:**
-- More code to maintain
-- Two coordination mechanisms
-- Doesn't leverage full swarm capability
-
-**Why not chosen:** Higher implementation effort for less capability. Claude Code's swarm is battle-tested.
-
-### Approach C: Forge as Swarm Backend
-
-Forge manages team/task/inbox files, Claude instances are pure workers.
-
-**Pros:**
-- Full control
-- No Claude Code dependency
-
-**Cons:**
-- Reimplements existing functionality
-- Significant effort
-- Missing swarm features (heartbeats, backends, etc.)
-
-**Why not chosen:** Reimplementing well-tested infrastructure is wasteful.
+| **Total** | **~3,800** |
 
 ---
 
 ## Open Questions
 
-1. **Callback vs Polling:** Should we rely primarily on callbacks or treat them as optimization over polling?
+1. **Swarm backend selection**: Should we auto-detect or require explicit configuration?
 
-2. **Budget Extension:** Should arbiter be able to extend phase budgets, or is that always human decision?
+2. **Cross-wave reviews**: Should reviews happen per-phase, per-wave, or configurable?
 
-3. **Cross-Phase Reviews:** Should reviews only happen per-phase, or also at wave boundaries?
+3. **Budget extension**: Can arbiter extend budgets, or is that always human decision?
 
-4. **Partial Completion:** If some phases in a wave fail, should we continue with non-dependent phases?
+4. **Partial wave failure**: If some phases in a wave fail, continue with non-dependent phases?
+
+5. **Swarm task granularity**: How fine-grained should decomposition be? File-level? Function-level?
 
 ---
 
-## Appendix: Swarm Primitives Reference
+## Summary
 
-From Claude Code's swarm orchestration capabilities:
+The hybrid approach gives us:
 
-| Primitive | Description |
-|-----------|-------------|
-| Agent | Claude instance with tools |
-| Team | Named group with leader + teammates |
-| Task | Work item with status, owner, dependencies |
-| Inbox | JSON message queue |
-| Backend | Execution mode: in-process, tmux, iterm2 |
+- **Fast, predictable scheduling** via native Rust DAG
+- **Sophisticated agent coordination** via Claude Code swarms
+- **Quality gates** via parallel review specialists
+- **Autonomous operation** via LLM arbiter
+- **Resilience** via checkpointing and recovery
+- **Clear separation** of concerns between Forge and Claude Code
 
-### Key TeammateTool Operations
-
-- `spawnTeam` - Create team
-- `write` - Message specific teammate
-- `broadcast` - Message all
-- `requestShutdown` / `approveShutdown` - Graceful exit
-- `cleanup` - Remove team resources
+This architecture plays to the strengths of both systems while maintaining Forge's philosophy of disciplined, observable orchestration.
