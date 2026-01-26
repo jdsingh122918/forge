@@ -15,6 +15,7 @@ pub mod signals;
 pub mod skills;
 pub mod stream;
 pub mod subphase;
+pub mod swarm;
 pub mod tracker;
 pub mod ui;
 pub mod util;
