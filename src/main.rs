@@ -106,6 +106,36 @@ pub enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Execute phases in parallel using DAG scheduling with optional reviews
+    Swarm {
+        /// Start from a specific phase
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Run only these phases (comma-separated)
+        #[arg(long)]
+        only: Option<String>,
+
+        /// Maximum concurrent phases
+        #[arg(long, default_value = "4")]
+        max_parallel: usize,
+
+        /// Enable review specialists (comma-separated: security,performance,architecture,all)
+        #[arg(long)]
+        review: Option<String>,
+
+        /// Review mode: manual, auto, arbiter
+        #[arg(long, default_value = "manual")]
+        review_mode: String,
+
+        /// Maximum auto-fix attempts
+        #[arg(long, default_value = "2")]
+        max_fix_attempts: u32,
+
+        /// Stop all phases on first failure
+        #[arg(long)]
+        fail_fast: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -224,6 +254,28 @@ async fn main() -> Result<()> {
             } else {
                 cmd_implement(&project_dir, design_doc, *no_tdd, *dry_run)?;
             }
+        }
+        Commands::Swarm {
+            from,
+            only,
+            max_parallel,
+            review,
+            review_mode,
+            max_fix_attempts,
+            fail_fast,
+        } => {
+            cmd_swarm(
+                &project_dir,
+                &cli,
+                from.as_deref(),
+                only.as_deref(),
+                *max_parallel,
+                review.as_deref(),
+                review_mode,
+                *max_fix_attempts,
+                *fail_fast,
+            )
+            .await?;
         }
     }
 
@@ -1723,6 +1775,301 @@ context_limit = "{}"
     println!("Summary written to: {}", summary_file.display());
     println!();
     println!("Compaction complete.");
+
+    Ok(())
+}
+
+async fn cmd_swarm(
+    project_dir: &std::path::Path,
+    cli: &Cli,
+    from: Option<&str>,
+    only: Option<&str>,
+    max_parallel: usize,
+    review: Option<&str>,
+    review_mode: &str,
+    max_fix_attempts: u32,
+    fail_fast: bool,
+) -> Result<()> {
+    use forge::config::Config;
+    use forge::dag::{DagConfig, DagExecutor, DagScheduler, ExecutorConfig, PhaseEvent, ReviewConfig, ReviewMode};
+    use forge::init::get_forge_dir;
+    use forge::orchestrator::review_integration::{DefaultSpecialist, ReviewIntegrationConfig};
+    use forge::phase::load_phases_or_default;
+    use tokio::sync::mpsc;
+
+    check_run_prerequisites(project_dir)?;
+
+    let forge_dir = get_forge_dir(project_dir);
+    let phases_file = forge_dir.join("phases.json");
+
+    // Load phases
+    let all_phases = load_phases_or_default(Some(&phases_file))?;
+
+    // Filter phases based on --from and --only
+    let phases: Vec<_> = if let Some(only_str) = only {
+        let only_phases: Vec<&str> = only_str.split(',').map(|s| s.trim()).collect();
+        all_phases
+            .into_iter()
+            .filter(|p| only_phases.contains(&p.number.as_str()))
+            .collect()
+    } else if let Some(from_phase) = from {
+        all_phases
+            .into_iter()
+            .filter(|p| p.number.as_str() >= from_phase)
+            .collect()
+    } else {
+        all_phases
+    };
+
+    if phases.is_empty() {
+        println!("No phases to execute.");
+        return Ok(());
+    }
+
+    // Parse review mode
+    let review_mode_enum = match review_mode.to_lowercase().as_str() {
+        "auto" => ReviewMode::Auto,
+        "arbiter" => ReviewMode::Arbiter,
+        _ => ReviewMode::Manual,
+    };
+
+    // Build review config
+    let review_enabled = review.is_some();
+    let review_specialists: Vec<String> = review
+        .map(|r| {
+            if r == "all" {
+                vec![
+                    "security".to_string(),
+                    "performance".to_string(),
+                    "architecture".to_string(),
+                ]
+            } else {
+                r.split(',').map(|s| s.trim().to_string()).collect()
+            }
+        })
+        .unwrap_or_default();
+
+    let dag_review_config = ReviewConfig {
+        enabled: review_enabled,
+        default_specialists: review_specialists.clone(),
+        mode: review_mode_enum,
+        max_fix_attempts,
+        arbiter_confidence: 0.7,
+    };
+
+    // Build DAG config
+    let dag_config = DagConfig::default()
+        .with_max_parallel(max_parallel)
+        .with_fail_fast(fail_fast)
+        .with_review(dag_review_config);
+
+    // Build executor config
+    let config = Config::new(
+        project_dir.to_path_buf(),
+        cli.verbose,
+        cli.auto_approve_threshold,
+        cli.spec_file.clone(),
+    )?;
+
+    let review_integration_config = if review_enabled {
+        ReviewIntegrationConfig::enabled()
+            .with_working_dir(project_dir.to_path_buf())
+            .with_default_specialists(
+                review_specialists
+                    .iter()
+                    .map(|s| DefaultSpecialist::gating(s))
+                    .collect(),
+            )
+            .with_verbose(cli.verbose)
+    } else {
+        ReviewIntegrationConfig::default()
+    };
+
+    let executor_config = ExecutorConfig::from_config(&config)
+        .with_review_config(review_integration_config)
+        .with_auto_approve(cli.yes);
+
+    // Create event channel for progress display
+    let (event_tx, mut event_rx) = mpsc::channel::<PhaseEvent>(100);
+
+    // Spawn progress display task
+    let verbose = cli.verbose;
+    let display_handle = tokio::spawn(async move {
+        while let Some(event) = event_rx.recv().await {
+            match event {
+                PhaseEvent::WaveStarted { wave, phases } => {
+                    println!();
+                    println!(
+                        "{}",
+                        console::style(format!("Wave {} starting: {:?}", wave, phases)).bold()
+                    );
+                }
+                PhaseEvent::Started { phase, wave: _ } => {
+                    println!(
+                        "  {} Phase {} starting",
+                        console::style("▶").cyan(),
+                        phase
+                    );
+                }
+                PhaseEvent::Progress {
+                    phase,
+                    iteration,
+                    budget,
+                    percent,
+                } => {
+                    if verbose {
+                        let pct_str = percent
+                            .map(|p| format!(" ({}%)", p))
+                            .unwrap_or_default();
+                        println!(
+                            "    {} Phase {} iteration {}/{}{}",
+                            console::style("·").dim(),
+                            phase,
+                            iteration,
+                            budget,
+                            pct_str
+                        );
+                    }
+                }
+                PhaseEvent::Completed { phase, result } => {
+                    if result.success {
+                        println!(
+                            "  {} Phase {} completed in {} iterations",
+                            console::style("✓").green(),
+                            phase,
+                            result.iterations
+                        );
+                    } else {
+                        let err = result.error.as_deref().unwrap_or("Unknown error");
+                        println!(
+                            "  {} Phase {} failed: {}",
+                            console::style("✗").red(),
+                            phase,
+                            err
+                        );
+                    }
+                }
+                PhaseEvent::ReviewStarted { phase } => {
+                    println!(
+                        "    {} Running reviews for phase {}...",
+                        console::style("◎").yellow(),
+                        phase
+                    );
+                }
+                PhaseEvent::ReviewCompleted {
+                    phase: _,
+                    passed,
+                    findings_count,
+                } => {
+                    if passed {
+                        println!(
+                            "    {} Reviews passed ({} findings)",
+                            console::style("✓").green(),
+                            findings_count
+                        );
+                    } else {
+                        println!(
+                            "    {} Reviews FAILED ({} findings)",
+                            console::style("✗").red(),
+                            findings_count
+                        );
+                    }
+                }
+                PhaseEvent::WaveCompleted {
+                    wave,
+                    success_count,
+                    failed_count,
+                } => {
+                    println!(
+                        "{} Wave {} completed: {} success, {} failed",
+                        console::style("─").dim(),
+                        wave,
+                        success_count,
+                        failed_count
+                    );
+                }
+                PhaseEvent::DagCompleted { success, summary } => {
+                    println!();
+                    if success {
+                        println!(
+                            "{}",
+                            console::style("All phases completed successfully!").green().bold()
+                        );
+                    } else {
+                        println!(
+                            "{}",
+                            console::style(format!(
+                                "Execution finished: {}/{} phases succeeded",
+                                summary.completed, summary.total_phases
+                            ))
+                            .yellow()
+                            .bold()
+                        );
+                    }
+                }
+            }
+        }
+    });
+
+    // Create executor and run
+    let executor = DagExecutor::new(executor_config, dag_config).with_event_channel(event_tx);
+
+    // Show DAG analysis
+    println!();
+    println!(
+        "{}",
+        console::style("Forge Swarm Orchestrator").bold().cyan()
+    );
+    println!("─────────────────────────");
+    println!("Phases: {}", phases.len());
+    println!("Max parallel: {}", max_parallel);
+    if review_enabled {
+        println!("Reviews: enabled ({})", review.unwrap_or("none"));
+        println!("Review mode: {}", review_mode);
+    }
+    if fail_fast {
+        println!("Mode: fail-fast");
+    }
+
+    // Compute and display waves
+    let scheduler = DagScheduler::from_phases(&phases, DagConfig::default())?;
+    let waves = scheduler.compute_waves();
+    println!();
+    println!("Execution plan ({} waves):", waves.len());
+    for (i, wave) in waves.iter().enumerate() {
+        println!("  Wave {}: {:?}", i, wave);
+    }
+
+    // Execute
+    let result = executor.execute(&phases).await?;
+
+    // Stop the display task (abort since we've received all events)
+    display_handle.abort();
+
+    // Summary
+    println!();
+    println!("─────────────────────────");
+    println!(
+        "Duration: {:.1}s",
+        result.duration.as_secs_f64()
+    );
+    println!(
+        "Completed: {}/{}",
+        result.summary.completed, result.summary.total_phases
+    );
+    if result.summary.failed > 0 {
+        println!(
+            "Failed: {}",
+            console::style(result.summary.failed).red()
+        );
+    }
+    if result.summary.skipped > 0 {
+        println!("Skipped: {}", result.summary.skipped);
+    }
+
+    if !result.success {
+        anyhow::bail!("Swarm execution failed");
+    }
 
     Ok(())
 }

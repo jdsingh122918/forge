@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod compaction;
 pub mod config;
+pub mod dag;
 pub mod forge_config;
 pub mod gates;
 pub mod generate;
