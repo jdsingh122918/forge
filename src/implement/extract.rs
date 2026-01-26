@@ -182,6 +182,7 @@ fn call_claude_for_extraction(project_dir: &Path, prompt: &str) -> Result<String
 
     let mut cmd = Command::new(&claude_cmd);
     cmd.arg("--print");
+    cmd.arg("--no-session-persistence");
     cmd.arg("-p");
     cmd.arg(prompt);
     cmd.current_dir(project_dir);

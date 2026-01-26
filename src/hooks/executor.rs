@@ -235,6 +235,7 @@ Respond ONLY with the JSON object, no other text."#,
         // Build and spawn Claude command
         let mut child = Command::new(&self.claude_cmd)
             .arg("--print")
+            .arg("--no-session-persistence")
             .arg("--dangerously-skip-permissions")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -186,7 +186,7 @@ async fn main() -> Result<()> {
             cmd_interview(&project_dir)?;
         }
         Commands::Generate => {
-            cmd_generate(&project_dir)?;
+            cmd_generate(&project_dir, cli.spec_file.as_deref(), cli.yes)?;
         }
         Commands::Run { phase } => {
             run_orchestrator(&cli, project_dir, phase.clone()).await?;
@@ -599,16 +599,26 @@ async fn run_orchestrator(
                     ui.show_blocker(&blocker.description);
                 }
 
-                // Prompt user about blockers
-                use dialoguer::Confirm;
-                let continue_anyway = Confirm::new()
-                    .with_prompt(format!(
-                        "{} blocker(s) detected. Continue anyway?",
+                // Auto-continue if --yes flag is set
+                let continue_anyway = if cli.yes {
+                    println!(
+                        "  {} {} blocker(s) detected, auto-continuing (--yes flag)",
+                        console::style("⚠").yellow(),
                         blockers.len()
-                    ))
-                    .default(true)
-                    .interact()
-                    .unwrap_or(true);
+                    );
+                    true
+                } else {
+                    // Prompt user about blockers
+                    use dialoguer::Confirm;
+                    Confirm::new()
+                        .with_prompt(format!(
+                            "{} blocker(s) detected. Continue anyway?",
+                            blockers.len()
+                        ))
+                        .default(true)
+                        .interact()
+                        .unwrap_or(true)
+                };
 
                 if !continue_anyway {
                     ui.phase_failed(&phase.number, "User stopped due to blockers");
@@ -1020,9 +1030,9 @@ fn cmd_interview(project_dir: &std::path::Path) -> Result<()> {
     run_interview(project_dir)
 }
 
-fn cmd_generate(project_dir: &std::path::Path) -> Result<()> {
+fn cmd_generate(project_dir: &std::path::Path, spec_file: Option<&std::path::Path>, auto_approve: bool) -> Result<()> {
     use forge::generate::run_generate;
-    run_generate(project_dir)
+    run_generate(project_dir, spec_file, auto_approve)
 }
 
 fn cmd_implement(
