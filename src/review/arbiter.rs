@@ -77,8 +77,11 @@ fn default_model() -> String {
     "claude-3-sonnet".to_string()
 }
 
+/// Default confidence threshold for arbiter decisions.
+pub const DEFAULT_CONFIDENCE_THRESHOLD: f64 = 0.7;
+
 fn default_confidence_threshold() -> f64 {
-    0.7
+    DEFAULT_CONFIDENCE_THRESHOLD
 }
 
 

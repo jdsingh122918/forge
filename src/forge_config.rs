@@ -22,6 +22,20 @@
 //! [phases.overrides."database-*"]
 //! permission_mode = "strict"
 //! budget = 12
+//!
+//! [reviews]
+//! enabled = true
+//! parallel = true
+//! mode = "arbiter"
+//! confidence_threshold = 0.7
+//!
+//! [[reviews.specialists]]
+//! type = "security"
+//! gate = true
+//!
+//! [[reviews.specialists]]
+//! type = "performance"
+//! gate = false
 //! ```
 
 use anyhow::{Context, Result};
@@ -182,6 +196,85 @@ pub struct SkillsSection {
     pub global: Vec<String>,
 }
 
+/// Review configuration section.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewsSection {
+    /// Whether review integration is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Default review specialists for all phases.
+    #[serde(default)]
+    pub specialists: Vec<ReviewSpecialistConfig>,
+    /// Whether to run reviews in parallel.
+    #[serde(default = "default_review_parallel")]
+    pub parallel: bool,
+    /// Resolution mode for failed reviews.
+    #[serde(default)]
+    pub mode: ReviewMode,
+    /// Confidence threshold for arbiter mode.
+    #[serde(default = "default_confidence_threshold")]
+    pub confidence_threshold: f64,
+}
+
+fn default_review_parallel() -> bool {
+    true
+}
+
+fn default_confidence_threshold() -> f64 {
+    crate::review::arbiter::DEFAULT_CONFIDENCE_THRESHOLD
+}
+
+impl Default for ReviewsSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            specialists: Vec::new(),
+            parallel: true,
+            mode: ReviewMode::default(),
+            confidence_threshold: default_confidence_threshold(),
+        }
+    }
+}
+
+/// Resolution mode for review failures.
+/// This mirrors ResolutionMode from the review module for configuration purposes.
+#[derive(Debug, Clone, Default, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReviewMode {
+    /// Always pause for user input.
+    #[default]
+    Manual,
+    /// Attempt auto-fix, retry up to N times.
+    Auto,
+    /// LLM arbiter decides based on severity and context.
+    Arbiter,
+}
+
+impl ReviewMode {
+    /// Convert to ResolutionMode for use with the arbiter.
+    pub fn to_resolution_mode(self) -> crate::review::ResolutionMode {
+        match self {
+            ReviewMode::Manual => crate::review::ResolutionMode::manual(),
+            ReviewMode::Auto => crate::review::ResolutionMode::auto(2), // default max attempts
+            ReviewMode::Arbiter => crate::review::ResolutionMode::arbiter(),
+        }
+    }
+}
+
+/// Configuration for a single review specialist in forge.toml.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewSpecialistConfig {
+    /// Type of specialist (security, performance, architecture, simplicity, or custom).
+    #[serde(rename = "type")]
+    pub specialist_type: String,
+    /// Whether this review gates phase completion.
+    #[serde(default)]
+    pub gate: bool,
+    /// Custom focus areas (optional).
+    #[serde(default)]
+    pub focus_areas: Vec<String>,
+}
+
 /// The complete forge.toml configuration structure.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ForgeToml {
@@ -200,6 +293,9 @@ pub struct ForgeToml {
     /// Skills configuration
     #[serde(default)]
     pub skills: SkillsSection,
+    /// Review configuration
+    #[serde(default)]
+    pub reviews: ReviewsSection,
 }
 
 impl ForgeToml {
@@ -881,5 +977,105 @@ auto_approve_threshold = 10
         assert!(flags.contains(&"--output-format".to_string()));
         assert!(flags.contains(&"stream-json".to_string()));
         assert!(flags.contains(&"--verbose".to_string()));
+    }
+
+    // =========================================
+    // Review configuration tests
+    // =========================================
+
+    #[test]
+    fn test_reviews_section_default() {
+        let reviews = ReviewsSection::default();
+        assert!(!reviews.enabled);
+        assert!(reviews.specialists.is_empty());
+        assert!(reviews.parallel);
+        assert_eq!(reviews.mode, ReviewMode::Manual);
+        assert!((reviews.confidence_threshold - 0.7).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_reviews_section_parse() {
+        let content = r#"
+[reviews]
+enabled = true
+parallel = true
+mode = "arbiter"
+confidence_threshold = 0.8
+
+[[reviews.specialists]]
+type = "security"
+gate = true
+
+[[reviews.specialists]]
+type = "performance"
+gate = false
+focus_areas = ["N+1 queries", "memory"]
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+
+        assert!(toml.reviews.enabled);
+        assert!(toml.reviews.parallel);
+        assert_eq!(toml.reviews.mode, ReviewMode::Arbiter);
+        assert!((toml.reviews.confidence_threshold - 0.8).abs() < f64::EPSILON);
+        assert_eq!(toml.reviews.specialists.len(), 2);
+
+        let security = &toml.reviews.specialists[0];
+        assert_eq!(security.specialist_type, "security");
+        assert!(security.gate);
+        assert!(security.focus_areas.is_empty());
+
+        let performance = &toml.reviews.specialists[1];
+        assert_eq!(performance.specialist_type, "performance");
+        assert!(!performance.gate);
+        assert_eq!(performance.focus_areas.len(), 2);
+    }
+
+    #[test]
+    fn test_review_mode_serialization() {
+        assert_eq!(
+            serde_json::to_string(&ReviewMode::Manual).unwrap(),
+            "\"manual\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ReviewMode::Auto).unwrap(),
+            "\"auto\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ReviewMode::Arbiter).unwrap(),
+            "\"arbiter\""
+        );
+    }
+
+    #[test]
+    fn test_review_mode_deserialization() {
+        assert_eq!(
+            serde_json::from_str::<ReviewMode>("\"manual\"").unwrap(),
+            ReviewMode::Manual
+        );
+        assert_eq!(
+            serde_json::from_str::<ReviewMode>("\"auto\"").unwrap(),
+            ReviewMode::Auto
+        );
+        assert_eq!(
+            serde_json::from_str::<ReviewMode>("\"arbiter\"").unwrap(),
+            ReviewMode::Arbiter
+        );
+    }
+
+    #[test]
+    fn test_reviews_section_disabled_by_default() {
+        let toml = ForgeToml::default();
+        assert!(!toml.reviews.enabled);
+    }
+
+    #[test]
+    fn test_reviews_section_empty_specialists() {
+        let content = r#"
+[reviews]
+enabled = true
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+        assert!(toml.reviews.enabled);
+        assert!(toml.reviews.specialists.is_empty());
     }
 }

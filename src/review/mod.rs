@@ -82,6 +82,7 @@
 //! ```
 
 pub mod arbiter;
+pub mod dispatcher;
 pub mod findings;
 pub mod specialists;
 
@@ -90,5 +91,6 @@ pub use arbiter::{
     ArbiterConfig, ArbiterDecision, ArbiterExecutor, ArbiterInput, ArbiterResult, ArbiterVerdict,
     DecisionSource, ResolutionMode,
 };
+pub use dispatcher::{DispatchResult, DispatcherConfig, PhaseReviewConfig, ReviewDispatcher};
 pub use findings::{FindingSeverity, ReviewAggregation, ReviewFinding, ReviewReport, ReviewVerdict};
 pub use specialists::{ReviewSpecialist, SpecialistType};

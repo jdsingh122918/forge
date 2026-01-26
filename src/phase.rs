@@ -24,6 +24,55 @@ pub enum PhaseType {
     Implement,
 }
 
+/// Configuration for review specialists on a phase.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PhaseReviewSettings {
+    /// Review specialists to invoke after phase completion.
+    #[serde(default)]
+    pub specialists: Vec<PhaseSpecialistConfig>,
+    /// Whether to run reviews in parallel.
+    #[serde(default = "default_parallel")]
+    pub parallel: bool,
+}
+
+fn default_parallel() -> bool {
+    true
+}
+
+impl Default for PhaseReviewSettings {
+    fn default() -> Self {
+        Self {
+            specialists: Vec::new(),
+            parallel: true,
+        }
+    }
+}
+
+impl PhaseReviewSettings {
+    /// Check if any review specialists are configured.
+    pub fn is_empty(&self) -> bool {
+        self.specialists.is_empty()
+    }
+
+    /// Check if any gating specialists are configured.
+    pub fn has_gating(&self) -> bool {
+        self.specialists.iter().any(|s| s.gate)
+    }
+}
+
+/// Configuration for a single review specialist.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PhaseSpecialistConfig {
+    /// Type of specialist (security, performance, architecture, simplicity, or custom name).
+    pub specialist_type: String,
+    /// Whether this review gates phase completion.
+    #[serde(default)]
+    pub gate: bool,
+    /// Custom focus areas (optional).
+    #[serde(default)]
+    pub focus_areas: Vec<String>,
+}
+
 /// Represents a single implementation phase.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Phase {
@@ -63,6 +112,9 @@ pub struct Phase {
     /// Used by `forge implement` to distinguish test phases from implementation phases
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_type: Option<PhaseType>,
+    /// Review specialists configuration for post-phase quality gates
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviews: Option<PhaseReviewSettings>,
 }
 
 /// Represents a sub-phase that is dynamically spawned from a parent phase.
@@ -159,6 +211,7 @@ impl SubPhase {
             parent_phase: Some(parent.number.clone()),
             sub_phases: Vec::new(),
             phase_type: parent.phase_type,
+            reviews: parent.reviews.clone(),
         }
     }
 
@@ -198,6 +251,7 @@ impl Phase {
             parent_phase: None,
             sub_phases: Vec::new(),
             phase_type: None,
+            reviews: None,
         }
     }
 
@@ -223,6 +277,7 @@ impl Phase {
             parent_phase: None,
             sub_phases: Vec::new(),
             phase_type: None,
+            reviews: None,
         }
     }
 
@@ -248,6 +303,7 @@ impl Phase {
             parent_phase: None,
             sub_phases: Vec::new(),
             phase_type: None,
+            reviews: None,
         }
     }
 
@@ -353,6 +409,21 @@ impl Phase {
     /// Check if all sub-phases are complete.
     pub fn all_sub_phases_complete(&self) -> bool {
         self.sub_phases.is_empty() || self.sub_phases.iter().all(|sp| sp.is_complete())
+    }
+
+    /// Check if this phase has review configuration.
+    pub fn has_reviews(&self) -> bool {
+        self.reviews.as_ref().is_some_and(|r| !r.is_empty())
+    }
+
+    /// Check if this phase has gating reviews.
+    pub fn has_gating_reviews(&self) -> bool {
+        self.reviews.as_ref().is_some_and(|r| r.has_gating())
+    }
+
+    /// Get the review settings for this phase.
+    pub fn review_settings(&self) -> Option<&PhaseReviewSettings> {
+        self.reviews.as_ref()
     }
 
     /// Get the next sub-phase to execute.
