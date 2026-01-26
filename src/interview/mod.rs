@@ -196,7 +196,7 @@ pub fn run_interview(project_dir: &Path) -> Result<()> {
         )?;
 
         println!("{}", response);
-        full_output.push_str("\n");
+        full_output.push('\n');
         full_output.push_str(&response);
 
         // Check for spec in response
@@ -237,7 +237,8 @@ fn run_claude_turn(
     user_message: &str,
     is_continuation: bool,
 ) -> Result<String> {
-    let mut cmd = build_interview_command(claude_cmd, project_dir, Some(user_message), is_continuation);
+    let mut cmd =
+        build_interview_command(claude_cmd, project_dir, Some(user_message), is_continuation);
 
     let output = cmd.output().context("Failed to run Claude")?;
 

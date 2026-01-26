@@ -1,0 +1,18 @@
+[project]
+name = "forge"
+
+[defaults]
+budget = 10
+permission_mode = "standard"
+
+[skills]
+global = [
+  "rust-conventions",
+  "testing-strategy",
+  "cli-design",
+  "tdd-workflow",
+  "dry-principles",
+  "secure-coding",
+  "context7-integration",
+  "agent-review"
+]
