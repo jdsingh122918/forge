@@ -572,12 +572,10 @@ async fn execute_single_phase(
                                     break;
                                 }
                                 Err(e) => {
-                                    if config.verbose {
-                                        eprintln!(
-                                            "Failed to convert decomposition for phase {}: {}",
-                                            phase.number, e
-                                        );
-                                    }
+                                    eprintln!(
+                                        "Warning: Failed to convert decomposition for phase {}: {}",
+                                        phase.number, e
+                                    );
                                     // Continue execution without decomposition
                                 }
                             }
@@ -678,15 +676,12 @@ async fn execute_single_phase(
 
                 // If reviews failed and not proceeding, mark as failure
                 if !result.can_proceed() {
-                    result.success = false;
-                    result.error = Some("Review gate failed".to_string());
+                    result.mark_review_gate_failure();
                 }
             }
             Err(e) => {
                 // Log review error but don't fail the phase
-                if config.verbose {
-                    eprintln!("Review error for phase {}: {}", phase.number, e);
-                }
+                eprintln!("Warning: Review error for phase {}: {}", phase.number, e);
             }
         }
     }
@@ -777,5 +772,296 @@ mod tests {
 
         let failed = PhaseResult::failure("01", "error", 5, Duration::from_secs(10));
         assert!(!failed.can_proceed());
+    }
+
+    #[test]
+    fn test_executor_config_max_parallel() {
+        // Test that max_parallel configuration is respected in DagConfig
+        let dag_config = DagConfig::default().with_max_parallel(8);
+        assert_eq!(dag_config.max_parallel, 8);
+
+        // Test with executor config
+        let executor_config = ExecutorConfig {
+            project_dir: PathBuf::from("/test"),
+            claude_cmd: "claude".to_string(),
+            skip_permissions: true,
+            auto_approve: false,
+            verbose: false,
+            review_config: ReviewIntegrationConfig::default(),
+            decomposition_config: DecompositionConfig::default(),
+        };
+
+        let executor = DagExecutor::new(executor_config, dag_config.clone());
+        assert_eq!(executor.dag_config.max_parallel, 8);
+
+        // Test different max_parallel values
+        let dag_config_1 = DagConfig::default().with_max_parallel(1);
+        assert_eq!(dag_config_1.max_parallel, 1);
+
+        let dag_config_16 = DagConfig::default().with_max_parallel(16);
+        assert_eq!(dag_config_16.max_parallel, 16);
+    }
+
+    #[test]
+    fn test_executor_config_fail_fast() {
+        // Test fail_fast = true
+        let dag_config_true = DagConfig::default().with_fail_fast(true);
+        assert!(dag_config_true.fail_fast);
+
+        // Test fail_fast = false
+        let dag_config_false = DagConfig::default().with_fail_fast(false);
+        assert!(!dag_config_false.fail_fast);
+
+        // Test default is false
+        let dag_config_default = DagConfig::default();
+        assert!(!dag_config_default.fail_fast);
+
+        // Verify the config is stored correctly in executor
+        let executor_config = ExecutorConfig {
+            project_dir: PathBuf::from("/test"),
+            claude_cmd: "claude".to_string(),
+            skip_permissions: true,
+            auto_approve: false,
+            verbose: false,
+            review_config: ReviewIntegrationConfig::default(),
+            decomposition_config: DecompositionConfig::default(),
+        };
+
+        let executor = DagExecutor::new(executor_config, dag_config_true);
+        assert!(executor.dag_config.fail_fast);
+    }
+
+    #[test]
+    fn test_executor_config_with_reviews() {
+        use crate::dag::scheduler::ReviewConfig;
+
+        // Test with reviews enabled
+        let review_config =
+            ReviewConfig::enabled(vec!["security".to_string(), "performance".to_string()]);
+        let dag_config = DagConfig::default().with_review(review_config.clone());
+
+        assert!(dag_config.review.enabled);
+        assert_eq!(dag_config.review.default_specialists.len(), 2);
+        assert!(dag_config
+            .review
+            .default_specialists
+            .contains(&"security".to_string()));
+        assert!(dag_config
+            .review
+            .default_specialists
+            .contains(&"performance".to_string()));
+
+        // Test with reviews disabled (default)
+        let dag_config_no_review = DagConfig::default();
+        assert!(!dag_config_no_review.review.enabled);
+
+        // Test executor stores review config correctly
+        let executor_config = ExecutorConfig {
+            project_dir: PathBuf::from("/test"),
+            claude_cmd: "claude".to_string(),
+            skip_permissions: true,
+            auto_approve: false,
+            verbose: false,
+            review_config: ReviewIntegrationConfig::default(),
+            decomposition_config: DecompositionConfig::default(),
+        };
+
+        let executor = DagExecutor::new(executor_config, dag_config);
+        assert!(executor.dag_config.review.enabled);
+        assert_eq!(executor.dag_config.review.default_specialists.len(), 2);
+    }
+
+    #[test]
+    fn test_dag_config_serialization() {
+        use crate::dag::scheduler::{ReviewConfig, ReviewMode, SwarmBackend};
+
+        // Create a fully configured DagConfig
+        let config = DagConfig {
+            max_parallel: 6,
+            fail_fast: true,
+            swarm_enabled: true,
+            swarm_backend: SwarmBackend::Tmux,
+            review: ReviewConfig {
+                enabled: true,
+                default_specialists: vec!["security".to_string()],
+                mode: ReviewMode::Auto,
+                max_fix_attempts: 3,
+                arbiter_confidence: 0.8,
+            },
+            decomposition_enabled: true,
+            decomposition_threshold: 60,
+            escalation_types: vec!["critical".to_string(), "security".to_string()],
+        };
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&config).expect("Failed to serialize DagConfig");
+
+        // Verify JSON contains expected values
+        assert!(json.contains("\"max_parallel\":6"));
+        assert!(json.contains("\"fail_fast\":true"));
+        assert!(json.contains("\"swarm_enabled\":true"));
+        assert!(json.contains("\"tmux\""));
+        assert!(json.contains("\"enabled\":true"));
+        assert!(json.contains("\"auto\""));
+        assert!(json.contains("\"decomposition_enabled\":true"));
+        assert!(json.contains("\"decomposition_threshold\":60"));
+
+        // Deserialize back
+        let deserialized: DagConfig =
+            serde_json::from_str(&json).expect("Failed to deserialize DagConfig");
+
+        // Verify round-trip
+        assert_eq!(deserialized.max_parallel, 6);
+        assert!(deserialized.fail_fast);
+        assert!(deserialized.swarm_enabled);
+        assert_eq!(deserialized.swarm_backend, SwarmBackend::Tmux);
+        assert!(deserialized.review.enabled);
+        assert_eq!(
+            deserialized.review.default_specialists,
+            vec!["security".to_string()]
+        );
+        assert_eq!(deserialized.review.mode, ReviewMode::Auto);
+        assert_eq!(deserialized.review.max_fix_attempts, 3);
+        assert!((deserialized.review.arbiter_confidence - 0.8).abs() < f64::EPSILON);
+        assert!(deserialized.decomposition_enabled);
+        assert_eq!(deserialized.decomposition_threshold, 60);
+        assert_eq!(
+            deserialized.escalation_types,
+            vec!["critical".to_string(), "security".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_phase_event_variants() {
+        // Test all PhaseEvent variants can be created and serialized
+
+        // Started
+        let started = PhaseEvent::Started {
+            phase: "01".to_string(),
+            wave: 0,
+        };
+        let json = serde_json::to_string(&started).unwrap();
+        assert!(json.contains("\"type\":\"started\""));
+        assert!(json.contains("\"phase\":\"01\""));
+        assert!(json.contains("\"wave\":0"));
+
+        // Progress
+        let progress = PhaseEvent::Progress {
+            phase: "02".to_string(),
+            iteration: 3,
+            budget: 10,
+            percent: Some(50),
+        };
+        let json = serde_json::to_string(&progress).unwrap();
+        assert!(json.contains("\"type\":\"progress\""));
+        assert!(json.contains("\"iteration\":3"));
+        assert!(json.contains("\"budget\":10"));
+        assert!(json.contains("\"percent\":50"));
+
+        // Completed
+        let result = PhaseResult::success(
+            "03",
+            5,
+            FileChangeSummary::default(),
+            Duration::from_secs(30),
+        );
+        let completed = PhaseEvent::Completed {
+            phase: "03".to_string(),
+            result: Box::new(result),
+        };
+        let json = serde_json::to_string(&completed).unwrap();
+        assert!(json.contains("\"type\":\"completed\""));
+        assert!(json.contains("\"phase\":\"03\""));
+
+        // ReviewStarted
+        let review_started = PhaseEvent::ReviewStarted {
+            phase: "04".to_string(),
+        };
+        let json = serde_json::to_string(&review_started).unwrap();
+        assert!(json.contains("\"type\":\"review_started\""));
+
+        // ReviewCompleted
+        let review_completed = PhaseEvent::ReviewCompleted {
+            phase: "04".to_string(),
+            passed: true,
+            findings_count: 2,
+        };
+        let json = serde_json::to_string(&review_completed).unwrap();
+        assert!(json.contains("\"type\":\"review_completed\""));
+        assert!(json.contains("\"passed\":true"));
+        assert!(json.contains("\"findings_count\":2"));
+
+        // WaveStarted
+        let wave_started = PhaseEvent::WaveStarted {
+            wave: 1,
+            phases: vec!["05".to_string(), "06".to_string()],
+        };
+        let json = serde_json::to_string(&wave_started).unwrap();
+        assert!(json.contains("\"type\":\"wave_started\""));
+        assert!(json.contains("\"wave\":1"));
+
+        // WaveCompleted
+        let wave_completed = PhaseEvent::WaveCompleted {
+            wave: 1,
+            success_count: 2,
+            failed_count: 0,
+        };
+        let json = serde_json::to_string(&wave_completed).unwrap();
+        assert!(json.contains("\"type\":\"wave_completed\""));
+        assert!(json.contains("\"success_count\":2"));
+        assert!(json.contains("\"failed_count\":0"));
+
+        // DagCompleted
+        let summary = DagSummary::new(5);
+        let dag_completed = PhaseEvent::DagCompleted {
+            success: true,
+            summary,
+        };
+        let json = serde_json::to_string(&dag_completed).unwrap();
+        assert!(json.contains("\"type\":\"dag_completed\""));
+        assert!(json.contains("\"success\":true"));
+
+        // DecompositionStarted
+        let decomp_started = PhaseEvent::DecompositionStarted {
+            phase: "07".to_string(),
+            reason: "Budget threshold exceeded".to_string(),
+        };
+        let json = serde_json::to_string(&decomp_started).unwrap();
+        assert!(json.contains("\"type\":\"decomposition_started\""));
+        assert!(json.contains("Budget threshold exceeded"));
+
+        // DecompositionCompleted
+        let decomp_completed = PhaseEvent::DecompositionCompleted {
+            phase: "07".to_string(),
+            task_count: 4,
+            total_budget: 20,
+        };
+        let json = serde_json::to_string(&decomp_completed).unwrap();
+        assert!(json.contains("\"type\":\"decomposition_completed\""));
+        assert!(json.contains("\"task_count\":4"));
+        assert!(json.contains("\"total_budget\":20"));
+
+        // SubTaskStarted
+        let subtask_started = PhaseEvent::SubTaskStarted {
+            phase: "08".to_string(),
+            task_id: "task-1".to_string(),
+            task_name: "Implement feature A".to_string(),
+        };
+        let json = serde_json::to_string(&subtask_started).unwrap();
+        assert!(json.contains("\"type\":\"sub_task_started\""));
+        assert!(json.contains("\"task_id\":\"task-1\""));
+        assert!(json.contains("\"task_name\":\"Implement feature A\""));
+
+        // SubTaskCompleted
+        let subtask_completed = PhaseEvent::SubTaskCompleted {
+            phase: "08".to_string(),
+            task_id: "task-1".to_string(),
+            success: true,
+            iterations: 3,
+        };
+        let json = serde_json::to_string(&subtask_completed).unwrap();
+        assert!(json.contains("\"type\":\"sub_task_completed\""));
+        assert!(json.contains("\"success\":true"));
+        assert!(json.contains("\"iterations\":3"));
     }
 }

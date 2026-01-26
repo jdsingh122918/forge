@@ -150,14 +150,14 @@ impl DagUI {
                 );
             }
             PhaseEvent::Completed { phase, result } => {
-                if result.success {
+                if result.is_success() {
                     let _ = writeln!(&self.term, "✓ {}", phase);
                 } else {
                     let _ = writeln!(
                         &self.term,
                         "✗ {} ({})",
                         phase,
-                        result.error.as_deref().unwrap_or("failed")
+                        result.error().unwrap_or("failed")
                     );
                 }
             }
@@ -340,7 +340,7 @@ impl DagUI {
     fn on_phase_completed(&self, phase: &str, result: &PhaseResult) {
         let mut bars = self.phase_bars.lock().unwrap();
         if let Some(state) = bars.remove(phase) {
-            if result.success {
+            if result.is_success() {
                 state.bar.set_style(
                     ProgressStyle::default_bar()
                         .template("  {prefix:.bold} [{bar:30.green/green}] {msg}")
@@ -364,7 +364,7 @@ impl DagUI {
                 state.bar.finish_with_message(format!(
                     "{} Failed: {}",
                     CROSS,
-                    result.error.as_deref().unwrap_or("unknown error")
+                    result.error().unwrap_or("unknown error")
                 ));
             }
         }
@@ -373,7 +373,7 @@ impl DagUI {
         self.header_bar.inc(1);
 
         // Print summary line
-        if result.success {
+        if result.is_success() {
             self.multi
                 .println(format!(
                     "  {} Phase {} {} in {} iterations ({})",
@@ -407,7 +407,7 @@ impl DagUI {
                     CROSS,
                     style(phase).red().bold(),
                     style("failed").red(),
-                    result.error.as_deref().unwrap_or("unknown error")
+                    result.error().unwrap_or("unknown error")
                 ))
                 .ok();
         }
@@ -562,7 +562,7 @@ impl DagUI {
             phases.sort_by_key(|(k, _)| *k);
 
             for (phase, result) in phases {
-                let status = if result.success {
+                let status = if result.is_success() {
                     style("✓").green()
                 } else {
                     style("✗").red()
@@ -763,7 +763,7 @@ mod tests {
             FileChangeSummary::default(),
             Duration::from_secs(30),
         );
-        assert!(result.success);
+        assert!(result.is_success());
         assert_eq!(result.iterations, 5);
     }
 }

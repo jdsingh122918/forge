@@ -416,7 +416,7 @@ impl ArbiterInput {
     pub fn highest_severity(&self) -> Option<FindingSeverity> {
         self.blocking_findings
             .iter()
-            .map(|f| f.severity)
+            .map(|f| f.severity())
             .min() // FindingSeverity orders Error < Warning < Info < Note
     }
 }
@@ -898,7 +898,7 @@ fn extract_json(response: &str) -> Option<String> {
 
 /// Check if a finding's category matches any in the escalation list.
 fn matches_escalate_category(finding: &ReviewFinding, escalate_on: &[String]) -> bool {
-    finding.category.as_ref().is_some_and(|cat| {
+    finding.category().is_some_and(|cat| {
         escalate_on
             .iter()
             .any(|c| cat.to_lowercase().contains(&c.to_lowercase()))
@@ -910,7 +910,7 @@ fn all_findings_auto_proceed(findings: &[ReviewFinding], auto_proceed_on: &[Stri
     !findings.is_empty()
         && !auto_proceed_on.is_empty()
         && findings.iter().all(|f| {
-            f.category.as_ref().is_some_and(|cat| {
+            f.category().is_some_and(|cat| {
                 auto_proceed_on
                     .iter()
                     .any(|c| cat.to_lowercase().contains(&c.to_lowercase()))
@@ -974,7 +974,7 @@ pub fn apply_rule_based_decision(
         // Check for categories that should always escalate
         for finding in &input.blocking_findings {
             if matches_escalate_category(finding, escalate_on) {
-                let category = finding.category.as_ref().unwrap(); // Safe: matches_escalate_category guarantees this
+                let category = finding.category().unwrap(); // Safe: matches_escalate_category guarantees this
                 return ArbiterDecision::escalate(
                     &format!("Finding category '{}' requires human review", category),
                     1.0,
@@ -1109,9 +1109,7 @@ impl ArbiterExecutor {
                     }
                     Err(e) => {
                         // LLM failed - fall back to rules
-                        if self.config.verbose {
-                            eprintln!("[arbiter] LLM call failed: {}, using rules", e);
-                        }
+                        eprintln!("[arbiter] Warning: LLM call failed: {}, using rules", e);
                         let decision = apply_rule_based_decision(&input, &self.config);
                         Ok(ArbiterResult::fallback(decision, &e.to_string()))
                     }
@@ -1232,7 +1230,7 @@ impl ArbiterExecutor {
         if let ResolutionMode::Arbiter { ref escalate_on, .. } = self.config.mode {
             for finding in &input.blocking_findings {
                 if matches_escalate_category(finding, escalate_on) {
-                    let category = finding.category.as_ref().unwrap(); // Safe: helper guarantees this
+                    let category = finding.category().unwrap(); // Safe: helper guarantees this
                     let decision = ArbiterDecision::escalate(
                         &format!("Category '{}' requires human review", category),
                         1.0,

@@ -283,9 +283,7 @@ impl SwarmExecutor {
             .await;
 
         // 5. Cleanup callback server
-        if let Err(e) = callback_server.stop().await
-            && self.config.verbose
-        {
+        if let Err(e) = callback_server.stop().await {
             eprintln!("[swarm] Warning: Failed to stop callback server: {}", e);
         }
 
@@ -433,9 +431,7 @@ impl SwarmExecutor {
                             }
                         }
                         Err(e) => {
-                            if self.config.verbose {
-                                eprintln!("[swarm] Error waiting for process: {}", e);
-                            }
+                            eprintln!("[swarm] Warning: Error waiting for process: {}", e);
                             process_exited = true;
                             if stdout_complete {
                                 break;
@@ -569,7 +565,7 @@ impl SwarmExecutor {
             let events = {
                 let state = state.read().await;
                 if state.events.len() > last_count {
-                    let new_events = state.events[last_count..].to_vec();
+                    let new_events: Vec<_> = state.events.iter().skip(last_count).cloned().collect();
                     last_count = state.events.len();
                     new_events
                 } else {
@@ -967,5 +963,154 @@ mod tests {
         let prompt = build_orchestration_prompt(&context);
         assert!(prompt.contains("phase 05"));
         assert!(prompt.contains("OAuth Integration"));
+    }
+
+    // =========================================
+    // Error recovery tests
+    // =========================================
+
+    #[test]
+    fn test_swarm_config_timeout_settings() {
+        // Test custom timeout configuration
+        let custom_timeout = Duration::from_secs(300);
+        let config = SwarmConfig::default().with_timeout(custom_timeout);
+
+        assert_eq!(config.timeout, custom_timeout);
+        assert_eq!(config.timeout.as_secs(), 300);
+    }
+
+    #[test]
+    fn test_swarm_config_default_has_reasonable_timeout() {
+        // Verify default timeout exists and is reasonable (> 0)
+        let config = SwarmConfig::default();
+
+        assert!(config.timeout.as_secs() > 0);
+        // Default should be 30 minutes (1800 seconds)
+        assert_eq!(config.timeout, Duration::from_secs(DEFAULT_TIMEOUT_SECS));
+    }
+
+    #[test]
+    fn test_swarm_config_verbose_setting() {
+        // Test verbose configuration for both true and false
+        let config_verbose = SwarmConfig::default().with_verbose(true);
+        assert!(config_verbose.verbose);
+
+        let config_quiet = SwarmConfig::default().with_verbose(false);
+        assert!(!config_quiet.verbose);
+
+        // Default should be false
+        let config_default = SwarmConfig::default();
+        assert!(!config_default.verbose);
+    }
+
+    #[test]
+    fn test_swarm_config_serialization() {
+        // SwarmConfig doesn't derive Serialize/Deserialize, but we can test
+        // that values survive through clone (which is used in executor flow)
+        let config = SwarmConfig::default()
+            .with_timeout(Duration::from_secs(600))
+            .with_verbose(true)
+            .with_claude_cmd("test-claude");
+
+        // Verify all settings are preserved
+        assert_eq!(config.timeout, Duration::from_secs(600));
+        assert!(config.verbose);
+        assert_eq!(config.claude_cmd, "test-claude");
+
+        // Clone should preserve all values (simulates config passing through executor)
+        let cloned = config.clone();
+        assert_eq!(cloned.timeout, Duration::from_secs(600));
+        assert!(cloned.verbose);
+        assert_eq!(cloned.claude_cmd, "test-claude");
+    }
+
+    #[test]
+    fn test_swarm_result_success_construction() {
+        // Test creating a successful SwarmResult with all fields populated
+        let result = SwarmResult::success(
+            "10".to_string(),
+            vec!["task-a".to_string(), "task-b".to_string(), "task-c".to_string()],
+            vec!["src/lib.rs".to_string(), "src/main.rs".to_string()],
+            vec![
+                ReviewOutcome {
+                    specialist: "security-sentinel".to_string(),
+                    verdict: "pass".to_string(),
+                },
+                ReviewOutcome {
+                    specialist: "performance-analyst".to_string(),
+                    verdict: "pass".to_string(),
+                },
+            ],
+            Duration::from_secs(180),
+            25,
+            0,
+        );
+
+        // Verify success state
+        assert!(result.success);
+        assert_eq!(result.phase, "10");
+
+        // Verify tasks
+        assert_eq!(result.tasks_completed.len(), 3);
+        assert!(result.tasks_completed.contains(&"task-a".to_string()));
+        assert!(result.tasks_completed.contains(&"task-b".to_string()));
+        assert!(result.tasks_completed.contains(&"task-c".to_string()));
+        assert!(result.tasks_failed.is_empty());
+
+        // Verify reviews
+        assert_eq!(result.reviews.len(), 2);
+        assert_eq!(result.reviews[0].specialist, "security-sentinel");
+        assert_eq!(result.reviews[1].verdict, "pass");
+
+        // Verify files changed
+        assert_eq!(result.files_changed.len(), 2);
+
+        // Verify no error
+        assert!(result.error.is_none());
+
+        // Verify metrics
+        assert_eq!(result.duration, Duration::from_secs(180));
+        assert_eq!(result.progress_events, 25);
+        assert_eq!(result.exit_code, 0);
+    }
+
+    #[test]
+    fn test_swarm_result_failure_construction() {
+        // Test creating a failed SwarmResult
+        let result = SwarmResult::failure(
+            "07".to_string(),
+            "Connection timeout to external service".to_string(),
+            vec!["task-1".to_string()],
+            vec!["task-2".to_string(), "task-3".to_string()],
+            Duration::from_secs(45),
+            12,
+            1,
+        );
+
+        // Verify failure state
+        assert!(!result.success);
+        assert_eq!(result.phase, "07");
+
+        // Verify error is set
+        assert!(result.error.is_some());
+        assert_eq!(
+            result.error.as_ref().unwrap(),
+            "Connection timeout to external service"
+        );
+
+        // Verify tasks
+        assert_eq!(result.tasks_completed.len(), 1);
+        assert_eq!(result.tasks_failed.len(), 2);
+        assert!(result.tasks_failed.contains(&"task-2".to_string()));
+        assert!(result.tasks_failed.contains(&"task-3".to_string()));
+
+        // Verify reviews and files are empty for failure
+        assert!(result.reviews.is_empty());
+        assert!(result.files_changed.is_empty());
+
+        // Verify metrics
+        assert_eq!(result.duration, Duration::from_secs(45));
+        assert_eq!(result.progress_events, 12);
+        assert_eq!(result.exit_code, 1);
     }
 }

@@ -44,7 +44,7 @@ pub struct PhaseResult {
     /// Phase number
     pub phase: String,
     /// Whether the phase completed successfully
-    pub success: bool,
+    pub(crate) success: bool,
     /// Number of iterations used
     pub iterations: u32,
     /// Files changed during the phase
@@ -54,7 +54,7 @@ pub struct PhaseResult {
     pub review_result: Option<DispatchResult>,
     /// Error message if the phase failed
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub(crate) error: Option<String>,
     /// Duration of the phase execution
     #[serde(with = "duration_serde")]
     pub duration: Duration,
@@ -141,6 +141,24 @@ impl PhaseResult {
     pub fn was_decomposed(&self) -> bool {
         self.decomposed
     }
+
+    /// Check if the phase completed successfully.
+    pub fn is_success(&self) -> bool {
+        self.success
+    }
+
+    /// Get the error message if the phase failed.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    /// Mark this result as failed due to review gate.
+    ///
+    /// This is used internally when review gates block progression.
+    pub(crate) fn mark_review_gate_failure(&mut self) {
+        self.success = false;
+        self.error = Some("Review gate failed".to_string());
+    }
 }
 
 /// Summary of DAG execution results.
@@ -173,7 +191,7 @@ impl DagSummary {
 
     /// Add a phase result to the summary.
     pub fn add_result(&mut self, result: PhaseResult) {
-        if result.success {
+        if result.is_success() {
             self.completed += 1;
         } else {
             self.failed += 1;
@@ -265,18 +283,18 @@ mod tests {
             FileChangeSummary::default(),
             Duration::from_secs(10),
         );
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.can_proceed());
-        assert!(result.error.is_none());
+        assert!(result.error().is_none());
     }
 
     #[test]
     fn test_phase_result_failure() {
         let result =
             PhaseResult::failure("01", "Budget exhausted", 10, Duration::from_secs(60));
-        assert!(!result.success);
+        assert!(!result.is_success());
         assert!(!result.can_proceed());
-        assert_eq!(result.error.as_deref(), Some("Budget exhausted"));
+        assert_eq!(result.error(), Some("Budget exhausted"));
     }
 
     #[test]
@@ -290,7 +308,7 @@ mod tests {
         .with_decomposition();
 
         assert!(result.was_decomposed());
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.can_proceed());
     }
 

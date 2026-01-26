@@ -185,23 +185,23 @@ impl fmt::Display for ReviewVerdict {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewFinding {
     /// Severity of this finding.
-    pub severity: FindingSeverity,
+    severity: FindingSeverity,
     /// File path where the issue was found (relative to project root).
-    pub file: String,
+    file: String,
     /// Line number (1-based, optional for file-level findings).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub line: Option<u32>,
+    line: Option<u32>,
     /// Column number (1-based, optional).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub column: Option<u32>,
+    column: Option<u32>,
     /// Description of the issue or observation.
-    pub issue: String,
+    issue: String,
     /// Suggested fix or improvement (optional).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub suggestion: Option<String>,
+    suggestion: Option<String>,
     /// Category or rule ID that triggered this finding (optional).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub category: Option<String>,
+    category: Option<String>,
 }
 
 impl ReviewFinding {
@@ -223,7 +223,7 @@ impl ReviewFinding {
     ///     "src/db.rs",
     ///     "Potential SQL injection"
     /// );
-    /// assert_eq!(finding.file, "src/db.rs");
+    /// assert_eq!(finding.file(), "src/db.rs");
     /// ```
     pub fn new(severity: FindingSeverity, file: impl Into<String>, issue: impl Into<String>) -> Self {
         Self {
@@ -246,7 +246,7 @@ impl ReviewFinding {
     ///
     /// let finding = ReviewFinding::new(FindingSeverity::Error, "src/main.rs", "Issue")
     ///     .with_line(42);
-    /// assert_eq!(finding.line, Some(42));
+    /// assert_eq!(finding.line(), Some(42));
     /// ```
     pub fn with_line(mut self, line: u32) -> Self {
         self.line = Some(line);
@@ -268,7 +268,7 @@ impl ReviewFinding {
     ///
     /// let finding = ReviewFinding::new(FindingSeverity::Warning, "src/db.rs", "SQL injection risk")
     ///     .with_suggestion("Use parameterized queries");
-    /// assert_eq!(finding.suggestion, Some("Use parameterized queries".to_string()));
+    /// assert_eq!(finding.suggestion(), Some("Use parameterized queries"));
     /// ```
     pub fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
         self.suggestion = Some(suggestion.into());
@@ -312,6 +312,41 @@ impl ReviewFinding {
     /// Check if this finding is actionable (error or warning).
     pub fn is_actionable(&self) -> bool {
         self.severity.is_actionable()
+    }
+
+    /// Get the file path where this finding was identified.
+    pub fn file(&self) -> &str {
+        &self.file
+    }
+
+    /// Get the line number of this finding (1-based).
+    pub fn line(&self) -> Option<u32> {
+        self.line
+    }
+
+    /// Get the column number of this finding (1-based).
+    pub fn column(&self) -> Option<u32> {
+        self.column
+    }
+
+    /// Get the severity level of this finding.
+    pub fn severity(&self) -> FindingSeverity {
+        self.severity
+    }
+
+    /// Get the description of the issue.
+    pub fn issue(&self) -> &str {
+        &self.issue
+    }
+
+    /// Get the suggested fix or improvement.
+    pub fn suggestion(&self) -> Option<&str> {
+        self.suggestion.as_deref()
+    }
+
+    /// Get the category or rule ID.
+    pub fn category(&self) -> Option<&str> {
+        self.category.as_deref()
     }
 }
 
@@ -827,13 +862,13 @@ mod tests {
             "Test issue",
         );
 
-        assert_eq!(finding.severity, FindingSeverity::Warning);
-        assert_eq!(finding.file, "src/main.rs");
-        assert_eq!(finding.issue, "Test issue");
-        assert!(finding.line.is_none());
-        assert!(finding.column.is_none());
-        assert!(finding.suggestion.is_none());
-        assert!(finding.category.is_none());
+        assert_eq!(finding.severity(), FindingSeverity::Warning);
+        assert_eq!(finding.file(), "src/main.rs");
+        assert_eq!(finding.issue(), "Test issue");
+        assert!(finding.line().is_none());
+        assert!(finding.column().is_none());
+        assert!(finding.suggestion().is_none());
+        assert!(finding.category().is_none());
     }
 
     #[test]
@@ -841,7 +876,7 @@ mod tests {
         let finding = ReviewFinding::new(FindingSeverity::Error, "src/lib.rs", "Issue")
             .with_line(42);
 
-        assert_eq!(finding.line, Some(42));
+        assert_eq!(finding.line(), Some(42));
     }
 
     #[test]
@@ -849,7 +884,7 @@ mod tests {
         let finding = ReviewFinding::new(FindingSeverity::Error, "src/lib.rs", "Issue")
             .with_column(10);
 
-        assert_eq!(finding.column, Some(10));
+        assert_eq!(finding.column(), Some(10));
     }
 
     #[test]
@@ -857,7 +892,7 @@ mod tests {
         let finding = ReviewFinding::new(FindingSeverity::Warning, "src/lib.rs", "Issue")
             .with_suggestion("Fix it");
 
-        assert_eq!(finding.suggestion, Some("Fix it".to_string()));
+        assert_eq!(finding.suggestion(), Some("Fix it"));
     }
 
     #[test]
@@ -865,7 +900,7 @@ mod tests {
         let finding = ReviewFinding::new(FindingSeverity::Warning, "src/lib.rs", "Issue")
             .with_category("security/sql-injection");
 
-        assert_eq!(finding.category, Some("security/sql-injection".to_string()));
+        assert_eq!(finding.category(), Some("security/sql-injection"));
     }
 
     #[test]
@@ -953,11 +988,11 @@ mod tests {
         let json = r#"{"severity":"error","file":"src/lib.rs","line":100,"issue":"Problem","suggestion":"Fix it"}"#;
         let finding: ReviewFinding = serde_json::from_str(json).unwrap();
 
-        assert_eq!(finding.severity, FindingSeverity::Error);
-        assert_eq!(finding.file, "src/lib.rs");
-        assert_eq!(finding.line, Some(100));
-        assert_eq!(finding.issue, "Problem");
-        assert_eq!(finding.suggestion, Some("Fix it".to_string()));
+        assert_eq!(finding.severity(), FindingSeverity::Error);
+        assert_eq!(finding.file(), "src/lib.rs");
+        assert_eq!(finding.line(), Some(100));
+        assert_eq!(finding.issue(), "Problem");
+        assert_eq!(finding.suggestion(), Some("Fix it"));
     }
 
     // =========================================

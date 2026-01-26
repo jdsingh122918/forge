@@ -2012,10 +2012,10 @@ mod review_library_tests {
         .with_line(42)
         .with_suggestion("Use httpOnly cookies instead");
 
-        assert_eq!(finding.severity, FindingSeverity::Warning);
-        assert_eq!(finding.file, "src/auth.rs");
-        assert_eq!(finding.line, Some(42));
-        assert!(finding.suggestion.is_some());
+        assert_eq!(finding.severity(), FindingSeverity::Warning);
+        assert_eq!(finding.file(), "src/auth.rs");
+        assert_eq!(finding.line(), Some(42));
+        assert!(finding.suggestion().is_some());
     }
 
     #[test]

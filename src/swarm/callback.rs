@@ -40,6 +40,7 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -121,8 +122,8 @@ pub enum SwarmEvent {
 /// to poll for new events during execution.
 #[derive(Debug)]
 pub(crate) struct ServerState {
-    /// Accumulated events
-    pub(crate) events: Vec<SwarmEvent>,
+    /// Accumulated events (VecDeque for O(1) front removal)
+    pub(crate) events: VecDeque<SwarmEvent>,
     /// Whether the server is running
     pub(crate) running: bool,
     /// Maximum number of events to retain
@@ -132,7 +133,7 @@ pub(crate) struct ServerState {
 impl Default for ServerState {
     fn default() -> Self {
         Self {
-            events: Vec::new(),
+            events: VecDeque::new(),
             running: false,
             max_events: DEFAULT_MAX_EVENTS,
         }
@@ -143,10 +144,10 @@ impl ServerState {
     /// Add an event, dropping oldest if at capacity.
     fn push_event(&mut self, event: SwarmEvent) {
         if self.events.len() >= self.max_events {
-            // Remove oldest event to make room
-            self.events.remove(0);
+            // Remove oldest event to make room (O(1) with VecDeque)
+            self.events.pop_front();
         }
-        self.events.push(event);
+        self.events.push_back(event);
     }
 }
 
@@ -264,12 +265,12 @@ impl CallbackServer {
     /// Drain all accumulated events, clearing the internal buffer.
     pub async fn drain_events(&self) -> Vec<SwarmEvent> {
         let mut state = self.state.write().await;
-        std::mem::take(&mut state.events)
+        state.events.drain(..).collect()
     }
 
     /// Peek at accumulated events without draining.
     pub async fn peek_events(&self) -> Vec<SwarmEvent> {
-        self.state.read().await.events.clone()
+        self.state.read().await.events.iter().cloned().collect()
     }
 
     /// Get the count of accumulated events.
@@ -406,7 +407,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         // Check event was recorded
-        let events = state.read().await.events.clone();
+        let events: Vec<_> = state.read().await.events.iter().cloned().collect();
         assert_eq!(events.len(), 1);
         match &events[0] {
             SwarmEvent::Progress(p) => {
@@ -439,7 +440,7 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let events = state.read().await.events.clone();
+        let events: Vec<_> = state.read().await.events.iter().cloned().collect();
         assert_eq!(events.len(), 1);
         match &events[0] {
             SwarmEvent::Complete(c) => {
@@ -470,7 +471,7 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let events = state.read().await.events.clone();
+        let events: Vec<_> = state.read().await.events.iter().cloned().collect();
         assert_eq!(events.len(), 1);
         match &events[0] {
             SwarmEvent::Event(e) => {
@@ -505,7 +506,7 @@ mod tests {
         {
             let mut state = server.state.write().await;
             for i in 0..5 {
-                state.events.push(SwarmEvent::Progress(ProgressUpdate {
+                state.events.push_back(SwarmEvent::Progress(ProgressUpdate {
                     task: format!("task-{}", i),
                     status: "running".to_string(),
                     percent: Some(i * 20),
@@ -535,7 +536,7 @@ mod tests {
         // Manually add an event
         {
             let mut state = server.state.write().await;
-            state.events.push(SwarmEvent::Progress(ProgressUpdate {
+            state.events.push_back(SwarmEvent::Progress(ProgressUpdate {
                 task: "test".to_string(),
                 status: "running".to_string(),
                 percent: None,
@@ -672,7 +673,7 @@ mod tests {
     #[test]
     fn test_max_events_limit() {
         let mut state = ServerState {
-            events: Vec::new(),
+            events: VecDeque::new(),
             running: false,
             max_events: 3,
         };

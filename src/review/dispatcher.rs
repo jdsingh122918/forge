@@ -383,9 +383,7 @@ impl ReviewDispatcher {
             match result {
                 Ok(report) => reports.push(report),
                 Err(e) => {
-                    if self.config.verbose {
-                        eprintln!("[review] Specialist failed: {}", e);
-                    }
+                    eprintln!("[review] Warning: Specialist failed: {}", e);
                     // Continue with other reviews
                 }
             }
@@ -405,9 +403,7 @@ impl ReviewDispatcher {
             match self.run_single_review(specialist, review_config).await {
                 Ok(report) => reports.push(report),
                 Err(e) => {
-                    if self.config.verbose {
-                        eprintln!("[review] Specialist {} failed: {}", specialist.display_name(), e);
-                    }
+                    eprintln!("[review] Warning: Specialist {} failed: {}", specialist.display_name(), e);
                     // Continue with other reviews
                 }
             }
@@ -697,9 +693,13 @@ fn parse_review_output(
         }
     }
 
-    // Fallback: couldn't parse output, assume pass
-    ReviewReport::new(phase, reviewer, ReviewVerdict::Pass)
-        .with_summary("Review completed (output could not be parsed)")
+    // Fallback: couldn't parse output, return warning so it's not silently ignored
+    eprintln!(
+        "Warning: Could not parse review output for phase '{}' by reviewer '{}' - manual inspection recommended",
+        phase, reviewer
+    );
+    ReviewReport::new(phase, reviewer, ReviewVerdict::Warn)
+        .with_summary("Review completed but output could not be parsed - manual inspection recommended")
         .with_timestamp(chrono::Utc::now())
 }
 
@@ -1087,9 +1087,9 @@ I found {"verdict": "warn", "summary": "Issues", "findings": []} in the code.
 
         assert_eq!(report.verdict, ReviewVerdict::Warn);
         assert_eq!(report.findings.len(), 1);
-        assert_eq!(report.findings[0].file, "src/auth.rs");
-        assert_eq!(report.findings[0].line, Some(42));
-        assert_eq!(report.findings[0].suggestion, Some("Use parameterized queries".to_string()));
+        assert_eq!(report.findings[0].file(), "src/auth.rs");
+        assert_eq!(report.findings[0].line(), Some(42));
+        assert_eq!(report.findings[0].suggestion(), Some("Use parameterized queries"));
     }
 
     #[test]
@@ -1121,9 +1121,10 @@ I found {"verdict": "warn", "summary": "Issues", "findings": []} in the code.
 
         let report = parse_review_output(output, "05", "security-sentinel", false);
 
-        // Should fall back to pass
-        assert_eq!(report.verdict, ReviewVerdict::Pass);
+        // Should fall back to warn (not pass) so unparseable output doesn't silently pass
+        assert_eq!(report.verdict, ReviewVerdict::Warn);
         assert!(report.summary.contains("could not be parsed"));
+        assert!(report.summary.contains("manual inspection recommended"));
     }
 
     // =========================================
@@ -1144,13 +1145,13 @@ I found {"verdict": "warn", "summary": "Issues", "findings": []} in the code.
 
         let finding = parse_finding(&value).unwrap();
 
-        assert_eq!(finding.severity, FindingSeverity::Warning);
-        assert_eq!(finding.file, "src/main.rs");
-        assert_eq!(finding.line, Some(42));
-        assert_eq!(finding.column, Some(10));
-        assert_eq!(finding.issue, "Test issue");
-        assert_eq!(finding.suggestion, Some("Fix it".to_string()));
-        assert_eq!(finding.category, Some("security/sql".to_string()));
+        assert_eq!(finding.severity(), FindingSeverity::Warning);
+        assert_eq!(finding.file(), "src/main.rs");
+        assert_eq!(finding.line(), Some(42));
+        assert_eq!(finding.column(), Some(10));
+        assert_eq!(finding.issue(), "Test issue");
+        assert_eq!(finding.suggestion(), Some("Fix it"));
+        assert_eq!(finding.category(), Some("security/sql"));
     }
 
     #[test]
@@ -1163,11 +1164,11 @@ I found {"verdict": "warn", "summary": "Issues", "findings": []} in the code.
 
         let finding = parse_finding(&value).unwrap();
 
-        assert_eq!(finding.severity, FindingSeverity::Error);
-        assert_eq!(finding.file, "a.rs");
-        assert_eq!(finding.issue, "Problem");
-        assert!(finding.line.is_none());
-        assert!(finding.suggestion.is_none());
+        assert_eq!(finding.severity(), FindingSeverity::Error);
+        assert_eq!(finding.file(), "a.rs");
+        assert_eq!(finding.issue(), "Problem");
+        assert!(finding.line().is_none());
+        assert!(finding.suggestion().is_none());
     }
 
     #[test]
