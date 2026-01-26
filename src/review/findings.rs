@@ -42,7 +42,9 @@ use std::fmt;
 /// Severity level for individual review findings.
 ///
 /// Severities are ordered from most to least critical.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum FindingSeverity {
     /// Critical issue requiring immediate attention.
@@ -100,7 +102,6 @@ impl FindingSeverity {
         }
     }
 }
-
 
 impl fmt::Display for FindingSeverity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -225,7 +226,11 @@ impl ReviewFinding {
     /// );
     /// assert_eq!(finding.file(), "src/db.rs");
     /// ```
-    pub fn new(severity: FindingSeverity, file: impl Into<String>, issue: impl Into<String>) -> Self {
+    pub fn new(
+        severity: FindingSeverity,
+        file: impl Into<String>,
+        issue: impl Into<String>,
+    ) -> Self {
         Self {
             severity,
             file: file.into(),
@@ -486,7 +491,10 @@ impl ReviewReport {
 
     /// Get the count of findings by severity.
     pub fn count_by_severity(&self, severity: FindingSeverity) -> usize {
-        self.findings.iter().filter(|f| f.severity == severity).count()
+        self.findings
+            .iter()
+            .filter(|f| f.severity == severity)
+            .count()
     }
 
     /// Get all critical (error) findings.
@@ -633,7 +641,10 @@ impl ReviewAggregation {
 
     /// Get all reports that indicate gating failures.
     pub fn gating_failures(&self) -> Vec<&ReviewReport> {
-        self.reports.iter().filter(|r| r.is_gating_failure()).collect()
+        self.reports
+            .iter()
+            .filter(|r| r.is_gating_failure())
+            .collect()
     }
 
     /// Get the names of specialists that reported failures.
@@ -669,7 +680,11 @@ impl ReviewAggregation {
     pub fn overall_verdict(&self) -> ReviewVerdict {
         if self.reports.iter().any(|r| r.verdict.is_fail()) {
             ReviewVerdict::Fail
-        } else if self.reports.iter().any(|r| r.verdict == ReviewVerdict::Warn) {
+        } else if self
+            .reports
+            .iter()
+            .any(|r| r.verdict == ReviewVerdict::Warn)
+        {
             ReviewVerdict::Warn
         } else {
             ReviewVerdict::Pass
@@ -833,9 +848,18 @@ mod tests {
 
     #[test]
     fn test_review_verdict_serialization() {
-        assert_eq!(serde_json::to_string(&ReviewVerdict::Pass).unwrap(), "\"pass\"");
-        assert_eq!(serde_json::to_string(&ReviewVerdict::Warn).unwrap(), "\"warn\"");
-        assert_eq!(serde_json::to_string(&ReviewVerdict::Fail).unwrap(), "\"fail\"");
+        assert_eq!(
+            serde_json::to_string(&ReviewVerdict::Pass).unwrap(),
+            "\"pass\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ReviewVerdict::Warn).unwrap(),
+            "\"warn\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ReviewVerdict::Fail).unwrap(),
+            "\"fail\""
+        );
     }
 
     #[test]
@@ -856,11 +880,7 @@ mod tests {
 
     #[test]
     fn test_review_finding_new() {
-        let finding = ReviewFinding::new(
-            FindingSeverity::Warning,
-            "src/main.rs",
-            "Test issue",
-        );
+        let finding = ReviewFinding::new(FindingSeverity::Warning, "src/main.rs", "Test issue");
 
         assert_eq!(finding.severity(), FindingSeverity::Warning);
         assert_eq!(finding.file(), "src/main.rs");
@@ -873,16 +893,16 @@ mod tests {
 
     #[test]
     fn test_review_finding_with_line() {
-        let finding = ReviewFinding::new(FindingSeverity::Error, "src/lib.rs", "Issue")
-            .with_line(42);
+        let finding =
+            ReviewFinding::new(FindingSeverity::Error, "src/lib.rs", "Issue").with_line(42);
 
         assert_eq!(finding.line(), Some(42));
     }
 
     #[test]
     fn test_review_finding_with_column() {
-        let finding = ReviewFinding::new(FindingSeverity::Error, "src/lib.rs", "Issue")
-            .with_column(10);
+        let finding =
+            ReviewFinding::new(FindingSeverity::Error, "src/lib.rs", "Issue").with_column(10);
 
         assert_eq!(finding.column(), Some(10));
     }
@@ -940,8 +960,8 @@ mod tests {
 
     #[test]
     fn test_review_finding_display() {
-        let finding = ReviewFinding::new(FindingSeverity::Warning, "src/main.rs", "Test issue")
-            .with_line(42);
+        let finding =
+            ReviewFinding::new(FindingSeverity::Warning, "src/main.rs", "Test issue").with_line(42);
 
         let display = format!("{}", finding);
         assert!(display.contains("warning"));
@@ -1014,8 +1034,8 @@ mod tests {
     #[test]
     fn test_review_report_add_finding() {
         let finding = ReviewFinding::new(FindingSeverity::Warning, "src/main.rs", "Issue");
-        let report = ReviewReport::new("05", "security-sentinel", ReviewVerdict::Warn)
-            .add_finding(finding);
+        let report =
+            ReviewReport::new("05", "security-sentinel", ReviewVerdict::Warn).add_finding(finding);
 
         assert_eq!(report.findings.len(), 1);
     }
@@ -1073,8 +1093,16 @@ mod tests {
     fn test_review_report_count_by_severity() {
         let report = ReviewReport::new("05", "security", ReviewVerdict::Warn)
             .add_finding(ReviewFinding::new(FindingSeverity::Error, "a.rs", "Issue"))
-            .add_finding(ReviewFinding::new(FindingSeverity::Warning, "b.rs", "Issue"))
-            .add_finding(ReviewFinding::new(FindingSeverity::Warning, "c.rs", "Issue"))
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Warning,
+                "b.rs",
+                "Issue",
+            ))
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Warning,
+                "c.rs",
+                "Issue",
+            ))
             .add_finding(ReviewFinding::new(FindingSeverity::Info, "d.rs", "Issue"));
 
         assert_eq!(report.count_by_severity(FindingSeverity::Error), 1);
@@ -1086,8 +1114,16 @@ mod tests {
     #[test]
     fn test_review_report_critical_findings() {
         let report = ReviewReport::new("05", "security", ReviewVerdict::Fail)
-            .add_finding(ReviewFinding::new(FindingSeverity::Error, "a.rs", "Critical"))
-            .add_finding(ReviewFinding::new(FindingSeverity::Warning, "b.rs", "Not critical"));
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Error,
+                "a.rs",
+                "Critical",
+            ))
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Warning,
+                "b.rs",
+                "Not critical",
+            ));
 
         let critical = report.critical_findings();
         assert_eq!(critical.len(), 1);
@@ -1098,7 +1134,11 @@ mod tests {
     fn test_review_report_actionable_findings() {
         let report = ReviewReport::new("05", "security", ReviewVerdict::Warn)
             .add_finding(ReviewFinding::new(FindingSeverity::Error, "a.rs", "Error"))
-            .add_finding(ReviewFinding::new(FindingSeverity::Warning, "b.rs", "Warning"))
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Warning,
+                "b.rs",
+                "Warning",
+            ))
             .add_finding(ReviewFinding::new(FindingSeverity::Info, "c.rs", "Info"));
 
         let actionable = report.actionable_findings();
@@ -1110,17 +1150,24 @@ mod tests {
         let empty = ReviewReport::new("05", "security", ReviewVerdict::Pass);
         assert!(!empty.has_findings());
 
-        let with_finding = empty.add_finding(
-            ReviewFinding::new(FindingSeverity::Info, "a.rs", "Note")
-        );
+        let with_finding =
+            empty.add_finding(ReviewFinding::new(FindingSeverity::Info, "a.rs", "Note"));
         assert!(with_finding.has_findings());
     }
 
     #[test]
     fn test_review_report_findings_count() {
         let report = ReviewReport::new("05", "security", ReviewVerdict::Warn)
-            .add_finding(ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Issue 1"))
-            .add_finding(ReviewFinding::new(FindingSeverity::Warning, "b.rs", "Issue 2"));
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Warning,
+                "a.rs",
+                "Issue 1",
+            ))
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Warning,
+                "b.rs",
+                "Issue 2",
+            ));
 
         assert_eq!(report.findings_count(), 2);
     }
@@ -1169,16 +1216,18 @@ mod tests {
         assert_eq!(report.findings.len(), 1);
         assert_eq!(report.findings[0].file, "src/auth/oauth.rs");
         assert_eq!(report.findings[0].line, Some(142));
-        assert!(report
-            .summary
-            .contains("medium-severity finding"));
+        assert!(report.summary.contains("medium-severity finding"));
     }
 
     #[test]
     fn test_review_report_display() {
         let report = ReviewReport::new("05", "security-sentinel", ReviewVerdict::Warn)
             .with_summary("Found issues")
-            .add_finding(ReviewFinding::new(FindingSeverity::Warning, "src/main.rs", "Issue"));
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Warning,
+                "src/main.rs",
+                "Issue",
+            ));
 
         let display = format!("{}", report);
         assert!(display.contains("security-sentinel"));
@@ -1282,10 +1331,19 @@ mod tests {
     #[test]
     fn test_review_aggregation_all_findings_count() {
         let report1 = ReviewReport::new("05", "security", ReviewVerdict::Warn)
-            .add_finding(ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Issue 1"))
-            .add_finding(ReviewFinding::new(FindingSeverity::Warning, "b.rs", "Issue 2"));
-        let report2 = ReviewReport::new("05", "perf", ReviewVerdict::Warn)
-            .add_finding(ReviewFinding::new(FindingSeverity::Warning, "c.rs", "Issue 3"));
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Warning,
+                "a.rs",
+                "Issue 1",
+            ))
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Warning,
+                "b.rs",
+                "Issue 2",
+            ));
+        let report2 = ReviewReport::new("05", "perf", ReviewVerdict::Warn).add_finding(
+            ReviewFinding::new(FindingSeverity::Warning, "c.rs", "Issue 3"),
+        );
 
         let aggregation = ReviewAggregation::new("05")
             .add_report(report1)
@@ -1296,10 +1354,12 @@ mod tests {
 
     #[test]
     fn test_review_aggregation_all_findings() {
-        let report1 = ReviewReport::new("05", "security", ReviewVerdict::Warn)
-            .add_finding(ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Issue 1"));
-        let report2 = ReviewReport::new("05", "perf", ReviewVerdict::Warn)
-            .add_finding(ReviewFinding::new(FindingSeverity::Warning, "b.rs", "Issue 2"));
+        let report1 = ReviewReport::new("05", "security", ReviewVerdict::Warn).add_finding(
+            ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Issue 1"),
+        );
+        let report2 = ReviewReport::new("05", "perf", ReviewVerdict::Warn).add_finding(
+            ReviewFinding::new(FindingSeverity::Warning, "b.rs", "Issue 2"),
+        );
 
         let aggregation = ReviewAggregation::new("05")
             .add_report(report1)
@@ -1312,10 +1372,19 @@ mod tests {
     #[test]
     fn test_review_aggregation_all_critical_findings() {
         let report1 = ReviewReport::new("05", "security", ReviewVerdict::Fail)
-            .add_finding(ReviewFinding::new(FindingSeverity::Error, "a.rs", "Critical"))
-            .add_finding(ReviewFinding::new(FindingSeverity::Warning, "b.rs", "Not critical"));
-        let report2 = ReviewReport::new("05", "perf", ReviewVerdict::Fail)
-            .add_finding(ReviewFinding::new(FindingSeverity::Error, "c.rs", "Also critical"));
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Error,
+                "a.rs",
+                "Critical",
+            ))
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Warning,
+                "b.rs",
+                "Not critical",
+            ));
+        let report2 = ReviewReport::new("05", "perf", ReviewVerdict::Fail).add_finding(
+            ReviewFinding::new(FindingSeverity::Error, "c.rs", "Also critical"),
+        );
 
         let aggregation = ReviewAggregation::new("05")
             .add_report(report1)
@@ -1355,9 +1424,8 @@ mod tests {
         let empty = ReviewAggregation::new("05");
         assert!(!empty.has_reports());
 
-        let with_report = empty.add_report(
-            ReviewReport::new("05", "security", ReviewVerdict::Pass)
-        );
+        let with_report =
+            empty.add_report(ReviewReport::new("05", "security", ReviewVerdict::Pass));
         assert!(with_report.has_reports());
     }
 
@@ -1462,14 +1530,18 @@ mod tests {
         assert_eq!(json["findings"][0]["severity"], "warning");
         assert_eq!(json["findings"][0]["file"], "src/auth/oauth.rs");
         assert_eq!(json["findings"][0]["line"], 142);
-        assert!(json["findings"][0]["issue"]
-            .as_str()
-            .unwrap()
-            .contains("localStorage"));
-        assert!(json["findings"][0]["suggestion"]
-            .as_str()
-            .unwrap()
-            .contains("httpOnly"));
+        assert!(
+            json["findings"][0]["issue"]
+                .as_str()
+                .unwrap()
+                .contains("localStorage")
+        );
+        assert!(
+            json["findings"][0]["suggestion"]
+                .as_str()
+                .unwrap()
+                .contains("httpOnly")
+        );
     }
 
     #[test]

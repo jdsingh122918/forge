@@ -125,9 +125,7 @@ impl PhaseResult {
         if !self.success {
             return false;
         }
-        self.review_result
-            .as_ref()
-            .is_none_or(|r| r.can_proceed())
+        self.review_result.as_ref().is_none_or(|r| r.can_proceed())
     }
 
     /// Check if reviews are blocking progress.
@@ -204,7 +202,12 @@ impl DagSummary {
         self.skipped += 1;
         self.phase_results.insert(
             phase.to_string(),
-            PhaseResult::failure(phase, "skipped due to dependency failure", 0, Duration::ZERO),
+            PhaseResult::failure(
+                phase,
+                "skipped due to dependency failure",
+                0,
+                Duration::ZERO,
+            ),
         );
     }
 
@@ -290,8 +293,7 @@ mod tests {
 
     #[test]
     fn test_phase_result_failure() {
-        let result =
-            PhaseResult::failure("01", "Budget exhausted", 10, Duration::from_secs(60));
+        let result = PhaseResult::failure("01", "Budget exhausted", 10, Duration::from_secs(60));
         assert!(!result.is_success());
         assert!(!result.can_proceed());
         assert_eq!(result.error(), Some("Budget exhausted"));

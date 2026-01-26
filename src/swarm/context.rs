@@ -405,8 +405,8 @@ mod tests {
 
     #[test]
     fn test_swarm_task_with_depends_on() {
-        let task = SwarmTask::new("task-2", "Test", "Desc", 3)
-            .with_depends_on(vec!["task-1".to_string()]);
+        let task =
+            SwarmTask::new("task-2", "Test", "Desc", 3).with_depends_on(vec!["task-1".to_string()]);
 
         assert!(task.has_dependencies());
         assert_eq!(task.depends_on, vec!["task-1"]);
@@ -453,7 +453,10 @@ mod tests {
 
     #[test]
     fn test_review_specialist_type_display_name() {
-        assert_eq!(ReviewSpecialistType::Security.display_name(), "Security Sentinel");
+        assert_eq!(
+            ReviewSpecialistType::Security.display_name(),
+            "Security Sentinel"
+        );
         assert_eq!(
             ReviewSpecialistType::Performance.display_name(),
             "Performance Oracle"
@@ -508,7 +511,10 @@ mod tests {
     #[test]
     fn test_review_config_add_specialist() {
         let config = ReviewConfig::new()
-            .add_specialist(ReviewSpecialistConfig::new(ReviewSpecialistType::Security, true))
+            .add_specialist(ReviewSpecialistConfig::new(
+                ReviewSpecialistType::Security,
+                true,
+            ))
             .add_specialist(ReviewSpecialistConfig::new(
                 ReviewSpecialistType::Performance,
                 false,
@@ -521,7 +527,10 @@ mod tests {
     #[test]
     fn test_review_config_gating_specialists() {
         let config = ReviewConfig::new()
-            .add_specialist(ReviewSpecialistConfig::new(ReviewSpecialistType::Security, true))
+            .add_specialist(ReviewSpecialistConfig::new(
+                ReviewSpecialistType::Security,
+                true,
+            ))
             .add_specialist(ReviewSpecialistConfig::new(
                 ReviewSpecialistType::Performance,
                 false,
@@ -577,8 +586,10 @@ mod tests {
     #[test]
     fn test_swarm_context_with_reviews() {
         let phase = PhaseInfo::new("05", "Test", "DONE", 10);
-        let reviews = ReviewConfig::new()
-            .add_specialist(ReviewSpecialistConfig::new(ReviewSpecialistType::Security, true));
+        let reviews = ReviewConfig::new().add_specialist(ReviewSpecialistConfig::new(
+            ReviewSpecialistType::Security,
+            true,
+        ));
         let context =
             SwarmContext::new(phase, "http://localhost", PathBuf::from("/")).with_reviews(reviews);
 

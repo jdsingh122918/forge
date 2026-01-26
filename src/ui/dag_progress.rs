@@ -8,7 +8,7 @@
 
 use crate::dag::{DagSummary, PhaseEvent, PhaseResult};
 use crate::ui::icons::{CHECK, CLOCK, CROSS, REVIEW, RUNNING, SPARKLE, WAVE};
-use console::{style, Term};
+use console::{Term, style};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::io::Write;
@@ -142,12 +142,7 @@ impl DagUI {
     fn handle_minimal(&self, event: &PhaseEvent) {
         match event {
             PhaseEvent::WaveStarted { wave, phases } => {
-                let _ = writeln!(
-                    &self.term,
-                    "Wave {}: {}",
-                    wave,
-                    phases.join(", ")
-                );
+                let _ = writeln!(&self.term, "Wave {}: {}", wave, phases.join(", "));
             }
             PhaseEvent::Completed { phase, result } => {
                 if result.is_success() {
@@ -262,11 +257,8 @@ impl DagUI {
             ))
             .ok();
 
-        self.header_bar.set_message(format!(
-            "Wave {} ({} phases)",
-            wave,
-            phases.len()
-        ));
+        self.header_bar
+            .set_message(format!("Wave {} ({} phases)", wave, phases.len()));
     }
 
     /// Handle phase start event.
@@ -417,7 +409,9 @@ impl DagUI {
     fn on_review_started(&self, phase: &str) {
         let bars = self.phase_bars.lock().unwrap();
         if let Some(state) = bars.get(phase) {
-            state.bar.set_message(format!("{} Running reviews...", REVIEW));
+            state
+                .bar
+                .set_message(format!("{} Running reviews...", REVIEW));
         }
 
         if self.verbose {
@@ -443,10 +437,7 @@ impl DagUI {
         self.multi
             .println(format!(
                 "    {} Review for {}: {} ({} findings)",
-                emoji,
-                phase,
-                status,
-                findings_count
+                emoji, phase, status, findings_count
             ))
             .ok();
     }
@@ -589,10 +580,7 @@ impl DagUI {
         }
 
         self.multi
-            .println(format!(
-                "\n{} DAG Analysis",
-                style("═".repeat(60)).cyan()
-            ))
+            .println(format!("\n{} DAG Analysis", style("═".repeat(60)).cyan()))
             .ok();
         self.multi
             .println(format!(

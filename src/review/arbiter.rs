@@ -84,7 +84,6 @@ fn default_confidence_threshold() -> f64 {
     DEFAULT_CONFIDENCE_THRESHOLD
 }
 
-
 impl ResolutionMode {
     /// Create a manual resolution mode.
     pub fn manual() -> Self {
@@ -132,7 +131,10 @@ impl ResolutionMode {
     /// Get the confidence threshold for arbiter mode.
     pub fn confidence_threshold(&self) -> Option<f64> {
         match self {
-            Self::Arbiter { confidence_threshold, .. } => Some(*confidence_threshold),
+            Self::Arbiter {
+                confidence_threshold,
+                ..
+            } => Some(*confidence_threshold),
             _ => None,
         }
     }
@@ -143,8 +145,15 @@ impl fmt::Display for ResolutionMode {
         match self {
             Self::Manual => write!(f, "manual"),
             Self::Auto { max_attempts } => write!(f, "auto (max {} attempts)", max_attempts),
-            Self::Arbiter { confidence_threshold, .. } => {
-                write!(f, "arbiter (confidence >= {:.0}%)", confidence_threshold * 100.0)
+            Self::Arbiter {
+                confidence_threshold,
+                ..
+            } => {
+                write!(
+                    f,
+                    "arbiter (confidence >= {:.0}%)",
+                    confidence_threshold * 100.0
+                )
             }
         }
     }
@@ -224,7 +233,11 @@ impl ArbiterConfig {
 
     /// Set the confidence threshold (only applies to arbiter mode).
     pub fn with_confidence_threshold(mut self, threshold: f64) -> Self {
-        if let ResolutionMode::Arbiter { ref mut confidence_threshold, .. } = self.mode {
+        if let ResolutionMode::Arbiter {
+            ref mut confidence_threshold,
+            ..
+        } = self.mode
+        {
             *confidence_threshold = threshold;
         }
         self
@@ -232,7 +245,11 @@ impl ArbiterConfig {
 
     /// Set categories that should always escalate.
     pub fn with_escalate_on(mut self, categories: Vec<String>) -> Self {
-        if let ResolutionMode::Arbiter { ref mut escalate_on, .. } = self.mode {
+        if let ResolutionMode::Arbiter {
+            ref mut escalate_on,
+            ..
+        } = self.mode
+        {
             *escalate_on = categories;
         }
         self
@@ -240,7 +257,11 @@ impl ArbiterConfig {
 
     /// Set categories that can auto-proceed.
     pub fn with_auto_proceed_on(mut self, categories: Vec<String>) -> Self {
-        if let ResolutionMode::Arbiter { ref mut auto_proceed_on, .. } = self.mode {
+        if let ResolutionMode::Arbiter {
+            ref mut auto_proceed_on,
+            ..
+        } = self.mode
+        {
             *auto_proceed_on = categories;
         }
         self
@@ -328,11 +349,8 @@ impl ArbiterInput {
         budget: u32,
         iterations_used: u32,
     ) -> Self {
-        let failed_reviews: Vec<ReviewReport> = aggregation
-            .gating_failures()
-            .into_iter()
-            .cloned()
-            .collect();
+        let failed_reviews: Vec<ReviewReport> =
+            aggregation.gating_failures().into_iter().cloned().collect();
 
         let blocking_findings: Vec<ReviewFinding> = failed_reviews
             .iter()
@@ -414,10 +432,7 @@ impl ArbiterInput {
 
     /// Get the highest severity among blocking findings.
     pub fn highest_severity(&self) -> Option<FindingSeverity> {
-        self.blocking_findings
-            .iter()
-            .map(|f| f.severity())
-            .min() // FindingSeverity orders Error < Warning < Info < Note
+        self.blocking_findings.iter().map(|f| f.severity()).min() // FindingSeverity orders Error < Warning < Info < Note
     }
 }
 
@@ -450,7 +465,6 @@ impl ArbiterVerdict {
         matches!(self, Self::Escalate)
     }
 }
-
 
 impl fmt::Display for ArbiterVerdict {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -647,7 +661,11 @@ impl fmt::Display for DecisionSource {
 
 impl ArbiterResult {
     /// Create a successful result with an LLM decision.
-    pub fn llm_decision(decision: ArbiterDecision, raw_response: Option<String>, duration_ms: u64) -> Self {
+    pub fn llm_decision(
+        decision: ArbiterDecision,
+        raw_response: Option<String>,
+        duration_ms: u64,
+    ) -> Self {
         Self {
             decision,
             source: DecisionSource::Llm,
@@ -713,8 +731,8 @@ impl fmt::Display for ArbiterResult {
 
 /// Build the prompt for the LLM arbiter.
 pub fn build_arbiter_prompt(input: &ArbiterInput) -> String {
-    let findings_json = serde_json::to_string_pretty(&input.blocking_findings)
-        .unwrap_or_else(|_| "[]".to_string());
+    let findings_json =
+        serde_json::to_string_pretty(&input.blocking_findings).unwrap_or_else(|_| "[]".to_string());
 
     let failed_specialists = input.failed_specialists.join(", ");
 
@@ -921,10 +939,7 @@ fn all_findings_auto_proceed(findings: &[ReviewFinding], auto_proceed_on: &[Stri
 /// Apply rule-based logic to determine decision without LLM.
 ///
 /// Used when the resolution mode doesn't require LLM or as a fallback.
-pub fn apply_rule_based_decision(
-    input: &ArbiterInput,
-    config: &ArbiterConfig,
-) -> ArbiterDecision {
+pub fn apply_rule_based_decision(input: &ArbiterInput, config: &ArbiterConfig) -> ArbiterDecision {
     // Check if we're out of budget
     if input.remaining_budget() == 0 {
         return ArbiterDecision::escalate(
@@ -951,7 +966,10 @@ pub fn apply_rule_based_decision(
         let critical_count = input.critical_findings().len();
         if input.remaining_budget() >= 3 {
             return ArbiterDecision::fix(
-                &format!("{} critical finding(s) require immediate attention", critical_count),
+                &format!(
+                    "{} critical finding(s) require immediate attention",
+                    critical_count
+                ),
                 0.9,
                 "Address all critical (error-level) findings from the review",
             )
@@ -970,7 +988,12 @@ pub fn apply_rule_based_decision(
     }
 
     // Check categories for auto-escalate or auto-proceed based on config
-    if let ResolutionMode::Arbiter { ref escalate_on, ref auto_proceed_on, .. } = config.mode {
+    if let ResolutionMode::Arbiter {
+        ref escalate_on,
+        ref auto_proceed_on,
+        ..
+    } = config.mode
+    {
         // Check for categories that should always escalate
         for finding in &input.blocking_findings {
             if matches_escalate_category(finding, escalate_on) {
@@ -985,10 +1008,7 @@ pub fn apply_rule_based_decision(
 
         // Check if all findings are in auto-proceed categories
         if all_findings_auto_proceed(&input.blocking_findings, auto_proceed_on) {
-            return ArbiterDecision::proceed(
-                "All findings are in auto-proceed categories",
-                0.9,
-            );
+            return ArbiterDecision::proceed("All findings are in auto-proceed categories", 0.9);
         }
     }
 
@@ -1087,7 +1107,10 @@ impl ArbiterExecutor {
                 let decision = apply_rule_based_decision(&input, &self.config);
                 Ok(ArbiterResult::rule_based(decision))
             }
-            ResolutionMode::Arbiter { confidence_threshold, .. } => {
+            ResolutionMode::Arbiter {
+                confidence_threshold,
+                ..
+            } => {
                 // Arbiter mode: try LLM, fall back to rules
                 match self.invoke_llm_arbiter(&input).await {
                     Ok(result) => {
@@ -1147,7 +1170,8 @@ impl ArbiterExecutor {
             .stderr(Stdio::inherit());
 
         // Spawn process
-        let mut child = cmd.spawn()
+        let mut child = cmd
+            .spawn()
             .map_err(|e| anyhow::anyhow!("Failed to spawn Claude process: {}", e))?;
 
         // Write prompt to stdin
@@ -1163,7 +1187,9 @@ impl ArbiterExecutor {
         }
 
         // Read stdout
-        let stdout = child.stdout.take()
+        let stdout = child
+            .stdout
+            .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to get stdout"))?;
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
@@ -1175,7 +1201,9 @@ impl ArbiterExecutor {
         }
 
         // Wait for process
-        let status = child.wait().await
+        let status = child
+            .wait()
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to wait for process: {}", e))?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -1199,7 +1227,11 @@ impl ArbiterExecutor {
         let decision = parse_arbiter_response(&output)
             .ok_or_else(|| anyhow::anyhow!("Failed to parse arbiter response"))?;
 
-        Ok(ArbiterResult::llm_decision(decision, Some(output), duration_ms))
+        Ok(ArbiterResult::llm_decision(
+            decision,
+            Some(output),
+            duration_ms,
+        ))
     }
 
     /// Quick check if we should even try the arbiter.
@@ -1208,11 +1240,8 @@ impl ArbiterExecutor {
     pub fn quick_decision(&self, input: &ArbiterInput) -> Option<ArbiterResult> {
         // Out of budget - always escalate
         if input.remaining_budget() == 0 {
-            let decision = ArbiterDecision::escalate(
-                "No remaining budget",
-                1.0,
-                "Phase budget exhausted",
-            );
+            let decision =
+                ArbiterDecision::escalate("No remaining budget", 1.0, "Phase budget exhausted");
             return Some(ArbiterResult::rule_based(decision));
         }
 
@@ -1227,14 +1256,20 @@ impl ArbiterExecutor {
         }
 
         // Check for forced escalation categories
-        if let ResolutionMode::Arbiter { ref escalate_on, .. } = self.config.mode {
+        if let ResolutionMode::Arbiter {
+            ref escalate_on, ..
+        } = self.config.mode
+        {
             for finding in &input.blocking_findings {
                 if matches_escalate_category(finding, escalate_on) {
                     let category = finding.category().unwrap(); // Safe: helper guarantees this
                     let decision = ArbiterDecision::escalate(
                         &format!("Category '{}' requires human review", category),
                         1.0,
-                        &format!("Finding in category '{}' configured for escalation", category),
+                        &format!(
+                            "Finding in category '{}' configured for escalation",
+                            category
+                        ),
                     );
                     return Some(ArbiterResult::from_config(decision));
                 }
@@ -1242,13 +1277,14 @@ impl ArbiterExecutor {
         }
 
         // Check for auto-proceed categories (only if all findings match)
-        if let ResolutionMode::Arbiter { ref auto_proceed_on, .. } = self.config.mode
+        if let ResolutionMode::Arbiter {
+            ref auto_proceed_on,
+            ..
+        } = self.config.mode
             && all_findings_auto_proceed(&input.blocking_findings, auto_proceed_on)
         {
-            let decision = ArbiterDecision::proceed(
-                "All findings in auto-proceed categories",
-                0.95,
-            );
+            let decision =
+                ArbiterDecision::proceed("All findings in auto-proceed categories", 0.95);
             return Some(ArbiterResult::from_config(decision));
         }
 
@@ -1256,7 +1292,10 @@ impl ArbiterExecutor {
     }
 
     /// Decide with quick check first, then full decision if needed.
-    pub async fn decide_with_quick_check(&self, input: ArbiterInput) -> anyhow::Result<ArbiterResult> {
+    pub async fn decide_with_quick_check(
+        &self,
+        input: ArbiterInput,
+    ) -> anyhow::Result<ArbiterResult> {
         // Try quick decision first
         if let Some(result) = self.quick_decision(&input) {
             return Ok(result);
@@ -1312,7 +1351,10 @@ mod tests {
     #[test]
     fn test_resolution_mode_display() {
         assert_eq!(format!("{}", ResolutionMode::manual()), "manual");
-        assert_eq!(format!("{}", ResolutionMode::auto(2)), "auto (max 2 attempts)");
+        assert_eq!(
+            format!("{}", ResolutionMode::auto(2)),
+            "auto (max 2 attempts)"
+        );
         assert!(format!("{}", ResolutionMode::arbiter()).contains("arbiter"));
     }
 
@@ -1397,13 +1439,10 @@ mod tests {
 
     #[test]
     fn test_arbiter_input_from_aggregation() {
-        let finding = ReviewFinding::new(
-            FindingSeverity::Warning,
-            "src/auth.rs",
-            "Potential issue",
-        );
-        let report = ReviewReport::new("05", "security-sentinel", ReviewVerdict::Fail)
-            .add_finding(finding);
+        let finding =
+            ReviewFinding::new(FindingSeverity::Warning, "src/auth.rs", "Potential issue");
+        let report =
+            ReviewReport::new("05", "security-sentinel", ReviewVerdict::Fail).add_finding(finding);
         let aggregation = ReviewAggregation::new("05").add_report(report);
 
         let input = ArbiterInput::from_aggregation(&aggregation, 20, 8);
@@ -1425,11 +1464,10 @@ mod tests {
 
     #[test]
     fn test_arbiter_input_critical_findings() {
-        let input = ArbiterInput::new("05", "Test", 20, 0)
-            .with_blocking_findings(vec![
-                ReviewFinding::new(FindingSeverity::Error, "a.rs", "Critical issue"),
-                ReviewFinding::new(FindingSeverity::Warning, "b.rs", "Warning"),
-            ]);
+        let input = ArbiterInput::new("05", "Test", 20, 0).with_blocking_findings(vec![
+            ReviewFinding::new(FindingSeverity::Error, "a.rs", "Critical issue"),
+            ReviewFinding::new(FindingSeverity::Warning, "b.rs", "Warning"),
+        ]);
 
         assert!(input.has_critical_findings());
         assert_eq!(input.critical_findings().len(), 1);
@@ -1438,11 +1476,10 @@ mod tests {
 
     #[test]
     fn test_arbiter_input_no_critical_findings() {
-        let input = ArbiterInput::new("05", "Test", 20, 0)
-            .with_blocking_findings(vec![
-                ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Warning 1"),
-                ReviewFinding::new(FindingSeverity::Warning, "b.rs", "Warning 2"),
-            ]);
+        let input = ArbiterInput::new("05", "Test", 20, 0).with_blocking_findings(vec![
+            ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Warning 1"),
+            ReviewFinding::new(FindingSeverity::Warning, "b.rs", "Warning 2"),
+        ]);
 
         assert!(!input.has_critical_findings());
         assert!(input.critical_findings().is_empty());
@@ -1506,15 +1543,15 @@ mod tests {
 
     #[test]
     fn test_arbiter_decision_fix() {
-        let decision = ArbiterDecision::fix(
-            "Security issue found",
-            0.9,
-            "Use parameterized queries",
-        )
-        .with_suggested_budget(3);
+        let decision =
+            ArbiterDecision::fix("Security issue found", 0.9, "Use parameterized queries")
+                .with_suggested_budget(3);
 
         assert_eq!(decision.decision, ArbiterVerdict::Fix);
-        assert_eq!(decision.fix_instructions, Some("Use parameterized queries".to_string()));
+        assert_eq!(
+            decision.fix_instructions,
+            Some("Use parameterized queries".to_string())
+        );
         assert_eq!(decision.suggested_fix_budget, Some(3));
     }
 
@@ -1548,8 +1585,7 @@ mod tests {
         assert!(proceed.summary().contains("PROCEED"));
         assert!(proceed.summary().contains("85%"));
 
-        let fix = ArbiterDecision::fix("Need fix", 0.9, "Instructions")
-            .with_suggested_budget(5);
+        let fix = ArbiterDecision::fix("Need fix", 0.9, "Instructions").with_suggested_budget(5);
         assert!(fix.summary().contains("FIX"));
         assert!(fix.summary().contains("suggested budget: 5"));
 
@@ -1813,8 +1849,7 @@ mod tests {
     #[test]
     fn test_rule_based_critical_findings_with_budget() {
         let finding = ReviewFinding::new(FindingSeverity::Error, "a.rs", "Critical issue");
-        let input = ArbiterInput::new("05", "Test", 20, 5)
-            .with_blocking_findings(vec![finding]);
+        let input = ArbiterInput::new("05", "Test", 20, 5).with_blocking_findings(vec![finding]);
         let config = ArbiterConfig::default();
 
         let decision = apply_rule_based_decision(&input, &config);
@@ -1825,8 +1860,7 @@ mod tests {
     #[test]
     fn test_rule_based_critical_findings_no_budget() {
         let finding = ReviewFinding::new(FindingSeverity::Error, "a.rs", "Critical issue");
-        let input = ArbiterInput::new("05", "Test", 10, 8)
-            .with_blocking_findings(vec![finding]);
+        let input = ArbiterInput::new("05", "Test", 10, 8).with_blocking_findings(vec![finding]);
         let config = ArbiterConfig::default();
 
         let decision = apply_rule_based_decision(&input, &config);
@@ -1837,10 +1871,8 @@ mod tests {
     fn test_rule_based_escalate_on_category() {
         let finding = ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Issue")
             .with_category("security-critical");
-        let input = ArbiterInput::new("05", "Test", 20, 5)
-            .with_blocking_findings(vec![finding]);
-        let config = ArbiterConfig::arbiter_mode()
-            .with_escalate_on(vec!["security".to_string()]);
+        let input = ArbiterInput::new("05", "Test", 20, 5).with_blocking_findings(vec![finding]);
+        let config = ArbiterConfig::arbiter_mode().with_escalate_on(vec!["security".to_string()]);
 
         let decision = apply_rule_based_decision(&input, &config);
         assert_eq!(decision.decision, ArbiterVerdict::Escalate);
@@ -1850,10 +1882,8 @@ mod tests {
     fn test_rule_based_auto_proceed_category() {
         let finding = ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Style issue")
             .with_category("style-naming");
-        let input = ArbiterInput::new("05", "Test", 20, 5)
-            .with_blocking_findings(vec![finding]);
-        let config = ArbiterConfig::arbiter_mode()
-            .with_auto_proceed_on(vec!["style".to_string()]);
+        let input = ArbiterInput::new("05", "Test", 20, 5).with_blocking_findings(vec![finding]);
+        let config = ArbiterConfig::arbiter_mode().with_auto_proceed_on(vec!["style".to_string()]);
 
         let decision = apply_rule_based_decision(&input, &config);
         assert_eq!(decision.decision, ArbiterVerdict::Proceed);
@@ -1862,8 +1892,7 @@ mod tests {
     #[test]
     fn test_rule_based_default_fix() {
         let finding = ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Warning");
-        let input = ArbiterInput::new("05", "Test", 20, 5)
-            .with_blocking_findings(vec![finding]);
+        let input = ArbiterInput::new("05", "Test", 20, 5).with_blocking_findings(vec![finding]);
         let config = ArbiterConfig::default();
 
         let decision = apply_rule_based_decision(&input, &config);
@@ -1873,8 +1902,7 @@ mod tests {
     #[test]
     fn test_rule_based_low_budget_escalate() {
         let finding = ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Warning");
-        let input = ArbiterInput::new("05", "Test", 10, 9)
-            .with_blocking_findings(vec![finding]);
+        let input = ArbiterInput::new("05", "Test", 10, 9).with_blocking_findings(vec![finding]);
         let config = ArbiterConfig::default();
 
         let decision = apply_rule_based_decision(&input, &config);

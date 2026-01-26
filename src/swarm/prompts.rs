@@ -41,10 +41,7 @@ pub fn build_orchestration_prompt(context: &SwarmContext) -> String {
         "- **Phase**: {} - {}\n",
         context.phase.number, context.phase.name
     ));
-    prompt.push_str(&format!(
-        "- **Promise**: `{}`\n",
-        context.phase.promise
-    ));
+    prompt.push_str(&format!("- **Promise**: `{}`\n", context.phase.promise));
     prompt.push_str(&format!(
         "- **Budget**: {} iterations ({} remaining)\n",
         context.phase.budget,
@@ -59,10 +56,7 @@ pub fn build_orchestration_prompt(context: &SwarmContext) -> String {
         "- **Working Directory**: {}\n",
         context.working_dir.display()
     ));
-    prompt.push_str(&format!(
-        "- **Callback URL**: {}\n",
-        context.callback_url
-    ));
+    prompt.push_str(&format!("- **Callback URL**: {}\n", context.callback_url));
     prompt.push('\n');
 
     // Additional context if provided
@@ -280,7 +274,10 @@ fn format_task(task: &SwarmTask) -> String {
     }
 
     if !task.depends_on.is_empty() {
-        output.push_str(&format!("- **Depends on**: {}\n", task.depends_on.join(", ")));
+        output.push_str(&format!(
+            "- **Depends on**: {}\n",
+            task.depends_on.join(", ")
+        ));
     }
 
     output.push('\n');
@@ -489,7 +486,11 @@ pub fn parse_task_completion(output: &str, task_id: &str) -> Option<String> {
     let content_start = start + pattern.len();
     let end = output[content_start..].find(end_tag)?;
 
-    Some(output[content_start..content_start + end].trim().to_string())
+    Some(
+        output[content_start..content_start + end]
+            .trim()
+            .to_string(),
+    )
 }
 
 #[cfg(test)]

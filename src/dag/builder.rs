@@ -4,7 +4,7 @@
 //! a directed acyclic graph (DAG) that can be used for scheduling.
 
 use crate::phase::Phase;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet};
 
 /// Index into the phase list.
@@ -93,8 +93,14 @@ impl PhaseGraph {
     }
 
     /// Check if all dependencies of a phase are satisfied.
-    pub fn dependencies_satisfied(&self, index: PhaseIndex, completed: &HashSet<PhaseIndex>) -> bool {
-        self.dependencies(index).iter().all(|dep| completed.contains(dep))
+    pub fn dependencies_satisfied(
+        &self,
+        index: PhaseIndex,
+        completed: &HashSet<PhaseIndex>,
+    ) -> bool {
+        self.dependencies(index)
+            .iter()
+            .all(|dep| completed.contains(dep))
     }
 }
 
@@ -168,11 +174,7 @@ impl DagBuilder {
 
     /// Validate that the graph has no cycles using Kahn's algorithm.
     fn validate_no_cycles(graph: &PhaseGraph) -> Result<()> {
-        let mut in_degree: Vec<usize> = graph
-            .reverse_edges
-            .iter()
-            .map(|deps| deps.len())
-            .collect();
+        let mut in_degree: Vec<usize> = graph.reverse_edges.iter().map(|deps| deps.len()).collect();
 
         let mut queue: Vec<PhaseIndex> = in_degree
             .iter()

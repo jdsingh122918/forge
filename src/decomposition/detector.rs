@@ -119,10 +119,15 @@ impl TriggerReason {
                 budget,
                 progress_percent
             ),
-            Self::ComplexitySignal { message } => format!("Complexity signal detected: {}", message),
+            Self::ComplexitySignal { message } => {
+                format!("Complexity signal detected: {}", message)
+            }
             Self::ExplicitRequest => "Explicit decomposition request from Claude".to_string(),
             Self::MultipleBlockers { count } => {
-                format!("Multiple blockers ({}) indicate need for decomposition", count)
+                format!(
+                    "Multiple blockers ({}) indicate need for decomposition",
+                    count
+                )
             }
             Self::None => "No decomposition trigger".to_string(),
         }
@@ -232,12 +237,17 @@ impl DecompositionDetector {
         progress_percent: u32,
     ) -> DecompositionTrigger {
         if !self.config.enabled {
-            return DecompositionTrigger::not_triggered(iterations_used, phase.budget, progress_percent);
+            return DecompositionTrigger::not_triggered(
+                iterations_used,
+                phase.budget,
+                progress_percent,
+            );
         }
 
         let budget_threshold = (phase.budget * self.config.budget_threshold_percent) / 100;
 
-        if iterations_used > budget_threshold && progress_percent < self.config.progress_threshold_percent
+        if iterations_used > budget_threshold
+            && progress_percent < self.config.progress_threshold_percent
         {
             DecompositionTrigger::triggered(
                 TriggerReason::BudgetProgressMismatch {
@@ -268,7 +278,11 @@ impl DecompositionDetector {
         progress_percent: u32,
     ) -> DecompositionTrigger {
         if !self.config.enabled {
-            return DecompositionTrigger::not_triggered(iterations_used, phase.budget, progress_percent);
+            return DecompositionTrigger::not_triggered(
+                iterations_used,
+                phase.budget,
+                progress_percent,
+            );
         }
 
         // Check for explicit decomposition request
@@ -420,12 +434,7 @@ mod tests {
 
     #[test]
     fn test_trigger_creation() {
-        let triggered = DecompositionTrigger::triggered(
-            TriggerReason::ExplicitRequest,
-            10,
-            20,
-            30,
-        );
+        let triggered = DecompositionTrigger::triggered(TriggerReason::ExplicitRequest, 10, 20, 30);
 
         assert!(triggered.should_decompose());
         assert_eq!(triggered.reason(), &TriggerReason::ExplicitRequest);

@@ -7,11 +7,11 @@ use crate::config::Config;
 use crate::dag::scheduler::{DagConfig, DagScheduler};
 use crate::dag::state::{DagState, DagSummary, ExecutionTimer, PhaseResult};
 use crate::decomposition::{
-    parse_decomposition_output, parse_decomposition_request, DecompositionConfig,
-    DecompositionDetector, DecompositionExecutor, ExecutionSignals,
+    DecompositionConfig, DecompositionDetector, DecompositionExecutor, ExecutionSignals,
+    parse_decomposition_output, parse_decomposition_request,
 };
-use crate::orchestrator::review_integration::{ReviewIntegration, ReviewIntegrationConfig};
 use crate::orchestrator::ClaudeRunner;
+use crate::orchestrator::review_integration::{ReviewIntegration, ReviewIntegrationConfig};
 use crate::phase::Phase;
 use crate::tracker::GitTracker;
 use anyhow::{Context, Result};
@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio::task::JoinHandle;
 
 /// Events emitted during DAG execution.
@@ -28,10 +28,7 @@ use tokio::task::JoinHandle;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PhaseEvent {
     /// A phase has started execution.
-    Started {
-        phase: String,
-        wave: usize,
-    },
+    Started { phase: String, wave: usize },
     /// A phase iteration completed.
     Progress {
         phase: String,
@@ -45,9 +42,7 @@ pub enum PhaseEvent {
         result: Box<PhaseResult>,
     },
     /// Reviews started for a phase.
-    ReviewStarted {
-        phase: String,
-    },
+    ReviewStarted { phase: String },
     /// Reviews completed for a phase.
     ReviewCompleted {
         phase: String,
@@ -55,10 +50,7 @@ pub enum PhaseEvent {
         findings_count: usize,
     },
     /// A wave of phases has started.
-    WaveStarted {
-        wave: usize,
-        phases: Vec<String>,
-    },
+    WaveStarted { wave: usize, phases: Vec<String> },
     /// A wave of phases has completed.
     WaveCompleted {
         wave: usize,
@@ -66,15 +58,9 @@ pub enum PhaseEvent {
         failed_count: usize,
     },
     /// DAG execution completed.
-    DagCompleted {
-        success: bool,
-        summary: DagSummary,
-    },
+    DagCompleted { success: bool, summary: DagSummary },
     /// A phase is being decomposed.
-    DecompositionStarted {
-        phase: String,
-        reason: String,
-    },
+    DecompositionStarted { phase: String, reason: String },
     /// A phase decomposition completed.
     DecompositionCompleted {
         phase: String,
@@ -210,7 +196,11 @@ impl DagExecutor {
         let waves = scheduler.compute_waves();
 
         if self.config.verbose {
-            println!("DAG Analysis: {} phases in {} waves", phases.len(), waves.len());
+            println!(
+                "DAG Analysis: {} phases in {} waves",
+                phases.len(),
+                waves.len()
+            );
             for (i, wave) in waves.iter().enumerate() {
                 println!("  Wave {}: {:?}", i, wave);
             }
@@ -239,7 +229,8 @@ impl DagExecutor {
 
             // Start new wave if we have ready phases and capacity
             if !ready_phases.is_empty() {
-                let wave_phases: Vec<String> = ready_phases.iter().map(|p| p.number.clone()).collect();
+                let wave_phases: Vec<String> =
+                    ready_phases.iter().map(|p| p.number.clone()).collect();
 
                 self.emit_event(PhaseEvent::WaveStarted {
                     wave: current_wave,
@@ -281,10 +272,7 @@ impl DagExecutor {
                         let result =
                             execute_single_phase(&phase, &config, &dag_config, event_tx).await;
 
-                        result_tx
-                            .send((phase.number.clone(), result))
-                            .await
-                            .ok();
+                        result_tx.send((phase.number.clone(), result)).await.ok();
                     });
 
                     active_tasks.insert(phase_number, handle);
@@ -529,7 +517,8 @@ async fn execute_single_phase(
 
                     if trigger.should_decompose() {
                         // Try to parse decomposition from output
-                        if let Ok(Some(decomposition)) = parse_decomposition_output(&output.output) {
+                        if let Ok(Some(decomposition)) = parse_decomposition_output(&output.output)
+                        {
                             // Emit decomposition started event
                             if let Some(ref tx) = event_tx {
                                 tx.send(PhaseEvent::DecompositionStarted {
@@ -620,9 +609,7 @@ async fn execute_single_phase(
     }
 
     // Compute changes
-    let files_changed = tracker
-        .compute_changes(&snapshot_sha)
-        .unwrap_or_default();
+    let files_changed = tracker.compute_changes(&snapshot_sha).unwrap_or_default();
 
     if !completed {
         return PhaseResult::failure(
@@ -633,7 +620,12 @@ async fn execute_single_phase(
         );
     }
 
-    let mut result = PhaseResult::success(&phase.number, iteration, files_changed.clone(), timer.elapsed());
+    let mut result = PhaseResult::success(
+        &phase.number,
+        iteration,
+        files_changed.clone(),
+        timer.elapsed(),
+    );
 
     // Run reviews if configured
     if dag_config.review.enabled {
@@ -842,14 +834,18 @@ mod tests {
 
         assert!(dag_config.review.enabled);
         assert_eq!(dag_config.review.default_specialists.len(), 2);
-        assert!(dag_config
-            .review
-            .default_specialists
-            .contains(&"security".to_string()));
-        assert!(dag_config
-            .review
-            .default_specialists
-            .contains(&"performance".to_string()));
+        assert!(
+            dag_config
+                .review
+                .default_specialists
+                .contains(&"security".to_string())
+        );
+        assert!(
+            dag_config
+                .review
+                .default_specialists
+                .contains(&"performance".to_string())
+        );
 
         // Test with reviews disabled (default)
         let dag_config_no_review = DagConfig::default();

@@ -7,7 +7,9 @@
 
 use super::config::HookDefinition;
 use super::types::{HookAction, HookContext, HookResult, HookType};
-use crate::swarm::context::{PhaseInfo, ReviewConfig, ReviewSpecialistConfig, SwarmContext, SwarmStrategy};
+use crate::swarm::context::{
+    PhaseInfo, ReviewConfig, ReviewSpecialistConfig, SwarmContext, SwarmStrategy,
+};
 use crate::swarm::executor::{SwarmConfig, SwarmExecutor};
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -418,10 +420,7 @@ Respond ONLY with the JSON object, no other text."#,
                 "files_changed".to_string(),
                 serde_json::json!(result.files_changed),
             );
-            metadata.insert(
-                "reviews".to_string(),
-                serde_json::json!(result.reviews),
-            );
+            metadata.insert("reviews".to_string(), serde_json::json!(result.reviews));
             metadata.insert(
                 "duration_secs".to_string(),
                 serde_json::json!(result.duration.as_secs()),
@@ -437,7 +436,9 @@ Respond ONLY with the JSON object, no other text."#,
                 metadata,
             })
         } else {
-            let error_msg = result.error.unwrap_or_else(|| "Unknown swarm error".to_string());
+            let error_msg = result
+                .error
+                .unwrap_or_else(|| "Unknown swarm error".to_string());
 
             // Include details about what failed
             let mut metadata = std::collections::HashMap::new();
@@ -1447,10 +1448,13 @@ echo '```'
 
     // ========== Swarm Hook Tests ==========
 
-    use crate::swarm::context::{SwarmStrategy, SwarmTask, ReviewSpecialistType};
+    use crate::swarm::context::{ReviewSpecialistType, SwarmStrategy, SwarmTask};
 
     /// Create a swarm hook definition for testing.
-    fn create_swarm_hook(event: super::super::types::HookEvent, strategy: SwarmStrategy) -> HookDefinition {
+    fn create_swarm_hook(
+        event: super::super::types::HookEvent,
+        strategy: SwarmStrategy,
+    ) -> HookDefinition {
         HookDefinition::swarm(event, strategy)
     }
 
@@ -1586,7 +1590,12 @@ echo '```'
 
         let result = executor.execute(&hook, &context).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("requires phase context"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("requires phase context")
+        );
     }
 
     #[test]
@@ -1601,9 +1610,7 @@ echo '```'
 
     #[test]
     fn test_swarm_hook_builder_chain() {
-        let tasks = vec![
-            SwarmTask::new("t1", "Task 1", "Description 1", 3),
-        ];
+        let tasks = vec![SwarmTask::new("t1", "Task 1", "Description 1", 3)];
         let reviews = vec![ReviewSpecialistType::Security];
 
         let hook = HookDefinition::swarm(
@@ -1622,6 +1629,9 @@ echo '```'
         assert_eq!(hook.max_agents, Some(2));
         assert!(hook.swarm_tasks.is_some());
         assert!(hook.reviews.is_some());
-        assert_eq!(hook.description, Some("Run swarm for database phases".to_string()));
+        assert_eq!(
+            hook.description,
+            Some("Run swarm for database phases".to_string())
+        );
     }
 }

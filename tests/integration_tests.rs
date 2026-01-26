@@ -1868,7 +1868,10 @@ mod dag_library_tests {
         // Mark as completed
         scheduler.mark_completed("01", 5);
         let node = scheduler.get_node("01").unwrap();
-        assert!(matches!(node.status, PhaseStatus::Completed { iterations: 5 }));
+        assert!(matches!(
+            node.status,
+            PhaseStatus::Completed { iterations: 5 }
+        ));
     }
 
     #[test]
@@ -2064,12 +2067,13 @@ mod review_library_tests {
     #[test]
     fn test_review_aggregation_with_failure() {
         let pass_report = ReviewReport::new("05", "perf", ReviewVerdict::Pass);
-        let fail_report = ReviewReport::new("05", "security", ReviewVerdict::Fail)
-            .add_finding(ReviewFinding::new(
+        let fail_report = ReviewReport::new("05", "security", ReviewVerdict::Fail).add_finding(
+            ReviewFinding::new(
                 FindingSeverity::Error,
                 "src/auth.rs",
                 "SQL injection vulnerability",
-            ));
+            ),
+        );
 
         let aggregation = ReviewAggregation::new("05")
             .add_report(pass_report)
@@ -2106,8 +2110,16 @@ mod review_library_tests {
     fn test_report_count_by_severity() {
         let report = ReviewReport::new("05", "reviewer", ReviewVerdict::Warn)
             .add_finding(ReviewFinding::new(FindingSeverity::Error, "a.rs", "Error"))
-            .add_finding(ReviewFinding::new(FindingSeverity::Warning, "b.rs", "Warn1"))
-            .add_finding(ReviewFinding::new(FindingSeverity::Warning, "c.rs", "Warn2"))
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Warning,
+                "b.rs",
+                "Warn1",
+            ))
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Warning,
+                "c.rs",
+                "Warn2",
+            ))
             .add_finding(ReviewFinding::new(FindingSeverity::Info, "d.rs", "Info"));
 
         assert_eq!(report.count_by_severity(FindingSeverity::Error), 1);
@@ -2119,9 +2131,21 @@ mod review_library_tests {
     #[test]
     fn test_report_critical_and_actionable_findings() {
         let report = ReviewReport::new("05", "reviewer", ReviewVerdict::Fail)
-            .add_finding(ReviewFinding::new(FindingSeverity::Error, "a.rs", "Critical"))
-            .add_finding(ReviewFinding::new(FindingSeverity::Warning, "b.rs", "Actionable"))
-            .add_finding(ReviewFinding::new(FindingSeverity::Info, "c.rs", "Informational"));
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Error,
+                "a.rs",
+                "Critical",
+            ))
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Warning,
+                "b.rs",
+                "Actionable",
+            ))
+            .add_finding(ReviewFinding::new(
+                FindingSeverity::Info,
+                "c.rs",
+                "Informational",
+            ));
 
         assert_eq!(report.critical_findings().len(), 1);
         assert_eq!(report.actionable_findings().len(), 2);
@@ -2154,7 +2178,9 @@ mod arbiter_library_tests {
     use forge::review::arbiter::{
         ArbiterConfig, ArbiterDecision, ArbiterInput, ArbiterVerdict, ResolutionMode,
     };
-    use forge::review::{FindingSeverity, ReviewAggregation, ReviewFinding, ReviewReport, ReviewVerdict};
+    use forge::review::{
+        FindingSeverity, ReviewAggregation, ReviewFinding, ReviewReport, ReviewVerdict,
+    };
 
     #[test]
     fn test_resolution_mode_manual() {
@@ -2188,7 +2214,10 @@ mod arbiter_library_tests {
             .with_verbose(true)
             .with_skip_permissions(true);
 
-        assert!(matches!(config.mode, ResolutionMode::Auto { max_attempts: 3 }));
+        assert!(matches!(
+            config.mode,
+            ResolutionMode::Auto { max_attempts: 3 }
+        ));
         assert!(config.verbose);
         assert!(config.skip_permissions);
     }
@@ -2315,8 +2344,9 @@ mod decomposition_tests {
 
     #[test]
     fn test_decomposition_task_with_dependencies() {
-        let task = DecompositionTask::new("task-03", "Unified Handler", "Combine OAuth providers", 3)
-            .with_depends_on(vec!["task-01".to_string(), "task-02".to_string()]);
+        let task =
+            DecompositionTask::new("task-03", "Unified Handler", "Combine OAuth providers", 3)
+                .with_depends_on(vec!["task-01".to_string(), "task-02".to_string()]);
 
         assert!(task.has_dependencies());
         assert_eq!(task.depends_on.len(), 2);
@@ -2349,8 +2379,9 @@ mod decomposition_tests {
             DecompositionTask::new("task-02", "Core B", "Implementation B", 5),
         ];
 
-        let integration = IntegrationTask::new("integration", "Final Integration", "Combine components", 3)
-            .with_depends_on(vec!["task-01".to_string(), "task-02".to_string()]);
+        let integration =
+            IntegrationTask::new("integration", "Final Integration", "Combine components", 3)
+                .with_depends_on(vec!["task-01".to_string(), "task-02".to_string()]);
 
         let result = DecompositionResult::new(tasks).with_integration(integration);
 
@@ -2371,10 +2402,9 @@ mod decomposition_tests {
 
         // With integration
         let integration = IntegrationTask::new("int", "Integration", "Desc", 4);
-        let result_with_integration = DecompositionResult::new(vec![
-            DecompositionTask::new("t1", "Task 1", "Desc", 5),
-        ])
-        .with_integration(integration);
+        let result_with_integration =
+            DecompositionResult::new(vec![DecompositionTask::new("t1", "Task 1", "Desc", 5)])
+                .with_integration(integration);
         assert_eq!(result_with_integration.total_budget(), 9);
     }
 
@@ -2406,8 +2436,13 @@ mod swarm_context_tests {
 
     #[test]
     fn test_swarm_task_creation() {
-        let task = SwarmTask::new("task-01", "Implement feature", "Implement the new feature", 5)
-            .with_files(vec!["src/feature.rs".to_string()]);
+        let task = SwarmTask::new(
+            "task-01",
+            "Implement feature",
+            "Implement the new feature",
+            5,
+        )
+        .with_files(vec!["src/feature.rs".to_string()]);
 
         assert_eq!(task.id, "task-01");
         assert_eq!(task.budget, 5);
@@ -2457,11 +2492,18 @@ mod swarm_context_tests {
     #[test]
     fn test_swarm_context_creation() {
         let phase = PhaseInfo::new("05", "OAuth Integration", "OAUTH DONE", 20);
-        let context = SwarmContext::new(phase, "http://localhost:3000/callback", PathBuf::from("/project"))
-            .with_strategy(SwarmStrategy::Parallel)
-            .with_tasks(vec![
-                SwarmTask::new("task-01", "Google OAuth", "Integrate Google OAuth", 5),
-            ]);
+        let context = SwarmContext::new(
+            phase,
+            "http://localhost:3000/callback",
+            PathBuf::from("/project"),
+        )
+        .with_strategy(SwarmStrategy::Parallel)
+        .with_tasks(vec![SwarmTask::new(
+            "task-01",
+            "Google OAuth",
+            "Integrate Google OAuth",
+            5,
+        )]);
 
         assert_eq!(context.phase.number, "05");
         assert_eq!(context.tasks.len(), 1);

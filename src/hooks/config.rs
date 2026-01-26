@@ -664,7 +664,10 @@ type = "prompt"
         assert_eq!(hook.max_agents, Some(8));
         assert_eq!(hook.swarm_tasks.as_ref().unwrap().len(), 2);
         assert_eq!(hook.reviews.as_ref().unwrap().len(), 2);
-        assert_eq!(hook.description, Some("Swarm for complex phases".to_string()));
+        assert_eq!(
+            hook.description,
+            Some("Swarm for complex phases".to_string())
+        );
     }
 
     #[test]
@@ -690,11 +693,17 @@ match = "database-*"
         // First hook
         assert_eq!(config.hooks[0].event, HookEvent::PrePhase);
         assert_eq!(config.hooks[0].hook_type, HookType::Swarm);
-        assert_eq!(config.hooks[0].swarm_strategy, Some(SwarmStrategy::Parallel));
+        assert_eq!(
+            config.hooks[0].swarm_strategy,
+            Some(SwarmStrategy::Parallel)
+        );
         assert_eq!(config.hooks[0].max_agents, Some(6));
 
         // Second hook
-        assert_eq!(config.hooks[1].swarm_strategy, Some(SwarmStrategy::Adaptive));
+        assert_eq!(
+            config.hooks[1].swarm_strategy,
+            Some(SwarmStrategy::Adaptive)
+        );
         assert_eq!(config.hooks[1].r#match, Some("database-*".to_string()));
     }
 

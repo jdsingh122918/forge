@@ -191,7 +191,10 @@ pub enum PhaseStatus {
 impl PhaseStatus {
     /// Check if the phase is in a terminal state.
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Completed { .. } | Self::Failed { .. } | Self::Skipped)
+        matches!(
+            self,
+            Self::Completed { .. } | Self::Failed { .. } | Self::Skipped
+        )
     }
 
     /// Check if the phase completed successfully.
@@ -354,7 +357,8 @@ impl DagScheduler {
                 if !matches!(node.status, PhaseStatus::Pending) {
                     return false;
                 }
-                self.graph.dependencies_satisfied(node.index, &self.completed)
+                self.graph
+                    .dependencies_satisfied(node.index, &self.completed)
             })
             .collect()
     }
@@ -568,10 +572,7 @@ mod tests {
 
     #[test]
     fn test_completion_tracking() {
-        let phases = vec![
-            phase("01", vec![]),
-            phase("02", vec!["01"]),
-        ];
+        let phases = vec![phase("01", vec![]), phase("02", vec!["01"])];
 
         let mut scheduler = DagScheduler::from_phases(&phases, DagConfig::default()).unwrap();
 

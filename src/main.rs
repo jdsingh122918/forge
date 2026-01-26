@@ -1156,7 +1156,11 @@ fn cmd_interview(project_dir: &std::path::Path) -> Result<()> {
     run_interview(project_dir)
 }
 
-fn cmd_generate(project_dir: &std::path::Path, spec_file: Option<&std::path::Path>, auto_approve: bool) -> Result<()> {
+fn cmd_generate(
+    project_dir: &std::path::Path,
+    spec_file: Option<&std::path::Path>,
+    auto_approve: bool,
+) -> Result<()> {
     use forge::generate::run_generate;
     run_generate(project_dir, spec_file, auto_approve)
 }
@@ -1865,8 +1869,8 @@ fn cmd_swarm_status(project_dir: &std::path::Path) -> Result<()> {
         return Ok(());
     }
 
-    let content = std::fs::read_to_string(&status_file)
-        .context("Failed to read swarm status file")?;
+    let content =
+        std::fs::read_to_string(&status_file).context("Failed to read swarm status file")?;
 
     // Parse and display the status
     if let Ok(status) = serde_json::from_str::<SwarmStatus>(&content) {
@@ -1925,8 +1929,7 @@ fn cmd_swarm_abort(project_dir: &std::path::Path) -> Result<()> {
     }
 
     // Create the abort signal file
-    std::fs::write(&abort_file, "abort")
-        .context("Failed to create abort signal file")?;
+    std::fs::write(&abort_file, "abort").context("Failed to create abort signal file")?;
 
     println!("{}", console::style("Abort signal sent.").yellow());
     println!("The swarm will stop gracefully after completing current iterations.");
@@ -1956,8 +1959,10 @@ async fn cmd_swarm(
     fail_fast: bool,
 ) -> Result<()> {
     use forge::config::Config;
-    use forge::dag::{DagConfig, DagExecutor, DagScheduler, ExecutorConfig, PhaseEvent, ReviewConfig, ReviewMode};
     use forge::dag::SwarmBackend;
+    use forge::dag::{
+        DagConfig, DagExecutor, DagScheduler, ExecutorConfig, PhaseEvent, ReviewConfig, ReviewMode,
+    };
     use forge::init::get_forge_dir;
     use forge::orchestrator::review_integration::{DefaultSpecialist, ReviewIntegrationConfig};
     use forge::phase::load_phases_or_default;
@@ -1980,7 +1985,10 @@ async fn cmd_swarm(
 
     // Validate arbiter confidence
     if !(0.0..=1.0).contains(&arbiter_confidence) {
-        anyhow::bail!("--arbiter-confidence must be between 0.0 and 1.0, got {}", arbiter_confidence);
+        anyhow::bail!(
+            "--arbiter-confidence must be between 0.0 and 1.0, got {}",
+            arbiter_confidence
+        );
     }
 
     // Parse escalation types
@@ -2121,7 +2129,10 @@ async fn cmd_swarm(
             println!("Review mode: {}", review_mode);
         }
         if decompose_enabled {
-            println!("Decomposition: enabled (threshold: {}%)", decompose_threshold);
+            println!(
+                "Decomposition: enabled (threshold: {}%)",
+                decompose_threshold
+            );
         }
         if fail_fast {
             println!("Mode: fail-fast");
@@ -2179,7 +2190,10 @@ async fn cmd_swarm(
             "skipped": result.summary.skipped,
             "total": result.summary.total_phases,
         });
-        println!("{}", serde_json::to_string(&final_state).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string(&final_state).unwrap_or_default()
+        );
     }
 
     if !result.success {

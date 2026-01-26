@@ -31,7 +31,9 @@
 
 use crate::swarm::callback::{CallbackServer, SwarmEvent, TaskComplete, TaskStatus};
 use crate::swarm::context::SwarmContext;
-use crate::swarm::prompts::{build_orchestration_prompt, parse_swarm_completion, SwarmCompletionResult};
+use crate::swarm::prompts::{
+    SwarmCompletionResult, build_orchestration_prompt, parse_swarm_completion,
+};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -350,10 +352,7 @@ impl SwarmExecutor {
                 .write_all(prompt.as_bytes())
                 .await
                 .context("Failed to write prompt to stdin")?;
-            stdin
-                .shutdown()
-                .await
-                .context("Failed to close stdin")?;
+            stdin.shutdown().await.context("Failed to close stdin")?;
         }
 
         // Set up stdout reader
@@ -366,9 +365,8 @@ impl SwarmExecutor {
         // Spawn task to read stdout
         let stdout_tx = event_tx.clone();
         let verbose = self.config.verbose;
-        let stdout_task = tokio::spawn(async move {
-            Self::read_stdout(reader, stdout_tx, verbose).await
-        });
+        let stdout_task =
+            tokio::spawn(async move { Self::read_stdout(reader, stdout_tx, verbose).await });
 
         // Spawn task to poll callback events
         let callback_tx = event_tx.clone();
@@ -545,9 +543,11 @@ impl SwarmExecutor {
             accumulated.push('\n');
         }
 
-        let _ = tx.send(ExecutionEvent::StdoutComplete {
-            output: accumulated,
-        }).await;
+        let _ = tx
+            .send(ExecutionEvent::StdoutComplete {
+                output: accumulated,
+            })
+            .await;
     }
 
     /// Poll the callback server for events.
@@ -565,7 +565,8 @@ impl SwarmExecutor {
             let events = {
                 let state = state.read().await;
                 if state.events.len() > last_count {
-                    let new_events: Vec<_> = state.events.iter().skip(last_count).cloned().collect();
+                    let new_events: Vec<_> =
+                        state.events.iter().skip(last_count).cloned().collect();
                     last_count = state.events.len();
                     new_events
                 } else {
@@ -574,7 +575,11 @@ impl SwarmExecutor {
             };
 
             for event in events {
-                if tx.send(ExecutionEvent::CallbackReceived(event)).await.is_err() {
+                if tx
+                    .send(ExecutionEvent::CallbackReceived(event))
+                    .await
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -902,12 +907,8 @@ mod tests {
             error: None,
         };
 
-        let result = executor.build_result_from_completion(
-            completion,
-            Duration::from_secs(100),
-            15,
-            0,
-        );
+        let result =
+            executor.build_result_from_completion(completion, Duration::from_secs(100), 15, 0);
 
         assert!(result.success);
         assert_eq!(result.phase, "05");
@@ -936,12 +937,8 @@ mod tests {
             error: Some("Security review failed".to_string()),
         };
 
-        let result = executor.build_result_from_completion(
-            completion,
-            Duration::from_secs(50),
-            8,
-            1,
-        );
+        let result =
+            executor.build_result_from_completion(completion, Duration::from_secs(50), 8, 1);
 
         assert!(!result.success);
         assert_eq!(result.phase, "05");
@@ -1029,7 +1026,11 @@ mod tests {
         // Test creating a successful SwarmResult with all fields populated
         let result = SwarmResult::success(
             "10".to_string(),
-            vec!["task-a".to_string(), "task-b".to_string(), "task-c".to_string()],
+            vec![
+                "task-a".to_string(),
+                "task-b".to_string(),
+                "task-c".to_string(),
+            ],
             vec!["src/lib.rs".to_string(), "src/main.rs".to_string()],
             vec![
                 ReviewOutcome {

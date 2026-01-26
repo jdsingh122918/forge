@@ -34,17 +34,17 @@
 
 use anyhow::{Context, Result};
 use axum::{
+    Json, Router,
     extract::State,
     http::StatusCode,
     routing::{get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{RwLock, oneshot};
 
 /// Maximum number of events to retain before dropping oldest.
 /// This prevents unbounded memory growth from misbehaving agents.

@@ -236,7 +236,7 @@ impl DecompositionResult {
             && self
                 .integration_task
                 .as_ref()
-                .map_or(true, |_| self.tasks.iter().all(|t| t.status.is_success()))
+                .is_none_or(|_| self.tasks.iter().all(|t| t.status.is_success()))
     }
 
     /// Get completed task IDs.

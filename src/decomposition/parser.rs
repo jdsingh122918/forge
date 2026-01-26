@@ -210,10 +210,13 @@ pub fn validate_decomposition(result: &DecompositionResult) -> Result<()> {
     }
 
     // Add integration task ID if present
-    if let Some(ref integration) = result.integration_task {
-        if !task_ids.insert(&integration.id) {
-            anyhow::bail!("Integration task ID duplicates another task: {}", integration.id);
-        }
+    if let Some(ref integration) = result.integration_task
+        && !task_ids.insert(&integration.id)
+    {
+        anyhow::bail!(
+            "Integration task ID duplicates another task: {}",
+            integration.id
+        );
     }
 
     // Validate dependencies
@@ -249,7 +252,12 @@ pub fn validate_decomposition(result: &DecompositionResult) -> Result<()> {
     let dep_map: HashMap<&str, Vec<&str>> = result
         .tasks
         .iter()
-        .map(|t| (t.id.as_str(), t.depends_on.iter().map(|d| d.as_str()).collect()))
+        .map(|t| {
+            (
+                t.id.as_str(),
+                t.depends_on.iter().map(|d| d.as_str()).collect(),
+            )
+        })
         .collect();
 
     // Simple resolution loop - if we can't make progress, there's a cycle
@@ -444,7 +452,9 @@ mod tests {
     #[test]
     fn test_parse_decomposition_request_not_found() {
         assert!(!parse_decomposition_request("no request here"));
-        assert!(!parse_decomposition_request("<decomposition>...</decomposition>"));
+        assert!(!parse_decomposition_request(
+            "<decomposition>...</decomposition>"
+        ));
     }
 
     // =========================================
@@ -479,7 +489,8 @@ mod tests {
     fn test_validate_decomposition_valid() {
         let tasks = vec![
             DecompositionTask::new("t1", "Task 1", "Desc", 5),
-            DecompositionTask::new("t2", "Task 2", "Desc", 3).with_depends_on(vec!["t1".to_string()]),
+            DecompositionTask::new("t2", "Task 2", "Desc", 3)
+                .with_depends_on(vec!["t1".to_string()]),
         ];
         let result = DecompositionResult::new(tasks);
 
@@ -513,7 +524,8 @@ mod tests {
     #[test]
     fn test_validate_decomposition_self_dependency() {
         let tasks = vec![
-            DecompositionTask::new("t1", "Task 1", "Desc", 5).with_depends_on(vec!["t1".to_string()]),
+            DecompositionTask::new("t1", "Task 1", "Desc", 5)
+                .with_depends_on(vec!["t1".to_string()]),
         ];
         let result = DecompositionResult::new(tasks);
 
@@ -524,8 +536,10 @@ mod tests {
     #[test]
     fn test_validate_decomposition_circular_dependency() {
         let tasks = vec![
-            DecompositionTask::new("t1", "Task 1", "Desc", 5).with_depends_on(vec!["t2".to_string()]),
-            DecompositionTask::new("t2", "Task 2", "Desc", 3).with_depends_on(vec!["t1".to_string()]),
+            DecompositionTask::new("t1", "Task 1", "Desc", 5)
+                .with_depends_on(vec!["t2".to_string()]),
+            DecompositionTask::new("t2", "Task 2", "Desc", 3)
+                .with_depends_on(vec!["t1".to_string()]),
         ];
         let result = DecompositionResult::new(tasks);
 

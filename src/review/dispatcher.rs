@@ -29,9 +29,8 @@
 //! ```
 
 use crate::review::{
-    ArbiterConfig, ArbiterExecutor, ArbiterInput, ArbiterResult,
-    FindingSeverity, ReviewAggregation, ReviewFinding, ReviewReport, ReviewSpecialist,
-    ReviewVerdict,
+    ArbiterConfig, ArbiterExecutor, ArbiterInput, ArbiterResult, FindingSeverity,
+    ReviewAggregation, ReviewFinding, ReviewReport, ReviewSpecialist, ReviewVerdict,
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -166,7 +165,10 @@ impl PhaseReviewConfig {
     }
 
     /// Add multiple specialists.
-    pub fn add_specialists(mut self, specialists: impl IntoIterator<Item = ReviewSpecialist>) -> Self {
+    pub fn add_specialists(
+        mut self,
+        specialists: impl IntoIterator<Item = ReviewSpecialist>,
+    ) -> Self {
         self.specialists.extend(specialists);
         self
     }
@@ -268,21 +270,21 @@ impl DispatchResult {
             && self
                 .arbiter_result
                 .as_ref()
-                .map_or(true, |r| r.decision.decision.requires_human())
+                .is_none_or(|r| r.decision.decision.requires_human())
     }
 
     /// Get the fix instructions if the verdict is Fix.
     pub fn fix_instructions(&self) -> Option<&str> {
-        self.arbiter_result.as_ref().and_then(|r| {
-            r.decision.fix_instructions.as_deref()
-        })
+        self.arbiter_result
+            .as_ref()
+            .and_then(|r| r.decision.fix_instructions.as_deref())
     }
 
     /// Get the escalation summary if the verdict is Escalate.
     pub fn escalation_summary(&self) -> Option<&str> {
-        self.arbiter_result.as_ref().and_then(|r| {
-            r.decision.escalation_summary.as_deref()
-        })
+        self.arbiter_result
+            .as_ref()
+            .and_then(|r| r.decision.escalation_summary.as_deref())
     }
 }
 
@@ -403,7 +405,11 @@ impl ReviewDispatcher {
             match self.run_single_review(specialist, review_config).await {
                 Ok(report) => reports.push(report),
                 Err(e) => {
-                    eprintln!("[review] Warning: Specialist {} failed: {}", specialist.display_name(), e);
+                    eprintln!(
+                        "[review] Warning: Specialist {} failed: {}",
+                        specialist.display_name(),
+                        e
+                    );
                     // Continue with other reviews
                 }
             }
@@ -480,10 +486,7 @@ impl ReviewDispatcher {
                 .write_all(prompt.as_bytes())
                 .await
                 .context("Failed to write prompt to stdin")?;
-            stdin
-                .shutdown()
-                .await
-                .context("Failed to close stdin")?;
+            stdin.shutdown().await.context("Failed to close stdin")?;
         }
 
         // Read stdout
@@ -646,51 +649,46 @@ Begin your review now.
 }
 
 /// Parse review output from Claude into a ReviewReport.
-fn parse_review_output(
-    output: &str,
-    phase: &str,
-    reviewer: &str,
-    is_gating: bool,
-) -> ReviewReport {
+fn parse_review_output(output: &str, phase: &str, reviewer: &str, is_gating: bool) -> ReviewReport {
     // Try to extract JSON from the output
-    if let Some(json_str) = extract_json(output) {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&json_str) {
-            // Parse verdict
-            let verdict_str = value
-                .get("verdict")
-                .and_then(|v| v.as_str())
-                .unwrap_or("pass");
-            let verdict = match verdict_str.to_lowercase().as_str() {
-                "fail" => ReviewVerdict::Fail,
-                "warn" => ReviewVerdict::Warn,
-                _ => ReviewVerdict::Pass,
-            };
+    if let Some(json_str) = extract_json(output)
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(&json_str)
+    {
+        // Parse verdict
+        let verdict_str = value
+            .get("verdict")
+            .and_then(|v| v.as_str())
+            .unwrap_or("pass");
+        let verdict = match verdict_str.to_lowercase().as_str() {
+            "fail" => ReviewVerdict::Fail,
+            "warn" => ReviewVerdict::Warn,
+            _ => ReviewVerdict::Pass,
+        };
 
-            // Parse summary
-            let summary = value
-                .get("summary")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+        // Parse summary
+        let summary = value
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
-            // Parse findings
-            let mut findings = Vec::new();
-            if let Some(findings_array) = value.get("findings").and_then(|v| v.as_array()) {
-                for finding_value in findings_array {
-                    if let Some(finding) = parse_finding(finding_value) {
-                        findings.push(finding);
-                    }
+        // Parse findings
+        let mut findings = Vec::new();
+        if let Some(findings_array) = value.get("findings").and_then(|v| v.as_array()) {
+            for finding_value in findings_array {
+                if let Some(finding) = parse_finding(finding_value) {
+                    findings.push(finding);
                 }
             }
-
-            // Determine final verdict based on findings and gating status
-            let final_verdict = determine_verdict(&findings, verdict, is_gating);
-
-            return ReviewReport::new(phase, reviewer, final_verdict)
-                .with_summary(summary)
-                .add_findings(findings)
-                .with_timestamp(chrono::Utc::now());
         }
+
+        // Determine final verdict based on findings and gating status
+        let final_verdict = determine_verdict(&findings, verdict, is_gating);
+
+        return ReviewReport::new(phase, reviewer, final_verdict)
+            .with_summary(summary)
+            .add_findings(findings)
+            .with_timestamp(chrono::Utc::now());
     }
 
     // Fallback: couldn't parse output, return warning so it's not silently ignored
@@ -699,7 +697,9 @@ fn parse_review_output(
         phase, reviewer
     );
     ReviewReport::new(phase, reviewer, ReviewVerdict::Warn)
-        .with_summary("Review completed but output could not be parsed - manual inspection recommended")
+        .with_summary(
+            "Review completed but output could not be parsed - manual inspection recommended",
+        )
         .with_timestamp(chrono::Utc::now())
 }
 
@@ -773,12 +773,12 @@ fn extract_json(output: &str) -> Option<String> {
     // Try to find JSON in a generic code block
     if let Some(start) = output.find("```") {
         let after_marker = &output[start + 3..];
-        if let Some(end) = after_marker.find("```") {
-            if let Some(json_start) = after_marker[..end].find('{') {
-                let content = &after_marker[json_start..end];
-                if !content.is_empty() {
-                    return Some(content.trim().to_string());
-                }
+        if let Some(end) = after_marker.find("```")
+            && let Some(json_start) = after_marker[..end].find('{')
+        {
+            let content = &after_marker[json_start..end];
+            if !content.is_empty() {
+                return Some(content.trim().to_string());
             }
         }
     }
@@ -857,7 +857,9 @@ mod tests {
     fn test_phase_review_config_add_specialist() {
         let config = PhaseReviewConfig::new("05", "OAuth")
             .add_specialist(ReviewSpecialist::gating(SpecialistType::SecuritySentinel))
-            .add_specialist(ReviewSpecialist::advisory(SpecialistType::PerformanceOracle));
+            .add_specialist(ReviewSpecialist::advisory(
+                SpecialistType::PerformanceOracle,
+            ));
 
         assert_eq!(config.specialists.len(), 2);
         assert!(config.has_gating_specialists());
@@ -882,7 +884,9 @@ mod tests {
     fn test_phase_review_config_gating_specialists() {
         let config = PhaseReviewConfig::new("05", "OAuth")
             .add_specialist(ReviewSpecialist::gating(SpecialistType::SecuritySentinel))
-            .add_specialist(ReviewSpecialist::advisory(SpecialistType::PerformanceOracle));
+            .add_specialist(ReviewSpecialist::advisory(
+                SpecialistType::PerformanceOracle,
+            ));
 
         let gating = config.gating_specialists();
         assert_eq!(gating.len(), 1);
@@ -895,8 +899,11 @@ mod tests {
 
     #[test]
     fn test_dispatch_result_success() {
-        let aggregation = ReviewAggregation::new("05")
-            .add_report(ReviewReport::new("05", "security", ReviewVerdict::Pass));
+        let aggregation = ReviewAggregation::new("05").add_report(ReviewReport::new(
+            "05",
+            "security",
+            ReviewVerdict::Pass,
+        ));
 
         let result = DispatchResult::success(aggregation, Duration::from_secs(10));
 
@@ -909,8 +916,11 @@ mod tests {
 
     #[test]
     fn test_dispatch_result_with_failure() {
-        let aggregation = ReviewAggregation::new("05")
-            .add_report(ReviewReport::new("05", "security", ReviewVerdict::Fail));
+        let aggregation = ReviewAggregation::new("05").add_report(ReviewReport::new(
+            "05",
+            "security",
+            ReviewVerdict::Fail,
+        ));
 
         let result = DispatchResult::success(aggregation, Duration::from_secs(10));
 
@@ -922,12 +932,17 @@ mod tests {
 
     #[test]
     fn test_dispatch_result_with_arbiter_proceed() {
-        let aggregation = ReviewAggregation::new("05")
-            .add_report(ReviewReport::new("05", "security", ReviewVerdict::Fail));
+        let aggregation = ReviewAggregation::new("05").add_report(ReviewReport::new(
+            "05",
+            "security",
+            ReviewVerdict::Fail,
+        ));
 
-        let arbiter_result = ArbiterResult::rule_based(ArbiterDecision::proceed("Minor issues", 0.9));
+        let arbiter_result =
+            ArbiterResult::rule_based(ArbiterDecision::proceed("Minor issues", 0.9));
 
-        let result = DispatchResult::with_arbiter(aggregation, arbiter_result, Duration::from_secs(10));
+        let result =
+            DispatchResult::with_arbiter(aggregation, arbiter_result, Duration::from_secs(10));
 
         assert!(result.has_gating_failures);
         assert!(result.can_proceed()); // Arbiter said proceed
@@ -937,14 +952,20 @@ mod tests {
 
     #[test]
     fn test_dispatch_result_with_arbiter_fix() {
-        let aggregation = ReviewAggregation::new("05")
-            .add_report(ReviewReport::new("05", "security", ReviewVerdict::Fail));
+        let aggregation = ReviewAggregation::new("05").add_report(ReviewReport::new(
+            "05",
+            "security",
+            ReviewVerdict::Fail,
+        ));
 
-        let arbiter_result = ArbiterResult::rule_based(
-            ArbiterDecision::fix("Security issue", 0.9, "Fix the SQL injection"),
-        );
+        let arbiter_result = ArbiterResult::rule_based(ArbiterDecision::fix(
+            "Security issue",
+            0.9,
+            "Fix the SQL injection",
+        ));
 
-        let result = DispatchResult::with_arbiter(aggregation, arbiter_result, Duration::from_secs(10));
+        let result =
+            DispatchResult::with_arbiter(aggregation, arbiter_result, Duration::from_secs(10));
 
         assert!(result.has_gating_failures);
         assert!(!result.can_proceed());
@@ -955,14 +976,20 @@ mod tests {
 
     #[test]
     fn test_dispatch_result_with_arbiter_escalate() {
-        let aggregation = ReviewAggregation::new("05")
-            .add_report(ReviewReport::new("05", "security", ReviewVerdict::Fail));
+        let aggregation = ReviewAggregation::new("05").add_report(ReviewReport::new(
+            "05",
+            "security",
+            ReviewVerdict::Fail,
+        ));
 
-        let arbiter_result = ArbiterResult::rule_based(
-            ArbiterDecision::escalate("Architectural concern", 0.9, "Need human decision"),
-        );
+        let arbiter_result = ArbiterResult::rule_based(ArbiterDecision::escalate(
+            "Architectural concern",
+            0.9,
+            "Need human decision",
+        ));
 
-        let result = DispatchResult::with_arbiter(aggregation, arbiter_result, Duration::from_secs(10));
+        let result =
+            DispatchResult::with_arbiter(aggregation, arbiter_result, Duration::from_secs(10));
 
         assert!(result.has_gating_failures);
         assert!(!result.can_proceed());
@@ -1089,7 +1116,10 @@ I found {"verdict": "warn", "summary": "Issues", "findings": []} in the code.
         assert_eq!(report.findings.len(), 1);
         assert_eq!(report.findings[0].file(), "src/auth.rs");
         assert_eq!(report.findings[0].line(), Some(42));
-        assert_eq!(report.findings[0].suggestion(), Some("Use parameterized queries"));
+        assert_eq!(
+            report.findings[0].suggestion(),
+            Some("Use parameterized queries")
+        );
     }
 
     #[test]
@@ -1244,11 +1274,7 @@ I found {"verdict": "warn", "summary": "Issues", "findings": []} in the code.
 
     #[test]
     fn test_determine_verdict_info_only() {
-        let findings = vec![ReviewFinding::new(
-            FindingSeverity::Info,
-            "a.rs",
-            "Note",
-        )];
+        let findings = vec![ReviewFinding::new(FindingSeverity::Info, "a.rs", "Note")];
         // Info-only findings shouldn't change pass verdict
         assert_eq!(
             determine_verdict(&findings, ReviewVerdict::Pass, true),

@@ -92,5 +92,7 @@ pub use arbiter::{
     DecisionSource, ResolutionMode,
 };
 pub use dispatcher::{DispatchResult, DispatcherConfig, PhaseReviewConfig, ReviewDispatcher};
-pub use findings::{FindingSeverity, ReviewAggregation, ReviewFinding, ReviewReport, ReviewVerdict};
+pub use findings::{
+    FindingSeverity, ReviewAggregation, ReviewFinding, ReviewReport, ReviewVerdict,
+};
 pub use specialists::{ReviewSpecialist, SpecialistType};

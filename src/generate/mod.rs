@@ -285,7 +285,11 @@ pub fn parse_review_action(input: &str) -> Result<ReviewAction> {
 ///
 /// # Returns
 /// `Ok(())` on success, or an error if something fails.
-pub fn run_generate(project_dir: &Path, spec_file: Option<&Path>, auto_approve: bool) -> Result<()> {
+pub fn run_generate(
+    project_dir: &Path,
+    spec_file: Option<&Path>,
+    auto_approve: bool,
+) -> Result<()> {
     use crate::patterns::{
         display_budget_suggestions, display_pattern_matches, list_patterns, match_patterns,
         suggest_budgets,
@@ -352,7 +356,10 @@ pub fn run_generate(project_dir: &Path, spec_file: Option<&Path>, auto_approve: 
             let phases_file_path = forge_dir.join("phases.json");
             let phases_file = create_phases_file(parsed.phases, &spec_content);
             phases_file.save(&phases_file_path)?;
-            println!("\nPhases automatically approved and saved to {}", phases_file_path.display());
+            println!(
+                "\nPhases automatically approved and saved to {}",
+                phases_file_path.display()
+            );
             return Ok(());
         }
 

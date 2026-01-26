@@ -65,8 +65,7 @@ impl DecompositionExecutor {
         reason: &str,
     ) -> Result<DecomposedPhase> {
         // Validate the decomposition
-        validate_decomposition(&decomposition)
-            .context("Invalid decomposition structure")?;
+        validate_decomposition(&decomposition).context("Invalid decomposition structure")?;
 
         // Check budget constraints
         let remaining_budget = phase.budget.saturating_sub(iterations_used);
@@ -147,7 +146,9 @@ impl DecompositionExecutor {
             .iter()
             .filter(|t| {
                 t.status == TaskStatus::Pending
-                    && t.depends_on.iter().all(|dep| completed_ids.contains(dep.as_str()))
+                    && t.depends_on
+                        .iter()
+                        .all(|dep| completed_ids.contains(dep.as_str()))
             })
             .collect()
     }
@@ -185,7 +186,13 @@ impl DecompositionExecutor {
         task_id: &str,
         iterations: u32,
     ) -> bool {
-        self.update_task_status(decomposition, task_id, TaskStatus::Completed, iterations, None)
+        self.update_task_status(
+            decomposition,
+            task_id,
+            TaskStatus::Completed,
+            iterations,
+            None,
+        )
     }
 
     /// Mark a task as failed.

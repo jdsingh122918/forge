@@ -40,7 +40,7 @@ mod executor;
 mod parser;
 mod types;
 
-pub use config::{default_complexity_keywords, DecompositionConfig, DEFAULT_COMPLEXITY_KEYWORDS};
+pub use config::{DEFAULT_COMPLEXITY_KEYWORDS, DecompositionConfig, default_complexity_keywords};
 pub use detector::{DecompositionDetector, DecompositionTrigger, ExecutionSignals, TriggerReason};
 pub use executor::{DecompositionExecutor, ExecutionSummary};
 pub use parser::{

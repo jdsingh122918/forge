@@ -36,25 +36,17 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 /// Configuration for review integration with the orchestrator.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReviewIntegrationConfig {
     /// Whether review integration is enabled.
+    #[serde(default)]
     pub enabled: bool,
     /// Underlying dispatcher configuration.
+    #[serde(default)]
     pub dispatcher: DispatcherConfig,
     /// Default specialists to use if phase has none configured.
     #[serde(default)]
     pub default_specialists: Vec<DefaultSpecialist>,
-}
-
-impl Default for ReviewIntegrationConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            dispatcher: DispatcherConfig::default(),
-            default_specialists: Vec::new(),
-        }
-    }
 }
 
 impl ReviewIntegrationConfig {
@@ -188,14 +180,14 @@ impl ReviewIntegration {
     /// Build the list of specialists for a phase.
     fn build_specialists(&self, phase: &Phase) -> Vec<ReviewSpecialist> {
         // Check if phase has explicit review configuration
-        if let Some(review_settings) = &phase.reviews {
-            if !review_settings.specialists.is_empty() {
-                return review_settings
-                    .specialists
-                    .iter()
-                    .map(|s| Self::phase_config_to_specialist(s))
-                    .collect();
-            }
+        if let Some(review_settings) = &phase.reviews
+            && !review_settings.specialists.is_empty()
+        {
+            return review_settings
+                .specialists
+                .iter()
+                .map(Self::phase_config_to_specialist)
+                .collect();
         }
 
         // Fall back to default specialists
@@ -277,16 +269,14 @@ impl PhaseWithReviewResult {
 
     /// Check if reviews need to be fixed before proceeding.
     pub fn needs_review_fix(&self) -> bool {
-        self.review_result
-            .as_ref()
-            .map_or(false, |r| r.needs_fix())
+        self.review_result.as_ref().is_some_and(|r| r.needs_fix())
     }
 
     /// Check if reviews need human escalation.
     pub fn needs_escalation(&self) -> bool {
         self.review_result
             .as_ref()
-            .map_or(false, |r| r.needs_escalation())
+            .is_some_and(|r| r.needs_escalation())
     }
 
     /// Get fix instructions if available.
@@ -414,9 +404,8 @@ mod tests {
 
     #[test]
     fn test_build_specialists_from_defaults() {
-        let config = ReviewIntegrationConfig::enabled().with_default_specialists(vec![
-            DefaultSpecialist::gating("security"),
-        ]);
+        let config = ReviewIntegrationConfig::enabled()
+            .with_default_specialists(vec![DefaultSpecialist::gating("security")]);
         let integration = ReviewIntegration::new(config);
 
         let phase = Phase::new("05", "OAuth", "DONE", 10, "reason", vec![]);
@@ -466,10 +455,7 @@ mod tests {
         let integration = ReviewIntegration::new(config);
 
         let phase = Phase::new("05", "OAuth", "DONE", 10, "reason", vec![]);
-        let result = integration
-            .run_phase_reviews(&phase, 5, &[])
-            .await
-            .unwrap();
+        let result = integration.run_phase_reviews(&phase, 5, &[]).await.unwrap();
 
         // Should succeed immediately when disabled
         assert!(!result.has_gating_failures);
@@ -482,10 +468,7 @@ mod tests {
         let integration = ReviewIntegration::new(config);
 
         let phase = Phase::new("05", "OAuth", "DONE", 10, "reason", vec![]);
-        let result = integration
-            .run_phase_reviews(&phase, 5, &[])
-            .await
-            .unwrap();
+        let result = integration.run_phase_reviews(&phase, 5, &[]).await.unwrap();
 
         // Should succeed when no specialists configured
         assert!(!result.has_gating_failures);

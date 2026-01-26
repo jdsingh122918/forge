@@ -455,7 +455,11 @@ mod tests {
     fn test_specialist_type_focus_areas_simplicity() {
         let areas = SpecialistType::SimplicityReviewer.focus_areas();
         assert!(!areas.is_empty());
-        assert!(areas.iter().any(|a| a.to_lowercase().contains("over-engineering")));
+        assert!(
+            areas
+                .iter()
+                .any(|a| a.to_lowercase().contains("over-engineering"))
+        );
         assert!(areas.iter().any(|a| a.contains("YAGNI")));
     }
 
@@ -593,7 +597,10 @@ mod tests {
     #[test]
     fn test_review_specialist_with_focus_areas() {
         let specialist = ReviewSpecialist::new(SpecialistType::SecuritySentinel, true)
-            .with_focus_areas(vec!["Custom area 1".to_string(), "Custom area 2".to_string()]);
+            .with_focus_areas(vec![
+                "Custom area 1".to_string(),
+                "Custom area 2".to_string(),
+            ]);
 
         let areas = specialist.focus_areas();
         assert_eq!(areas.len(), 2);
@@ -664,7 +671,10 @@ mod tests {
         let json = r#"{"specialist_type":"performance_oracle"}"#;
         let specialist: ReviewSpecialist = serde_json::from_str(json).unwrap();
 
-        assert_eq!(specialist.specialist_type, SpecialistType::PerformanceOracle);
+        assert_eq!(
+            specialist.specialist_type,
+            SpecialistType::PerformanceOracle
+        );
         assert!(!specialist.gate); // defaults to false
         assert!(specialist.custom_focus_areas.is_empty());
     }
