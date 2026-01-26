@@ -10,7 +10,14 @@
 # OS
 .DS_Store
 
-# Local development
+# Forge local state and temporary files
+.forge/logs/
+.forge/state
+
+# Forge audit snapshots (keep current-run.json for CI visibility)
+.forge/audit/runs/
+
+# Legacy patterns (cleanup)
 .forge-logs/
 .forge-audit/
 .forge-state
