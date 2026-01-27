@@ -82,10 +82,19 @@ to analyze a website the user provides, use WebFetch or WebSearch tools instead,
 user know you're fetching the page content rather than interactively browsing it.
 
 Your goal is to understand what the user wants to build and produce a comprehensive
-spec document. Ask questions one at a time. Adapt your questions based on their
-answers - probe deeper into areas that need clarification.
+spec document.
 
-Cover these areas (as relevant):
+CRITICAL RULE: Ask exactly ONE question per response. Never ask multiple questions,
+numbered lists of questions, or combine questions with "and also" or "additionally".
+If you need to cover several topics, ask them in separate turns. After the user answers
+one question, ask the next. Keep each question concise and focused.
+
+When asking a question with enumerated options, format them as a short bulleted list
+with brief labels, not long paragraphs. For example:
+- **Option A** — short description
+- **Option B** — short description
+
+Cover these areas (as relevant), one question at a time:
 - Project goal and purpose
 - Tech stack and language choices
 - Core features and functionality
@@ -102,6 +111,87 @@ The spec should include:
 - Database schema (if applicable)
 - API endpoints (if applicable)
 - Implementation phases with success criteria (promises)"#;
+
+/// Split a response containing multiple numbered questions into individual questions.
+///
+/// Detects patterns like "**1.", "**2." or "1.", "2." at line starts and splits them
+/// into separate strings. If no numbered questions are detected, returns the full
+/// response as a single item.
+pub fn split_questions(response: &str) -> Vec<String> {
+    let re = regex::Regex::new(r"(?m)^\s*\*{0,2}\d+[\.\)]\s").unwrap();
+    let matches: Vec<_> = re.find_iter(response).collect();
+
+    if matches.len() < 2 {
+        return vec![response.to_string()];
+    }
+
+    // Find the preamble (text before the first question)
+    let preamble = response[..matches[0].start()].trim();
+
+    let mut questions = Vec::new();
+    for i in 0..matches.len() {
+        let start = matches[i].start();
+        let end = if i + 1 < matches.len() {
+            matches[i + 1].start()
+        } else {
+            response.len()
+        };
+        let q = response[start..end].trim().to_string();
+        questions.push(q);
+    }
+
+    // Prepend preamble to first question if non-empty
+    if !preamble.is_empty() {
+        if let Some(first) = questions.first_mut() {
+            *first = format!("{}\n\n{}", preamble, first);
+        }
+    }
+
+    questions
+}
+
+/// Wrap text to fit the terminal width.
+///
+/// Uses the terminal's column count (or 80 as fallback) to word-wrap each
+/// paragraph while preserving blank lines and list item indentation.
+pub fn wrap_for_terminal(text: &str) -> String {
+    let width = terminal_size::terminal_size()
+        .map(|(w, _)| w.0 as usize)
+        .unwrap_or(80)
+        .min(120); // cap at 120 for readability
+
+    let mut result = String::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            result.push('\n');
+            continue;
+        }
+
+        // Detect indentation and list markers to preserve them
+        let indent_len = line.len() - line.trim_start().len();
+        let indent: String = line.chars().take(indent_len).collect();
+
+        let opts = textwrap::Options::new(width.saturating_sub(indent_len))
+            .initial_indent("")
+            .subsequent_indent(&indent);
+        let wrapped = textwrap::fill(line.trim_start(), opts);
+
+        // Re-add original indent to first line
+        for (i, wl) in wrapped.lines().enumerate() {
+            if i == 0 {
+                result.push_str(&indent);
+            }
+            result.push_str(wl);
+            result.push('\n');
+        }
+    }
+
+    // Remove trailing newline to match original behavior
+    if result.ends_with('\n') {
+        result.pop();
+    }
+    result
+}
 
 /// Run an interactive interview session to generate a project spec.
 ///
@@ -160,7 +250,7 @@ pub fn run_interview(project_dir: &Path) -> Result<()> {
         false, // First turn - don't use --continue
     )?;
 
-    println!("{}", response);
+    println!("{}", wrap_for_terminal(&response));
     full_output.push_str(&response);
 
     // Check for spec in initial response (unlikely but possible)
@@ -209,7 +299,34 @@ pub fn run_interview(project_dir: &Path) -> Result<()> {
             true, // Continuation turn - use --continue
         )?;
 
-        println!("{}", response);
+        let questions = split_questions(&response);
+        if questions.len() > 1 {
+            // Multiple questions detected — present one at a time
+            for (i, q) in questions.iter().enumerate() {
+                println!("{}", wrap_for_terminal(q));
+
+                // For all questions except the last, wait for the user's answer
+                // and accumulate it. The combined answer goes to Claude as one message.
+                if i < questions.len() - 1 {
+                    print!("\n> ");
+                    stdout.flush()?;
+
+                    let mut partial_input = String::new();
+                    if stdin.lock().read_line(&mut partial_input)? == 0 {
+                        println!("\nSession ended.");
+                        // Save any spec found so far
+                        if let Some(spec_content) = extract_spec(&full_output) {
+                            save_spec(&forge_dir, &spec_content)?;
+                            println!("Spec saved to .forge/spec.md");
+                        }
+                        return Ok(());
+                    }
+                    println!();
+                }
+            }
+        } else {
+            println!("{}", wrap_for_terminal(&response));
+        }
         full_output.push('\n');
         full_output.push_str(&response);
 
@@ -534,9 +651,16 @@ End of output
         // Verify the system prompt contains key instructions
         assert!(INTERVIEW_SYSTEM_PROMPT.contains("interview"));
         assert!(INTERVIEW_SYSTEM_PROMPT.contains("specification"));
-        assert!(INTERVIEW_SYSTEM_PROMPT.contains("one at a time"));
+        assert!(INTERVIEW_SYSTEM_PROMPT.contains("ONE question"));
         assert!(INTERVIEW_SYSTEM_PROMPT.contains("<spec>"));
         assert!(INTERVIEW_SYSTEM_PROMPT.contains("</spec>"));
+    }
+
+    #[test]
+    fn test_system_prompt_enforces_single_question() {
+        assert!(INTERVIEW_SYSTEM_PROMPT.contains("CRITICAL RULE"));
+        assert!(INTERVIEW_SYSTEM_PROMPT.contains("ONE question"));
+        assert!(INTERVIEW_SYSTEM_PROMPT.contains("Never ask multiple questions"));
     }
 
     #[test]
@@ -559,5 +683,75 @@ End of output
         assert!(INTERVIEW_SYSTEM_PROMPT.contains("ASCII"));
         assert!(INTERVIEW_SYSTEM_PROMPT.contains("Implementation phases"));
         assert!(INTERVIEW_SYSTEM_PROMPT.contains("promises"));
+    }
+
+    // =========================================
+    // split_questions tests
+    // =========================================
+
+    #[test]
+    fn test_split_questions_no_numbered() {
+        let text = "What tech stack do you prefer?";
+        let result = split_questions(text);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], text);
+    }
+
+    #[test]
+    fn test_split_questions_single_numbered() {
+        let text = "1. What tech stack do you prefer?";
+        let result = split_questions(text);
+        assert_eq!(result.len(), 1); // Single numbered item is not split
+    }
+
+    #[test]
+    fn test_split_questions_multiple_numbered() {
+        let text = "A few questions:\n\n**1. Tech stack?** React or Vue?\n\n**2. Deployment?** Vercel or AWS?\n\n**3. Database?** Postgres or Mongo?";
+        let result = split_questions(text);
+        assert_eq!(result.len(), 3);
+        assert!(result[0].contains("A few questions:"));
+        assert!(result[0].contains("Tech stack"));
+        assert!(result[1].contains("Deployment"));
+        assert!(result[2].contains("Database"));
+    }
+
+    #[test]
+    fn test_split_questions_plain_numbered() {
+        let text = "1. First question?\n2. Second question?\n3. Third question?";
+        let result = split_questions(text);
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_split_questions_paren_numbered() {
+        let text = "1) First question?\n2) Second question?";
+        let result = split_questions(text);
+        assert_eq!(result.len(), 2);
+    }
+
+    // =========================================
+    // wrap_for_terminal tests
+    // =========================================
+
+    #[test]
+    fn test_wrap_preserves_short_lines() {
+        let text = "Short line.";
+        let result = wrap_for_terminal(text);
+        assert_eq!(result, "Short line.");
+    }
+
+    #[test]
+    fn test_wrap_preserves_blank_lines() {
+        let text = "Line one.\n\nLine two.";
+        let result = wrap_for_terminal(text);
+        assert!(result.contains("\n\n"));
+    }
+
+    #[test]
+    fn test_wrap_preserves_list_indent() {
+        let text = "- Item one\n- Item two";
+        let result = wrap_for_terminal(text);
+        assert!(result.contains("- Item one"));
+        assert!(result.contains("- Item two"));
     }
 }
