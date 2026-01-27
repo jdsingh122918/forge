@@ -10,6 +10,7 @@
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::LazyLock;
 
 use crate::forge_config::ForgeConfig;
 use crate::init::{get_forge_dir, is_initialized};
@@ -112,14 +113,18 @@ The spec should include:
 - API endpoints (if applicable)
 - Implementation phases with success criteria (promises)"#;
 
+static QUESTION_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?m)^\s*\*{0,2}\d+[\.\)]\s")
+        .expect("QUESTION_RE is a valid compile-time constant regex")
+});
+
 /// Split a response containing multiple numbered questions into individual questions.
 ///
 /// Detects patterns like "**1.", "**2." or "1.", "2." at line starts and splits them
 /// into separate strings. If no numbered questions are detected, returns the full
 /// response as a single item.
-pub fn split_questions(response: &str) -> Vec<String> {
-    let re = regex::Regex::new(r"(?m)^\s*\*{0,2}\d+[\.\)]\s").unwrap();
-    let matches: Vec<_> = re.find_iter(response).collect();
+fn split_questions(response: &str) -> Vec<String> {
+    let matches: Vec<_> = QUESTION_RE.find_iter(response).collect();
 
     if matches.len() < 2 {
         return vec![response.to_string()];
@@ -154,7 +159,7 @@ pub fn split_questions(response: &str) -> Vec<String> {
 ///
 /// Uses the terminal's column count (or 80 as fallback) to word-wrap each
 /// paragraph while preserving blank lines and list item indentation.
-pub fn wrap_for_terminal(text: &str) -> String {
+fn wrap_for_terminal(text: &str) -> String {
     let width = terminal_size::terminal_size()
         .map(|(w, _)| w.0 as usize)
         .unwrap_or(80)
@@ -167,23 +172,15 @@ pub fn wrap_for_terminal(text: &str) -> String {
             continue;
         }
 
-        // Detect indentation and list markers to preserve them
-        let indent_len = line.len() - line.trim_start().len();
-        let indent: String = line.chars().take(indent_len).collect();
+        let trimmed = line.trim_start();
+        let indent = &line[..line.len() - trimmed.len()];
 
-        let opts = textwrap::Options::new(width.saturating_sub(indent_len))
-            .initial_indent("")
-            .subsequent_indent(&indent);
-        let wrapped = textwrap::fill(line.trim_start(), opts);
+        let opts = textwrap::Options::new(width.saturating_sub(indent.len()).max(20))
+            .initial_indent(indent)
+            .subsequent_indent(indent);
 
-        // Re-add original indent to first line
-        for (i, wl) in wrapped.lines().enumerate() {
-            if i == 0 {
-                result.push_str(&indent);
-            }
-            result.push_str(wl);
-            result.push('\n');
-        }
+        result.push_str(&textwrap::fill(trimmed, opts));
+        result.push('\n');
     }
 
     // Remove trailing newline to match original behavior
@@ -236,7 +233,9 @@ pub fn run_interview(project_dir: &Path) -> Result<()> {
     println!("Type 'quit' or 'exit' to end the session.");
     println!();
 
-    let project_dir_str = project_dir.to_str().unwrap_or(".");
+    let project_dir_str = project_dir
+        .to_str()
+        .context("Project directory path contains invalid UTF-8 characters")?;
 
     // Accumulate all output for spec extraction
     let mut full_output = String::new();
@@ -300,35 +299,68 @@ pub fn run_interview(project_dir: &Path) -> Result<()> {
         )?;
 
         let questions = split_questions(&response);
-        if questions.len() > 1 {
-            // Multiple questions detected — present one at a time
-            for (i, q) in questions.iter().enumerate() {
-                println!("{}", wrap_for_terminal(q));
-
-                // For all questions except the last, wait for the user's answer
-                // and accumulate it. The combined answer goes to Claude as one message.
-                if i < questions.len() - 1 {
-                    print!("\n> ");
-                    stdout.flush()?;
-
-                    let mut partial_input = String::new();
-                    if stdin.lock().read_line(&mut partial_input)? == 0 {
-                        println!("\nSession ended.");
-                        // Save any spec found so far
-                        if let Some(spec_content) = extract_spec(&full_output) {
-                            save_spec(&forge_dir, &spec_content)?;
-                            println!("Spec saved to .forge/spec.md");
-                        }
-                        return Ok(());
-                    }
-                    println!();
-                }
-            }
-        } else {
-            println!("{}", wrap_for_terminal(&response));
-        }
         full_output.push('\n');
         full_output.push_str(&response);
+
+        if questions.len() > 1 {
+            // Multiple questions detected — present one at a time, collect answers
+            let mut combined_answers = Vec::new();
+            for (i, q) in questions.iter().enumerate() {
+                println!("{}", wrap_for_terminal(q));
+                print!("\n> ");
+                stdout.flush()?;
+
+                let mut answer = String::new();
+                if stdin.lock().read_line(&mut answer)? == 0 {
+                    println!("\nSession ended.");
+                    if let Some(spec_content) = extract_spec(&full_output) {
+                        save_spec(&forge_dir, &spec_content)?;
+                        println!("Spec saved to .forge/spec.md");
+                    }
+                    return Ok(());
+                }
+
+                let answer = answer.trim();
+                if answer.eq_ignore_ascii_case("quit") || answer.eq_ignore_ascii_case("exit") {
+                    println!("Session ended.");
+                    if let Some(spec_content) = extract_spec(&full_output) {
+                        save_spec(&forge_dir, &spec_content)?;
+                        println!("Spec saved to .forge/spec.md");
+                    }
+                    return Ok(());
+                }
+
+                if !answer.is_empty() {
+                    combined_answers.push(format!("Q{}: {}", i + 1, answer));
+                }
+                println!();
+            }
+
+            // Send combined answers as the next Claude turn
+            if !combined_answers.is_empty() {
+                let combined = combined_answers.join("\n");
+                println!();
+                let follow_up = run_claude_turn(
+                    &claude_cmd,
+                    project_dir_str,
+                    &combined,
+                    true,
+                )?;
+                println!("{}", wrap_for_terminal(&follow_up));
+                full_output.push('\n');
+                full_output.push_str(&follow_up);
+
+                if let Some(spec_content) = extract_spec(&full_output) {
+                    save_spec(&forge_dir, &spec_content)?;
+                    println!();
+                    println!("Spec saved to .forge/spec.md");
+                    return Ok(());
+                }
+            }
+            continue;
+        }
+
+        println!("{}", wrap_for_terminal(&response));
 
         // Check for spec in response
         if let Some(spec_content) = extract_spec(&full_output) {
@@ -753,5 +785,101 @@ End of output
         let result = wrap_for_terminal(text);
         assert!(result.contains("- Item one"));
         assert!(result.contains("- Item two"));
+    }
+
+    // =========================================
+    // split_questions edge-case tests
+    // =========================================
+
+    #[test]
+    fn test_split_questions_empty_string() {
+        let result = split_questions("");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], "");
+    }
+
+    #[test]
+    fn test_split_questions_numbered_options_false_positive() {
+        // Documents known limitation: numbered option lists within a single
+        // question will be split. The system prompt instructs Claude to use
+        // bullet points instead, but this test documents current behavior.
+        let text = "What approach do you prefer?\n\nThe options are:\n1. Monolith architecture\n2. Microservices\n3. Serverless";
+        let result = split_questions(text);
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_split_questions_mixed_formatting() {
+        let text = "**1. Bold question?**\n\n2. Plain question?\n\n**3. Bold again?**";
+        let result = split_questions(text);
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_split_questions_preamble_format() {
+        let text = "Here are my questions:\n\n1. First?\n2. Second?";
+        let result = split_questions(text);
+        assert_eq!(result.len(), 2);
+        assert!(result[0].starts_with("Here are my questions:\n\n1."));
+    }
+
+    #[test]
+    fn test_split_questions_multiline_preamble_no_numbers() {
+        let text = "Great, thanks for the context!\n\nLet me ask about your deployment preferences.\n\nWhat cloud provider do you want to use?";
+        let result = split_questions(text);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], text);
+    }
+
+    // =========================================
+    // wrap_for_terminal edge-case tests
+    // =========================================
+
+    #[test]
+    fn test_wrap_empty_string() {
+        let result = wrap_for_terminal("");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_wrap_breaks_long_line() {
+        // In test/CI, terminal_size returns None -> fallback 80 columns
+        let long_line = "word ".repeat(30);
+        let result = wrap_for_terminal(long_line.trim());
+        let lines: Vec<&str> = result.lines().collect();
+        assert!(
+            lines.len() > 1,
+            "Long line should be wrapped into multiple lines"
+        );
+        for line in &lines {
+            assert!(
+                line.len() <= 80,
+                "Each line should be at most 80 chars, got {}",
+                line.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_wrap_indented_long_line_preserves_indent() {
+        let text = format!("  {}", "word ".repeat(25));
+        let result = wrap_for_terminal(&text);
+        let lines: Vec<&str> = result.lines().collect();
+        assert!(lines.len() > 1);
+        for line in &lines {
+            assert!(
+                line.starts_with("  "),
+                "Line should preserve indent: '{}'",
+                line
+            );
+        }
+    }
+
+    #[test]
+    fn test_wrap_unicode_content() {
+        let text = "This has unicode: caf\u{00e9} and emojis \u{1f680}";
+        let result = wrap_for_terminal(text);
+        assert!(result.contains("caf\u{00e9}"));
+        assert!(result.contains("\u{1f680}"));
     }
 }
