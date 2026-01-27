@@ -146,10 +146,10 @@ fn split_questions(response: &str) -> Vec<String> {
     }
 
     // Prepend preamble to first question if non-empty
-    if !preamble.is_empty() {
-        if let Some(first) = questions.first_mut() {
-            *first = format!("{}\n\n{}", preamble, first);
-        }
+    if !preamble.is_empty()
+        && let Some(first) = questions.first_mut()
+    {
+        *first = format!("{}\n\n{}", preamble, first);
     }
 
     questions
@@ -340,12 +340,7 @@ pub fn run_interview(project_dir: &Path) -> Result<()> {
             if !combined_answers.is_empty() {
                 let combined = combined_answers.join("\n");
                 println!();
-                let follow_up = run_claude_turn(
-                    &claude_cmd,
-                    project_dir_str,
-                    &combined,
-                    true,
-                )?;
+                let follow_up = run_claude_turn(&claude_cmd, project_dir_str, &combined, true)?;
                 println!("{}", wrap_for_terminal(&follow_up));
                 full_output.push('\n');
                 full_output.push_str(&follow_up);
