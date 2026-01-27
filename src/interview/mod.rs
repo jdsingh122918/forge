@@ -41,9 +41,9 @@ pub fn build_interview_command(
     cmd.arg("--print");
 
     // Disable browser automation tools that hang in non-interactive mode.
-    // When Claude tries to use Playwright MCP tools without a TTY, they wait
-    // indefinitely for user interaction that never comes, causing the process to hang.
-    // Use wildcard pattern to disable all Playwright browser tools.
+    // Playwright MCP tools require permission prompts (TTY interaction) before executing.
+    // In --print mode there's no TTY, so these prompts block indefinitely.
+    // Disabling them allows Claude to fall back to WebSearch/WebFetch instead.
     cmd.arg("--disallowed-tools").arg("mcp__playwright*");
 
     // Add system prompt flag - this guides Claude's interview behavior
@@ -72,6 +72,10 @@ pub fn build_interview_command(
 
 /// The system prompt used for conducting project interviews.
 pub const INTERVIEW_SYSTEM_PROMPT: &str = r#"You are conducting an interview to create a project specification.
+
+Note: Browser automation tools (Playwright) are not available in interview mode. If you need
+to analyze a website the user provides, use WebFetch or WebSearch tools instead, and let the
+user know you're fetching the page content rather than interactively browsing it.
 
 Your goal is to understand what the user wants to build and produce a comprehensive
 spec document. Ask questions one at a time. Adapt your questions based on their
@@ -495,7 +499,6 @@ End of output
             "Command should include --disallowed-tools flag to disable browser tools"
         );
 
-        // Find the value after --disallowed-tools and verify it contains browser tools
         let disallowed_idx = args
             .iter()
             .position(|a| *a == OsStr::new("--disallowed-tools"));
@@ -508,7 +511,6 @@ End of output
         );
 
         let value_str = disallowed_value.unwrap().to_string_lossy();
-        // Should disable Playwright browser tools that can hang (using wildcard pattern)
         assert!(
             value_str.contains("mcp__playwright*"),
             "Should disable Playwright MCP tools with wildcard pattern, got: {}",
