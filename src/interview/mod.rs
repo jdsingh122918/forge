@@ -40,6 +40,12 @@ pub fn build_interview_command(
     // Use --print mode for non-interactive execution
     cmd.arg("--print");
 
+    // Disable browser automation tools that hang in non-interactive mode.
+    // When Claude tries to use Playwright MCP tools without a TTY, they wait
+    // indefinitely for user interaction that never comes, causing the process to hang.
+    // Use wildcard pattern to disable all Playwright browser tools.
+    cmd.arg("--disallowed-tools").arg("mcp__playwright*");
+
     // Add system prompt flag - this guides Claude's interview behavior
     cmd.arg("--system-prompt").arg(INTERVIEW_SYSTEM_PROMPT);
 
@@ -474,6 +480,40 @@ End of output
     fn test_build_interview_command_custom_claude() {
         let cmd = build_interview_command("/custom/claude", "/tmp/test", None, false);
         assert_eq!(cmd.get_program(), "/custom/claude");
+    }
+
+    #[test]
+    fn test_build_interview_command_disables_browser_tools() {
+        use std::ffi::OsStr;
+        let cmd = build_interview_command("claude", "/tmp/test", Some("Hello"), false);
+        let args: Vec<_> = cmd.get_args().collect();
+
+        // Should have --disallowed-tools to prevent browser automation tools from hanging
+        // in non-interactive mode (they wait for TTY/permissions that never come)
+        assert!(
+            args.iter().any(|a| *a == OsStr::new("--disallowed-tools")),
+            "Command should include --disallowed-tools flag to disable browser tools"
+        );
+
+        // Find the value after --disallowed-tools and verify it contains browser tools
+        let disallowed_idx = args
+            .iter()
+            .position(|a| *a == OsStr::new("--disallowed-tools"));
+        assert!(disallowed_idx.is_some(), "--disallowed-tools flag not found");
+
+        let disallowed_value = args.get(disallowed_idx.unwrap() + 1);
+        assert!(
+            disallowed_value.is_some(),
+            "--disallowed-tools should have a value"
+        );
+
+        let value_str = disallowed_value.unwrap().to_string_lossy();
+        // Should disable Playwright browser tools that can hang (using wildcard pattern)
+        assert!(
+            value_str.contains("mcp__playwright*"),
+            "Should disable Playwright MCP tools with wildcard pattern, got: {}",
+            value_str
+        );
     }
 
     // =========================================
