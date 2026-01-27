@@ -40,6 +40,10 @@ pub fn build_interview_command(
     // Use --print mode for non-interactive execution
     cmd.arg("--print");
 
+    // Skip permission prompts so tools like WebSearch/WebFetch work in non-interactive mode.
+    // Without this, tool use that requires permission acceptance fails with no TTY.
+    cmd.arg("--dangerously-skip-permissions");
+
     // Disable browser automation tools that hang in non-interactive mode.
     // Playwright MCP tools require permission prompts (TTY interaction) before executing.
     // In --print mode there's no TTY, so these prompts block indefinitely.
@@ -502,7 +506,10 @@ End of output
         let disallowed_idx = args
             .iter()
             .position(|a| *a == OsStr::new("--disallowed-tools"));
-        assert!(disallowed_idx.is_some(), "--disallowed-tools flag not found");
+        assert!(
+            disallowed_idx.is_some(),
+            "--disallowed-tools flag not found"
+        );
 
         let disallowed_value = args.get(disallowed_idx.unwrap() + 1);
         assert!(

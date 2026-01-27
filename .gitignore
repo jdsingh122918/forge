@@ -17,6 +17,9 @@
 # Forge audit snapshots (keep current-run.json for CI visibility)
 .forge/audit/runs/
 
+# Playwright MCP artifacts
+.playwright-mcp/
+
 # Legacy patterns (cleanup)
 .forge-logs/
 .forge-audit/
