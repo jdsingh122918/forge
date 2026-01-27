@@ -36,6 +36,8 @@ glob = "0.3"
 dirs = "5"
 toml = "0.8"
 regex = "1"
+textwrap = "0.16"
+terminal_size = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
