@@ -1165,6 +1165,10 @@ impl ArbiterExecutor {
             cmd.arg("--dangerously-skip-permissions");
         }
 
+        // Arbiter reviews are read-only — restrict to safe tools
+        cmd.arg("--allowed-tools")
+            .arg("Read,Glob,Grep,WebSearch,WebFetch");
+
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());

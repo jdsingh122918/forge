@@ -379,6 +379,57 @@ impl DecompositionSection {
     }
 }
 
+/// Claude CLI integration configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeSection {
+    /// Enable session continuity via `--resume` across iterations (default: true)
+    #[serde(default = "default_session_continuity")]
+    pub session_continuity: bool,
+    /// Enable iteration feedback via `--append-system-prompt` (default: true)
+    #[serde(default = "default_iteration_feedback")]
+    pub iteration_feedback: bool,
+    /// Override allowed tools for all phases (overrides permission-mode-based tools)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_tools_override: Option<Vec<String>>,
+    /// Tools to disallow across all phases
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disallowed_tools: Option<Vec<String>>,
+}
+
+fn default_session_continuity() -> bool {
+    true
+}
+
+fn default_iteration_feedback() -> bool {
+    true
+}
+
+impl Default for ClaudeSection {
+    fn default() -> Self {
+        Self {
+            session_continuity: default_session_continuity(),
+            iteration_feedback: default_iteration_feedback(),
+            allowed_tools_override: None,
+            disallowed_tools: None,
+        }
+    }
+}
+
+/// Returns the set of allowed tools for a given permission mode.
+/// Returns `None` for modes that don't restrict tools.
+pub fn tools_for_permission_mode(mode: PermissionMode) -> Option<Vec<String>> {
+    match mode {
+        PermissionMode::Readonly => Some(vec![
+            "Read".to_string(),
+            "Glob".to_string(),
+            "Grep".to_string(),
+            "WebSearch".to_string(),
+            "WebFetch".to_string(),
+        ]),
+        _ => None,
+    }
+}
+
 /// The complete forge.toml configuration structure.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ForgeToml {
@@ -403,6 +454,9 @@ pub struct ForgeToml {
     /// Decomposition configuration
     #[serde(default)]
     pub decomposition: DecompositionSection,
+    /// Claude CLI integration settings
+    #[serde(default)]
+    pub claude: ClaudeSection,
 }
 
 impl ForgeToml {
@@ -1273,5 +1327,93 @@ budget_threshold = 70
     fn test_decomposition_enabled_by_default_in_forge_toml() {
         let toml = ForgeToml::default();
         assert!(toml.decomposition.enabled);
+    }
+
+    // =========================================
+    // Claude section tests
+    // =========================================
+
+    #[test]
+    fn test_claude_section_default() {
+        let section = ClaudeSection::default();
+        assert!(section.session_continuity);
+        assert!(section.iteration_feedback);
+        assert!(section.allowed_tools_override.is_none());
+        assert!(section.disallowed_tools.is_none());
+    }
+
+    #[test]
+    fn test_claude_section_parse_empty_config() {
+        let toml = ForgeToml::parse("").unwrap();
+        assert!(toml.claude.session_continuity);
+        assert!(toml.claude.iteration_feedback);
+    }
+
+    #[test]
+    fn test_claude_section_parse_full() {
+        let content = r#"
+[claude]
+session_continuity = false
+iteration_feedback = false
+allowed_tools_override = ["Read", "Glob", "Grep"]
+disallowed_tools = ["Bash"]
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+        assert!(!toml.claude.session_continuity);
+        assert!(!toml.claude.iteration_feedback);
+        assert_eq!(
+            toml.claude.allowed_tools_override,
+            Some(vec![
+                "Read".to_string(),
+                "Glob".to_string(),
+                "Grep".to_string()
+            ])
+        );
+        assert_eq!(toml.claude.disallowed_tools, Some(vec!["Bash".to_string()]));
+    }
+
+    #[test]
+    fn test_claude_section_partial_config() {
+        let content = r#"
+[claude]
+session_continuity = false
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+        assert!(!toml.claude.session_continuity);
+        // Defaults for unspecified fields
+        assert!(toml.claude.iteration_feedback);
+        assert!(toml.claude.allowed_tools_override.is_none());
+    }
+
+    // =========================================
+    // tools_for_permission_mode tests
+    // =========================================
+
+    #[test]
+    fn test_tools_for_readonly_mode() {
+        let tools = tools_for_permission_mode(PermissionMode::Readonly);
+        assert!(tools.is_some());
+        let tools = tools.unwrap();
+        assert!(tools.contains(&"Read".to_string()));
+        assert!(tools.contains(&"Glob".to_string()));
+        assert!(tools.contains(&"Grep".to_string()));
+        assert!(tools.contains(&"WebSearch".to_string()));
+        assert!(tools.contains(&"WebFetch".to_string()));
+        assert_eq!(tools.len(), 5);
+    }
+
+    #[test]
+    fn test_tools_for_standard_mode() {
+        assert!(tools_for_permission_mode(PermissionMode::Standard).is_none());
+    }
+
+    #[test]
+    fn test_tools_for_strict_mode() {
+        assert!(tools_for_permission_mode(PermissionMode::Strict).is_none());
+    }
+
+    #[test]
+    fn test_tools_for_autonomous_mode() {
+        assert!(tools_for_permission_mode(PermissionMode::Autonomous).is_none());
     }
 }

@@ -470,6 +470,10 @@ impl ReviewDispatcher {
             cmd.arg("--dangerously-skip-permissions");
         }
 
+        // Reviews are read-only — restrict to safe tools
+        cmd.arg("--allowed-tools")
+            .arg("Read,Glob,Grep,WebSearch,WebFetch");
+
         if let Some(ref working_dir) = self.config.working_dir {
             cmd.current_dir(working_dir);
         }

@@ -308,6 +308,9 @@ pub struct ClaudeSession {
     pub output_chars: usize,
     pub exit_code: i32,
     pub token_usage: Option<TokenUsage>,
+    /// Session ID from Claude CLI, used for `--resume` continuity across iterations
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -391,5 +394,59 @@ mod tests {
         summary.files_added.push(PathBuf::from("new.rs"));
         summary.files_modified.push(PathBuf::from("old.rs"));
         assert_eq!(summary.total_files(), 2);
+    }
+
+    #[test]
+    fn test_claude_session_serialization_with_session_id() {
+        let session = ClaudeSession {
+            prompt_file: PathBuf::from("prompt.md"),
+            prompt_chars: 100,
+            output_file: PathBuf::from("output.log"),
+            output_chars: 500,
+            exit_code: 0,
+            token_usage: None,
+            session_id: Some("session-abc-123".to_string()),
+        };
+
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("session_id"));
+        assert!(json.contains("session-abc-123"));
+
+        let deserialized: ClaudeSession = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.session_id, Some("session-abc-123".to_string()));
+    }
+
+    #[test]
+    fn test_claude_session_serialization_without_session_id() {
+        let session = ClaudeSession {
+            prompt_file: PathBuf::from("prompt.md"),
+            prompt_chars: 100,
+            output_file: PathBuf::from("output.log"),
+            output_chars: 500,
+            exit_code: 0,
+            token_usage: None,
+            session_id: None,
+        };
+
+        let json = serde_json::to_string(&session).unwrap();
+        // session_id should be omitted when None (skip_serializing_if)
+        assert!(!json.contains("session_id"));
+    }
+
+    #[test]
+    fn test_claude_session_backward_compat_deserialization() {
+        // Old format without session_id field should still deserialize
+        let json = r#"{
+            "prompt_file": "prompt.md",
+            "prompt_chars": 100,
+            "output_file": "output.log",
+            "output_chars": 500,
+            "exit_code": 0,
+            "token_usage": null
+        }"#;
+
+        let session: ClaudeSession = serde_json::from_str(json).unwrap();
+        assert!(session.session_id.is_none());
+        assert_eq!(session.prompt_chars, 100);
     }
 }

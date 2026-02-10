@@ -1,5 +1,6 @@
-use crate::audit::ClaudeSession;
+use crate::audit::{ClaudeSession, FileChangeSummary};
 use crate::config::Config;
+use crate::forge_config::tools_for_permission_mode;
 use crate::phase::Phase;
 use crate::signals::{IterationSignals, extract_signals};
 use crate::skills::SkillsLoader;
@@ -59,6 +60,106 @@ impl PromptContext {
     }
 }
 
+/// Builder for iteration feedback injected via `--append-system-prompt`.
+///
+/// Aggregates status, git changes, and signals from the prior iteration
+/// into a compact system prompt that gives Claude context about its progress.
+pub struct IterationFeedback {
+    parts: Vec<String>,
+}
+
+impl Default for IterationFeedback {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl IterationFeedback {
+    pub fn new() -> Self {
+        Self { parts: Vec::new() }
+    }
+
+    /// Add iteration status (current iteration, budget, whether promise was found).
+    pub fn with_iteration_status(
+        mut self,
+        iteration: u32,
+        budget: u32,
+        promise_found: bool,
+    ) -> Self {
+        let status = if promise_found {
+            "COMPLETED".to_string()
+        } else {
+            format!("in progress ({}/{})", iteration, budget)
+        };
+        self.parts.push(format!("Iteration status: {}", status));
+        self
+    }
+
+    /// Add git change summary from the prior iteration.
+    pub fn with_git_changes(mut self, changes: &FileChangeSummary) -> Self {
+        if changes.is_empty() {
+            return self;
+        }
+        let mut lines = vec![format!(
+            "Files changed: {} added, {} modified, {} deleted (+{}/-{})",
+            changes.files_added.len(),
+            changes.files_modified.len(),
+            changes.files_deleted.len(),
+            changes.total_lines_added,
+            changes.total_lines_removed,
+        )];
+        // Show up to 10 modified files
+        for path in changes.files_modified.iter().take(10) {
+            lines.push(format!("  M {}", path.display()));
+        }
+        for path in changes.files_added.iter().take(5) {
+            lines.push(format!("  A {}", path.display()));
+        }
+        self.parts.push(lines.join("\n"));
+        self
+    }
+
+    /// Add signals from the prior iteration (progress %, blockers, pivots).
+    pub fn with_signals(mut self, signals: &IterationSignals) -> Self {
+        if !signals.has_signals() {
+            return self;
+        }
+        let mut lines = Vec::new();
+        if let Some(pct) = signals.latest_progress() {
+            lines.push(format!("Progress: {}%", pct));
+        }
+        for blocker in &signals.blockers {
+            if !blocker.acknowledged {
+                lines.push(format!("Blocker: {}", blocker.description));
+            }
+        }
+        for pivot in &signals.pivots {
+            lines.push(format!("Pivot: {}", pivot.new_approach));
+        }
+        if !lines.is_empty() {
+            self.parts.push(lines.join("\n"));
+        }
+        self
+    }
+
+    /// Build the feedback string. Returns None if no content was added.
+    /// Truncates to 4000 chars max to avoid bloating the system prompt.
+    pub fn build(self) -> Option<String> {
+        if self.parts.is_empty() {
+            return None;
+        }
+        let mut result = String::from("## ITERATION FEEDBACK\n");
+        result.push_str(&self.parts.join("\n\n"));
+
+        // Truncate to 4000 chars max
+        if result.len() > 4000 {
+            result.truncate(3997);
+            result.push_str("...");
+        }
+        Some(result)
+    }
+}
+
 pub struct ClaudeRunner {
     config: Config,
 }
@@ -82,19 +183,27 @@ impl ClaudeRunner {
         iteration: u32,
         ui: Option<Arc<OrchestratorUI>>,
     ) -> Result<IterationResult> {
-        self.run_iteration_with_context(phase, iteration, ui, None)
+        self.run_iteration_with_context(phase, iteration, ui, None, None, None)
             .await
     }
 
-    /// Run an iteration with optional injected context (e.g., compaction summary).
+    /// Run an iteration with optional injected context (e.g., compaction summary),
+    /// session resumption, and feedback injection.
     pub async fn run_iteration_with_context(
         &self,
         phase: &Phase,
         iteration: u32,
         ui: Option<Arc<OrchestratorUI>>,
         prompt_context: Option<&PromptContext>,
+        resume_session_id: Option<&str>,
+        append_system_prompt: Option<&str>,
     ) -> Result<IterationResult> {
-        let prompt = self.generate_prompt_with_context(phase, prompt_context);
+        // When resuming, use a short continuation prompt instead of the full spec
+        let prompt = if resume_session_id.is_some() {
+            self.generate_continuation_prompt(phase, iteration, prompt_context)
+        } else {
+            self.generate_prompt_with_context(phase, prompt_context)
+        };
 
         // Write prompt to file
         let prompt_file = self.config.log_dir.join(format!(
@@ -122,10 +231,40 @@ impl ClaudeRunner {
             cmd.arg(flag);
         }
 
+        // Add --resume if we have a session to continue
+        if let Some(sid) = resume_session_id {
+            cmd.arg("--resume").arg(sid);
+        }
+
+        // Add --append-system-prompt for iteration feedback
+        if let Some(text) = append_system_prompt {
+            cmd.arg("--append-system-prompt").arg(text);
+        }
+
+        // Add --allowed-tools for permission mode enforcement
+        if let Some(tools) = self.compute_allowed_tools(phase) {
+            cmd.arg("--allowed-tools").arg(tools.join(","));
+        }
+
+        // Add --disallowed-tools if configured
+        if let Some(fc) = self.config.forge_config()
+            && let Some(disallowed) = &fc.toml.claude.disallowed_tools
+            && !disallowed.is_empty()
+        {
+            cmd.arg("--disallowed-tools").arg(disallowed.join(","));
+        }
+
         // Log the command being executed
         let cmd_display = format!("{} {}", self.config.claude_cmd, flags.join(" "));
         if let Some(ref ui) = ui {
-            ui.log_step(&format!("Spawning: {}", cmd_display));
+            let mut display = cmd_display.clone();
+            if resume_session_id.is_some() {
+                display.push_str(" --resume <session>");
+            }
+            if append_system_prompt.is_some() {
+                display.push_str(" --append-system-prompt <feedback>");
+            }
+            ui.log_step(&format!("Spawning: {}", display));
         }
 
         // Run Claude with prompt via stdin
@@ -160,6 +299,7 @@ impl ClaudeRunner {
         let mut accumulated_text = String::new();
         let mut final_result: Option<String> = None;
         let mut is_error = false;
+        let mut captured_session_id: Option<String> = None;
 
         // Spawn elapsed time updater
         let ui_clone = ui.clone();
@@ -186,7 +326,14 @@ impl ClaudeRunner {
             match serde_json::from_str::<StreamEvent>(&line) {
                 Ok(event) => {
                     match event {
-                        StreamEvent::Assistant { message, .. } => {
+                        StreamEvent::Assistant {
+                            message,
+                            session_id,
+                            ..
+                        } => {
+                            if captured_session_id.is_none() && !session_id.is_empty() {
+                                captured_session_id = Some(session_id);
+                            }
                             for content in message.content {
                                 match content {
                                     ContentBlock::ToolUse { name, input, .. } => {
@@ -246,6 +393,23 @@ impl ClaudeRunner {
             ));
         }
 
+        // Graceful --resume failure fallback: if exit code is non-zero and we were
+        // resuming, retry once without --resume
+        if exit_code != 0 && resume_session_id.is_some() {
+            if let Some(ref ui) = ui {
+                ui.log_step("Session resume failed, retrying fresh");
+            }
+            return Box::pin(self.run_iteration_with_context(
+                phase,
+                iteration,
+                ui,
+                prompt_context,
+                None,
+                None,
+            ))
+            .await;
+        }
+
         // Use final_result if available, otherwise accumulated text
         let combined_output = final_result.unwrap_or(accumulated_text);
 
@@ -286,6 +450,7 @@ impl ClaudeRunner {
             output_chars: combined_output.len(),
             exit_code,
             token_usage: None, // TODO: Extract from output if available
+            session_id: captured_session_id,
         };
 
         Ok(IterationResult {
@@ -296,9 +461,44 @@ impl ClaudeRunner {
         })
     }
 
+    /// Compute allowed tools based on permission mode and config overrides.
+    fn compute_allowed_tools(&self, phase: &Phase) -> Option<Vec<String>> {
+        // Config override takes precedence
+        if let Some(fc) = self.config.forge_config()
+            && let Some(tools_override) = &fc.toml.claude.allowed_tools_override
+            && !tools_override.is_empty()
+        {
+            return Some(tools_override.clone());
+        }
+        // Fall back to permission-mode-based tools
+        tools_for_permission_mode(phase.permission_mode)
+    }
+
     #[allow(dead_code)]
     fn generate_prompt(&self, phase: &Phase) -> String {
         self.generate_prompt_with_context(phase, None)
+    }
+
+    /// Generate a short continuation prompt for `--resume` sessions.
+    ///
+    /// When resuming, Claude already has the full conversation history,
+    /// so we only need a brief reminder of the current task.
+    pub fn generate_continuation_prompt(
+        &self,
+        phase: &Phase,
+        iteration: u32,
+        prompt_context: Option<&PromptContext>,
+    ) -> String {
+        let context_section = prompt_context
+            .filter(|ctx| ctx.has_content())
+            .map(|ctx| format!("{}\n", ctx.generate_section()))
+            .unwrap_or_default();
+
+        format!(
+            "{}Continue working on phase {} - {}. Iteration {}/{}.\n\
+             Output <promise>{}</promise> when FULLY complete.",
+            context_section, phase.number, phase.name, iteration, phase.budget, phase.promise
+        )
     }
 
     /// Generate a prompt with optional injected context.
@@ -600,5 +800,113 @@ mod tests {
             !prompt.contains("## SKILLS AND CONVENTIONS"),
             "Prompt should not have skills section when no skills are used"
         );
+    }
+
+    #[test]
+    fn test_continuation_prompt() {
+        let dir = tempdir().unwrap();
+        let spec_content = "# Spec Content";
+        let config = setup_test_config(dir.path(), spec_content);
+        let runner = ClaudeRunner::new(config);
+
+        let phase = Phase::new("01", "Test Phase", "TEST_DONE", 5, "Test reasoning", vec![]);
+        let prompt = runner.generate_continuation_prompt(&phase, 3, None);
+
+        assert!(prompt.contains("Continue working on phase 01"));
+        assert!(prompt.contains("Test Phase"));
+        assert!(prompt.contains("3/5"));
+        assert!(prompt.contains("<promise>TEST_DONE</promise>"));
+        // Should NOT contain full spec
+        assert!(!prompt.contains("## SPECIFICATION"));
+    }
+
+    #[test]
+    fn test_continuation_prompt_with_context() {
+        let dir = tempdir().unwrap();
+        let spec_content = "# Spec Content";
+        let config = setup_test_config(dir.path(), spec_content);
+        let runner = ClaudeRunner::new(config);
+
+        let phase = Phase::new("01", "Test Phase", "DONE", 5, "reason", vec![]);
+        let ctx = PromptContext::with_compaction("Summary of prior iterations.".to_string());
+        let prompt = runner.generate_continuation_prompt(&phase, 2, Some(&ctx));
+
+        assert!(prompt.contains("Summary of prior iterations."));
+        assert!(prompt.contains("Continue working on phase 01"));
+    }
+
+    #[test]
+    fn test_iteration_feedback_empty() {
+        let fb = IterationFeedback::new().build();
+        assert!(fb.is_none(), "Empty feedback should return None");
+    }
+
+    #[test]
+    fn test_iteration_feedback_with_status() {
+        let fb = IterationFeedback::new()
+            .with_iteration_status(3, 8, false)
+            .build();
+        assert!(fb.is_some());
+        let text = fb.unwrap();
+        assert!(text.contains("ITERATION FEEDBACK"));
+        assert!(text.contains("3/8"));
+    }
+
+    #[test]
+    fn test_iteration_feedback_completed() {
+        let fb = IterationFeedback::new()
+            .with_iteration_status(5, 8, true)
+            .build();
+        let text = fb.unwrap();
+        assert!(text.contains("COMPLETED"));
+    }
+
+    #[test]
+    fn test_iteration_feedback_with_changes() {
+        let changes = FileChangeSummary {
+            files_added: vec![PathBuf::from("new.rs")],
+            files_modified: vec![PathBuf::from("main.rs")],
+            files_deleted: vec![],
+            total_lines_added: 50,
+            total_lines_removed: 10,
+        };
+        let fb = IterationFeedback::new().with_git_changes(&changes).build();
+        let text = fb.unwrap();
+        assert!(text.contains("1 added"));
+        assert!(text.contains("1 modified"));
+        assert!(text.contains("+50/-10"));
+    }
+
+    #[test]
+    fn test_iteration_feedback_with_signals() {
+        let mut signals = IterationSignals::new();
+        signals
+            .progress
+            .push(crate::signals::ProgressSignal::new(75, "75%"));
+        let fb = IterationFeedback::new().with_signals(&signals).build();
+        let text = fb.unwrap();
+        assert!(text.contains("75%"));
+    }
+
+    #[test]
+    fn test_iteration_feedback_truncation() {
+        let long_desc = "x".repeat(5000);
+        let changes = FileChangeSummary {
+            files_added: vec![PathBuf::from(long_desc)],
+            files_modified: vec![],
+            files_deleted: vec![],
+            total_lines_added: 0,
+            total_lines_removed: 0,
+        };
+        let fb = IterationFeedback::new().with_git_changes(&changes).build();
+        let text = fb.unwrap();
+        assert!(text.len() <= 4000);
+    }
+
+    #[test]
+    fn test_iteration_feedback_empty_changes_skipped() {
+        let changes = FileChangeSummary::default();
+        let fb = IterationFeedback::new().with_git_changes(&changes).build();
+        assert!(fb.is_none(), "Empty changes should not produce feedback");
     }
 }

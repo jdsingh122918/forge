@@ -10,8 +10,10 @@ use crate::decomposition::{
     DecompositionConfig, DecompositionDetector, DecompositionExecutor, ExecutionSignals,
     parse_decomposition_output, parse_decomposition_request,
 };
-use crate::orchestrator::ClaudeRunner;
+use crate::forge_config::ForgeToml;
+use crate::init::get_forge_dir;
 use crate::orchestrator::review_integration::{ReviewIntegration, ReviewIntegrationConfig};
+use crate::orchestrator::{ClaudeRunner, IterationFeedback};
 use crate::phase::Phase;
 use crate::tracker::GitTracker;
 use anyhow::{Context, Result};
@@ -467,6 +469,16 @@ async fn execute_single_phase(
     let decomposition_executor = DecompositionExecutor::new(config.decomposition_config.clone());
     let mut accumulated_signals = ExecutionSignals::new();
 
+    // Load config for session continuity settings
+    let forge_dir = get_forge_dir(&config.project_dir);
+    let forge_toml = ForgeToml::load_or_default(&forge_dir).unwrap_or_default();
+    let session_continuity_enabled = forge_toml.claude.session_continuity;
+    let iteration_feedback_enabled = forge_toml.claude.iteration_feedback;
+
+    // Session continuity state
+    let mut active_session_id: Option<String> = None;
+    let mut previous_feedback: Option<String> = None;
+
     // Run iterations until complete or budget exhausted
     let mut completed = false;
     let mut iteration = 0;
@@ -487,8 +499,25 @@ async fn execute_single_phase(
             .ok();
         }
 
-        // Run the iteration
-        let result = runner.run_iteration(phase, iter, None).await;
+        // Run the iteration with session continuity and feedback
+        let result = runner
+            .run_iteration_with_context(
+                phase,
+                iter,
+                None,
+                None,
+                if session_continuity_enabled {
+                    active_session_id.as_deref()
+                } else {
+                    None
+                },
+                if iteration_feedback_enabled {
+                    previous_feedback.as_deref()
+                } else {
+                    None
+                },
+            )
+            .await;
 
         match result {
             Ok(output) => {
@@ -585,6 +614,19 @@ async fn execute_single_phase(
                     .await
                     .ok();
                 }
+
+                // Capture session ID for --resume in next iteration
+                if let Some(ref sid) = output.session.session_id {
+                    active_session_id = Some(sid.clone());
+                }
+
+                // Build iteration feedback for next iteration
+                let changes = tracker.compute_changes(&snapshot_sha).unwrap_or_default();
+                previous_feedback = IterationFeedback::new()
+                    .with_iteration_status(iter, phase.budget, output.promise_found)
+                    .with_git_changes(&changes)
+                    .with_signals(&output.signals)
+                    .build();
             }
             Err(e) => {
                 return PhaseResult::failure(&phase.number, &e.to_string(), iter, timer.elapsed());

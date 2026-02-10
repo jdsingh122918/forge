@@ -386,7 +386,7 @@ async fn run_orchestrator(
     use forge::gates::{ApprovalGate, GateDecision, IterationDecision, ProgressTracker};
     use forge::hooks::{HookAction, HookManager};
     use forge::init::get_forge_dir;
-    use forge::orchestrator::{ClaudeRunner, PromptContext, StateManager};
+    use forge::orchestrator::{ClaudeRunner, IterationFeedback, PromptContext, StateManager};
     use forge::phase::load_phases_or_default;
     use forge::tracker::GitTracker;
     use forge::ui::OrchestratorUI;
@@ -563,6 +563,15 @@ async fn run_orchestrator(
         // Track current prompt context (compaction summary if any)
         let mut current_prompt_context: Option<PromptContext> = None;
 
+        // Session continuity: track active session ID for --resume across iterations
+        let mut active_session_id: Option<String> = None;
+        // Iteration feedback: track feedback to inject via --append-system-prompt
+        let mut previous_feedback: Option<String> = None;
+
+        // Check if session continuity and iteration feedback are enabled
+        let session_continuity_enabled = forge_toml.claude.session_continuity;
+        let iteration_feedback_enabled = forge_toml.claude.iteration_feedback;
+
         let mut completed = false;
         let mut phase_aborted = false;
         for iter in 1..=phase.budget {
@@ -647,15 +656,28 @@ async fn run_orchestrator(
                     );
                 }
                 current_prompt_context = Some(PromptContext::with_compaction(summary_text));
+                // Reset session on compaction — the compacted context replaces history
+                active_session_id = None;
+                previous_feedback = None;
             }
 
-            // Run iteration with optional compaction context
+            // Run iteration with optional compaction context, session resumption, and feedback
             let result = runner
                 .run_iteration_with_context(
                     &phase,
                     iter,
                     Some(ui.clone()),
                     current_prompt_context.as_ref(),
+                    if session_continuity_enabled {
+                        active_session_id.as_deref()
+                    } else {
+                        None
+                    },
+                    if iteration_feedback_enabled {
+                        previous_feedback.as_deref()
+                    } else {
+                        None
+                    },
                 )
                 .await?;
 
@@ -689,6 +711,18 @@ async fn run_orchestrator(
             // Update progress tracker for autonomous mode
             let progress_pct = result.signals.latest_progress();
             progress_tracker.update(&changes, progress_pct);
+
+            // Capture session ID for --resume in next iteration
+            if let Some(ref sid) = result.session.session_id {
+                active_session_id = Some(sid.clone());
+            }
+
+            // Build iteration feedback for next iteration
+            previous_feedback = IterationFeedback::new()
+                .with_iteration_status(iter, phase.budget, result.promise_found)
+                .with_git_changes(&changes)
+                .with_signals(&result.signals)
+                .build();
 
             // Record iteration in compaction manager
             let output_summary = extract_output_summary(&result.output, 100);
