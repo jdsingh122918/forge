@@ -14,9 +14,10 @@ indicatif = "0.17"
 # Async
 tokio = { version = "1", features = ["full", "process"] }
 futures = "0.3"
+futures-util = "0.3"
 
 # HTTP Server (for swarm callback server)
-axum = "0.7"
+axum = { version = "0.7", features = ["ws"] }
 
 # Git
 git2 = "0.20.4"
