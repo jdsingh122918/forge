@@ -1,12 +1,12 @@
 import { useCallback } from 'react';
 import {
   DndContext,
-  DragEndEvent,
   PointerSensor,
   useSensor,
   useSensors,
   closestCorners,
 } from '@dnd-kit/core';
+import type { DragEndEvent } from '@dnd-kit/core';
 import type { BoardView, IssueColumn } from '../types';
 import { Column } from './Column';
 
