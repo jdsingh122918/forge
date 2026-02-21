@@ -61,7 +61,45 @@ pub async fn ws_handler(
 
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let (mut sender, mut receiver) = socket.split();
-    let mut rx = state.tx.subscribe();
+    let mut rx = state.ws_tx.subscribe();
+
+    // Task to forward broadcast messages to this WebSocket client
+    let mut send_task = tokio::spawn(async move {
+        while let Ok(msg) = rx.recv().await {
+            if sender.send(Message::Text(msg.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Task to read from WebSocket (handle pings, close)
+    let mut recv_task = tokio::spawn(async move {
+        while let Some(Ok(msg)) = receiver.next().await {
+            match msg {
+                Message::Close(_) => break,
+                _ => {} // Ignore other messages from client for now
+            }
+        }
+    });
+
+    // Wait for either task to complete, then abort the other
+    tokio::select! {
+        _ = &mut send_task => recv_task.abort(),
+        _ = &mut recv_task => send_task.abort(),
+    }
+}
+
+/// WebSocket handler that accepts a broadcast sender directly (for use with server router).
+pub async fn ws_handler_with_sender(
+    ws: WebSocketUpgrade,
+    tx: broadcast::Sender<String>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket_with_sender(socket, tx))
+}
+
+async fn handle_socket_with_sender(socket: WebSocket, tx: broadcast::Sender<String>) {
+    let (mut sender, mut receiver) = socket.split();
+    let mut rx = tx.subscribe();
 
     // Task to forward broadcast messages to this WebSocket client
     let mut send_task = tokio::spawn(async move {

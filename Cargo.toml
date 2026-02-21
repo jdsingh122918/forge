@@ -40,6 +40,8 @@ regex = "1"
 textwrap = "0.16"
 terminal_size = "0.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+mime_guess = "2"
 
 [dev-dependencies]
 tempfile = "3"

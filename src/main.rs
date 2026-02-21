@@ -106,6 +106,20 @@ pub enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Launch the Code Factory Kanban UI
+    Factory {
+        /// Port to serve on
+        #[arg(short, long, default_value = "3141")]
+        port: u16,
+
+        /// Initialize database only (don't start server)
+        #[arg(long)]
+        init: bool,
+
+        /// Database path
+        #[arg(long, default_value = ".forge/factory.db")]
+        db_path: String,
+    },
     /// Execute phases in parallel using DAG scheduling with optional reviews
     Swarm {
         #[command(subcommand)]
@@ -297,6 +311,30 @@ async fn main() -> Result<()> {
             } else {
                 cmd_implement(&project_dir, design_doc, *no_tdd, *dry_run)?;
             }
+        }
+        Commands::Factory {
+            port,
+            init,
+            db_path,
+        } => {
+            let db_path = std::path::PathBuf::from(&db_path);
+
+            if *init {
+                // Just initialize the database
+                if let Some(parent) = db_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                forge::factory::db::FactoryDb::new(&db_path)?;
+                println!("Factory database initialized at {}", db_path.display());
+                return Ok(());
+            }
+
+            forge::factory::server::start_server(forge::factory::server::ServerConfig {
+                port: *port,
+                db_path,
+                dev_mode: false,
+            })
+            .await?;
         }
         Commands::Swarm {
             command,

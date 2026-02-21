@@ -4,7 +4,7 @@ use axum::{
     Json, Router,
     extract::{Path, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, patch, post},
 };
 use serde::Deserialize;
@@ -17,8 +17,10 @@ use super::models::IssueColumn;
 
 pub struct AppState {
     pub db: Mutex<FactoryDb>,
-    pub tx: broadcast::Sender<String>,
+    pub ws_tx: broadcast::Sender<String>,
 }
+
+pub type SharedState = Arc<AppState>;
 
 // ── Request payload types ─────────────────────────────────────────────
 
@@ -47,26 +49,42 @@ pub struct MoveIssueRequest {
     pub position: i32,
 }
 
+// ── Error handling ────────────────────────────────────────────────────
+
+pub enum ApiError {
+    NotFound(String),
+    BadRequest(String),
+    Internal(String),
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let (status, message) = match self {
+            ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
+            ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
+            ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+        };
+        (status, Json(serde_json::json!({"error": message}))).into_response()
+    }
+}
+
 // ── Router ────────────────────────────────────────────────────────────
 
-pub fn api_router(state: Arc<AppState>) -> Router {
+pub fn api_router() -> Router<SharedState> {
     Router::new()
-        .route("/health", get(health_check))
         .route("/api/projects", get(list_projects).post(create_project))
         .route("/api/projects/:id", get(get_project))
         .route("/api/projects/:id/board", get(get_board))
         .route("/api/projects/:id/issues", post(create_issue))
         .route(
             "/api/issues/:id",
-            get(get_issue_detail)
-                .patch(update_issue)
-                .delete(delete_issue),
+            get(get_issue).patch(update_issue).delete(delete_issue),
         )
         .route("/api/issues/:id/move", patch(move_issue))
         .route("/api/issues/:id/run", post(trigger_pipeline))
         .route("/api/runs/:id", get(get_pipeline_run))
         .route("/api/runs/:id/cancel", post(cancel_pipeline_run))
-        .with_state(state)
+        .route("/health", get(health_check))
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────
@@ -75,179 +93,170 @@ async fn health_check() -> &'static str {
     "ok"
 }
 
-async fn list_projects(
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    match db.list_projects() {
-        Ok(projects) => Ok(Json(projects)),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
+async fn list_projects(State(state): State<SharedState>) -> Result<impl IntoResponse, ApiError> {
+    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
+    let projects = db
+        .list_projects()
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(projects))
 }
 
 async fn create_project(
-    State(state): State<Arc<AppState>>,
+    State(state): State<SharedState>,
     Json(req): Json<CreateProjectRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    match db.create_project(&req.name, &req.path) {
-        Ok(project) => {
-            let msg =
-                serde_json::json!({"event": "project_created", "project": project}).to_string();
-            let _ = state.tx.send(msg);
-            Ok((StatusCode::CREATED, Json(project)))
-        }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
+) -> Result<impl IntoResponse, ApiError> {
+    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
+    let project = db
+        .create_project(&req.name, &req.path)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let msg = serde_json::json!({"event": "project_created", "project": project}).to_string();
+    let _ = state.ws_tx.send(msg);
+    Ok((StatusCode::CREATED, Json(project)))
 }
 
 async fn get_project(
-    State(state): State<Arc<AppState>>,
+    State(state): State<SharedState>,
     Path(id): Path<i64>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    match db.get_project(id) {
-        Ok(Some(project)) => Ok(Json(project)),
-        Ok(None) => Err(StatusCode::NOT_FOUND),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+) -> Result<impl IntoResponse, ApiError> {
+    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
+    match db
+        .get_project(id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+    {
+        Some(project) => Ok(Json(project)),
+        None => Err(ApiError::NotFound(format!("Project {} not found", id))),
     }
 }
 
 async fn get_board(
-    State(state): State<Arc<AppState>>,
+    State(state): State<SharedState>,
     Path(id): Path<i64>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    match db.get_board(id) {
-        Ok(board) => Ok(Json(board)),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
+) -> Result<impl IntoResponse, ApiError> {
+    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
+    let board = db
+        .get_board(id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(board))
 }
 
 async fn create_issue(
-    State(state): State<Arc<AppState>>,
+    State(state): State<SharedState>,
     Path(project_id): Path<i64>,
     Json(req): Json<CreateIssueRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, ApiError> {
     let column = match &req.column {
-        Some(c) => IssueColumn::from_str(c).map_err(|_| StatusCode::BAD_REQUEST)?,
+        Some(c) => IssueColumn::from_str(c).map_err(ApiError::BadRequest)?,
         None => IssueColumn::Backlog,
     };
     let description = req.description.as_deref().unwrap_or("");
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    match db.create_issue(project_id, &req.title, description, &column) {
-        Ok(issue) => {
-            let msg = serde_json::json!({"event": "issue_created", "issue": issue}).to_string();
-            let _ = state.tx.send(msg);
-            Ok((StatusCode::CREATED, Json(issue)))
-        }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
+    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
+    let issue = db
+        .create_issue(project_id, &req.title, description, &column)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let msg = serde_json::json!({"event": "issue_created", "issue": issue}).to_string();
+    let _ = state.ws_tx.send(msg);
+    Ok((StatusCode::CREATED, Json(issue)))
 }
 
-async fn get_issue_detail(
-    State(state): State<Arc<AppState>>,
+async fn get_issue(
+    State(state): State<SharedState>,
     Path(id): Path<i64>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    match db.get_issue_detail(id) {
-        Ok(Some(detail)) => Ok(Json(detail)),
-        Ok(None) => Err(StatusCode::NOT_FOUND),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+) -> Result<impl IntoResponse, ApiError> {
+    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
+    match db
+        .get_issue_detail(id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+    {
+        Some(detail) => Ok(Json(detail)),
+        None => Err(ApiError::NotFound(format!("Issue {} not found", id))),
     }
 }
 
 async fn update_issue(
-    State(state): State<Arc<AppState>>,
+    State(state): State<SharedState>,
     Path(id): Path<i64>,
     Json(req): Json<UpdateIssueRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    match db.update_issue(id, req.title.as_deref(), req.description.as_deref()) {
-        Ok(issue) => {
-            let msg = serde_json::json!({"event": "issue_updated", "issue": issue}).to_string();
-            let _ = state.tx.send(msg);
-            Ok(Json(issue))
-        }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
+) -> Result<impl IntoResponse, ApiError> {
+    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
+    let issue = db
+        .update_issue(id, req.title.as_deref(), req.description.as_deref())
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let msg = serde_json::json!({"event": "issue_updated", "issue": issue}).to_string();
+    let _ = state.ws_tx.send(msg);
+    Ok(Json(issue))
 }
 
 async fn move_issue(
-    State(state): State<Arc<AppState>>,
+    State(state): State<SharedState>,
     Path(id): Path<i64>,
     Json(req): Json<MoveIssueRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let column = IssueColumn::from_str(&req.column).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    match db.move_issue(id, &column, req.position) {
-        Ok(issue) => {
-            let msg = serde_json::json!({"event": "issue_moved", "issue": issue}).to_string();
-            let _ = state.tx.send(msg);
-            Ok(Json(issue))
-        }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
+) -> Result<impl IntoResponse, ApiError> {
+    let column = IssueColumn::from_str(&req.column).map_err(ApiError::BadRequest)?;
+    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
+    let issue = db
+        .move_issue(id, &column, req.position)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let msg = serde_json::json!({"event": "issue_moved", "issue": issue}).to_string();
+    let _ = state.ws_tx.send(msg);
+    Ok(Json(issue))
 }
 
 async fn delete_issue(
-    State(state): State<Arc<AppState>>,
+    State(state): State<SharedState>,
     Path(id): Path<i64>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    match db.delete_issue(id) {
-        Ok(true) => {
+) -> Result<impl IntoResponse, ApiError> {
+    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
+    match db
+        .delete_issue(id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+    {
+        true => {
             let msg = serde_json::json!({"event": "issue_deleted", "id": id}).to_string();
-            let _ = state.tx.send(msg);
+            let _ = state.ws_tx.send(msg);
             Ok(StatusCode::NO_CONTENT)
         }
-        Ok(false) => Err(StatusCode::NOT_FOUND),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        false => Err(ApiError::NotFound(format!("Issue {} not found", id))),
     }
 }
 
 async fn trigger_pipeline(
-    State(state): State<Arc<AppState>>,
+    State(state): State<SharedState>,
     Path(issue_id): Path<i64>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    match db.create_pipeline_run(issue_id) {
-        Ok(run) => {
-            let msg =
-                serde_json::json!({"event": "pipeline_triggered", "run": run}).to_string();
-            let _ = state.tx.send(msg);
-            Ok((StatusCode::ACCEPTED, Json(run)))
-        }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
+) -> Result<impl IntoResponse, ApiError> {
+    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
+    let run = db
+        .create_pipeline_run(issue_id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let msg = serde_json::json!({"event": "pipeline_triggered", "run": run}).to_string();
+    let _ = state.ws_tx.send(msg);
+    Ok((StatusCode::CREATED, Json(run)))
 }
 
 async fn get_pipeline_run(
-    State(state): State<Arc<AppState>>,
+    State(state): State<SharedState>,
     Path(id): Path<i64>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    match db.get_pipeline_run(id) {
-        Ok(Some(run)) => Ok(Json(run)),
-        Ok(None) => Err(StatusCode::NOT_FOUND),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+) -> Result<impl IntoResponse, ApiError> {
+    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
+    match db
+        .get_pipeline_run(id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+    {
+        Some(run) => Ok(Json(run)),
+        None => Err(ApiError::NotFound(format!("Pipeline run {} not found", id))),
     }
 }
 
 async fn cancel_pipeline_run(
-    State(state): State<Arc<AppState>>,
+    State(state): State<SharedState>,
     Path(id): Path<i64>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    match db.cancel_pipeline_run(id) {
-        Ok(run) => {
-            let msg =
-                serde_json::json!({"event": "pipeline_cancelled", "run": run}).to_string();
-            let _ = state.tx.send(msg);
-            Ok(Json(run))
-        }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
+) -> Result<impl IntoResponse, ApiError> {
+    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
+    let run = db
+        .cancel_pipeline_run(id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let msg = serde_json::json!({"event": "pipeline_cancelled", "run": run}).to_string();
+    let _ = state.ws_tx.send(msg);
+    Ok(Json(run))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────
@@ -260,24 +269,25 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    fn test_app() -> (Router, Arc<AppState>) {
+    fn test_app() -> Router {
         let db = FactoryDb::new_in_memory().unwrap();
-        let db = Mutex::new(db);
-        let (tx, _rx) = broadcast::channel(100);
-        let state = Arc::new(AppState { db, tx });
-        let app = api_router(state.clone());
-        (app, state)
+        let (ws_tx, _) = broadcast::channel(16);
+        let state = Arc::new(AppState {
+            db: Mutex::new(db),
+            ws_tx,
+        });
+        api_router().with_state(state)
     }
 
-    async fn body_json<T: serde::de::DeserializeOwned>(response: axum::http::Response<Body>) -> T {
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        serde_json::from_slice(&body).unwrap()
+    async fn body_json<T: serde::de::DeserializeOwned>(body: Body) -> T {
+        let bytes = body.collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
     }
 
     // 1. Health check
     #[tokio::test]
     async fn test_health_check() {
-        let (app, _state) = test_app();
+        let app = test_app();
 
         let request = Request::builder()
             .method("GET")
@@ -295,7 +305,7 @@ mod tests {
     // 2. List projects (empty)
     #[tokio::test]
     async fn test_list_projects_empty() {
-        let (app, _state) = test_app();
+        let app = test_app();
 
         let request = Request::builder()
             .method("GET")
@@ -306,14 +316,14 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let projects: Vec<serde_json::Value> = body_json(response).await;
+        let projects: Vec<serde_json::Value> = body_json(response.into_body()).await;
         assert!(projects.is_empty());
     }
 
     // 3. Create project
     #[tokio::test]
     async fn test_create_project() {
-        let (app, _state) = test_app();
+        let app = test_app();
 
         let request = Request::builder()
             .method("POST")
@@ -327,7 +337,7 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
 
-        let project: serde_json::Value = body_json(response).await;
+        let project: serde_json::Value = body_json(response.into_body()).await;
         assert_eq!(project["name"], "my-project");
         assert_eq!(project["path"], "/tmp/my-project");
         assert!(project["id"].as_i64().unwrap() > 0);
@@ -336,24 +346,32 @@ mod tests {
     // 4. Get project
     #[tokio::test]
     async fn test_get_project() {
-        let (app, state) = test_app();
+        let app = test_app();
 
-        // Create a project directly via DB
-        {
-            let db = state.db.lock().unwrap();
-            db.create_project("test-proj", "/tmp/test-proj").unwrap();
-        }
+        // First create a project
+        let create_req = Request::builder()
+            .method("POST")
+            .uri("/api/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"name": "test-proj", "path": "/tmp/test-proj"}).to_string(),
+            ))
+            .unwrap();
 
-        let request = Request::builder()
+        let create_resp = app.clone().oneshot(create_req).await.unwrap();
+        assert_eq!(create_resp.status(), StatusCode::CREATED);
+
+        // Then retrieve it
+        let get_req = Request::builder()
             .method("GET")
             .uri("/api/projects/1")
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(get_req).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let project: serde_json::Value = body_json(response).await;
+        let project: serde_json::Value = body_json(response.into_body()).await;
         assert_eq!(project["name"], "test-proj");
         assert_eq!(project["path"], "/tmp/test-proj");
     }
@@ -361,7 +379,7 @@ mod tests {
     // 5. Get project not found
     #[tokio::test]
     async fn test_get_project_not_found() {
-        let (app, _state) = test_app();
+        let app = test_app();
 
         let request = Request::builder()
             .method("GET")
@@ -376,13 +394,20 @@ mod tests {
     // 6. Get board (empty columns)
     #[tokio::test]
     async fn test_get_board_empty() {
-        let (app, state) = test_app();
+        let app = test_app();
 
-        {
-            let db = state.db.lock().unwrap();
-            db.create_project("board-proj", "/tmp/board").unwrap();
-        }
+        // Create project first
+        let create_req = Request::builder()
+            .method("POST")
+            .uri("/api/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"name": "board-proj", "path": "/tmp/board"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(create_req).await.unwrap();
 
+        // Get the board
         let request = Request::builder()
             .method("GET")
             .uri("/api/projects/1/board")
@@ -392,7 +417,7 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let board: serde_json::Value = body_json(response).await;
+        let board: serde_json::Value = body_json(response.into_body()).await;
         assert_eq!(board["project"]["name"], "board-proj");
         let columns = board["columns"].as_array().unwrap();
         assert_eq!(columns.len(), 5);
@@ -406,13 +431,20 @@ mod tests {
     // 7. Create issue
     #[tokio::test]
     async fn test_create_issue() {
-        let (app, state) = test_app();
+        let app = test_app();
 
-        {
-            let db = state.db.lock().unwrap();
-            db.create_project("issue-proj", "/tmp/issue").unwrap();
-        }
+        // Create project first
+        let create_proj = Request::builder()
+            .method("POST")
+            .uri("/api/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"name": "issue-proj", "path": "/tmp/issue"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(create_proj).await.unwrap();
 
+        // Create issue
         let request = Request::builder()
             .method("POST")
             .uri("/api/projects/1/issues")
@@ -429,7 +461,7 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
 
-        let issue: serde_json::Value = body_json(response).await;
+        let issue: serde_json::Value = body_json(response.into_body()).await;
         assert_eq!(issue["title"], "Fix login bug");
         assert_eq!(issue["description"], "Users cannot log in");
         assert_eq!(issue["column"], "backlog");
@@ -439,22 +471,39 @@ mod tests {
     // 8. Get issue detail
     #[tokio::test]
     async fn test_get_issue_detail() {
-        let (app, state) = test_app();
+        let app = test_app();
 
-        {
-            let db = state.db.lock().unwrap();
-            let project = db.create_project("detail-proj", "/tmp/detail").unwrap();
-            let issue = db
-                .create_issue(
-                    project.id,
-                    "Detail issue",
-                    "desc",
-                    &IssueColumn::Backlog,
-                )
-                .unwrap();
-            db.create_pipeline_run(issue.id).unwrap();
-        }
+        // Create project
+        let create_proj = Request::builder()
+            .method("POST")
+            .uri("/api/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"name": "detail-proj", "path": "/tmp/detail"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(create_proj).await.unwrap();
 
+        // Create issue
+        let create_issue_req = Request::builder()
+            .method("POST")
+            .uri("/api/projects/1/issues")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"title": "Detail issue", "description": "desc"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(create_issue_req).await.unwrap();
+
+        // Trigger a pipeline run
+        let trigger = Request::builder()
+            .method("POST")
+            .uri("/api/issues/1/run")
+            .body(Body::empty())
+            .unwrap();
+        app.clone().oneshot(trigger).await.unwrap();
+
+        // Get issue detail
         let request = Request::builder()
             .method("GET")
             .uri("/api/issues/1")
@@ -464,7 +513,7 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let detail: serde_json::Value = body_json(response).await;
+        let detail: serde_json::Value = body_json(response.into_body()).await;
         assert_eq!(detail["issue"]["title"], "Detail issue");
         let runs = detail["runs"].as_array().unwrap();
         assert_eq!(runs.len(), 1);
@@ -474,20 +523,30 @@ mod tests {
     // 9. Update issue
     #[tokio::test]
     async fn test_update_issue() {
-        let (app, state) = test_app();
+        let app = test_app();
 
-        {
-            let db = state.db.lock().unwrap();
-            let project = db.create_project("update-proj", "/tmp/update").unwrap();
-            db.create_issue(
-                project.id,
-                "Old title",
-                "Old desc",
-                &IssueColumn::Backlog,
-            )
+        // Create project and issue
+        let create_proj = Request::builder()
+            .method("POST")
+            .uri("/api/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"name": "update-proj", "path": "/tmp/update"}).to_string(),
+            ))
             .unwrap();
-        }
+        app.clone().oneshot(create_proj).await.unwrap();
 
+        let create_issue_req = Request::builder()
+            .method("POST")
+            .uri("/api/projects/1/issues")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"title": "Old title", "description": "Old desc"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(create_issue_req).await.unwrap();
+
+        // Update the issue
         let request = Request::builder()
             .method("PATCH")
             .uri("/api/issues/1")
@@ -504,7 +563,7 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let issue: serde_json::Value = body_json(response).await;
+        let issue: serde_json::Value = body_json(response.into_body()).await;
         assert_eq!(issue["title"], "New title");
         assert_eq!(issue["description"], "New desc");
     }
@@ -512,20 +571,30 @@ mod tests {
     // 10. Move issue
     #[tokio::test]
     async fn test_move_issue() {
-        let (app, state) = test_app();
+        let app = test_app();
 
-        {
-            let db = state.db.lock().unwrap();
-            let project = db.create_project("move-proj", "/tmp/move").unwrap();
-            db.create_issue(
-                project.id,
-                "Move me",
-                "",
-                &IssueColumn::Backlog,
-            )
+        // Create project and issue
+        let create_proj = Request::builder()
+            .method("POST")
+            .uri("/api/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"name": "move-proj", "path": "/tmp/move"}).to_string(),
+            ))
             .unwrap();
-        }
+        app.clone().oneshot(create_proj).await.unwrap();
 
+        let create_issue_req = Request::builder()
+            .method("POST")
+            .uri("/api/projects/1/issues")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"title": "Move me"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(create_issue_req).await.unwrap();
+
+        // Move the issue
         let request = Request::builder()
             .method("PATCH")
             .uri("/api/issues/1/move")
@@ -542,7 +611,7 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let issue: serde_json::Value = body_json(response).await;
+        let issue: serde_json::Value = body_json(response.into_body()).await;
         assert_eq!(issue["column"], "in_progress");
         assert_eq!(issue["position"], 0);
     }
@@ -550,51 +619,77 @@ mod tests {
     // 11. Delete issue
     #[tokio::test]
     async fn test_delete_issue() {
-        let (app, state) = test_app();
+        let app = test_app();
 
-        {
-            let db = state.db.lock().unwrap();
-            let project = db.create_project("delete-proj", "/tmp/delete").unwrap();
-            db.create_issue(
-                project.id,
-                "Delete me",
-                "",
-                &IssueColumn::Backlog,
-            )
+        // Create project and issue
+        let create_proj = Request::builder()
+            .method("POST")
+            .uri("/api/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"name": "delete-proj", "path": "/tmp/delete"}).to_string(),
+            ))
             .unwrap();
-        }
+        app.clone().oneshot(create_proj).await.unwrap();
 
+        let create_issue_req = Request::builder()
+            .method("POST")
+            .uri("/api/projects/1/issues")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"title": "Delete me"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(create_issue_req).await.unwrap();
+
+        // Delete the issue
         let request = Request::builder()
             .method("DELETE")
             .uri("/api/issues/1")
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
-        // Verify the issue is gone by trying to get it
-        let db = state.db.lock().unwrap();
-        assert!(db.get_issue(1).unwrap().is_none());
+        // Verify the issue is gone
+        let get_req = Request::builder()
+            .method("GET")
+            .uri("/api/issues/1")
+            .body(Body::empty())
+            .unwrap();
+
+        let get_resp = app.oneshot(get_req).await.unwrap();
+        assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
     }
 
     // 12. Trigger pipeline
     #[tokio::test]
     async fn test_trigger_pipeline() {
-        let (app, state) = test_app();
+        let app = test_app();
 
-        {
-            let db = state.db.lock().unwrap();
-            let project = db.create_project("pipe-proj", "/tmp/pipe").unwrap();
-            db.create_issue(
-                project.id,
-                "Pipeline issue",
-                "",
-                &IssueColumn::InProgress,
-            )
+        // Create project and issue
+        let create_proj = Request::builder()
+            .method("POST")
+            .uri("/api/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"name": "pipe-proj", "path": "/tmp/pipe"}).to_string(),
+            ))
             .unwrap();
-        }
+        app.clone().oneshot(create_proj).await.unwrap();
 
+        let create_issue_req = Request::builder()
+            .method("POST")
+            .uri("/api/projects/1/issues")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"title": "Pipeline issue"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(create_issue_req).await.unwrap();
+
+        // Trigger pipeline
         let request = Request::builder()
             .method("POST")
             .uri("/api/issues/1/run")
@@ -602,9 +697,9 @@ mod tests {
             .unwrap();
 
         let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(response.status(), StatusCode::CREATED);
 
-        let run: serde_json::Value = body_json(response).await;
+        let run: serde_json::Value = body_json(response.into_body()).await;
         assert_eq!(run["issue_id"], 1);
         assert_eq!(run["status"], "queued");
     }
@@ -612,22 +707,37 @@ mod tests {
     // 13. Get pipeline run
     #[tokio::test]
     async fn test_get_pipeline_run() {
-        let (app, state) = test_app();
+        let app = test_app();
 
-        {
-            let db = state.db.lock().unwrap();
-            let project = db.create_project("run-proj", "/tmp/run").unwrap();
-            let issue = db
-                .create_issue(
-                    project.id,
-                    "Run issue",
-                    "",
-                    &IssueColumn::InProgress,
-                )
-                .unwrap();
-            db.create_pipeline_run(issue.id).unwrap();
-        }
+        // Create project, issue, and pipeline run
+        let create_proj = Request::builder()
+            .method("POST")
+            .uri("/api/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"name": "run-proj", "path": "/tmp/run"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(create_proj).await.unwrap();
 
+        let create_issue_req = Request::builder()
+            .method("POST")
+            .uri("/api/projects/1/issues")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"title": "Run issue"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(create_issue_req).await.unwrap();
+
+        let trigger = Request::builder()
+            .method("POST")
+            .uri("/api/issues/1/run")
+            .body(Body::empty())
+            .unwrap();
+        app.clone().oneshot(trigger).await.unwrap();
+
+        // Get pipeline run
         let request = Request::builder()
             .method("GET")
             .uri("/api/runs/1")
@@ -637,7 +747,7 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let run: serde_json::Value = body_json(response).await;
+        let run: serde_json::Value = body_json(response.into_body()).await;
         assert_eq!(run["id"], 1);
         assert_eq!(run["issue_id"], 1);
         assert_eq!(run["status"], "queued");
@@ -646,22 +756,37 @@ mod tests {
     // 14. Cancel pipeline run
     #[tokio::test]
     async fn test_cancel_pipeline_run() {
-        let (app, state) = test_app();
+        let app = test_app();
 
-        {
-            let db = state.db.lock().unwrap();
-            let project = db.create_project("cancel-proj", "/tmp/cancel").unwrap();
-            let issue = db
-                .create_issue(
-                    project.id,
-                    "Cancel issue",
-                    "",
-                    &IssueColumn::InProgress,
-                )
-                .unwrap();
-            db.create_pipeline_run(issue.id).unwrap();
-        }
+        // Create project, issue, and pipeline run
+        let create_proj = Request::builder()
+            .method("POST")
+            .uri("/api/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"name": "cancel-proj", "path": "/tmp/cancel"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(create_proj).await.unwrap();
 
+        let create_issue_req = Request::builder()
+            .method("POST")
+            .uri("/api/projects/1/issues")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"title": "Cancel issue"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(create_issue_req).await.unwrap();
+
+        let trigger = Request::builder()
+            .method("POST")
+            .uri("/api/issues/1/run")
+            .body(Body::empty())
+            .unwrap();
+        app.clone().oneshot(trigger).await.unwrap();
+
+        // Cancel the pipeline run
         let request = Request::builder()
             .method("POST")
             .uri("/api/runs/1/cancel")
@@ -671,8 +796,57 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let run: serde_json::Value = body_json(response).await;
+        let run: serde_json::Value = body_json(response.into_body()).await;
         assert_eq!(run["status"], "cancelled");
         assert!(run["completed_at"].as_str().is_some());
+    }
+
+    // 15. Verify WebSocket broadcast on create issue
+    #[tokio::test]
+    async fn test_create_issue_broadcasts_ws() {
+        let db = FactoryDb::new_in_memory().unwrap();
+        let (ws_tx, _) = broadcast::channel(16);
+        let state = Arc::new(AppState {
+            db: Mutex::new(db),
+            ws_tx: ws_tx.clone(),
+        });
+        let app = api_router().with_state(state);
+
+        // Subscribe to broadcasts before the action
+        let mut rx = ws_tx.subscribe();
+
+        // Create project first
+        let create_proj = Request::builder()
+            .method("POST")
+            .uri("/api/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"name": "ws-proj", "path": "/tmp/ws"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(create_proj).await.unwrap();
+
+        // Drain the project_created message
+        let _ = rx.recv().await.unwrap();
+
+        // Create issue
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/projects/1/issues")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"title": "WS test issue", "description": "testing ws"})
+                    .to_string(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        // Verify the broadcast message was received
+        let msg = rx.recv().await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(parsed["event"], "issue_created");
+        assert_eq!(parsed["issue"]["title"], "WS test issue");
     }
 }
