@@ -3,7 +3,7 @@ import type { Project } from './types';
 import { useBoard } from './hooks/useBoard';
 
 function App() {
-  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  const [selectedProject, _setSelectedProject] = useState<Project | null>(null);
   const { board, loading, error, wsStatus } = useBoard(selectedProject?.id ?? null);
 
   return (

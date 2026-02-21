@@ -7,7 +7,7 @@ export function useWebSocket(url: string) {
   const [lastMessage, setLastMessage] = useState<WsMessage | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<number>();
+  const reconnectTimeoutRef = useRef<number>(undefined);
   const reconnectAttemptRef = useRef(0);
 
   const connect = useCallback(() => {
