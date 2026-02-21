@@ -38,6 +38,7 @@ toml = "0.8"
 regex = "1"
 textwrap = "0.16"
 terminal_size = "0.4"
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"

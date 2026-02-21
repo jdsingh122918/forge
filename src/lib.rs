@@ -3,6 +3,7 @@ pub mod compaction;
 pub mod config;
 pub mod dag;
 pub mod decomposition;
+pub mod factory;
 pub mod forge_config;
 pub mod gates;
 pub mod generate;
