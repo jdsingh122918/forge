@@ -1,60 +1,113 @@
-import { useState } from 'react';
-import type { Project } from './types';
+import { useState, useEffect, useCallback } from 'react';
+import type { Project, IssueColumn } from './types';
 import { useBoard } from './hooks/useBoard';
+import { api } from './api/client';
+import { Header } from './components/Header';
+import { Board } from './components/Board';
+import { IssueDetail } from './components/IssueDetail';
+import { NewIssueForm } from './components/NewIssueForm';
 
 function App() {
-  const [selectedProject, _setSelectedProject] = useState<Project | null>(null);
-  const { board, loading, error, wsStatus } = useBoard(selectedProject?.id ?? null);
+  const [, setProjects] = useState<Project[]>([]);
+  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  const [selectedIssueId, setSelectedIssueId] = useState<number | null>(null);
+  const [showNewIssue, setShowNewIssue] = useState(false);
+
+  const { board, loading, error, wsStatus, moveIssue, createIssue, deleteIssue, triggerPipeline, refresh } =
+    useBoard(selectedProject?.id ?? null);
+
+  // Load projects on mount
+  useEffect(() => {
+    api.listProjects().then((ps) => {
+      setProjects(ps);
+      if (ps.length > 0) setSelectedProject(ps[0]);
+    }).catch(console.error);
+  }, []);
+
+  const handleMoveIssue = useCallback(
+    (issueId: number, column: IssueColumn, position: number) => {
+      moveIssue(issueId, column, position);
+    },
+    [moveIssue]
+  );
+
+  const handleCreateIssue = useCallback(
+    async (title: string, description: string) => {
+      await createIssue(title, description);
+      setShowNewIssue(false);
+      refresh();
+    },
+    [createIssue, refresh]
+  );
+
+  const handleDeleteIssue = useCallback(
+    async (issueId: number) => {
+      await deleteIssue(issueId);
+      setSelectedIssueId(null);
+      refresh();
+    },
+    [deleteIssue, refresh]
+  );
+
+  const handleTriggerPipeline = useCallback(
+    async (issueId: number) => {
+      await triggerPipeline(issueId);
+      refresh();
+    },
+    [triggerPipeline, refresh]
+  );
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-200 px-6 py-4">
-        <div className="flex items-center justify-between">
-          <h1 className="text-xl font-semibold text-gray-900">Forge Factory</h1>
-          <div className="flex items-center gap-3">
-            <span className={`inline-block w-2 h-2 rounded-full ${
-              wsStatus === 'connected' ? 'bg-green-500' :
-              wsStatus === 'connecting' ? 'bg-yellow-500' : 'bg-red-500'
-            }`} />
-            <span className="text-sm text-gray-500">{wsStatus}</span>
-          </div>
-        </div>
-      </header>
+    <div className="h-screen flex flex-col bg-gray-100">
+      <Header
+        projectName={selectedProject?.name ?? null}
+        wsStatus={wsStatus}
+        onNewIssue={() => setShowNewIssue(true)}
+      />
 
-      <main className="p-6">
-        {loading && <p className="text-gray-500">Loading board...</p>}
-        {error && <p className="text-red-500">{error}</p>}
-        {!board && !loading && (
-          <div className="text-center py-20">
-            <h2 className="text-lg font-medium text-gray-700">No project selected</h2>
-            <p className="text-gray-500 mt-2">Select or create a project to get started.</p>
+      <main className="flex-1 overflow-hidden">
+        {loading && (
+          <div className="flex items-center justify-center h-full">
+            <p className="text-gray-500">Loading board...</p>
+          </div>
+        )}
+        {error && (
+          <div className="p-6">
+            <p className="text-red-500 bg-red-50 rounded-md p-4">{error}</p>
+          </div>
+        )}
+        {!board && !loading && !error && (
+          <div className="flex items-center justify-center h-full">
+            <div className="text-center">
+              <h2 className="text-lg font-medium text-gray-700">No project selected</h2>
+              <p className="text-gray-500 mt-2">Select or create a project to get started.</p>
+            </div>
           </div>
         )}
         {board && (
-          <div className="grid grid-cols-5 gap-4">
-            {board.columns.map((col) => (
-              <div key={col.name} className="bg-gray-100 rounded-lg p-3">
-                <h3 className="font-medium text-gray-700 mb-3 text-sm uppercase tracking-wide">
-                  {col.name.replace('_', ' ')}
-                  <span className="ml-2 text-gray-400">({col.issues.length})</span>
-                </h3>
-                <div className="space-y-2">
-                  {col.issues.map((item) => (
-                    <div key={item.issue.id} className="bg-white rounded-md p-3 shadow-sm border border-gray-200">
-                      <p className="text-sm font-medium text-gray-900">{item.issue.title}</p>
-                      {item.active_run && (
-                        <span className="text-xs text-blue-500 mt-1 block">
-                          Pipeline: {item.active_run.status}
-                        </span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
+          <Board
+            board={board}
+            onMoveIssue={handleMoveIssue}
+            onIssueClick={setSelectedIssueId}
+          />
         )}
       </main>
+
+      {selectedIssueId && (
+        <IssueDetail
+          issueId={selectedIssueId}
+          onClose={() => setSelectedIssueId(null)}
+          onTriggerPipeline={handleTriggerPipeline}
+          onDelete={handleDeleteIssue}
+        />
+      )}
+
+      {showNewIssue && (
+        <NewIssueForm
+          onSubmit={handleCreateIssue}
+          onCancel={() => setShowNewIssue(false)}
+        />
+      )}
     </div>
   );
 }
