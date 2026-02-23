@@ -9,6 +9,7 @@ services:
       - "3141:3141"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
       - CLAUDE_CMD=${CLAUDE_CMD:-claude}
       - FORGE_CMD=${FORGE_CMD:-forge}
     volumes:
@@ -26,6 +27,7 @@ services:
       - "3141:3141"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
       - CLAUDE_CMD=${CLAUDE_CMD:-claude}
       - FORGE_CMD=${FORGE_CMD:-forge}
       - RUST_LOG=debug

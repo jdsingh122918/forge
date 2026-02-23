@@ -19,10 +19,19 @@ if [ -f .env ]; then
     set +a
 fi
 
-# Warn if API key is missing
-if [ -z "${ANTHROPIC_API_KEY:-}" ] || [ "$ANTHROPIC_API_KEY" = "your-api-key-here" ]; then
-    echo "WARNING: ANTHROPIC_API_KEY is not set. Pipeline execution will not work."
-    echo "         Edit .env and set your Anthropic API key."
+# Warn if no authentication is configured
+has_api_key=false
+has_oauth=false
+if [ -n "${ANTHROPIC_API_KEY:-}" ] && [ "$ANTHROPIC_API_KEY" != "your-api-key-here" ]; then
+    has_api_key=true
+fi
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ "$CLAUDE_CODE_OAUTH_TOKEN" != "your-oauth-token-here" ]; then
+    has_oauth=true
+fi
+if [ "$has_api_key" = false ] && [ "$has_oauth" = false ]; then
+    echo "WARNING: No authentication configured. Pipeline execution will not work."
+    echo "         Edit .env and set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN."
+    echo "         (Run 'claude setup-token' to generate an OAuth token)"
     echo ""
 fi
 
