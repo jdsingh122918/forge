@@ -78,6 +78,7 @@ forge status
 | `forge list` | Display all phases |
 | `forge status` | Show progress |
 | `forge reset` | Reset all progress |
+| `forge factory` | Launch the Factory Kanban board UI |
 
 ### Configuration
 
@@ -181,6 +182,7 @@ prompt = "Should we proceed? Return {approve: bool, reason: str}"
 |----------|-------------|---------|
 | `CLAUDE_CMD` | Claude CLI command | `claude` |
 | `SKIP_PERMISSIONS` | Skip permission prompts | `true` |
+| `FORGE_CMD` | Forge CLI command for pipeline execution | `forge` |
 
 ## Hook System
 
@@ -369,6 +371,14 @@ src/
 │   ├── parser.rs        # Decomposition parsing
 │   ├── executor.rs      # Sub-task execution
 │   └── types.rs         # Decomposition types
+│
+├── factory/             # Factory Kanban board
+│   ├── api.rs           # REST API handlers (Axum)
+│   ├── server.rs        # Server startup & config
+│   ├── db.rs            # SQLite database layer
+│   ├── models.rs        # Data models & view types
+│   ├── pipeline.rs      # Pipeline execution engine
+│   └── ws.rs            # WebSocket message types
 │
 ├── hooks/               # Hook system
 ├── skills/              # Skills management
@@ -727,6 +737,77 @@ Clear checkpoints and restart:
 rm -rf .forge/checkpoints/
 forge swarm
 ```
+
+## Factory (Kanban Board)
+
+Forge Factory is a web-based Kanban board for managing issues that can self-implement through the Forge orchestration engine. Launch it with:
+
+```bash
+forge factory
+```
+
+This starts a local web server (default port 3000) with a drag-and-drop Kanban board and real-time pipeline progress.
+
+### Kanban Columns
+
+| Column | Description |
+|--------|-------------|
+| **Backlog** | New issues waiting to be worked on |
+| **Ready** | Issues prioritized and ready for pipeline execution |
+| **In Progress** | Issues currently being implemented by a pipeline |
+| **In Review** | Pipeline completed, PR created and awaiting review |
+| **Done** | Issue resolved and merged |
+
+Issues can be dragged between columns manually, or they move automatically during pipeline execution.
+
+### Self-Implementing Issues
+
+Clicking **"Run Pipeline"** on an issue triggers the full implementation lifecycle:
+
+1. **Column moves to In Progress** — issue is picked up
+2. **Git branch created** — `forge/issue-{id}-{slug}` branch for isolation
+3. **Phases auto-generated** — issue description written to `.forge/spec.md`, then `forge generate` creates `phases.json`
+4. **Pipeline executes** — `forge swarm` runs if phases exist, otherwise falls back to `claude --print` for simple issues
+5. **PR created** — on success, a pull request is opened via `gh pr create`
+6. **Column moves to In Review** — signals the work is ready for human review
+
+### Real-Time Progress
+
+The Factory UI receives live updates via WebSocket:
+
+| Event | Description |
+|-------|-------------|
+| `PipelineStarted` | Pipeline execution begins |
+| `PipelineBranchCreated` | Git branch created for the issue |
+| `PipelinePhaseStarted` | A DAG phase begins execution |
+| `PipelinePhaseCompleted` | A DAG phase finishes |
+| `PipelineReviewStarted` | Code review begins for a phase |
+| `PipelineReviewCompleted` | Code review finishes with findings |
+| `PipelinePrCreated` | Pull request created on success |
+| `PipelineCompleted` | Pipeline finishes (success or failure) |
+
+The issue detail panel shows a **Phase Timeline** with per-phase status, iteration progress, and duration.
+
+### Factory Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--port <PORT>` | HTTP server port | `3000` |
+| `--db-path <PATH>` | SQLite database file | `.forge/factory.db` |
+
+### Factory REST API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/board` | Get board view with all columns and issues |
+| `POST` | `/api/issues` | Create a new issue |
+| `GET` | `/api/issues/:id` | Get issue detail with pipeline runs and phases |
+| `PUT` | `/api/issues/:id` | Update an issue |
+| `DELETE` | `/api/issues/:id` | Delete an issue |
+| `PUT` | `/api/issues/:id/move` | Move issue to a different column |
+| `POST` | `/api/issues/:id/pipeline` | Trigger pipeline execution |
+| `POST` | `/api/pipeline-runs/:id/cancel` | Cancel a running pipeline |
+| `GET` | `/ws` | WebSocket endpoint for real-time updates |
 
 ## Testing
 
