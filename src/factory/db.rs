@@ -467,6 +467,24 @@ impl FactoryDb {
     pub fn cancel_pipeline_run(&self, id: i64) -> Result<PipelineRun> {
         self.update_pipeline_run(id, &PipelineStatus::Cancelled, None, None)
     }
+
+    /// Update the progress fields (phase_count, current_phase, iteration) for a pipeline run.
+    pub fn update_pipeline_progress(
+        &self,
+        id: i64,
+        phase_count: Option<i32>,
+        current_phase: Option<i32>,
+        iteration: Option<i32>,
+    ) -> Result<PipelineRun> {
+        self.conn
+            .execute(
+                "UPDATE pipeline_runs SET phase_count = ?1, current_phase = ?2, iteration = ?3 WHERE id = ?4",
+                params![phase_count, current_phase, iteration, id],
+            )
+            .context("Failed to update pipeline progress")?;
+        self.get_pipeline_run(id)?
+            .context("Pipeline run not found after progress update")
+    }
 }
 
 // ── Internal row helpers ──────────────────────────────────────────────

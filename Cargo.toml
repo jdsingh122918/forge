@@ -18,6 +18,8 @@ futures-util = "0.3"
 
 # HTTP Server (for swarm callback server)
 axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors"] }
+open = "5"
 
 # Git
 git2 = "0.20.4"

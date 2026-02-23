@@ -5,7 +5,7 @@ export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 
 export function useWebSocket(url: string) {
   const [lastMessage, setLastMessage] = useState<WsMessage | null>(null);
-  const [status, setStatus] = useState<ConnectionStatus>('disconnected');
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number>(undefined);
   const reconnectAttemptRef = useRef(0);
@@ -14,10 +14,10 @@ export function useWebSocket(url: string) {
     try {
       const ws = new WebSocket(url);
       wsRef.current = ws;
-      setStatus('connecting');
+      setConnectionStatus('connecting');
 
       ws.onopen = () => {
-        setStatus('connected');
+        setConnectionStatus('connected');
         reconnectAttemptRef.current = 0;
       };
 
@@ -31,7 +31,7 @@ export function useWebSocket(url: string) {
       };
 
       ws.onclose = () => {
-        setStatus('disconnected');
+        setConnectionStatus('disconnected');
         wsRef.current = null;
         // Exponential backoff reconnect
         const attempt = reconnectAttemptRef.current;
@@ -44,9 +44,16 @@ export function useWebSocket(url: string) {
         ws.close();
       };
     } catch {
-      setStatus('disconnected');
+      setConnectionStatus('disconnected');
     }
   }, [url]);
+
+  const sendMessage = useCallback((msg: any) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(msg));
+    }
+  }, []);
 
   useEffect(() => {
     connect();
@@ -58,5 +65,5 @@ export function useWebSocket(url: string) {
     };
   }, [connect]);
 
-  return { lastMessage, status };
+  return { lastMessage, connectionStatus, sendMessage };
 }

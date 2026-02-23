@@ -12,6 +12,7 @@ use tokio::sync::broadcast;
 
 use super::db::FactoryDb;
 use super::models::IssueColumn;
+use super::ws::{WsMessage, broadcast_message};
 
 // ── Shared application state ──────────────────────────────────────────
 
@@ -153,8 +154,7 @@ async fn create_issue(
     let issue = db
         .create_issue(project_id, &req.title, description, &column)
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let msg = serde_json::json!({"event": "issue_created", "issue": issue}).to_string();
-    let _ = state.ws_tx.send(msg);
+    broadcast_message(&state.ws_tx, &WsMessage::IssueCreated { issue: issue.clone() });
     Ok((StatusCode::CREATED, Json(issue)))
 }
 
@@ -181,8 +181,7 @@ async fn update_issue(
     let issue = db
         .update_issue(id, req.title.as_deref(), req.description.as_deref())
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let msg = serde_json::json!({"event": "issue_updated", "issue": issue}).to_string();
-    let _ = state.ws_tx.send(msg);
+    broadcast_message(&state.ws_tx, &WsMessage::IssueUpdated { issue: issue.clone() });
     Ok(Json(issue))
 }
 
@@ -193,11 +192,24 @@ async fn move_issue(
 ) -> Result<impl IntoResponse, ApiError> {
     let column = IssueColumn::from_str(&req.column).map_err(ApiError::BadRequest)?;
     let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
+    // Capture the original column before the move for the WsMessage
+    let from_column = db
+        .get_issue(id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .map(|i| i.column.as_str().to_string())
+        .unwrap_or_default();
     let issue = db
         .move_issue(id, &column, req.position)
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let msg = serde_json::json!({"event": "issue_moved", "issue": issue}).to_string();
-    let _ = state.ws_tx.send(msg);
+    broadcast_message(
+        &state.ws_tx,
+        &WsMessage::IssueMoved {
+            issue_id: id,
+            from_column,
+            to_column: req.column.clone(),
+            position: req.position,
+        },
+    );
     Ok(Json(issue))
 }
 
@@ -211,8 +223,7 @@ async fn delete_issue(
         .map_err(|e| ApiError::Internal(e.to_string()))?
     {
         true => {
-            let msg = serde_json::json!({"event": "issue_deleted", "id": id}).to_string();
-            let _ = state.ws_tx.send(msg);
+            broadcast_message(&state.ws_tx, &WsMessage::IssueDeleted { issue_id: id });
             Ok(StatusCode::NO_CONTENT)
         }
         false => Err(ApiError::NotFound(format!("Issue {} not found", id))),
@@ -227,8 +238,7 @@ async fn trigger_pipeline(
     let run = db
         .create_pipeline_run(issue_id)
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let msg = serde_json::json!({"event": "pipeline_triggered", "run": run}).to_string();
-    let _ = state.ws_tx.send(msg);
+    broadcast_message(&state.ws_tx, &WsMessage::PipelineStarted { run: run.clone() });
     Ok((StatusCode::CREATED, Json(run)))
 }
 
@@ -254,8 +264,10 @@ async fn cancel_pipeline_run(
     let run = db
         .cancel_pipeline_run(id)
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let msg = serde_json::json!({"event": "pipeline_cancelled", "run": run}).to_string();
-    let _ = state.ws_tx.send(msg);
+    // Note: WsMessage does not yet have a PipelineCancelled variant.
+    // Using PipelineFailed as the closest typed alternative; the run's status
+    // field will be "cancelled" so clients can distinguish cancellation from failure.
+    broadcast_message(&state.ws_tx, &WsMessage::PipelineFailed { run: run.clone() });
     Ok(Json(run))
 }
 
@@ -843,10 +855,10 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
 
-        // Verify the broadcast message was received
+        // Verify the broadcast message was received in typed WsMessage format
         let msg = rx.recv().await.unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
-        assert_eq!(parsed["event"], "issue_created");
-        assert_eq!(parsed["issue"]["title"], "WS test issue");
+        assert_eq!(parsed["type"], "IssueCreated");
+        assert_eq!(parsed["data"]["issue"]["title"], "WS test issue");
     }
 }

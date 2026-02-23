@@ -119,6 +119,14 @@ pub enum Commands {
         /// Database path
         #[arg(long, default_value = ".forge/factory.db")]
         db_path: String,
+
+        /// Auto-open browser after server starts
+        #[arg(long, default_value = "true")]
+        open: bool,
+
+        /// Enable dev mode (CORS permissive for local Vite dev server)
+        #[arg(long)]
+        dev: bool,
     },
     /// Execute phases in parallel using DAG scheduling with optional reviews
     Swarm {
@@ -316,6 +324,8 @@ async fn main() -> Result<()> {
             port,
             init,
             db_path,
+            open,
+            dev,
         } => {
             let db_path = std::path::PathBuf::from(&db_path);
 
@@ -329,10 +339,22 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
 
+            // Spawn browser open before starting the server (which blocks)
+            if *open {
+                let url = format!("http://localhost:{}", port);
+                tokio::spawn(async move {
+                    // Small delay to let the server start binding
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    if let Err(e) = open::that(&url) {
+                        eprintln!("Failed to open browser: {}", e);
+                    }
+                });
+            }
+
             forge::factory::server::start_server(forge::factory::server::ServerConfig {
                 port: *port,
                 db_path,
-                dev_mode: false,
+                dev_mode: *dev,
             })
             .await?;
         }
