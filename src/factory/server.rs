@@ -9,16 +9,13 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::get,
 };
-use rust_embed::Embed;
+use tower_http::cors::CorsLayer;
 use tokio::sync::broadcast;
 
 use super::api::{self, AppState};
 use super::db::FactoryDb;
+use super::embedded::Assets;
 use super::ws;
-
-#[derive(Embed)]
-#[folder = "ui/dist/"]
-struct Assets;
 
 /// Configuration for the factory server.
 pub struct ServerConfig {
@@ -92,7 +89,11 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
         ws_tx,
     });
 
-    let app = build_router(state);
+    let mut app = build_router(state);
+
+    if config.dev_mode {
+        app = app.layer(CorsLayer::permissive());
+    }
 
     let addr = format!("127.0.0.1:{}", config.port);
     let listener = tokio::net::TcpListener::bind(&addr)

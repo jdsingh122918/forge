@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import type { ReactNode } from 'react';
 import {
   DndContext,
   PointerSensor,
@@ -14,9 +15,11 @@ interface BoardProps {
   board: BoardView;
   onMoveIssue: (issueId: number, column: IssueColumn, position: number) => void;
   onIssueClick: (issueId: number) => void;
+  backlogHeaderAction?: ReactNode;
+  backlogTopSlot?: ReactNode;
 }
 
-export function Board({ board, onMoveIssue, onIssueClick }: BoardProps) {
+export function Board({ board, onMoveIssue, onIssueClick, backlogHeaderAction, backlogTopSlot }: BoardProps) {
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 8 },
@@ -65,7 +68,13 @@ export function Board({ board, onMoveIssue, onIssueClick }: BoardProps) {
     >
       <div className="grid grid-cols-5 gap-4 h-[calc(100vh-64px)] p-6">
         {board.columns.map((column) => (
-          <Column key={column.name} column={column} onIssueClick={onIssueClick} />
+          <Column
+            key={column.name}
+            column={column}
+            onIssueClick={onIssueClick}
+            headerAction={column.name === 'backlog' ? backlogHeaderAction : undefined}
+            topSlot={column.name === 'backlog' ? backlogTopSlot : undefined}
+          />
         ))}
       </div>
     </DndContext>

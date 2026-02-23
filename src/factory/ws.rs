@@ -5,13 +5,21 @@ use axum::{
     },
     response::IntoResponse,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{stream::SplitSink, stream::SplitStream, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::broadcast;
+use tokio::time::Instant;
 
 use super::api::AppState;
 use super::models::*;
+
+/// How often to send WebSocket Ping frames.
+const PING_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How long to wait for a Pong response before considering the connection dead.
+const PONG_TIMEOUT: Duration = Duration::from_secs(60);
 
 // ── WebSocket message types ──────────────────────────────────────────
 
@@ -60,33 +68,9 @@ pub async fn ws_handler(
 }
 
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
-    let (mut sender, mut receiver) = socket.split();
-    let mut rx = state.ws_tx.subscribe();
-
-    // Task to forward broadcast messages to this WebSocket client
-    let mut send_task = tokio::spawn(async move {
-        while let Ok(msg) = rx.recv().await {
-            if sender.send(Message::Text(msg.into())).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    // Task to read from WebSocket (handle pings, close)
-    let mut recv_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = receiver.next().await {
-            match msg {
-                Message::Close(_) => break,
-                _ => {} // Ignore other messages from client for now
-            }
-        }
-    });
-
-    // Wait for either task to complete, then abort the other
-    tokio::select! {
-        _ = &mut send_task => recv_task.abort(),
-        _ = &mut recv_task => send_task.abort(),
-    }
+    let (sender, receiver) = socket.split();
+    let rx = state.ws_tx.subscribe();
+    run_socket_loop(sender, receiver, rx).await;
 }
 
 /// WebSocket handler that accepts a broadcast sender directly (for use with server router).
@@ -98,33 +82,80 @@ pub async fn ws_handler_with_sender(
 }
 
 async fn handle_socket_with_sender(socket: WebSocket, tx: broadcast::Sender<String>) {
-    let (mut sender, mut receiver) = socket.split();
-    let mut rx = tx.subscribe();
+    let (sender, receiver) = socket.split();
+    let rx = tx.subscribe();
+    run_socket_loop(sender, receiver, rx).await;
+}
 
-    // Task to forward broadcast messages to this WebSocket client
-    let mut send_task = tokio::spawn(async move {
-        while let Ok(msg) = rx.recv().await {
-            if sender.send(Message::Text(msg.into())).await.is_err() {
-                break;
+/// Core WebSocket loop with ping/pong keepalive.
+///
+/// Combines broadcast forwarding, client message receiving, and periodic
+/// ping/pong health checking into a single select loop. If no Pong is
+/// received within [`PONG_TIMEOUT`] after a Ping is sent, the connection
+/// is considered dead and the loop exits.
+async fn run_socket_loop(
+    mut sender: SplitSink<WebSocket, Message>,
+    mut receiver: SplitStream<WebSocket>,
+    mut rx: broadcast::Receiver<String>,
+) {
+    let mut ping_interval = tokio::time::interval(PING_INTERVAL);
+    // The first tick completes immediately; consume it so the first real
+    // ping fires after PING_INTERVAL has elapsed.
+    ping_interval.tick().await;
+
+    let mut last_pong = Instant::now();
+    let mut awaiting_pong = false;
+
+    loop {
+        tokio::select! {
+            // ── Periodic ping ───────────────────────────────────────
+            _ = ping_interval.tick() => {
+                // Check if the previous ping timed out
+                if awaiting_pong && last_pong.elapsed() > PONG_TIMEOUT {
+                    // Connection is dead — no pong received in time
+                    break;
+                }
+                if sender.send(Message::Ping(vec![])).await.is_err() {
+                    break;
+                }
+                awaiting_pong = true;
+            }
+
+            // ── Broadcast forwarding ────────────────────────────────
+            result = rx.recv() => {
+                match result {
+                    Ok(msg) => {
+                        if sender.send(Message::Text(msg.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        // Missed some messages; continue receiving
+                        continue;
+                    }
+                }
+            }
+
+            // ── Client messages (pong, close, etc.) ─────────────────
+            msg = receiver.next() => {
+                match msg {
+                    Some(Ok(Message::Pong(_))) => {
+                        last_pong = Instant::now();
+                        awaiting_pong = false;
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(_)) => {
+                        // Ignore other messages from client (Text, Binary, Ping)
+                    }
+                    Some(Err(_)) => break,
+                }
             }
         }
-    });
-
-    // Task to read from WebSocket (handle pings, close)
-    let mut recv_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = receiver.next().await {
-            match msg {
-                Message::Close(_) => break,
-                _ => {} // Ignore other messages from client for now
-            }
-        }
-    });
-
-    // Wait for either task to complete, then abort the other
-    tokio::select! {
-        _ = &mut send_task => recv_task.abort(),
-        _ = &mut recv_task => send_task.abort(),
     }
+
+    // Best-effort close frame
+    let _ = sender.send(Message::Close(None)).await;
 }
 
 // ── Broadcast helper ─────────────────────────────────────────────────
@@ -311,5 +342,15 @@ mod tests {
         // Drop all receivers - broadcast_message should not panic
         let msg = WsMessage::IssueDeleted { issue_id: 1 };
         broadcast_message(&tx, &msg); // Should not panic
+    }
+
+    #[test]
+    fn test_keepalive_constants() {
+        // Verify the keepalive timing configuration is sensible:
+        // PONG_TIMEOUT must be greater than PING_INTERVAL so we don't
+        // immediately consider a fresh connection dead.
+        assert!(PONG_TIMEOUT > PING_INTERVAL);
+        assert_eq!(PING_INTERVAL, Duration::from_secs(30));
+        assert_eq!(PONG_TIMEOUT, Duration::from_secs(60));
     }
 }
