@@ -496,7 +496,7 @@ mod tests {
     #[tokio::test]
     async fn test_pipeline_cancel_kills_process() {
         // Create a script that sleeps for a long time, ignoring any arguments
-        let script_path = "/tmp/forge_test_sleep.sh";
+        let script_path = "/tmp/forge_test_sleep_cancel.sh";
         std::fs::write(script_path, "#!/bin/sh\nsleep 60\n").unwrap();
         std::fs::set_permissions(script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
 
@@ -513,14 +513,18 @@ mod tests {
         let runner = PipelineRunner::new("/tmp");
         runner.start_run(run.id, &issue, db.clone(), tx.clone()).await.unwrap();
 
-        // Give process a moment to start
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-
-        // Verify process is tracked
-        {
+        // Wait for the process to be registered in the running_processes map.
+        // We poll because the spawned task needs to actually call spawn() and insert.
+        let mut tracked = false;
+        for _ in 0..20 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             let processes = runner.running_processes.lock().await;
-            assert!(processes.contains_key(&run.id), "Process should be tracked");
+            if processes.contains_key(&run.id) {
+                tracked = true;
+                break;
+            }
         }
+        assert!(tracked, "Process should be tracked within 1 second");
 
         // Cancel it
         let cancelled_run = runner.cancel(run.id, &db, &tx).await.unwrap();
