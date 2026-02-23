@@ -1,0 +1,9 @@
+target/
+node_modules/
+ui/dist/
+.git/
+.forge/factory.db
+*.swp
+*.swo
+.DS_Store
+docs/

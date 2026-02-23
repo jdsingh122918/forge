@@ -1,0 +1,52 @@
+services:
+  forge:
+    build:
+      context: .
+      target: runtime
+    image: forge:local
+    profiles: ["prod"]
+    ports:
+      - "3141:3141"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - CLAUDE_CMD=${CLAUDE_CMD:-claude}
+      - FORGE_CMD=${FORGE_CMD:-forge}
+    volumes:
+      - ./.forge:/app/.forge
+      - .:/app/project:ro
+    working_dir: /app/project
+    command: ["factory", "--port", "3141"]
+
+  forge-dev:
+    build:
+      context: .
+      target: dev
+    profiles: ["dev"]
+    ports:
+      - "3141:3141"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - CLAUDE_CMD=${CLAUDE_CMD:-claude}
+      - FORGE_CMD=${FORGE_CMD:-forge}
+      - RUST_LOG=debug
+    volumes:
+      - .:/app
+      - cargo-cache:/usr/local/cargo/registry
+      - cargo-target:/app/target
+    command: ["cargo", "watch", "-x", "run -- factory --dev --port 3141"]
+
+  ui-dev:
+    image: node:22-alpine
+    profiles: ["dev"]
+    working_dir: /app
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./ui:/app
+      - node-modules:/app/node_modules
+    command: ["sh", "-c", "npm install && npm run dev -- --host 0.0.0.0"]
+
+volumes:
+  cargo-cache:
+  cargo-target:
+  node-modules:
