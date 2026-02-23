@@ -312,6 +312,8 @@ pub fn is_valid_transition(from: &PipelineStatus, to: &PipelineStatus) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn test_pipeline_runner_new() {
@@ -493,8 +495,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipeline_cancel_kills_process() {
-        // Use 'sleep' as a long-running command we can cancel
-        unsafe { std::env::set_var("CLAUDE_CMD", "sleep") };
+        // Create a script that sleeps for a long time, ignoring any arguments
+        let script_path = "/tmp/forge_test_sleep.sh";
+        std::fs::write(script_path, "#!/bin/sh\nsleep 60\n").unwrap();
+        std::fs::set_permissions(script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        unsafe { std::env::set_var("CLAUDE_CMD", script_path) };
 
         let db = FactoryDb::new_in_memory().unwrap();
         let project = db.create_project("test", "/tmp").unwrap();
@@ -508,7 +514,7 @@ mod tests {
         runner.start_run(run.id, &issue, db.clone(), tx.clone()).await.unwrap();
 
         // Give process a moment to start
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         // Verify process is tracked
         {
@@ -528,6 +534,7 @@ mod tests {
 
         // Clean up
         unsafe { std::env::remove_var("CLAUDE_CMD") };
+        let _ = std::fs::remove_file(script_path);
     }
 
     #[tokio::test]
