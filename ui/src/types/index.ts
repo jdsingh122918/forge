@@ -31,6 +31,8 @@ export interface PipelineRun {
   iteration: number | null;
   summary: string | null;
   error: string | null;
+  branch_name: string | null;
+  pr_url: string | null;
   started_at: string;
   completed_at: string | null;
 }
@@ -50,9 +52,26 @@ export interface IssueWithStatus {
   active_run: PipelineRun | null;
 }
 
+export interface PipelinePhase {
+  id: number;
+  run_id: number;
+  phase_number: string;
+  phase_name: string;
+  status: string;
+  iteration: number | null;
+  budget: number | null;
+  started_at: string | null;
+  completed_at: string | null;
+  error: string | null;
+}
+
+export interface PipelineRunDetail extends PipelineRun {
+  phases: PipelinePhase[];
+}
+
 export interface IssueDetail {
   issue: Issue;
-  runs: PipelineRun[];
+  runs: PipelineRunDetail[];
 }
 
 export type WsMessage =
@@ -63,7 +82,13 @@ export type WsMessage =
   | { type: 'PipelineStarted'; data: { run: PipelineRun } }
   | { type: 'PipelineProgress'; data: { run_id: number; phase: number; iteration: number; percent: number | null } }
   | { type: 'PipelineCompleted'; data: { run: PipelineRun } }
-  | { type: 'PipelineFailed'; data: { run: PipelineRun } };
+  | { type: 'PipelineFailed'; data: { run: PipelineRun } }
+  | { type: 'PipelineBranchCreated'; data: { run_id: number; branch_name: string } }
+  | { type: 'PipelinePrCreated'; data: { run_id: number; pr_url: string } }
+  | { type: 'PipelinePhaseStarted'; data: { run_id: number; phase_number: string; phase_name: string; wave: number } }
+  | { type: 'PipelinePhaseCompleted'; data: { run_id: number; phase_number: string; success: boolean } }
+  | { type: 'PipelineReviewStarted'; data: { run_id: number; phase_number: string } }
+  | { type: 'PipelineReviewCompleted'; data: { run_id: number; phase_number: string; passed: boolean; findings_count: number } };
 
 // Column display configuration
 export const COLUMNS: { key: IssueColumn; label: string }[] = [

@@ -149,6 +149,34 @@ export function useBoard(projectId: number | null) {
             })),
           };
         }
+        case 'PipelineBranchCreated': {
+          const { run_id, branch_name } = msg.data;
+          return {
+            ...prev,
+            columns: prev.columns.map(col => ({
+              ...col,
+              issues: col.issues.map(item =>
+                item.active_run?.id === run_id
+                  ? { ...item, active_run: { ...item.active_run, branch_name } }
+                  : item
+              ),
+            })),
+          };
+        }
+        case 'PipelinePrCreated': {
+          const { run_id, pr_url } = msg.data;
+          return {
+            ...prev,
+            columns: prev.columns.map(col => ({
+              ...col,
+              issues: col.issues.map(item =>
+                item.active_run?.id === run_id
+                  ? { ...item, active_run: { ...item.active_run, pr_url } }
+                  : item
+              ),
+            })),
+          };
+        }
         default:
           // Unknown message type — fall back to full re-fetch
           fetchBoard();

@@ -15,12 +15,14 @@ use tokio::sync::broadcast;
 use super::api::{self, AppState};
 use super::db::FactoryDb;
 use super::embedded::Assets;
+use super::pipeline::PipelineRunner;
 use super::ws;
 
 /// Configuration for the factory server.
 pub struct ServerConfig {
     pub port: u16,
     pub db_path: std::path::PathBuf,
+    pub project_path: String,
     pub dev_mode: bool,
 }
 
@@ -29,6 +31,7 @@ impl Default for ServerConfig {
         Self {
             port: 3141,
             db_path: std::path::PathBuf::from(".forge/factory.db"),
+            project_path: ".".to_string(),
             dev_mode: false,
         }
     }
@@ -83,10 +86,12 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
 
     let db = FactoryDb::new(&config.db_path).context("Failed to initialize factory database")?;
     let (ws_tx, _rx) = broadcast::channel::<String>(256);
+    let pipeline_runner = PipelineRunner::new(&config.project_path);
 
     let state = Arc::new(AppState {
-        db: std::sync::Mutex::new(db),
+        db: Arc::new(std::sync::Mutex::new(db)),
         ws_tx,
+        pipeline_runner,
     });
 
     let mut app = build_router(state);
@@ -130,9 +135,11 @@ mod tests {
     fn test_router() -> Router {
         let db = FactoryDb::new_in_memory().unwrap();
         let (ws_tx, _) = broadcast::channel(16);
+        let pipeline_runner = PipelineRunner::new("/tmp/test");
         let state = Arc::new(AppState {
-            db: std::sync::Mutex::new(db),
+            db: Arc::new(std::sync::Mutex::new(db)),
             ws_tx,
+            pipeline_runner,
         });
         build_router(state)
     }
@@ -212,6 +219,7 @@ mod tests {
             config.db_path,
             std::path::PathBuf::from(".forge/factory.db")
         );
+        assert_eq!(config.project_path, ".");
         assert!(!config.dev_mode);
     }
 }

@@ -56,6 +56,35 @@ pub enum WsMessage {
     PipelineFailed {
         run: PipelineRun,
     },
+    PipelineBranchCreated {
+        run_id: i64,
+        branch_name: String,
+    },
+    PipelinePrCreated {
+        run_id: i64,
+        pr_url: String,
+    },
+    PipelinePhaseStarted {
+        run_id: i64,
+        phase_number: String,
+        phase_name: String,
+        wave: usize,
+    },
+    PipelinePhaseCompleted {
+        run_id: i64,
+        phase_number: String,
+        success: bool,
+    },
+    PipelineReviewStarted {
+        run_id: i64,
+        phase_number: String,
+    },
+    PipelineReviewCompleted {
+        run_id: i64,
+        phase_number: String,
+        passed: bool,
+        findings_count: usize,
+    },
 }
 
 // ── WebSocket handler ────────────────────────────────────────────────
@@ -229,6 +258,8 @@ mod tests {
             iteration: None,
             summary: None,
             error: None,
+            branch_name: None,
+            pr_url: None,
             started_at: "2024-01-01".to_string(),
             completed_at: None,
         };
@@ -263,6 +294,8 @@ mod tests {
             iteration: Some(3),
             summary: Some("All done".to_string()),
             error: None,
+            branch_name: Some("forge/issue-1-fix-auth".to_string()),
+            pr_url: Some("https://github.com/org/repo/pull/42".to_string()),
             started_at: "2024-01-01".to_string(),
             completed_at: Some("2024-01-02".to_string()),
         };
@@ -284,6 +317,8 @@ mod tests {
             iteration: Some(8),
             summary: None,
             error: Some("OOM killed".to_string()),
+            branch_name: Some("forge/issue-1-fix-auth".to_string()),
+            pr_url: None,
             started_at: "2024-01-01".to_string(),
             completed_at: Some("2024-01-02".to_string()),
         };

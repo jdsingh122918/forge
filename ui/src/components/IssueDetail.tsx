@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import type { IssueDetail as IssueDetailType } from '../types';
 import { PRIORITY_COLORS } from '../types';
 import { PipelineStatus } from './PipelineStatus';
+import { PhaseTimeline } from './PhaseTimeline';
 import { api } from '../api/client';
 
 interface IssueDetailProps {
@@ -91,6 +92,27 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
                     <PipelineStatus run={run} />
                     <span className="text-xs text-gray-400">#{run.id}</span>
                   </div>
+                  {run.branch_name && (
+                    <p className="text-xs text-gray-500 mt-1 font-mono truncate" title={run.branch_name}>
+                      Branch: {run.branch_name}
+                    </p>
+                  )}
+                  {run.pr_url && (
+                    <a
+                      href={run.pr_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-blue-600 hover:text-blue-800 mt-1 inline-block"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      View Pull Request
+                    </a>
+                  )}
+                  {run.phases && run.phases.length > 0 && (
+                    <div className="mt-2">
+                      <PhaseTimeline phases={run.phases} />
+                    </div>
+                  )}
                   {run.summary && <p className="text-xs text-gray-600 mt-1">{run.summary}</p>}
                   {run.error && <p className="text-xs text-red-600 mt-1">{run.error}</p>}
                   <p className="text-xs text-gray-400 mt-1">{new Date(run.started_at).toLocaleString()}</p>

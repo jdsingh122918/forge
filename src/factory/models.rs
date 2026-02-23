@@ -128,8 +128,24 @@ pub struct PipelineRun {
     pub iteration: Option<i32>,
     pub summary: Option<String>,
     pub error: Option<String>,
+    pub branch_name: Option<String>,
+    pub pr_url: Option<String>,
     pub started_at: String,
     pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipelinePhase {
+    pub id: i64,
+    pub run_id: i64,
+    pub phase_number: String,
+    pub phase_name: String,
+    pub status: String,
+    pub iteration: Option<i32>,
+    pub budget: Option<i32>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub error: Option<String>,
 }
 
 // API view types
@@ -154,5 +170,12 @@ pub struct IssueWithStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueDetail {
     pub issue: Issue,
-    pub runs: Vec<PipelineRun>,
+    pub runs: Vec<PipelineRunDetail>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipelineRunDetail {
+    #[serde(flatten)]
+    pub run: PipelineRun,
+    pub phases: Vec<PipelinePhase>,
 }

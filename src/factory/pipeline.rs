@@ -10,6 +10,95 @@ use super::db::FactoryDb;
 use super::models::*;
 use super::ws::{WsMessage, broadcast_message};
 
+/// Convert a title to a URL-safe slug, limited to `max_len` characters.
+fn slugify(title: &str, max_len: usize) -> String {
+    let slug: String = title
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.len() > max_len {
+        slug[..max_len].trim_end_matches('-').to_string()
+    } else {
+        slug
+    }
+}
+
+/// Create a git branch for the pipeline run. Returns the branch name.
+async fn create_git_branch(project_path: &str, issue_id: i64, issue_title: &str) -> Result<String> {
+    let slug = slugify(issue_title, 40);
+    let branch_name = format!("forge/issue-{}-{}", issue_id, slug);
+
+    let status = tokio::process::Command::new("git")
+        .args(["checkout", "-b", &branch_name])
+        .current_dir(project_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()
+        .await
+        .context("Failed to run git checkout -b")?;
+
+    if !status.success() {
+        anyhow::bail!("Failed to create branch: {}", branch_name);
+    }
+
+    Ok(branch_name)
+}
+
+/// Push branch and create a PR using `gh`. Returns the PR URL.
+async fn create_pull_request(
+    project_path: &str,
+    branch_name: &str,
+    issue_title: &str,
+    issue_description: &str,
+) -> Result<String> {
+    // Push the branch
+    let push_status = tokio::process::Command::new("git")
+        .args(["push", "-u", "origin", branch_name])
+        .current_dir(project_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()
+        .await
+        .context("Failed to push branch")?;
+
+    if !push_status.success() {
+        anyhow::bail!("Failed to push branch {}", branch_name);
+    }
+
+    // Create PR
+    let body = format!(
+        "## Summary\n\nAutomated implementation for: **{}**\n\n{}\n\n---\n*Created by Forge Factory*",
+        issue_title,
+        if issue_description.is_empty() { "No description provided." } else { issue_description }
+    );
+
+    let output = tokio::process::Command::new("gh")
+        .args(["pr", "create", "--title", issue_title, "--body", &body])
+        .current_dir(project_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .context("Failed to run gh pr create")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to create PR: {}", stderr);
+    }
+
+    let pr_url = String::from_utf8(output.stdout)
+        .context("Invalid UTF-8 in gh output")?
+        .trim()
+        .to_string();
+
+    Ok(pr_url)
+}
+
 /// Tracks progress parsed from subprocess stdout lines.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 struct ProgressInfo {
@@ -53,10 +142,27 @@ impl PipelineRunner {
             }
         }
 
-        // Update DB status to Cancelled
+        // Update DB status to Cancelled and move issue back to Ready
         let db = db.lock().unwrap();
         let run = db.cancel_pipeline_run(run_id)?;
         broadcast_message(tx, &WsMessage::PipelineFailed { run: run.clone() });
+
+        // Auto-move issue back to Ready
+        if let Ok(Some(issue)) = db.get_issue(run.issue_id) {
+            if issue.column == IssueColumn::InProgress {
+                let _ = db.move_issue(run.issue_id, &IssueColumn::Ready, 0);
+                broadcast_message(
+                    tx,
+                    &WsMessage::IssueMoved {
+                        issue_id: run.issue_id,
+                        from_column: "in_progress".to_string(),
+                        to_column: "ready".to_string(),
+                        position: 0,
+                    },
+                );
+            }
+        }
+
         Ok(run)
     }
 
@@ -67,7 +173,7 @@ impl PipelineRunner {
     }
 
     /// Start a pipeline run for the given issue.
-    /// This spawns a background task that runs `claude` and monitors progress via stdout streaming.
+    /// Creates a git branch, executes the pipeline, and creates a PR on success.
     pub async fn start_run(
         &self,
         run_id: i64,
@@ -76,19 +182,66 @@ impl PipelineRunner {
         tx: broadcast::Sender<String>,
     ) -> Result<()> {
         let project_path = self.project_path.clone();
+        let issue_id = issue.id;
         let issue_title = issue.title.clone();
         let issue_description = issue.description.clone();
         let running_processes = Arc::clone(&self.running_processes);
 
-        // Update status to Running
+        let from_column = issue.column.as_str().to_string();
+
+        // Update status to Running and move issue to InProgress
         {
             let db = db.lock().unwrap();
             let run = db.update_pipeline_run(run_id, &PipelineStatus::Running, None, None)?;
             broadcast_message(&tx, &WsMessage::PipelineStarted { run });
+
+            // Auto-move issue to InProgress
+            if issue.column != IssueColumn::InProgress {
+                let _ = db.move_issue(issue_id, &IssueColumn::InProgress, 0);
+                broadcast_message(
+                    &tx,
+                    &WsMessage::IssueMoved {
+                        issue_id,
+                        from_column: from_column.clone(),
+                        to_column: "in_progress".to_string(),
+                        position: 0,
+                    },
+                );
+            }
         }
 
         // Spawn background task for execution
         tokio::spawn(async move {
+            // Step 1: Create a git branch for isolation
+            let branch_name = match create_git_branch(&project_path, issue_id, &issue_title).await {
+                Ok(name) => {
+                    // Store branch name in DB and broadcast
+                    {
+                        let db_guard = db.lock().unwrap();
+                        let _ = db_guard.update_pipeline_branch(run_id, &name);
+                    }
+                    broadcast_message(
+                        &tx,
+                        &WsMessage::PipelineBranchCreated {
+                            run_id,
+                            branch_name: name.clone(),
+                        },
+                    );
+                    Some(name)
+                }
+                Err(_) => {
+                    // Branch creation failed (e.g., not a git repo) — continue without branching
+                    None
+                }
+            };
+
+            // Step 2: Auto-generate phases if none exist
+            if !has_forge_phases(&project_path) && is_forge_initialized(&project_path) {
+                // Try to generate phases; if it fails, we'll fall back to simple Claude invocation
+                let _ = auto_generate_phases(&project_path, &issue_title, &issue_description).await;
+            }
+
+            // Step 3: Execute the pipeline
             let result = execute_pipeline_streaming(
                 run_id,
                 &project_path,
@@ -106,18 +259,46 @@ impl PipelineRunner {
                 processes.remove(&run_id);
             }
 
-            let db_guard = db.lock().unwrap();
-
             // Check if already cancelled (e.g., by cancel() call)
-            if let Ok(Some(current_run)) = db_guard.get_pipeline_run(run_id) {
-                if current_run.status == PipelineStatus::Cancelled {
-                    // Already cancelled, don't overwrite status
-                    return;
+            {
+                let db_guard = db.lock().unwrap();
+                if let Ok(Some(current_run)) = db_guard.get_pipeline_run(run_id) {
+                    if current_run.status == PipelineStatus::Cancelled {
+                        return;
+                    }
                 }
             }
 
             match result {
                 Ok(summary) => {
+                    // Step 3: On success, create a PR if we have a branch
+                    if let Some(ref branch) = branch_name {
+                        match create_pull_request(
+                            &project_path,
+                            branch,
+                            &issue_title,
+                            &issue_description,
+                        )
+                        .await
+                        {
+                            Ok(pr_url) => {
+                                let db_guard = db.lock().unwrap();
+                                let _ = db_guard.update_pipeline_pr_url(run_id, &pr_url);
+                                broadcast_message(
+                                    &tx,
+                                    &WsMessage::PipelinePrCreated {
+                                        run_id,
+                                        pr_url,
+                                    },
+                                );
+                            }
+                            Err(_) => {
+                                // PR creation failed — still mark pipeline as completed
+                            }
+                        }
+                    }
+
+                    let db_guard = db.lock().unwrap();
                     if let Ok(run) = db_guard.update_pipeline_run(
                         run_id,
                         &PipelineStatus::Completed,
@@ -126,9 +307,21 @@ impl PipelineRunner {
                     ) {
                         broadcast_message(&tx, &WsMessage::PipelineCompleted { run });
                     }
+                    // Auto-move issue to InReview
+                    let _ = db_guard.move_issue(issue_id, &IssueColumn::InReview, 0);
+                    broadcast_message(
+                        &tx,
+                        &WsMessage::IssueMoved {
+                            issue_id,
+                            from_column: "in_progress".to_string(),
+                            to_column: "in_review".to_string(),
+                            position: 0,
+                        },
+                    );
                 }
                 Err(e) => {
                     let error_msg = format!("{:#}", e);
+                    let db_guard = db.lock().unwrap();
                     if let Ok(run) = db_guard.update_pipeline_run(
                         run_id,
                         &PipelineStatus::Failed,
@@ -137,6 +330,7 @@ impl PipelineRunner {
                     ) {
                         broadcast_message(&tx, &WsMessage::PipelineFailed { run });
                     }
+                    // Issue stays in InProgress on failure (error is visible on the card)
                 }
             }
         });
@@ -145,7 +339,105 @@ impl PipelineRunner {
     }
 }
 
+/// Check if the project has `.forge/phases.json` for swarm execution.
+fn has_forge_phases(project_path: &str) -> bool {
+    std::path::Path::new(project_path)
+        .join(".forge")
+        .join("phases.json")
+        .exists()
+}
+
+/// Check if the project is initialized with `.forge/` directory.
+fn is_forge_initialized(project_path: &str) -> bool {
+    std::path::Path::new(project_path)
+        .join(".forge")
+        .is_dir()
+}
+
+/// Auto-generate spec and phases from an issue description.
+/// Writes a design doc to `.forge/issue-design.md`, then runs `forge generate`.
+/// Returns Ok(true) if phases were generated, Ok(false) if skipped.
+async fn auto_generate_phases(
+    project_path: &str,
+    issue_title: &str,
+    issue_description: &str,
+) -> Result<bool> {
+    // Ensure .forge directory exists
+    let forge_dir = std::path::Path::new(project_path).join(".forge");
+    if !forge_dir.exists() {
+        tokio::fs::create_dir_all(&forge_dir)
+            .await
+            .context("Failed to create .forge directory")?;
+    }
+
+    // Write a design document from the issue
+    let design_content = format!(
+        "# {}\n\n## Overview\n\n{}\n\n## Requirements\n\n- Implement the feature described above\n- Ensure all existing tests continue to pass\n- Add tests for new functionality\n",
+        issue_title,
+        if issue_description.is_empty() { "No additional details provided." } else { issue_description }
+    );
+    let design_path = forge_dir.join("spec.md");
+    tokio::fs::write(&design_path, &design_content)
+        .await
+        .context("Failed to write design document")?;
+
+    // Run forge generate to create phases.json
+    let forge_cmd = std::env::var("FORGE_CMD").unwrap_or_else(|_| "forge".to_string());
+    let status = tokio::process::Command::new(&forge_cmd)
+        .arg("generate")
+        .current_dir(project_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .status()
+        .await
+        .context("Failed to run forge generate")?;
+
+    if status.success() && has_forge_phases(project_path) {
+        Ok(true)
+    } else {
+        // Generation failed — fall back to simple Claude invocation
+        Ok(false)
+    }
+}
+
+/// Build the command to execute: `forge swarm` if phases exist, otherwise `claude --print`.
+fn build_execution_command(
+    project_path: &str,
+    issue_title: &str,
+    issue_description: &str,
+) -> tokio::process::Command {
+    if has_forge_phases(project_path) {
+        // Use forge swarm for full DAG-based parallel execution
+        let forge_cmd = std::env::var("FORGE_CMD").unwrap_or_else(|_| "forge".to_string());
+        let mut cmd = tokio::process::Command::new(&forge_cmd);
+        cmd.arg("swarm")
+            .arg("--max-parallel")
+            .arg("4")
+            .arg("--fail-fast")
+            .current_dir(project_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd
+    } else {
+        // Fallback: direct Claude invocation for simple issues without phases
+        let claude_cmd = std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".to_string());
+        let prompt = format!(
+            "Implement the following issue:\n\nTitle: {}\n\nDescription: {}\n",
+            issue_title, issue_description
+        );
+        let mut cmd = tokio::process::Command::new(&claude_cmd);
+        cmd.arg("--print")
+            .arg("--dangerously-skip-permissions")
+            .arg(&prompt)
+            .current_dir(project_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd
+    }
+}
+
 /// Execute a forge pipeline for the given issue, streaming stdout line by line.
+/// Uses `forge swarm` if phases.json exists, otherwise falls back to `claude --print`.
 /// Monitors output for progress JSON and emits PipelineProgress WS events.
 async fn execute_pipeline_streaming(
     run_id: i64,
@@ -156,22 +448,8 @@ async fn execute_pipeline_streaming(
     db: &Arc<std::sync::Mutex<FactoryDb>>,
     tx: &broadcast::Sender<String>,
 ) -> Result<String> {
-    let claude_cmd = std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".to_string());
-
-    let prompt = format!(
-        "Implement the following issue:\n\nTitle: {}\n\nDescription: {}\n",
-        issue_title, issue_description
-    );
-
-    let mut child = tokio::process::Command::new(&claude_cmd)
-        .arg("--print")
-        .arg("--dangerously-skip-permissions")
-        .arg(&prompt)
-        .current_dir(project_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("Failed to spawn claude process")?;
+    let mut cmd = build_execution_command(project_path, issue_title, issue_description);
+    let mut child = cmd.spawn().context("Failed to spawn pipeline process")?;
 
     // Take stdout before storing child — we need ownership of the stdout handle
     let stdout = child
@@ -194,7 +472,13 @@ async fn execute_pipeline_streaming(
         all_output.push_str(&line);
         all_output.push('\n');
 
-        // Try to parse the line as progress JSON
+        // Try to parse as DAG executor PhaseEvent first (from forge swarm)
+        if let Some(event) = try_parse_phase_event(&line) {
+            process_phase_event(&event, run_id, db, tx);
+            continue;
+        }
+
+        // Fall back to simple progress JSON (from claude --print)
         if let Some(progress) = try_parse_progress(&line) {
             // Update DB with progress
             {
@@ -234,9 +518,6 @@ async fn execute_pipeline_streaming(
         }
     };
 
-    // Re-insert a placeholder is not needed since the process has exited.
-    // The outer task will also call remove, which is a no-op.
-
     if status.success() {
         // Take last 500 chars as summary
         let summary = if all_output.len() > 500 {
@@ -246,7 +527,7 @@ async fn execute_pipeline_streaming(
         };
         Ok(summary)
     } else {
-        anyhow::bail!("Claude process failed with exit code: {:?}", status.code())
+        anyhow::bail!("Pipeline process failed with exit code: {:?}", status.code())
     }
 }
 
@@ -289,6 +570,134 @@ fn compute_percent(progress: &ProgressInfo) -> Option<u8> {
             Some(pct)
         }
         _ => None,
+    }
+}
+
+/// A PhaseEvent from the DAG executor's JSON output.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[allow(dead_code)]
+enum PhaseEventJson {
+    Started { phase: String, wave: usize },
+    Progress { phase: String, iteration: u32, budget: u32, percent: Option<u32> },
+    Completed { phase: String, result: serde_json::Value },
+    ReviewStarted { phase: String },
+    ReviewCompleted { phase: String, passed: bool, findings_count: usize },
+    WaveStarted { wave: usize, phases: Vec<String> },
+    WaveCompleted { wave: usize, success_count: usize, failed_count: usize },
+    DagCompleted { success: bool },
+    #[serde(other)]
+    Unknown,
+}
+
+/// Try to parse a line as a DAG executor PhaseEvent.
+/// Returns the event if successfully parsed and actionable.
+fn try_parse_phase_event(line: &str) -> Option<PhaseEventJson> {
+    let trimmed = line.trim();
+    if let Ok(event) = serde_json::from_str::<PhaseEventJson>(trimmed) {
+        return match &event {
+            PhaseEventJson::Unknown => None,
+            _ => Some(event),
+        };
+    }
+    // Try embedded JSON
+    if let Some(start) = trimmed.find('{') {
+        if let Some(end) = trimmed.rfind('}') {
+            if end > start {
+                let json_str = &trimmed[start..=end];
+                if let Ok(event) = serde_json::from_str::<PhaseEventJson>(json_str) {
+                    return match &event {
+                        PhaseEventJson::Unknown => None,
+                        _ => Some(event),
+                    };
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Process a PhaseEvent and emit corresponding WsMessages + DB updates.
+fn process_phase_event(
+    event: &PhaseEventJson,
+    run_id: i64,
+    db: &Arc<std::sync::Mutex<FactoryDb>>,
+    tx: &broadcast::Sender<String>,
+) {
+    match event {
+        PhaseEventJson::Started { phase, wave } => {
+            let db_guard = db.lock().unwrap();
+            let _ = db_guard.upsert_pipeline_phase(run_id, phase, phase, "running", None, None);
+            drop(db_guard);
+            broadcast_message(
+                tx,
+                &WsMessage::PipelinePhaseStarted {
+                    run_id,
+                    phase_number: phase.clone(),
+                    phase_name: phase.clone(),
+                    wave: *wave,
+                },
+            );
+        }
+        PhaseEventJson::Progress { phase, iteration, budget, percent } => {
+            let db_guard = db.lock().unwrap();
+            let _ = db_guard.upsert_pipeline_phase(
+                run_id, phase, phase, "running",
+                Some(*iteration as i32), Some(*budget as i32),
+            );
+            drop(db_guard);
+            broadcast_message(
+                tx,
+                &WsMessage::PipelineProgress {
+                    run_id,
+                    phase: phase.parse::<i32>().unwrap_or(0),
+                    iteration: *iteration as i32,
+                    percent: percent.map(|p| p.min(100) as u8),
+                },
+            );
+        }
+        PhaseEventJson::Completed { phase, result } => {
+            let success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
+            let status = if success { "completed" } else { "failed" };
+            let db_guard = db.lock().unwrap();
+            let _ = db_guard.upsert_pipeline_phase(run_id, phase, phase, status, None, None);
+            drop(db_guard);
+            broadcast_message(
+                tx,
+                &WsMessage::PipelinePhaseCompleted {
+                    run_id,
+                    phase_number: phase.clone(),
+                    success,
+                },
+            );
+        }
+        PhaseEventJson::ReviewStarted { phase } => {
+            broadcast_message(
+                tx,
+                &WsMessage::PipelineReviewStarted {
+                    run_id,
+                    phase_number: phase.clone(),
+                },
+            );
+        }
+        PhaseEventJson::ReviewCompleted { phase, passed, findings_count } => {
+            broadcast_message(
+                tx,
+                &WsMessage::PipelineReviewCompleted {
+                    run_id,
+                    phase_number: phase.clone(),
+                    passed: *passed,
+                    findings_count: *findings_count,
+                },
+            );
+        }
+        PhaseEventJson::DagCompleted { success: _ } => {
+            // Handled by the outer pipeline completion logic
+        }
+        PhaseEventJson::WaveStarted { .. } | PhaseEventJson::WaveCompleted { .. } => {
+            // Wave events are informational, no DB/WS action needed
+        }
+        PhaseEventJson::Unknown => {}
     }
 }
 

@@ -351,9 +351,14 @@ async fn main() -> Result<()> {
                 });
             }
 
+            let project_path = std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string());
+
             forge::factory::server::start_server(forge::factory::server::ServerConfig {
                 port: *port,
                 db_path,
+                project_path,
                 dev_mode: *dev,
             })
             .await?;

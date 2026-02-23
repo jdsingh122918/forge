@@ -68,13 +68,30 @@ impl FactoryDb {
                     iteration INTEGER,
                     summary TEXT,
                     error TEXT,
+                    branch_name TEXT,
+                    pr_url TEXT,
                     started_at TEXT NOT NULL DEFAULT (datetime('now')),
                     completed_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS pipeline_phases (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+                    phase_number TEXT NOT NULL,
+                    phase_name TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    iteration INTEGER,
+                    budget INTEGER,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    error TEXT,
+                    UNIQUE(run_id, phase_number)
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_issues_project ON issues(project_id);
                 CREATE INDEX IF NOT EXISTS idx_issues_column ON issues(project_id, column_name);
                 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_issue ON pipeline_runs(issue_id);
+                CREATE INDEX IF NOT EXISTS idx_pipeline_phases_run ON pipeline_phases(run_id);
                 ",
             )
             .context("Failed to create tables")?;
@@ -311,7 +328,7 @@ impl FactoryDb {
             // Find active runs for each issue
             for iws in &mut col_issues {
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, issue_id, status, phase_count, current_phase, iteration, summary, error, started_at, completed_at
+                    "SELECT id, issue_id, status, phase_count, current_phase, iteration, summary, error, branch_name, pr_url, started_at, completed_at
                      FROM pipeline_runs
                      WHERE issue_id = ?1 AND status IN ('queued', 'running')
                      ORDER BY id DESC LIMIT 1",
@@ -326,8 +343,10 @@ impl FactoryDb {
                         iteration: row.get(5)?,
                         summary: row.get(6)?,
                         error: row.get(7)?,
-                        started_at: row.get(8)?,
-                        completed_at: row.get(9)?,
+                        branch_name: row.get(8)?,
+                        pr_url: row.get(9)?,
+                        started_at: row.get(10)?,
+                        completed_at: row.get(11)?,
                     })
                 })?;
                 if let Some(row) = rows.next() {
@@ -356,7 +375,7 @@ impl FactoryDb {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, issue_id, status, phase_count, current_phase, iteration, summary, error, started_at, completed_at
+                "SELECT id, issue_id, status, phase_count, current_phase, iteration, summary, error, branch_name, pr_url, started_at, completed_at
                  FROM pipeline_runs WHERE issue_id = ?1 ORDER BY id",
             )
             .context("Failed to prepare get_issue_detail runs")?;
@@ -371,15 +390,19 @@ impl FactoryDb {
                     iteration: row.get(5)?,
                     summary: row.get(6)?,
                     error: row.get(7)?,
-                    started_at: row.get(8)?,
-                    completed_at: row.get(9)?,
+                    branch_name: row.get(8)?,
+                    pr_url: row.get(9)?,
+                    started_at: row.get(10)?,
+                    completed_at: row.get(11)?,
                 })
             })
             .context("Failed to query pipeline runs")?;
         let mut runs = Vec::new();
         for row in rows {
             let r = row.context("Failed to read pipeline_run row")?;
-            runs.push(r.into_pipeline_run()?);
+            let run = r.into_pipeline_run()?;
+            let phases = self.get_pipeline_phases(run.id)?;
+            runs.push(PipelineRunDetail { run, phases });
         }
 
         Ok(Some(IssueDetail { issue, runs }))
@@ -435,7 +458,7 @@ impl FactoryDb {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, issue_id, status, phase_count, current_phase, iteration, summary, error, started_at, completed_at
+                "SELECT id, issue_id, status, phase_count, current_phase, iteration, summary, error, branch_name, pr_url, started_at, completed_at
                  FROM pipeline_runs WHERE id = ?1",
             )
             .context("Failed to prepare get_pipeline_run")?;
@@ -450,8 +473,10 @@ impl FactoryDb {
                     iteration: row.get(5)?,
                     summary: row.get(6)?,
                     error: row.get(7)?,
-                    started_at: row.get(8)?,
-                    completed_at: row.get(9)?,
+                    branch_name: row.get(8)?,
+                    pr_url: row.get(9)?,
+                    started_at: row.get(10)?,
+                    completed_at: row.get(11)?,
                 })
             })
             .context("Failed to query pipeline run")?;
@@ -484,6 +509,91 @@ impl FactoryDb {
             .context("Failed to update pipeline progress")?;
         self.get_pipeline_run(id)?
             .context("Pipeline run not found after progress update")
+    }
+
+    /// Set the branch name for a pipeline run.
+    pub fn update_pipeline_branch(&self, id: i64, branch_name: &str) -> Result<PipelineRun> {
+        self.conn
+            .execute(
+                "UPDATE pipeline_runs SET branch_name = ?1 WHERE id = ?2",
+                params![branch_name, id],
+            )
+            .context("Failed to update pipeline branch")?;
+        self.get_pipeline_run(id)?
+            .context("Pipeline run not found after branch update")
+    }
+
+    /// Set the PR URL for a pipeline run.
+    pub fn update_pipeline_pr_url(&self, id: i64, pr_url: &str) -> Result<PipelineRun> {
+        self.conn
+            .execute(
+                "UPDATE pipeline_runs SET pr_url = ?1 WHERE id = ?2",
+                params![pr_url, id],
+            )
+            .context("Failed to update pipeline PR URL")?;
+        self.get_pipeline_run(id)?
+            .context("Pipeline run not found after PR URL update")
+    }
+
+    // ── Pipeline Phase CRUD ─────────────────────────────────────────
+
+    /// Create or update a pipeline phase record.
+    pub fn upsert_pipeline_phase(
+        &self,
+        run_id: i64,
+        phase_number: &str,
+        phase_name: &str,
+        status: &str,
+        iteration: Option<i32>,
+        budget: Option<i32>,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO pipeline_phases (run_id, phase_number, phase_name, status, iteration, budget, started_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+                 ON CONFLICT(run_id, phase_number) DO UPDATE SET
+                    status = ?4,
+                    iteration = COALESCE(?5, pipeline_phases.iteration),
+                    budget = COALESCE(?6, pipeline_phases.budget),
+                    completed_at = CASE WHEN ?4 IN ('completed', 'failed') THEN datetime('now') ELSE pipeline_phases.completed_at END,
+                    error = NULL",
+                params![run_id, phase_number, phase_name, status, iteration, budget],
+            )
+            .context("Failed to upsert pipeline phase")?;
+        Ok(())
+    }
+
+    /// Get all phases for a pipeline run.
+    pub fn get_pipeline_phases(&self, run_id: i64) -> Result<Vec<PipelinePhase>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, run_id, phase_number, phase_name, status, iteration, budget, started_at, completed_at, error
+                 FROM pipeline_phases WHERE run_id = ?1 ORDER BY phase_number ASC",
+            )
+            .context("Failed to prepare get_pipeline_phases")?;
+        let rows = stmt
+            .query_map(params![run_id], |row| {
+                Ok(PipelinePhase {
+                    id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    phase_number: row.get(2)?,
+                    phase_name: row.get(3)?,
+                    status: row.get(4)?,
+                    iteration: row.get(5)?,
+                    budget: row.get(6)?,
+                    started_at: row.get(7)?,
+                    completed_at: row.get(8)?,
+                    error: row.get(9)?,
+                })
+            })
+            .context("Failed to query pipeline phases")?;
+
+        let mut phases = Vec::new();
+        for row in rows {
+            phases.push(row.context("Failed to read pipeline phase row")?);
+        }
+        Ok(phases)
     }
 }
 
@@ -540,6 +650,8 @@ struct PipelineRunRow {
     iteration: Option<i32>,
     summary: Option<String>,
     error: Option<String>,
+    branch_name: Option<String>,
+    pr_url: Option<String>,
     started_at: String,
     completed_at: Option<String>,
 }
@@ -558,6 +670,8 @@ impl PipelineRunRow {
             iteration: self.iteration,
             summary: self.summary,
             error: self.error,
+            branch_name: self.branch_name,
+            pr_url: self.pr_url,
             started_at: self.started_at,
             completed_at: self.completed_at,
         })
@@ -807,9 +921,9 @@ mod tests {
             .expect("detail should exist");
         assert_eq!(detail.issue.id, issue.id);
         assert_eq!(detail.runs.len(), 2);
-        assert_eq!(detail.runs[0].status, PipelineStatus::Failed);
-        assert_eq!(detail.runs[0].error.as_deref(), Some("OOM"));
-        assert_eq!(detail.runs[1].status, PipelineStatus::Queued);
+        assert_eq!(detail.runs[0].run.status, PipelineStatus::Failed);
+        assert_eq!(detail.runs[0].run.error.as_deref(), Some("OOM"));
+        assert_eq!(detail.runs[1].run.status, PipelineStatus::Queued);
 
         Ok(())
     }

@@ -12,13 +12,15 @@ use tokio::sync::broadcast;
 
 use super::db::FactoryDb;
 use super::models::IssueColumn;
+use super::pipeline::PipelineRunner;
 use super::ws::{WsMessage, broadcast_message};
 
 // ── Shared application state ──────────────────────────────────────────
 
 pub struct AppState {
-    pub db: Mutex<FactoryDb>,
+    pub db: Arc<Mutex<FactoryDb>>,
     pub ws_tx: broadcast::Sender<String>,
+    pub pipeline_runner: PipelineRunner,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -234,11 +236,25 @@ async fn trigger_pipeline(
     State(state): State<SharedState>,
     Path(issue_id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
-    let run = db
-        .create_pipeline_run(issue_id)
+    let (run, issue) = {
+        let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
+        let issue = db
+            .get_issue(issue_id)
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| ApiError::NotFound(format!("Issue {} not found", issue_id)))?;
+        let run = db
+            .create_pipeline_run(issue_id)
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        (run, issue)
+    };
+
+    // Start pipeline execution in a background task
+    state
+        .pipeline_runner
+        .start_run(run.id, &issue, Arc::clone(&state.db), state.ws_tx.clone())
+        .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    broadcast_message(&state.ws_tx, &WsMessage::PipelineStarted { run: run.clone() });
+
     Ok((StatusCode::CREATED, Json(run)))
 }
 
@@ -260,14 +276,12 @@ async fn cancel_pipeline_run(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
-    let run = db
-        .cancel_pipeline_run(id)
+    // Kill the running process and update DB status
+    let run = state
+        .pipeline_runner
+        .cancel(id, &state.db, &state.ws_tx)
+        .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    // Note: WsMessage does not yet have a PipelineCancelled variant.
-    // Using PipelineFailed as the closest typed alternative; the run's status
-    // field will be "cancelled" so clients can distinguish cancellation from failure.
-    broadcast_message(&state.ws_tx, &WsMessage::PipelineFailed { run: run.clone() });
     Ok(Json(run))
 }
 
@@ -284,9 +298,11 @@ mod tests {
     fn test_app() -> Router {
         let db = FactoryDb::new_in_memory().unwrap();
         let (ws_tx, _) = broadcast::channel(16);
+        let pipeline_runner = PipelineRunner::new("/tmp/test");
         let state = Arc::new(AppState {
-            db: Mutex::new(db),
+            db: Arc::new(Mutex::new(db)),
             ws_tx,
+            pipeline_runner,
         });
         api_router().with_state(state)
     }
@@ -529,7 +545,12 @@ mod tests {
         assert_eq!(detail["issue"]["title"], "Detail issue");
         let runs = detail["runs"].as_array().unwrap();
         assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0]["status"], "queued");
+        // Pipeline is now actually started, so status transitions from queued to running/failed
+        let status = runs[0]["status"].as_str().unwrap();
+        assert!(
+            status == "running" || status == "failed" || status == "queued",
+            "Expected running/failed/queued, got: {}", status
+        );
     }
 
     // 9. Update issue
@@ -713,7 +734,13 @@ mod tests {
 
         let run: serde_json::Value = body_json(response.into_body()).await;
         assert_eq!(run["issue_id"], 1);
-        assert_eq!(run["status"], "queued");
+        // The run is created as queued, then start_run transitions it to running.
+        // The response reflects the initial creation (queued) before the background task starts.
+        let status = run["status"].as_str().unwrap();
+        assert!(
+            status == "queued" || status == "running",
+            "Expected queued or running, got: {}", status
+        );
     }
 
     // 13. Get pipeline run
@@ -762,7 +789,12 @@ mod tests {
         let run: serde_json::Value = body_json(response.into_body()).await;
         assert_eq!(run["id"], 1);
         assert_eq!(run["issue_id"], 1);
-        assert_eq!(run["status"], "queued");
+        // Pipeline is now actually started, so status transitions from queued
+        let status = run["status"].as_str().unwrap();
+        assert!(
+            status == "running" || status == "failed" || status == "queued",
+            "Expected running/failed/queued, got: {}", status
+        );
     }
 
     // 14. Cancel pipeline run
@@ -818,9 +850,11 @@ mod tests {
     async fn test_create_issue_broadcasts_ws() {
         let db = FactoryDb::new_in_memory().unwrap();
         let (ws_tx, _) = broadcast::channel(16);
+        let pipeline_runner = PipelineRunner::new("/tmp/test");
         let state = Arc::new(AppState {
-            db: Mutex::new(db),
+            db: Arc::new(Mutex::new(db)),
             ws_tx: ws_tx.clone(),
+            pipeline_runner,
         });
         let app = api_router().with_state(state);
 
