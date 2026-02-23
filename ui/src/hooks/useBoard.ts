@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import type { BoardView, IssueColumn } from '../types';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import type { BoardView, IssueColumn, WsMessage, IssueWithStatus } from '../types';
 import { api } from '../api/client';
 import { useWebSocket } from './useWebSocket';
 
@@ -7,9 +7,10 @@ export function useBoard(projectId: number | null) {
   const [board, setBoard] = useState<BoardView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const prevBoardRef = useRef<BoardView | null>(null);
 
   const wsUrl = `ws://${window.location.host}/ws`;
-  const { lastMessage, status: wsStatus } = useWebSocket(wsUrl);
+  const { lastMessage, connectionStatus: wsStatus } = useWebSocket(wsUrl);
 
   // Fetch initial board
   const fetchBoard = useCallback(async () => {
@@ -30,21 +31,172 @@ export function useBoard(projectId: number | null) {
     fetchBoard();
   }, [fetchBoard]);
 
-  // Apply WebSocket updates
+  // Apply WebSocket updates incrementally
   useEffect(() => {
     if (!lastMessage || !board) return;
-    // Re-fetch board on any mutation for simplicity in MVP
-    fetchBoard();
+    const msg = lastMessage as WsMessage;
+
+    setBoard(prev => {
+      if (!prev) return prev;
+
+      switch (msg.type) {
+        case 'IssueCreated': {
+          const { issue } = msg.data;
+          const newItem: IssueWithStatus = { issue, active_run: null };
+          return {
+            ...prev,
+            columns: prev.columns.map(col =>
+              col.name === issue.column
+                ? { ...col, issues: [...col.issues, newItem] }
+                : col
+            ),
+          };
+        }
+        case 'IssueUpdated': {
+          const { issue } = msg.data;
+          return {
+            ...prev,
+            columns: prev.columns.map(col => ({
+              ...col,
+              issues: col.issues.map(item =>
+                item.issue.id === issue.id
+                  ? { ...item, issue }
+                  : item
+              ),
+            })),
+          };
+        }
+        case 'IssueMoved': {
+          const { issue_id, from_column, to_column, position } = msg.data;
+          // Find the issue in the source column
+          let movedItem: IssueWithStatus | undefined;
+          const withoutSource = prev.columns.map(col => {
+            if (col.name === from_column) {
+              const idx = col.issues.findIndex(i => i.issue.id === issue_id);
+              if (idx >= 0) {
+                movedItem = col.issues[idx];
+                return { ...col, issues: col.issues.filter((_, i) => i !== idx) };
+              }
+            }
+            return col;
+          });
+          if (!movedItem) return prev; // Not found, re-fetch as fallback
+          // Update the issue's column
+          movedItem = { ...movedItem, issue: { ...movedItem.issue, column: to_column as IssueColumn } };
+          // Insert at position in target column
+          return {
+            ...prev,
+            columns: withoutSource.map(col => {
+              if (col.name === to_column) {
+                const issues = [...col.issues];
+                issues.splice(Math.min(position, issues.length), 0, movedItem!);
+                return { ...col, issues };
+              }
+              return col;
+            }),
+          };
+        }
+        case 'IssueDeleted': {
+          const { issue_id } = msg.data;
+          return {
+            ...prev,
+            columns: prev.columns.map(col => ({
+              ...col,
+              issues: col.issues.filter(item => item.issue.id !== issue_id),
+            })),
+          };
+        }
+        case 'PipelineStarted': {
+          const { run } = msg.data;
+          return {
+            ...prev,
+            columns: prev.columns.map(col => ({
+              ...col,
+              issues: col.issues.map(item =>
+                item.issue.id === run.issue_id
+                  ? { ...item, active_run: run }
+                  : item
+              ),
+            })),
+          };
+        }
+        case 'PipelineProgress': {
+          const { run_id, phase, iteration } = msg.data;
+          return {
+            ...prev,
+            columns: prev.columns.map(col => ({
+              ...col,
+              issues: col.issues.map(item =>
+                item.active_run?.id === run_id
+                  ? { ...item, active_run: { ...item.active_run, current_phase: phase, iteration } }
+                  : item
+              ),
+            })),
+          };
+        }
+        case 'PipelineCompleted':
+        case 'PipelineFailed': {
+          const { run } = msg.data;
+          return {
+            ...prev,
+            columns: prev.columns.map(col => ({
+              ...col,
+              issues: col.issues.map(item =>
+                item.issue.id === run.issue_id
+                  ? { ...item, active_run: run }
+                  : item
+              ),
+            })),
+          };
+        }
+        default:
+          // Unknown message type — fall back to full re-fetch
+          fetchBoard();
+          return prev;
+      }
+    });
   }, [lastMessage, fetchBoard]);
 
+  // Optimistic move: update local state immediately, rollback on error
   const moveIssue = useCallback(async (issueId: number, column: IssueColumn, position: number) => {
+    // Save current board for rollback
+    prevBoardRef.current = board;
+
+    // Optimistic local update
+    setBoard(prev => {
+      if (!prev) return prev;
+      let movedItem: IssueWithStatus | undefined;
+      const withoutSource = prev.columns.map(col => {
+        const idx = col.issues.findIndex(i => i.issue.id === issueId);
+        if (idx >= 0) {
+          movedItem = col.issues[idx];
+          return { ...col, issues: col.issues.filter((_, i) => i !== idx) };
+        }
+        return col;
+      });
+      if (!movedItem) return prev;
+      movedItem = { ...movedItem, issue: { ...movedItem.issue, column } };
+      return {
+        ...prev,
+        columns: withoutSource.map(col => {
+          if (col.name === column) {
+            const issues = [...col.issues];
+            issues.splice(Math.min(position, issues.length), 0, movedItem!);
+            return { ...col, issues };
+          }
+          return col;
+        }),
+      };
+    });
+
     try {
       await api.moveIssue(issueId, column, position);
     } catch (e) {
+      // Rollback on failure
+      setBoard(prevBoardRef.current);
       setError(e instanceof Error ? e.message : 'Failed to move issue');
-      fetchBoard(); // Rollback by re-fetching
     }
-  }, [fetchBoard]);
+  }, [board]);
 
   const createIssue = useCallback(async (title: string, description: string) => {
     if (!projectId) return;
