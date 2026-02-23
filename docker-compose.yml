@@ -12,6 +12,7 @@ services:
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
       - CLAUDE_CMD=${CLAUDE_CMD:-claude}
       - FORGE_CMD=${FORGE_CMD:-forge}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
     volumes:
       - ./.forge:/app/.forge
       - .:/app/project:ro
@@ -30,6 +31,7 @@ services:
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
       - CLAUDE_CMD=${CLAUDE_CMD:-claude}
       - FORGE_CMD=${FORGE_CMD:-forge}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
       - RUST_LOG=debug
     volumes:
       - .:/app
@@ -43,6 +45,10 @@ services:
     working_dir: /app
     ports:
       - "5173:5173"
+    environment:
+      - API_HOST=forge-dev
+    depends_on:
+      - forge-dev
     volumes:
       - ./ui:/app
       - node-modules:/app/node_modules

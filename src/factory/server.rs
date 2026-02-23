@@ -87,11 +87,14 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     let db = FactoryDb::new(&config.db_path).context("Failed to initialize factory database")?;
     let (ws_tx, _rx) = broadcast::channel::<String>(256);
     let pipeline_runner = PipelineRunner::new(&config.project_path);
+    let github_client_id = std::env::var("GITHUB_CLIENT_ID").ok();
 
     let state = Arc::new(AppState {
         db: Arc::new(std::sync::Mutex::new(db)),
         ws_tx,
         pipeline_runner,
+        github_client_id,
+        github_token: std::sync::Mutex::new(None),
     });
 
     let mut app = build_router(state);
@@ -100,7 +103,8 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
         app = app.layer(CorsLayer::permissive());
     }
 
-    let addr = format!("127.0.0.1:{}", config.port);
+    let host = if config.dev_mode { "0.0.0.0" } else { "127.0.0.1" };
+    let addr = format!("{}:{}", host, config.port);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .with_context(|| format!("Failed to bind to {}", addr))?;
@@ -140,6 +144,8 @@ mod tests {
             db: Arc::new(std::sync::Mutex::new(db)),
             ws_tx,
             pipeline_runner,
+            github_client_id: None,
+            github_token: std::sync::Mutex::new(None),
         });
         build_router(state)
     }

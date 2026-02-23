@@ -90,6 +90,29 @@ export type WsMessage =
   | { type: 'PipelineReviewStarted'; data: { run_id: number; phase_number: string } }
   | { type: 'PipelineReviewCompleted'; data: { run_id: number; phase_number: string; passed: boolean; findings_count: number } };
 
+// GitHub OAuth types
+export interface GitHubDeviceCode {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  expires_in: number;
+  interval: number;
+}
+
+export interface GitHubRepo {
+  full_name: string;
+  name: string;
+  private: boolean;
+  html_url: string;
+  clone_url: string;
+  description: string | null;
+  default_branch: string;
+}
+
+export interface GitHubAuthStatus {
+  connected: boolean;
+}
+
 // Column display configuration
 export const COLUMNS: { key: IssueColumn; label: string }[] = [
   { key: 'backlog', label: 'Backlog' },

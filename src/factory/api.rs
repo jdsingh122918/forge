@@ -21,6 +21,8 @@ pub struct AppState {
     pub db: Arc<Mutex<FactoryDb>>,
     pub ws_tx: broadcast::Sender<String>,
     pub pipeline_runner: PipelineRunner,
+    pub github_client_id: Option<String>,
+    pub github_token: Mutex<Option<String>>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -31,6 +33,11 @@ pub type SharedState = Arc<AppState>;
 pub struct CreateProjectRequest {
     pub name: String,
     pub path: String,
+}
+
+#[derive(Deserialize)]
+pub struct CloneProjectRequest {
+    pub repo_url: String,
 }
 
 #[derive(Deserialize)]
@@ -50,6 +57,16 @@ pub struct UpdateIssueRequest {
 pub struct MoveIssueRequest {
     pub column: String,
     pub position: i32,
+}
+
+#[derive(Deserialize)]
+pub struct PollTokenRequest {
+    pub device_code: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct GitHubAuthStatus {
+    pub connected: bool,
 }
 
 // ── Error handling ────────────────────────────────────────────────────
@@ -76,6 +93,7 @@ impl IntoResponse for ApiError {
 pub fn api_router() -> Router<SharedState> {
     Router::new()
         .route("/api/projects", get(list_projects).post(create_project))
+        .route("/api/projects/clone", post(clone_project))
         .route("/api/projects/:id", get(get_project))
         .route("/api/projects/:id/board", get(get_board))
         .route("/api/projects/:id/issues", post(create_issue))
@@ -87,6 +105,11 @@ pub fn api_router() -> Router<SharedState> {
         .route("/api/issues/:id/run", post(trigger_pipeline))
         .route("/api/runs/:id", get(get_pipeline_run))
         .route("/api/runs/:id/cancel", post(cancel_pipeline_run))
+        .route("/api/github/status", get(github_status))
+        .route("/api/github/device-code", post(github_device_code))
+        .route("/api/github/poll", post(github_poll_token))
+        .route("/api/github/repos", get(github_list_repos))
+        .route("/api/github/disconnect", post(github_disconnect))
         .route("/health", get(health_check))
 }
 
@@ -111,6 +134,84 @@ async fn create_project(
     let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
     let project = db
         .create_project(&req.name, &req.path)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let msg = serde_json::json!({"event": "project_created", "project": project}).to_string();
+    let _ = state.ws_tx.send(msg);
+    Ok((StatusCode::CREATED, Json(project)))
+}
+
+async fn clone_project(
+    State(state): State<SharedState>,
+    Json(req): Json<CloneProjectRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let repo_url = req.repo_url.trim().to_string();
+
+    // Parse repo name from URL (handles https://github.com/user/repo, user/repo, etc.)
+    let repo_name = repo_url
+        .trim_end_matches('/')
+        .trim_end_matches(".git")
+        .rsplit('/')
+        .next()
+        .ok_or_else(|| ApiError::BadRequest("Invalid repository URL".to_string()))?
+        .to_string();
+
+    if repo_name.is_empty() {
+        return Err(ApiError::BadRequest("Could not parse repository name from URL".to_string()));
+    }
+
+    // Normalize: if it looks like "user/repo", prepend GitHub URL
+    let clone_url = if repo_url.starts_with("http://") || repo_url.starts_with("https://") || repo_url.starts_with("git@") {
+        repo_url.clone()
+    } else {
+        format!("https://github.com/{}", repo_url)
+    };
+
+    // If we have a GitHub token, use it for cloning (enables private repos)
+    let clone_url = {
+        let gh_token = state.github_token.lock()
+            .map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
+        if let Some(ref token) = *gh_token {
+            if clone_url.starts_with("https://github.com/") {
+                clone_url.replacen("https://github.com/", &format!("https://x-access-token:{}@github.com/", token), 1)
+            } else {
+                clone_url
+            }
+        } else {
+            clone_url
+        }
+    };
+
+    // Clone into .forge/repos/<repo_name>
+    let repos_dir = std::path::PathBuf::from(".forge/repos");
+    std::fs::create_dir_all(&repos_dir)
+        .map_err(|e| ApiError::Internal(format!("Failed to create repos directory: {}", e)))?;
+
+    let clone_path = repos_dir.join(&repo_name);
+    if clone_path.exists() {
+        return Err(ApiError::BadRequest(format!("Repository '{}' already cloned. Use the local path option to connect it.", repo_name)));
+    }
+
+    let clone_path_str = clone_path.to_string_lossy().to_string();
+
+    // Run git clone asynchronously
+    let output = tokio::process::Command::new("git")
+        .args(["clone", &clone_url, &clone_path_str])
+        .output()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to run git clone: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ApiError::BadRequest(format!("git clone failed: {}", stderr.trim())));
+    }
+
+    // Resolve to absolute path for the project record
+    let abs_path = std::fs::canonicalize(&clone_path)
+        .map_err(|e| ApiError::Internal(format!("Failed to resolve path: {}", e)))?;
+
+    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
+    let project = db
+        .create_project(&repo_name, &abs_path.to_string_lossy())
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let msg = serde_json::json!({"event": "project_created", "project": project}).to_string();
     let _ = state.ws_tx.send(msg);
@@ -285,6 +386,82 @@ async fn cancel_pipeline_run(
     Ok(Json(run))
 }
 
+// ── GitHub OAuth handlers ─────────────────────────────────────────────
+
+async fn github_status(
+    State(state): State<SharedState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let connected = state
+        .github_token
+        .lock()
+        .map_err(|_| ApiError::Internal("Lock poisoned".into()))?
+        .is_some();
+    Ok(Json(GitHubAuthStatus { connected }))
+}
+
+async fn github_device_code(
+    State(state): State<SharedState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let client_id = state
+        .github_client_id
+        .as_deref()
+        .ok_or_else(|| ApiError::BadRequest("GITHUB_CLIENT_ID not configured".into()))?;
+    let resp = super::github::request_device_code(client_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(resp))
+}
+
+async fn github_poll_token(
+    State(state): State<SharedState>,
+    Json(req): Json<PollTokenRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let client_id = state
+        .github_client_id
+        .as_deref()
+        .ok_or_else(|| ApiError::BadRequest("GITHUB_CLIENT_ID not configured".into()))?;
+    match super::github::poll_for_token(client_id, &req.device_code)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+    {
+        Some(token) => {
+            let mut gh_token = state
+                .github_token
+                .lock()
+                .map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
+            *gh_token = Some(token);
+            Ok(Json(serde_json::json!({"status": "complete"})))
+        }
+        None => Ok(Json(serde_json::json!({"status": "pending"}))),
+    }
+}
+
+async fn github_list_repos(
+    State(state): State<SharedState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let token = state
+        .github_token
+        .lock()
+        .map_err(|_| ApiError::Internal("Lock poisoned".into()))?
+        .clone()
+        .ok_or_else(|| ApiError::BadRequest("Not connected to GitHub".into()))?;
+    let repos = super::github::list_repos(&token, 1, 100)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(repos))
+}
+
+async fn github_disconnect(
+    State(state): State<SharedState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let mut token = state
+        .github_token
+        .lock()
+        .map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
+    *token = None;
+    Ok(Json(serde_json::json!({"status": "disconnected"})))
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -303,6 +480,8 @@ mod tests {
             db: Arc::new(Mutex::new(db)),
             ws_tx,
             pipeline_runner,
+            github_client_id: None,
+            github_token: Mutex::new(None),
         });
         api_router().with_state(state)
     }
@@ -855,6 +1034,8 @@ mod tests {
             db: Arc::new(Mutex::new(db)),
             ws_tx: ws_tx.clone(),
             pipeline_runner,
+            github_client_id: None,
+            github_token: Mutex::new(None),
         });
         let app = api_router().with_state(state);
 

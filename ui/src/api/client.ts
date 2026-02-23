@@ -21,6 +21,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name, path }),
     }),
+  cloneProject: (repoUrl: string) =>
+    request<import('../types').Project>('/projects/clone', {
+      method: 'POST',
+      body: JSON.stringify({ repo_url: repoUrl }),
+    }),
   getProject: (id: number) => request<import('../types').Project>(`/projects/${id}`),
 
   // Board
@@ -54,4 +59,15 @@ export const api = {
     request<import('../types').PipelineRun>(`/runs/${id}`),
   cancelPipelineRun: (id: number) =>
     request<import('../types').PipelineRun>(`/runs/${id}/cancel`, { method: 'POST' }),
+
+  // GitHub OAuth
+  githubStatus: () => request<import('../types').GitHubAuthStatus>('/github/status'),
+  githubDeviceCode: () => request<import('../types').GitHubDeviceCode>('/github/device-code', { method: 'POST' }),
+  githubPollToken: (deviceCode: string) =>
+    request<{ status: 'pending' | 'complete' }>('/github/poll', {
+      method: 'POST',
+      body: JSON.stringify({ device_code: deviceCode }),
+    }),
+  githubRepos: () => request<import('../types').GitHubRepo[]>('/github/repos'),
+  githubDisconnect: () => request<{ status: string }>('/github/disconnect', { method: 'POST' }),
 };

@@ -20,6 +20,7 @@ futures-util = "0.3"
 axum = { version = "0.7", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors"] }
 open = "5"
+reqwest = { version = "0.12", features = ["json"] }
 
 # Git
 git2 = "0.20.4"
