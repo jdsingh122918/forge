@@ -25,6 +25,9 @@
 # Playwright MCP artifacts
 .playwright-mcp/
 
+# Worktrees
+.worktrees/
+
 # Legacy patterns (cleanup)
 .forge-logs/
 .forge-audit/
