@@ -214,6 +214,7 @@ mod tests {
             position: 0,
             priority: Priority::Medium,
             labels: vec![],
+            github_issue_number: None,
             created_at: "2024-01-01".to_string(),
             updated_at: "2024-01-01".to_string(),
         };

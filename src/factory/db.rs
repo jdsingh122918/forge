@@ -95,6 +95,22 @@ impl FactoryDb {
                 ",
             )
             .context("Failed to create tables")?;
+
+        // Additive migrations (columns are nullable, safe to re-run)
+        let _ = self.conn.execute(
+            "ALTER TABLE projects ADD COLUMN github_repo TEXT",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE issues ADD COLUMN github_issue_number INTEGER",
+            [],
+        );
+        self.conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_github_number
+             ON issues(project_id, github_issue_number)
+             WHERE github_issue_number IS NOT NULL;"
+        ).context("Failed to create github_issue_number index")?;
+
         Ok(())
     }
 
@@ -115,7 +131,7 @@ impl FactoryDb {
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, name, path, created_at FROM projects ORDER BY id")
+            .prepare("SELECT id, name, path, github_repo, created_at FROM projects ORDER BY id")
             .context("Failed to prepare list_projects")?;
         let rows = stmt
             .query_map([], |row| {
@@ -123,7 +139,8 @@ impl FactoryDb {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     path: row.get(2)?,
-                    created_at: row.get(3)?,
+                    github_repo: row.get(3)?,
+                    created_at: row.get(4)?,
                 })
             })
             .context("Failed to query projects")?;
@@ -137,7 +154,7 @@ impl FactoryDb {
     pub fn get_project(&self, id: i64) -> Result<Option<Project>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, name, path, created_at FROM projects WHERE id = ?1")
+            .prepare("SELECT id, name, path, github_repo, created_at FROM projects WHERE id = ?1")
             .context("Failed to prepare get_project")?;
         let mut rows = stmt
             .query_map(params![id], |row| {
@@ -145,7 +162,8 @@ impl FactoryDb {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     path: row.get(2)?,
-                    created_at: row.get(3)?,
+                    github_repo: row.get(3)?,
+                    created_at: row.get(4)?,
                 })
             })
             .context("Failed to query project")?;
@@ -153,6 +171,17 @@ impl FactoryDb {
             Some(row) => Ok(Some(row.context("Failed to read project row")?)),
             None => Ok(None),
         }
+    }
+
+    pub fn update_project_github_repo(&self, id: i64, github_repo: &str) -> Result<Project> {
+        self.conn
+            .execute(
+                "UPDATE projects SET github_repo = ?1 WHERE id = ?2",
+                params![github_repo, id],
+            )
+            .context("Failed to update project github_repo")?;
+        self.get_project(id)?
+            .context("Project not found after github_repo update")
     }
 
     // ── Issue CRUD ────────────────────────────────────────────────────
@@ -189,7 +218,7 @@ impl FactoryDb {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, project_id, title, description, column_name, position, priority, labels, created_at, updated_at
+                "SELECT id, project_id, title, description, column_name, position, priority, labels, github_issue_number, created_at, updated_at
                  FROM issues WHERE project_id = ?1 ORDER BY position",
             )
             .context("Failed to prepare list_issues")?;
@@ -204,8 +233,9 @@ impl FactoryDb {
                     position: row.get(5)?,
                     priority: row.get(6)?,
                     labels: row.get(7)?,
-                    created_at: row.get(8)?,
-                    updated_at: row.get(9)?,
+                    github_issue_number: row.get(8)?,
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
                 })
             })
             .context("Failed to query issues")?;
@@ -221,7 +251,7 @@ impl FactoryDb {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, project_id, title, description, column_name, position, priority, labels, created_at, updated_at
+                "SELECT id, project_id, title, description, column_name, position, priority, labels, github_issue_number, created_at, updated_at
                  FROM issues WHERE id = ?1",
             )
             .context("Failed to prepare get_issue")?;
@@ -236,8 +266,9 @@ impl FactoryDb {
                     position: row.get(5)?,
                     priority: row.get(6)?,
                     labels: row.get(7)?,
-                    created_at: row.get(8)?,
-                    updated_at: row.get(9)?,
+                    github_issue_number: row.get(8)?,
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
                 })
             })
             .context("Failed to query issue")?;
@@ -292,6 +323,37 @@ impl FactoryDb {
             .execute("DELETE FROM issues WHERE id = ?1", params![id])
             .context("Failed to delete issue")?;
         Ok(count > 0)
+    }
+
+    pub fn create_issue_from_github(
+        &self,
+        project_id: i64,
+        title: &str,
+        description: &str,
+        github_issue_number: i64,
+    ) -> Result<Option<Issue>> {
+        let exists: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM issues WHERE project_id = ?1 AND github_issue_number = ?2",
+            params![project_id, github_issue_number],
+            |row| row.get(0),
+        )?;
+        if exists {
+            return Ok(None);
+        }
+
+        let max_pos: i32 = self.conn.query_row(
+            "SELECT COALESCE(MAX(position), -1) FROM issues WHERE project_id = ?1 AND column_name = 'backlog'",
+            params![project_id],
+            |row| row.get(0),
+        )?;
+
+        self.conn.execute(
+            "INSERT INTO issues (project_id, title, description, column_name, position, github_issue_number)
+             VALUES (?1, ?2, ?3, 'backlog', ?4, ?5)",
+            params![project_id, title, description, max_pos + 1, github_issue_number],
+        ).context("Failed to insert github issue")?;
+        let id = self.conn.last_insert_rowid();
+        Ok(self.get_issue(id)?)
     }
 
     // ── Board view ────────────────────────────────────────────────────
@@ -610,6 +672,7 @@ struct IssueRow {
     position: i32,
     priority: String,
     labels: String,
+    github_issue_number: Option<i64>,
     created_at: String,
     updated_at: String,
 }
@@ -634,6 +697,7 @@ impl IssueRow {
             position: self.position,
             priority,
             labels,
+            github_issue_number: self.github_issue_number,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -1022,6 +1086,31 @@ mod tests {
         let fetched = db.get_pipeline_run(run.id)?.expect("run should exist");
         assert_eq!(fetched.status, PipelineStatus::Cancelled);
         assert!(fetched.completed_at.is_some());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_issue_from_github() -> Result<()> {
+        let db = FactoryDb::new_in_memory()?;
+        let project = db.create_project("test", "/tmp/test")?;
+
+        // First import succeeds
+        let issue = db.create_issue_from_github(project.id, "Fix bug", "Description", 42)?;
+        assert!(issue.is_some());
+        let issue = issue.unwrap();
+        assert_eq!(issue.title, "Fix bug");
+        assert_eq!(issue.github_issue_number, Some(42));
+        assert_eq!(issue.column, IssueColumn::Backlog);
+
+        // Duplicate import returns None
+        let dup = db.create_issue_from_github(project.id, "Fix bug", "Description", 42)?;
+        assert!(dup.is_none());
+
+        // Different number succeeds
+        let issue2 = db.create_issue_from_github(project.id, "Another", "Desc", 43)?;
+        assert!(issue2.is_some());
+        assert_eq!(issue2.unwrap().position, 1);
 
         Ok(())
     }

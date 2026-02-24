@@ -5,6 +5,7 @@ pub struct Project {
     pub id: i64,
     pub name: String,
     pub path: String,
+    pub github_repo: Option<String>,
     pub created_at: String,
 }
 
@@ -81,6 +82,7 @@ pub struct Issue {
     pub position: i32,
     pub priority: Priority,
     pub labels: Vec<String>,
+    pub github_issue_number: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
