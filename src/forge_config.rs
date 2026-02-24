@@ -430,6 +430,90 @@ impl Default for ClaudeSection {
     }
 }
 
+/// Configuration for autonomous operation mode.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AutonomyConfig {
+    /// Master switch for autonomous mode.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Iterations with no progress before injecting pivot prompt.
+    #[serde(default = "default_stale_iterations")]
+    pub stale_iterations_before_pivot: u32,
+    /// Optional custom pivot prompt override.
+    #[serde(default)]
+    pub pivot_prompt: Option<String>,
+    /// Sensitive phase pattern configuration.
+    #[serde(default)]
+    pub sensitive_patterns: SensitivePatternsConfig,
+    /// Auto-promote configuration for factory pipeline.
+    #[serde(default)]
+    pub auto_promote: AutoPromoteConfig,
+}
+
+fn default_stale_iterations() -> u32 {
+    3
+}
+
+impl Default for AutonomyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            stale_iterations_before_pivot: default_stale_iterations(),
+            pivot_prompt: None,
+            sensitive_patterns: SensitivePatternsConfig::default(),
+            auto_promote: AutoPromoteConfig::default(),
+        }
+    }
+}
+
+/// Configuration for sensitive phase detection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SensitivePatternsConfig {
+    /// Glob patterns that match sensitive phase names.
+    #[serde(default)]
+    pub patterns: Vec<String>,
+    /// Additional fix attempts for sensitive phases (added to base).
+    #[serde(default = "default_extra_fix_attempts")]
+    pub extra_fix_attempts: u32,
+}
+
+fn default_extra_fix_attempts() -> u32 {
+    2
+}
+
+impl Default for SensitivePatternsConfig {
+    fn default() -> Self {
+        Self {
+            patterns: Vec::new(),
+            extra_fix_attempts: default_extra_fix_attempts(),
+        }
+    }
+}
+
+/// Configuration for factory auto-promote behavior.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AutoPromoteConfig {
+    /// Enable conditional auto-promote in factory.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Auto-promote to Done when all reviews pass.
+    #[serde(default = "default_true")]
+    pub promote_on_clean: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for AutoPromoteConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            promote_on_clean: true,
+        }
+    }
+}
+
 /// Returns the set of allowed tools for a given permission mode.
 /// Returns `None` for modes that don't restrict tools.
 pub fn tools_for_permission_mode(mode: PermissionMode) -> Option<Vec<String>> {
@@ -472,6 +556,9 @@ pub struct ForgeToml {
     /// Claude CLI integration settings
     #[serde(default)]
     pub claude: ClaudeSection,
+    /// Autonomous operation settings
+    #[serde(default)]
+    pub autonomy: AutonomyConfig,
 }
 
 impl ForgeToml {
@@ -1443,5 +1530,47 @@ session_continuity = false
     #[test]
     fn test_tools_for_autonomous_mode() {
         assert!(tools_for_permission_mode(PermissionMode::Autonomous).is_none());
+    }
+
+    // =========================================
+    // AutonomyConfig tests
+    // =========================================
+
+    #[test]
+    fn test_autonomy_config_default() {
+        let config = AutonomyConfig::default();
+        assert!(!config.enabled);
+        assert_eq!(config.stale_iterations_before_pivot, 3);
+        assert!(config.pivot_prompt.is_none());
+        assert!(config.sensitive_patterns.patterns.is_empty());
+        assert_eq!(config.sensitive_patterns.extra_fix_attempts, 2);
+        assert!(config.auto_promote.enabled);
+        assert!(config.auto_promote.promote_on_clean);
+    }
+
+    #[test]
+    fn test_autonomy_config_deserialization() {
+        let toml_str = r#"
+        [autonomy]
+        enabled = true
+        stale_iterations_before_pivot = 5
+
+        [autonomy.sensitive_patterns]
+        patterns = ["database-*", "security-*"]
+        extra_fix_attempts = 4
+
+        [autonomy.auto_promote]
+        enabled = true
+        promote_on_clean = false
+        "#;
+        let parsed: toml::Value = toml::from_str(toml_str).unwrap();
+        let autonomy: AutonomyConfig = parsed.get("autonomy").unwrap().clone().try_into().unwrap();
+        assert!(autonomy.enabled);
+        assert_eq!(autonomy.stale_iterations_before_pivot, 5);
+        assert_eq!(
+            autonomy.sensitive_patterns.patterns,
+            vec!["database-*", "security-*"]
+        );
+        assert!(!autonomy.auto_promote.promote_on_clean);
     }
 }
