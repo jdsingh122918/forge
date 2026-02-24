@@ -8,6 +8,7 @@ use tokio::sync::broadcast;
 
 use super::db::FactoryDb;
 use super::models::*;
+use super::sandbox::DockerSandbox;
 use super::ws::{WsMessage, broadcast_message};
 
 /// Convert a title to a URL-safe slug, limited to `max_len` characters.
@@ -110,19 +111,28 @@ struct ProgressInfo {
     iteration: Option<i32>,
 }
 
+/// Handle to a running pipeline — either a local subprocess or a Docker container.
+pub enum RunHandle {
+    Process(tokio::process::Child),
+    Container(String), // container ID
+}
+
 /// Manages pipeline execution for factory issues.
 /// Tracks running child processes so they can be cancelled.
 pub struct PipelineRunner {
     project_path: String,
-    /// Map from run_id to the child process handle for running pipelines.
-    running_processes: Arc<tokio::sync::Mutex<HashMap<i64, tokio::process::Child>>>,
+    /// Map from run_id to the run handle for running pipelines.
+    running_processes: Arc<tokio::sync::Mutex<HashMap<i64, RunHandle>>>,
+    /// Docker sandbox, if available and enabled.
+    sandbox: Option<Arc<DockerSandbox>>,
 }
 
 impl PipelineRunner {
-    pub fn new(project_path: &str) -> Self {
+    pub fn new(project_path: &str, sandbox: Option<Arc<DockerSandbox>>) -> Self {
         Self {
             project_path: project_path.to_string(),
             running_processes: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            sandbox,
         }
     }
 
@@ -134,11 +144,20 @@ impl PipelineRunner {
         db: &Arc<std::sync::Mutex<FactoryDb>>,
         tx: &broadcast::Sender<String>,
     ) -> Result<PipelineRun> {
-        // Kill the child process if it exists
+        // Kill the child process or stop the container if it exists
         {
             let mut processes = self.running_processes.lock().await;
-            if let Some(mut child) = processes.remove(&run_id) {
-                let _ = child.kill().await;
+            if let Some(handle) = processes.remove(&run_id) {
+                match handle {
+                    RunHandle::Process(mut child) => {
+                        let _ = child.kill().await;
+                    }
+                    RunHandle::Container(container_id) => {
+                        if let Some(ref sandbox) = self.sandbox {
+                            let _ = sandbox.stop(&container_id).await;
+                        }
+                    }
+                }
             }
         }
 
@@ -168,7 +187,7 @@ impl PipelineRunner {
 
     /// Returns a clone of the running_processes map handle, so external code
     /// (e.g., API cancel handler) can also kill processes.
-    pub fn running_processes(&self) -> Arc<tokio::sync::Mutex<HashMap<i64, tokio::process::Child>>> {
+    pub fn running_processes(&self) -> Arc<tokio::sync::Mutex<HashMap<i64, RunHandle>>> {
         Arc::clone(&self.running_processes)
     }
 
@@ -455,7 +474,7 @@ async fn execute_pipeline_streaming(
     project_path: &str,
     issue_title: &str,
     issue_description: &str,
-    running_processes: &Arc<tokio::sync::Mutex<HashMap<i64, tokio::process::Child>>>,
+    running_processes: &Arc<tokio::sync::Mutex<HashMap<i64, RunHandle>>>,
     db: &Arc<std::sync::Mutex<FactoryDb>>,
     tx: &broadcast::Sender<String>,
 ) -> Result<String> {
@@ -471,7 +490,7 @@ async fn execute_pipeline_streaming(
     // Store the child handle for cancellation
     {
         let mut processes = running_processes.lock().await;
-        processes.insert(run_id, child);
+        processes.insert(run_id, RunHandle::Process(child));
     }
 
     // Read stdout line by line, looking for progress updates
@@ -521,8 +540,15 @@ async fn execute_pipeline_streaming(
     // Wait for the process to finish — retrieve the child from the map
     let status = {
         let mut processes = running_processes.lock().await;
-        if let Some(mut child) = processes.remove(&run_id) {
-            child.wait().await.context("Failed to wait for child process")?
+        if let Some(handle) = processes.remove(&run_id) {
+            match handle {
+                RunHandle::Process(mut child) => {
+                    child.wait().await.context("Failed to wait for child process")?
+                }
+                RunHandle::Container(_) => {
+                    anyhow::bail!("Unexpected container handle in local execution path")
+                }
+            }
         } else {
             // Process was already removed (e.g., cancelled)
             anyhow::bail!("Pipeline was cancelled")
@@ -737,7 +763,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_runner_new() {
-        let runner = PipelineRunner::new("/tmp/my-project");
+        let runner = PipelineRunner::new("/tmp/my-project", None);
         assert_eq!(runner.project_path, "/tmp/my-project");
     }
 
@@ -867,7 +893,7 @@ mod tests {
         let db = Arc::new(std::sync::Mutex::new(db));
         let (tx, _rx) = broadcast::channel(16);
 
-        let runner = PipelineRunner::new("/tmp/nonexistent");
+        let runner = PipelineRunner::new("/tmp/nonexistent", None);
         runner.start_run(run.id, &issue, db.clone(), tx).await.unwrap();
 
         // Give the background task time to complete
@@ -897,7 +923,7 @@ mod tests {
         let db = Arc::new(std::sync::Mutex::new(db));
         let (tx, mut rx) = broadcast::channel(16);
 
-        let runner = PipelineRunner::new("/tmp");
+        let runner = PipelineRunner::new("/tmp", None);
         runner.start_run(run.id, &issue, db.clone(), tx).await.unwrap();
 
         // Should receive a PipelineStarted message
@@ -930,7 +956,7 @@ mod tests {
         let db = Arc::new(std::sync::Mutex::new(db));
         let (tx, _rx) = broadcast::channel(16);
 
-        let runner = PipelineRunner::new("/tmp");
+        let runner = PipelineRunner::new("/tmp", None);
         runner.start_run(run.id, &issue, db.clone(), tx.clone()).await.unwrap();
 
         // Wait for the process to be registered in the running_processes map.
@@ -974,7 +1000,7 @@ mod tests {
         let db = Arc::new(std::sync::Mutex::new(db));
         let (tx, _rx) = broadcast::channel(16);
 
-        let runner = PipelineRunner::new("/tmp");
+        let runner = PipelineRunner::new("/tmp", None);
         runner.start_run(run.id, &issue, db.clone(), tx).await.unwrap();
 
         // Give the background task time to complete
@@ -992,7 +1018,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_running_processes_accessor() {
-        let runner = PipelineRunner::new("/tmp");
+        let runner = PipelineRunner::new("/tmp", None);
         let processes = runner.running_processes();
 
         // Should be empty initially

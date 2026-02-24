@@ -86,7 +86,7 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
 
     let db = FactoryDb::new(&config.db_path).context("Failed to initialize factory database")?;
     let (ws_tx, _rx) = broadcast::channel::<String>(256);
-    let pipeline_runner = PipelineRunner::new(&config.project_path);
+    let pipeline_runner = PipelineRunner::new(&config.project_path, None);
     let github_client_id = std::env::var("GITHUB_CLIENT_ID").ok();
 
     let state = Arc::new(AppState {
@@ -139,7 +139,7 @@ mod tests {
     fn test_router() -> Router {
         let db = FactoryDb::new_in_memory().unwrap();
         let (ws_tx, _) = broadcast::channel(16);
-        let pipeline_runner = PipelineRunner::new("/tmp/test");
+        let pipeline_runner = PipelineRunner::new("/tmp/test", None);
         let state = Arc::new(AppState {
             db: Arc::new(std::sync::Mutex::new(db)),
             ws_tx,

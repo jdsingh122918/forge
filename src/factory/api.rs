@@ -133,9 +133,11 @@ pub fn api_router() -> Router<SharedState> {
 /// Extract "owner/repo" from various GitHub URL formats.
 fn parse_github_owner_repo(url: &str) -> Option<String> {
     let url = url.trim().trim_end_matches('/').trim_end_matches(".git");
-    if let Some(rest) = url.strip_prefix("https://github.com/") {
+    // Handle https://github.com/owner/repo and https://TOKEN@github.com/owner/repo
+    if let Some(github_pos) = url.find("github.com/") {
+        let rest = &url[github_pos + "github.com/".len()..];
         let parts: Vec<&str> = rest.splitn(3, '/').collect();
-        if parts.len() >= 2 {
+        if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
             return Some(format!("{}/{}", parts[0], parts[1]));
         }
     }
@@ -161,9 +163,22 @@ async fn do_sync_github_issues(state: &SharedState, project_id: i64) -> Result<S
             .get_project(project_id)
             .map_err(|e| ApiError::Internal(e.to_string()))?
             .ok_or_else(|| ApiError::NotFound(format!("Project {} not found", project_id)))?;
-        project
-            .github_repo
-            .ok_or_else(|| ApiError::BadRequest("Project has no GitHub repo configured".into()))?
+
+        match project.github_repo {
+            Some(repo) => repo,
+            None => {
+                // Try to detect github_repo from git remote
+                let detected = detect_github_repo_from_path(&project.path);
+                if let Some(ref owner_repo) = detected {
+                    let _ = db.update_project_github_repo(project_id, owner_repo);
+                }
+                detected.ok_or_else(|| {
+                    ApiError::BadRequest(
+                        "Project has no GitHub repo configured and could not detect one from git remotes".into(),
+                    )
+                })?
+            }
+        }
     };
 
     let token = state
@@ -204,6 +219,19 @@ async fn do_sync_github_issues(state: &SharedState, project_id: i64) -> Result<S
     }
 
     Ok(SyncResult { imported, skipped, total_github })
+}
+
+/// Try to detect "owner/repo" from git remote URLs in a local repo path.
+fn detect_github_repo_from_path(path: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["-C", path, "remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    parse_github_owner_repo(&url)
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────
@@ -280,32 +308,43 @@ async fn clone_project(
         .map_err(|e| ApiError::Internal(format!("Failed to create repos directory: {}", e)))?;
 
     let clone_path = repos_dir.join(&repo_name);
-    if clone_path.exists() {
-        return Err(ApiError::BadRequest(format!("Repository '{}' already cloned. Use the local path option to connect it.", repo_name)));
-    }
+    let already_cloned = clone_path.exists();
 
-    let clone_path_str = clone_path.to_string_lossy().to_string();
+    if !already_cloned {
+        let clone_path_str = clone_path.to_string_lossy().to_string();
 
-    // Run git clone asynchronously
-    let output = tokio::process::Command::new("git")
-        .args(["clone", &clone_url, &clone_path_str])
-        .output()
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to run git clone: {}", e)))?;
+        // Run git clone asynchronously
+        let output = tokio::process::Command::new("git")
+            .args(["clone", &clone_url, &clone_path_str])
+            .output()
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to run git clone: {}", e)))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(ApiError::BadRequest(format!("git clone failed: {}", stderr.trim())));
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ApiError::BadRequest(format!("git clone failed: {}", stderr.trim())));
+        }
     }
 
     // Resolve to absolute path for the project record
     let abs_path = std::fs::canonicalize(&clone_path)
         .map_err(|e| ApiError::Internal(format!("Failed to resolve path: {}", e)))?;
+    let abs_path_str = abs_path.to_string_lossy().to_string();
 
     let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
-    let project = db
-        .create_project(&repo_name, &abs_path.to_string_lossy())
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    // Check if a project already exists for this path
+    let existing = db.list_projects()
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .into_iter()
+        .find(|p| p.path == abs_path_str);
+
+    let project = if let Some(project) = existing {
+        project
+    } else {
+        db.create_project(&repo_name, &abs_path_str)
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+    };
 
     // Parse and store the GitHub owner/repo from the original URL (before token injection)
     let github_repo = parse_github_owner_repo(&repo_url);
@@ -625,7 +664,7 @@ mod tests {
     fn test_app() -> Router {
         let db = FactoryDb::new_in_memory().unwrap();
         let (ws_tx, _) = broadcast::channel(16);
-        let pipeline_runner = PipelineRunner::new("/tmp/test");
+        let pipeline_runner = PipelineRunner::new("/tmp/test", None);
         let state = Arc::new(AppState {
             db: Arc::new(Mutex::new(db)),
             ws_tx,
@@ -1179,7 +1218,7 @@ mod tests {
     async fn test_create_issue_broadcasts_ws() {
         let db = FactoryDb::new_in_memory().unwrap();
         let (ws_tx, _) = broadcast::channel(16);
-        let pipeline_runner = PipelineRunner::new("/tmp/test");
+        let pipeline_runner = PipelineRunner::new("/tmp/test", None);
         let state = Arc::new(AppState {
             db: Arc::new(Mutex::new(db)),
             ws_tx: ws_tx.clone(),
@@ -1225,5 +1264,37 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
         assert_eq!(parsed["type"], "IssueCreated");
         assert_eq!(parsed["data"]["issue"]["title"], "WS test issue");
+    }
+
+    // 16. parse_github_owner_repo
+    #[test]
+    fn test_parse_github_owner_repo() {
+        // Standard HTTPS
+        assert_eq!(
+            parse_github_owner_repo("https://github.com/owner/repo"),
+            Some("owner/repo".to_string())
+        );
+        // HTTPS with .git
+        assert_eq!(
+            parse_github_owner_repo("https://github.com/owner/repo.git"),
+            Some("owner/repo".to_string())
+        );
+        // Token-embedded URL (from git remote after authenticated clone)
+        assert_eq!(
+            parse_github_owner_repo("https://x-access-token:ghp_abc123@github.com/owner/repo.git"),
+            Some("owner/repo".to_string())
+        );
+        // SSH
+        assert_eq!(
+            parse_github_owner_repo("git@github.com:owner/repo.git"),
+            Some("owner/repo".to_string())
+        );
+        // Bare owner/repo
+        assert_eq!(
+            parse_github_owner_repo("owner/repo"),
+            Some("owner/repo".to_string())
+        );
+        // Invalid
+        assert_eq!(parse_github_owner_repo("not-a-url"), None);
     }
 }
