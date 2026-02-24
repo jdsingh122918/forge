@@ -35,6 +35,18 @@ pub struct GitHubRepo {
     pub default_branch: String,
 }
 
+/// A GitHub issue (subset of fields).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GitHubIssue {
+    pub number: i64,
+    pub title: String,
+    pub body: Option<String>,
+    pub state: String,
+    pub html_url: String,
+    /// Pull requests also come through the issues endpoint; filter them out.
+    pub pull_request: Option<serde_json::Value>,
+}
+
 /// Start the device flow — returns device code + user code for the user to enter.
 pub async fn request_device_code(client_id: &str) -> anyhow::Result<DeviceCodeResponse> {
     let client = reqwest::Client::new();
@@ -43,11 +55,18 @@ pub async fn request_device_code(client_id: &str) -> anyhow::Result<DeviceCodeRe
         .header("Accept", "application/json")
         .form(&[("client_id", client_id), ("scope", "repo")])
         .send()
-        .await?
-        .error_for_status()?
-        .json::<DeviceCodeResponse>()
         .await?;
-    Ok(resp)
+
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        anyhow::bail!(
+            "GitHub rejected the OAuth client ID. Ensure GITHUB_CLIENT_ID is set to a valid \
+             GitHub OAuth App with Device Flow enabled. \
+             Create one at https://github.com/settings/developers"
+        );
+    }
+
+    let resp = resp.error_for_status()?;
+    Ok(resp.json::<DeviceCodeResponse>().await?)
 }
 
 /// Poll GitHub for the access token. Returns Ok(Some(token)) when authorized,
@@ -76,6 +95,43 @@ pub async fn poll_for_token(client_id: &str, device_code: &str) -> anyhow::Resul
         Some(err) => anyhow::bail!("GitHub auth error: {}", err),
         None => anyhow::bail!("Unexpected response from GitHub"),
     }
+}
+
+/// List open issues for a repository (excludes pull requests).
+/// Paginates through all pages automatically.
+pub async fn list_issues(token: &str, owner_repo: &str) -> anyhow::Result<Vec<GitHubIssue>> {
+    let client = reqwest::Client::new();
+    let url = format!("https://api.github.com/repos/{}/issues", owner_repo);
+    let mut all_issues = Vec::new();
+    let mut page = 1u32;
+
+    loop {
+        let resp: Vec<GitHubIssue> = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("User-Agent", "forge-factory")
+            .query(&[
+                ("state", "open"),
+                ("per_page", "100"),
+                ("page", &page.to_string()),
+            ])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        let count = resp.len();
+        // Filter out pull requests (they have a pull_request key)
+        all_issues.extend(resp.into_iter().filter(|i| i.pull_request.is_none()));
+
+        if count < 100 {
+            break; // Last page
+        }
+        page += 1;
+    }
+
+    Ok(all_issues)
 }
 
 /// List repos accessible to the authenticated user.
