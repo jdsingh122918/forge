@@ -514,6 +514,32 @@ impl Default for AutoPromoteConfig {
     }
 }
 
+/// Detects whether a phase name matches sensitive patterns.
+pub struct SensitivePhaseDetector {
+    patterns: Vec<glob::Pattern>,
+}
+
+impl SensitivePhaseDetector {
+    /// Create a new detector from a list of glob pattern strings.
+    pub fn new(patterns: &[String]) -> Self {
+        let compiled = patterns
+            .iter()
+            .filter_map(|p| glob::Pattern::new(p).ok())
+            .collect();
+        Self { patterns: compiled }
+    }
+
+    /// Create a detector from the sensitive patterns config.
+    pub fn from_config(config: &SensitivePatternsConfig) -> Self {
+        Self::new(&config.patterns)
+    }
+
+    /// Check if a phase name matches any sensitive pattern.
+    pub fn is_sensitive(&self, phase_name: &str) -> bool {
+        self.patterns.iter().any(|p| p.matches(phase_name))
+    }
+}
+
 /// Returns the set of allowed tools for a given permission mode.
 /// Returns `None` for modes that don't restrict tools.
 pub fn tools_for_permission_mode(mode: PermissionMode) -> Option<Vec<String>> {
@@ -1530,6 +1556,45 @@ session_continuity = false
     #[test]
     fn test_tools_for_autonomous_mode() {
         assert!(tools_for_permission_mode(PermissionMode::Autonomous).is_none());
+    }
+
+    // =========================================
+    // AutonomyConfig tests
+    // =========================================
+
+    // =========================================
+    // SensitivePhaseDetector tests
+    // =========================================
+
+    #[test]
+    fn test_sensitive_phase_detector_empty() {
+        let detector = SensitivePhaseDetector::new(&[]);
+        assert!(!detector.is_sensitive("database-migration"));
+        assert!(!detector.is_sensitive("anything"));
+    }
+
+    #[test]
+    fn test_sensitive_phase_detector_matches() {
+        let detector = SensitivePhaseDetector::new(&[
+            "database-*".to_string(),
+            "security-*".to_string(),
+            "auth-*".to_string(),
+        ]);
+        assert!(detector.is_sensitive("database-migration"));
+        assert!(detector.is_sensitive("security-audit"));
+        assert!(detector.is_sensitive("auth-setup"));
+        assert!(!detector.is_sensitive("frontend-ui"));
+        assert!(!detector.is_sensitive("api-integration"));
+    }
+
+    #[test]
+    fn test_sensitive_phase_detector_from_config() {
+        let config = SensitivePatternsConfig {
+            patterns: vec!["database-*".to_string()],
+            extra_fix_attempts: 4,
+        };
+        let detector = SensitivePhaseDetector::from_config(&config);
+        assert!(detector.is_sensitive("database-migration"));
     }
 
     // =========================================
