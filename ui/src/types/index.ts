@@ -2,6 +2,7 @@ export interface Project {
   id: number;
   name: string;
   path: string;
+  github_repo: string | null;
   created_at: string;
 }
 
@@ -111,6 +112,13 @@ export interface GitHubRepo {
 
 export interface GitHubAuthStatus {
   connected: boolean;
+  client_id_configured: boolean;
+}
+
+export interface SyncResult {
+  imported: number;
+  skipped: number;
+  total_github: number;
 }
 
 // Column display configuration

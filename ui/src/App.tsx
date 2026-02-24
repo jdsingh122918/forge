@@ -6,12 +6,15 @@ import { Header } from './components/Header';
 import { Board } from './components/Board';
 import { IssueDetail } from './components/IssueDetail';
 import { NewIssueForm } from './components/NewIssueForm';
+import { ProjectSetup } from './components/ProjectSetup';
 
 function App() {
-  const [, setProjects] = useState<Project[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [selectedIssueId, setSelectedIssueId] = useState<number | null>(null);
   const [showNewIssue, setShowNewIssue] = useState(false);
+  const [projectsLoading, setProjectsLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
 
   const { board, loading, error, wsStatus, moveIssue, createIssue, deleteIssue, triggerPipeline, refresh } =
     useBoard(selectedProject?.id ?? null);
@@ -21,7 +24,31 @@ function App() {
     api.listProjects().then((ps) => {
       setProjects(ps);
       if (ps.length > 0) setSelectedProject(ps[0]);
-    }).catch(console.error);
+    }).catch(console.error).finally(() => setProjectsLoading(false));
+  }, []);
+
+  const handleSelectProject = useCallback((project: Project) => {
+    setSelectedProject(project);
+    setSelectedIssueId(null);
+    setShowNewIssue(false);
+  }, []);
+
+  const handleCreateProject = useCallback(async (name: string, path: string) => {
+    const project = await api.createProject(name, path);
+    setProjects((prev) => [...prev, project]);
+    setSelectedProject(project);
+  }, []);
+
+  const handleCloneProject = useCallback(async (repoUrl: string) => {
+    const project = await api.cloneProject(repoUrl);
+    setProjects((prev) => [...prev, project]);
+    setSelectedProject(project);
+  }, []);
+
+  const handleDisconnect = useCallback(() => {
+    setSelectedProject(null);
+    setSelectedIssueId(null);
+    setShowNewIssue(false);
   }, []);
 
   const handleMoveIssue = useCallback(
@@ -57,34 +84,59 @@ function App() {
     [triggerPipeline, refresh]
   );
 
+  const handleSyncGithub = useCallback(async () => {
+    if (!selectedProject) return;
+    setSyncing(true);
+    try {
+      const result = await api.syncGithub(selectedProject.id);
+      if (result.imported > 0) {
+        refresh();
+      }
+    } catch (e) {
+      console.error('Sync failed:', e);
+    } finally {
+      setSyncing(false);
+    }
+  }, [selectedProject, refresh]);
+
   return (
     <div className="h-screen flex flex-col bg-gray-100">
       <Header
-        projectName={selectedProject?.name ?? null}
+        project={selectedProject}
+        projects={projects}
         wsStatus={wsStatus}
         onNewIssue={() => setShowNewIssue(true)}
+        onSelectProject={handleSelectProject}
+        onDisconnect={handleDisconnect}
+        onSyncGithub={handleSyncGithub}
+        syncing={syncing}
       />
 
       <main className="flex-1 overflow-hidden">
-        {loading && (
+        {projectsLoading && (
+          <div className="flex items-center justify-center h-full">
+            <p className="text-gray-500">Loading...</p>
+          </div>
+        )}
+        {!projectsLoading && !selectedProject && (
+          <ProjectSetup
+            projects={projects}
+            onSelect={handleSelectProject}
+            onCreate={handleCreateProject}
+            onClone={handleCloneProject}
+          />
+        )}
+        {selectedProject && loading && (
           <div className="flex items-center justify-center h-full">
             <p className="text-gray-500">Loading board...</p>
           </div>
         )}
-        {error && (
+        {selectedProject && error && (
           <div className="p-6">
             <p className="text-red-500 bg-red-50 rounded-md p-4">{error}</p>
           </div>
         )}
-        {!board && !loading && !error && (
-          <div className="flex items-center justify-center h-full">
-            <div className="text-center">
-              <h2 className="text-lg font-medium text-gray-700">No project selected</h2>
-              <p className="text-gray-500 mt-2">Select or create a project to get started.</p>
-            </div>
-          </div>
-        )}
-        {board && (
+        {selectedProject && board && (
           <Board
             board={board}
             onMoveIssue={handleMoveIssue}

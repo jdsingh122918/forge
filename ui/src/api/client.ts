@@ -68,6 +68,17 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ device_code: deviceCode }),
     }),
+  githubConnectToken: (token: string) =>
+    request<{ status: string }>('/github/connect', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    }),
   githubRepos: () => request<import('../types').GitHubRepo[]>('/github/repos'),
   githubDisconnect: () => request<{ status: string }>('/github/disconnect', { method: 'POST' }),
+
+  // GitHub Sync
+  syncGithub: (projectId: number) =>
+    request<import('../types').SyncResult>(`/projects/${projectId}/sync-github`, {
+      method: 'POST',
+    }),
 };
