@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use bollard::Docker;
 use serde::Deserialize;
 
 /// Configuration for a sandboxed pipeline container.
@@ -82,6 +83,35 @@ impl SandboxConfig {
         }
 
         Ok(config)
+    }
+}
+
+/// Docker sandbox manager. Creates and manages pipeline containers.
+pub struct DockerSandbox {
+    docker: Docker,
+    pub default_image: String,
+}
+
+impl DockerSandbox {
+    /// Connect to the Docker daemon via the unix socket.
+    /// Returns None if Docker is not available.
+    pub async fn new(default_image: String) -> Option<Self> {
+        let docker = Docker::connect_with_socket_defaults().ok()?;
+        // Verify connectivity
+        if docker.ping().await.is_err() {
+            return None;
+        }
+        Some(Self { docker, default_image })
+    }
+
+    /// Check if Docker is reachable.
+    pub async fn is_available(&self) -> bool {
+        self.docker.ping().await.is_ok()
+    }
+
+    /// Get a reference to the bollard Docker client.
+    pub fn client(&self) -> &Docker {
+        &self.docker
     }
 }
 
@@ -182,5 +212,18 @@ image = "python:3.12-slim"
         let config = SandboxConfig::load(dir.path()).unwrap();
         assert!(config.image.is_none());
         assert_eq!(config.memory, "4g");
+    }
+
+    #[tokio::test]
+    async fn test_docker_sandbox_new_returns_none_without_docker() {
+        // This test will pass in CI/environments without Docker
+        // and also pass on machines with Docker — it just verifies the constructor doesn't panic
+        let sandbox = DockerSandbox::new("forge:test".to_string()).await;
+        // We can't assert Some or None since it depends on the environment
+        // But we can verify it doesn't panic and the type is correct
+        if let Some(ref s) = sandbox {
+            assert_eq!(s.default_image, "forge:test");
+            assert!(s.is_available().await);
+        }
     }
 }
