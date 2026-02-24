@@ -443,6 +443,118 @@ pub enum SubPhaseSpawnDecision {
     RejectAll,
 }
 
+/// Default pivot prompt injected when autonomous mode detects stale progress.
+const DEFAULT_PIVOT_PROMPT: &str = "CRITICAL: You have made no progress for multiple iterations. \
+Your current approach is not working. Stop what you are doing. Analyze what went wrong, identify \
+the root blocker, and try a fundamentally different strategy. Do not repeat previous attempts.";
+
+/// Tracks stale detection state for autonomous pivot behavior.
+#[derive(Debug, Clone, Default)]
+pub struct StaleHandler {
+    /// Whether a pivot prompt has already been issued.
+    pub pivot_issued: bool,
+}
+
+/// Autonomous gate strategy — no interactive prompts.
+///
+/// Auto-approves all phases and iterations. On stale progress:
+/// 1. First stale: injects pivot prompt, resets stale counter, continues.
+/// 2. Second stale: stops the phase.
+pub struct AutonomousGateStrategy {
+    /// Stale iteration threshold before action.
+    pub stale_threshold: u32,
+    /// Custom pivot prompt (overrides default).
+    pub custom_pivot_prompt: Option<String>,
+    /// Stale handler state.
+    pub stale_handler: StaleHandler,
+}
+
+impl AutonomousGateStrategy {
+    pub fn new(stale_threshold: u32, custom_pivot_prompt: Option<String>) -> Self {
+        Self {
+            stale_threshold,
+            custom_pivot_prompt,
+            stale_handler: StaleHandler::default(),
+        }
+    }
+
+    /// Get the pivot prompt text.
+    pub fn pivot_prompt(&self) -> &str {
+        self.custom_pivot_prompt
+            .as_deref()
+            .unwrap_or(DEFAULT_PIVOT_PROMPT)
+    }
+
+    /// Check a phase — always approves.
+    pub fn check_phase(
+        &self,
+        _phase: &Phase,
+        _previous_changes: Option<&FileChangeSummary>,
+    ) -> GateDecision {
+        GateDecision::Approved
+    }
+
+    /// Check an iteration — always continues.
+    pub fn check_iteration(
+        &self,
+        _phase: &Phase,
+        _iteration: u32,
+        _changes: Option<&FileChangeSummary>,
+    ) -> IterationDecision {
+        IterationDecision::Continue
+    }
+
+    /// Check stale progress — pivot once, then stop.
+    ///
+    /// Returns `Continue` with pivot prompt on first stale detection.
+    /// Returns `StopPhase` on second stale detection.
+    /// The caller is responsible for injecting the pivot prompt when `Continue` is returned
+    /// and `stale_handler.pivot_issued` transitions from false to true.
+    pub fn check_stale_progress(
+        &mut self,
+        _phase: &Phase,
+        tracker: &mut ProgressTracker,
+    ) -> IterationDecision {
+        if !tracker.is_making_progress(self.stale_threshold) {
+            if self.stale_handler.pivot_issued {
+                // Second stale detection — terminate
+                return IterationDecision::StopPhase;
+            }
+            // First stale detection — pivot
+            self.stale_handler.pivot_issued = true;
+            tracker.stale_iterations = 0;
+            return IterationDecision::Continue;
+        }
+        IterationDecision::Continue
+    }
+
+    /// Check sub-phase spawn — auto-approve if within budget.
+    pub fn check_sub_phase_spawn(
+        &self,
+        spawn_signal: &SubPhaseSpawnSignal,
+        remaining_budget: u32,
+    ) -> SubPhaseSpawnDecision {
+        if spawn_signal.budget <= remaining_budget {
+            SubPhaseSpawnDecision::Approved
+        } else {
+            eprintln!(
+                "  [autonomous] Sub-phase '{}' rejected: budget {} exceeds remaining {}",
+                spawn_signal.name, spawn_signal.budget, remaining_budget
+            );
+            SubPhaseSpawnDecision::Skipped
+        }
+    }
+
+    /// Check sub-phase execution — always approves.
+    pub fn check_sub_phase(
+        &self,
+        _sub_phase: &SubPhase,
+        _parent: &Phase,
+    ) -> GateDecision {
+        GateDecision::Approved
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -657,5 +769,91 @@ mod tests {
 
         // skip_all should override
         assert!(gate.check_autonomous_progress(&tracker));
+    }
+
+    // =========================================
+    // AutonomousGateStrategy tests
+    // =========================================
+
+    #[test]
+    fn test_autonomous_strategy_check_phase_always_approves() {
+        let strategy = AutonomousGateStrategy::new(3, None);
+        let phase = Phase::new("01", "Impl", "DONE", 5, "impl", vec![]);
+        let result = strategy.check_phase(&phase, None);
+        assert_eq!(result, GateDecision::Approved);
+    }
+
+    #[test]
+    fn test_autonomous_strategy_check_iteration_always_continues() {
+        let strategy = AutonomousGateStrategy::new(3, None);
+        let phase = Phase::new("01", "Impl", "DONE", 5, "impl", vec![]);
+        let result = strategy.check_iteration(&phase, 1, None);
+        assert_eq!(result, IterationDecision::Continue);
+    }
+
+    #[test]
+    fn test_autonomous_strategy_stale_first_time_continues() {
+        let mut strategy = AutonomousGateStrategy::new(3, None);
+        let phase = Phase::new("01", "Impl", "DONE", 5, "impl", vec![]);
+        let mut tracker = ProgressTracker::new();
+        tracker.stale_iterations = 3; // At threshold
+        let result = strategy.check_stale_progress(&phase, &mut tracker);
+        assert_eq!(result, IterationDecision::Continue);
+        assert!(strategy.stale_handler.pivot_issued);
+    }
+
+    #[test]
+    fn test_autonomous_strategy_stale_second_time_stops() {
+        let mut strategy = AutonomousGateStrategy::new(3, None);
+        strategy.stale_handler.pivot_issued = true; // Already pivoted
+        let phase = Phase::new("01", "Impl", "DONE", 5, "impl", vec![]);
+        let mut tracker = ProgressTracker::new();
+        tracker.stale_iterations = 3;
+        let result = strategy.check_stale_progress(&phase, &mut tracker);
+        assert_eq!(result, IterationDecision::StopPhase);
+    }
+
+    #[test]
+    fn test_autonomous_strategy_sub_phase_within_budget() {
+        let strategy = AutonomousGateStrategy::new(3, None);
+        let signal = SubPhaseSpawnSignal {
+            name: "sub".to_string(),
+            promise: "SUB_DONE".to_string(),
+            budget: 3,
+            reasoning: "need to split".to_string(),
+            timestamp: chrono::Utc::now(),
+            skills: vec![],
+        };
+        let result = strategy.check_sub_phase_spawn(&signal, 5);
+        assert_eq!(result, SubPhaseSpawnDecision::Approved);
+    }
+
+    #[test]
+    fn test_autonomous_strategy_sub_phase_over_budget() {
+        let strategy = AutonomousGateStrategy::new(3, None);
+        let signal = SubPhaseSpawnSignal {
+            name: "sub".to_string(),
+            promise: "SUB_DONE".to_string(),
+            budget: 10,
+            reasoning: "need to split".to_string(),
+            timestamp: chrono::Utc::now(),
+            skills: vec![],
+        };
+        let result = strategy.check_sub_phase_spawn(&signal, 5);
+        assert_eq!(result, SubPhaseSpawnDecision::Skipped);
+    }
+
+    #[test]
+    fn test_autonomous_strategy_pivot_prompt_default() {
+        let strategy = AutonomousGateStrategy::new(3, None);
+        let prompt = strategy.pivot_prompt();
+        assert!(prompt.contains("CRITICAL"));
+        assert!(prompt.contains("different strategy"));
+    }
+
+    #[test]
+    fn test_autonomous_strategy_pivot_prompt_custom() {
+        let strategy = AutonomousGateStrategy::new(3, Some("Try something else".to_string()));
+        assert_eq!(strategy.pivot_prompt(), "Try something else");
     }
 }
