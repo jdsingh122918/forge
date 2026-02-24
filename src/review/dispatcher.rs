@@ -264,7 +264,16 @@ impl DispatchResult {
             .is_some_and(|r| r.decision.decision.requires_fix())
     }
 
-    /// Check if we need human intervention.
+    /// Check if the phase has terminally failed.
+    pub fn is_phase_failed(&self) -> bool {
+        self.has_gating_failures
+            && self
+                .arbiter_result
+                .as_ref()
+                .is_none_or(|r| r.decision.decision.fails_phase())
+    }
+
+    /// Check if we need human intervention (deprecated — always false in autonomous mode).
     pub fn needs_escalation(&self) -> bool {
         self.has_gating_failures
             && self
@@ -280,11 +289,16 @@ impl DispatchResult {
             .and_then(|r| r.decision.fix_instructions.as_deref())
     }
 
-    /// Get the escalation summary if the verdict is Escalate.
-    pub fn escalation_summary(&self) -> Option<&str> {
+    /// Get the failure summary if the verdict is FailPhase.
+    pub fn failure_summary(&self) -> Option<&str> {
         self.arbiter_result
             .as_ref()
-            .and_then(|r| r.decision.escalation_summary.as_deref())
+            .and_then(|r| r.decision.failure_summary.as_deref())
+    }
+
+    /// Get the escalation summary (deprecated — use failure_summary).
+    pub fn escalation_summary(&self) -> Option<&str> {
+        self.failure_summary()
     }
 }
 
@@ -931,7 +945,7 @@ mod tests {
         assert!(result.has_gating_failures);
         assert!(result.requires_action());
         assert!(!result.can_proceed());
-        assert!(result.needs_escalation()); // No arbiter result, so escalate
+        assert!(result.needs_escalation()); // No arbiter result — unresolved
     }
 
     #[test]
@@ -979,17 +993,17 @@ mod tests {
     }
 
     #[test]
-    fn test_dispatch_result_with_arbiter_escalate() {
+    fn test_dispatch_result_with_arbiter_fail_phase() {
         let aggregation = ReviewAggregation::new("05").add_report(ReviewReport::new(
             "05",
             "security",
             ReviewVerdict::Fail,
         ));
 
-        let arbiter_result = ArbiterResult::rule_based(ArbiterDecision::escalate(
+        let arbiter_result = ArbiterResult::rule_based(ArbiterDecision::fail_phase(
             "Architectural concern",
             0.9,
-            "Need human decision",
+            "Critical security issue",
         ));
 
         let result =
@@ -998,8 +1012,9 @@ mod tests {
         assert!(result.has_gating_failures);
         assert!(!result.can_proceed());
         assert!(!result.needs_fix());
-        assert!(result.needs_escalation());
-        assert_eq!(result.escalation_summary(), Some("Need human decision"));
+        assert!(!result.needs_escalation());
+        assert!(result.is_phase_failed());
+        assert_eq!(result.failure_summary(), Some("Critical security issue"));
     }
 
     // =========================================

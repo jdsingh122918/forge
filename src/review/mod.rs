@@ -77,7 +77,7 @@
 //! match decision.decision {
 //!     ArbiterVerdict::Proceed => println!("Proceeding despite findings"),
 //!     ArbiterVerdict::Fix => println!("Attempting to fix: {:?}", decision.fix_instructions),
-//!     ArbiterVerdict::Escalate => println!("Escalating: {:?}", decision.escalation_summary),
+//!     ArbiterVerdict::FailPhase => println!("Phase failed: {:?}", decision.failure_summary),
 //! }
 //! ```
 

@@ -444,9 +444,9 @@ pub enum ArbiterVerdict {
     Proceed,
     /// Spawn fix agent and retry review.
     Fix,
-    /// Require human decision (policy, architecture, out of budget).
+    /// Phase cannot proceed — terminal failure (out of budget, unresolvable).
     #[default]
-    Escalate,
+    FailPhase,
 }
 
 impl ArbiterVerdict {
@@ -462,7 +462,12 @@ impl ArbiterVerdict {
 
     /// Check if this verdict requires human intervention.
     pub fn requires_human(&self) -> bool {
-        matches!(self, Self::Escalate)
+        false // No human escalation path in autonomous mode
+    }
+
+    /// Check if this verdict terminates the phase.
+    pub fn fails_phase(&self) -> bool {
+        matches!(self, Self::FailPhase)
     }
 }
 
@@ -471,7 +476,7 @@ impl fmt::Display for ArbiterVerdict {
         match self {
             Self::Proceed => write!(f, "PROCEED"),
             Self::Fix => write!(f, "FIX"),
-            Self::Escalate => write!(f, "ESCALATE"),
+            Self::FailPhase => write!(f, "FAIL_PHASE"),
         }
     }
 }
@@ -488,9 +493,9 @@ pub struct ArbiterDecision {
     /// Instructions for fixing (if verdict is Fix).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fix_instructions: Option<String>,
-    /// Summary for escalation (if verdict is Escalate).
+    /// Summary for phase failure (if verdict is FailPhase).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub escalation_summary: Option<String>,
+    pub failure_summary: Option<String>,
     /// Suggested budget for fix (if verdict is Fix).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggested_fix_budget: Option<u32>,
@@ -514,7 +519,7 @@ impl ArbiterDecision {
             reasoning: reasoning.to_string(),
             confidence: Self::clamp_confidence(confidence),
             fix_instructions: None,
-            escalation_summary: None,
+            failure_summary: None,
             suggested_fix_budget: None,
             addressed_findings: Vec::new(),
         }
@@ -529,22 +534,22 @@ impl ArbiterDecision {
             reasoning: reasoning.to_string(),
             confidence: Self::clamp_confidence(confidence),
             fix_instructions: Some(instructions.to_string()),
-            escalation_summary: None,
+            failure_summary: None,
             suggested_fix_budget: None,
             addressed_findings: Vec::new(),
         }
     }
 
-    /// Create a new ESCALATE decision.
+    /// Create a new FAIL_PHASE decision.
     ///
     /// Confidence is clamped to the 0.0-1.0 range.
-    pub fn escalate(reasoning: &str, confidence: f64, summary: &str) -> Self {
+    pub fn fail_phase(reasoning: &str, confidence: f64, summary: &str) -> Self {
         Self {
-            decision: ArbiterVerdict::Escalate,
+            decision: ArbiterVerdict::FailPhase,
             reasoning: reasoning.to_string(),
             confidence: Self::clamp_confidence(confidence),
             fix_instructions: None,
-            escalation_summary: Some(summary.to_string()),
+            failure_summary: Some(summary.to_string()),
             suggested_fix_budget: None,
             addressed_findings: Vec::new(),
         }
@@ -589,9 +594,9 @@ impl ArbiterDecision {
                     budget_note
                 )
             }
-            ArbiterVerdict::Escalate => {
+            ArbiterVerdict::FailPhase => {
                 format!(
-                    "ESCALATE ({:.0}% confidence): {}",
+                    "FAIL_PHASE ({:.0}% confidence): {}",
                     self.confidence * 100.0,
                     self.reasoning
                 )
@@ -602,7 +607,7 @@ impl ArbiterDecision {
 
 impl Default for ArbiterDecision {
     fn default() -> Self {
-        Self::escalate(
+        Self::fail_phase(
             "No decision could be made",
             0.0,
             "Unable to determine appropriate action",
@@ -773,11 +778,10 @@ You are deciding how to handle review findings that would block progress.
 - Within remaining budget to attempt fix
 - The fix won't destabilize other work
 
-**ESCALATE** when:
-- Architectural concerns that need human judgment
+**FAIL_PHASE** when:
+- Architectural concerns that cannot be auto-resolved
 - Ambiguous risk that you're uncertain about
 - Out of budget for fixing
-- Policy decisions needed
 - Multiple conflicting trade-offs
 - You are less than 60% confident in PROCEED or FIX
 
@@ -787,11 +791,11 @@ Respond with ONLY a JSON object in this exact format (no markdown, no explanatio
 
 ```json
 {{
-  "decision": "PROCEED|FIX|ESCALATE",
+  "decision": "PROCEED|FIX|FAIL_PHASE",
   "reasoning": "Brief explanation of why this decision was made",
   "confidence": 0.0-1.0,
   "fix_instructions": "If FIX: specific instructions for what to fix and how",
-  "escalation_summary": "If ESCALATE: brief summary for human reviewer"
+  "failure_summary": "If FAIL_PHASE: brief summary of why the phase cannot proceed"
 }}
 ```
 "#,
@@ -820,7 +824,7 @@ pub fn parse_arbiter_response(response: &str) -> Option<ArbiterDecision> {
     let decision = match decision_str.to_uppercase().as_str() {
         "PROCEED" => ArbiterVerdict::Proceed,
         "FIX" => ArbiterVerdict::Fix,
-        "ESCALATE" => ArbiterVerdict::Escalate,
+        "FAIL_PHASE" | "ESCALATE" => ArbiterVerdict::FailPhase,
         _ => return None,
     };
 
@@ -847,12 +851,12 @@ pub fn parse_arbiter_response(response: &str) -> Option<ArbiterDecision> {
                 .unwrap_or("Apply suggested fixes from review findings");
             ArbiterDecision::fix(&reasoning, confidence, instructions)
         }
-        ArbiterVerdict::Escalate => {
+        ArbiterVerdict::FailPhase => {
             let summary = value
-                .get("escalation_summary")
+                .get("failure_summary")
                 .and_then(|v| v.as_str())
                 .unwrap_or("Review findings require human decision");
-            ArbiterDecision::escalate(&reasoning, confidence, summary)
+            ArbiterDecision::fail_phase(&reasoning, confidence, summary)
         }
     };
 
@@ -942,7 +946,7 @@ fn all_findings_auto_proceed(findings: &[ReviewFinding], auto_proceed_on: &[Stri
 pub fn apply_rule_based_decision(input: &ArbiterInput, config: &ArbiterConfig) -> ArbiterDecision {
     // Check if we're out of budget
     if input.remaining_budget() == 0 {
-        return ArbiterDecision::escalate(
+        return ArbiterDecision::fail_phase(
             "No remaining budget for fixes",
             1.0,
             "Phase budget exhausted; human decision required on whether to extend budget",
@@ -951,7 +955,7 @@ pub fn apply_rule_based_decision(input: &ArbiterInput, config: &ArbiterConfig) -
 
     // Check if we've exceeded max fix attempts
     if input.fix_attempts >= config.max_fix_attempts {
-        return ArbiterDecision::escalate(
+        return ArbiterDecision::fail_phase(
             &format!(
                 "Max fix attempts ({}) reached without resolution",
                 config.max_fix_attempts
@@ -975,7 +979,7 @@ pub fn apply_rule_based_decision(input: &ArbiterInput, config: &ArbiterConfig) -
             )
             .with_suggested_budget(3.min(input.remaining_budget()));
         } else {
-            return ArbiterDecision::escalate(
+            return ArbiterDecision::fail_phase(
                 "Critical findings present but insufficient budget to fix",
                 0.95,
                 &format!(
@@ -998,7 +1002,7 @@ pub fn apply_rule_based_decision(input: &ArbiterInput, config: &ArbiterConfig) -
         for finding in &input.blocking_findings {
             if matches_escalate_category(finding, escalate_on) {
                 let category = finding.category().unwrap(); // Safe: matches_escalate_category guarantees this
-                return ArbiterDecision::escalate(
+                return ArbiterDecision::fail_phase(
                     &format!("Finding category '{}' requires human review", category),
                     1.0,
                     &format!("Category '{}' is configured to always escalate", category),
@@ -1021,7 +1025,7 @@ pub fn apply_rule_based_decision(input: &ArbiterInput, config: &ArbiterConfig) -
         )
         .with_suggested_budget(2.min(input.remaining_budget()))
     } else {
-        ArbiterDecision::escalate(
+        ArbiterDecision::fail_phase(
             "Insufficient budget to confidently address findings",
             0.6,
             &format!(
@@ -1091,7 +1095,7 @@ impl ArbiterExecutor {
         match &self.config.mode {
             ResolutionMode::Manual => {
                 // Manual mode always escalates to human
-                let decision = ArbiterDecision::escalate(
+                let decision = ArbiterDecision::fail_phase(
                     "Manual resolution mode - human decision required",
                     1.0,
                     &format!(
@@ -1245,13 +1249,13 @@ impl ArbiterExecutor {
         // Out of budget - always escalate
         if input.remaining_budget() == 0 {
             let decision =
-                ArbiterDecision::escalate("No remaining budget", 1.0, "Phase budget exhausted");
+                ArbiterDecision::fail_phase("No remaining budget", 1.0, "Phase budget exhausted");
             return Some(ArbiterResult::rule_based(decision));
         }
 
         // Max fix attempts reached - always escalate
         if input.fix_attempts >= self.config.max_fix_attempts {
-            let decision = ArbiterDecision::escalate(
+            let decision = ArbiterDecision::fail_phase(
                 "Max fix attempts reached",
                 1.0,
                 &format!("{} fix attempts made without success", input.fix_attempts),
@@ -1267,7 +1271,7 @@ impl ArbiterExecutor {
             for finding in &input.blocking_findings {
                 if matches_escalate_category(finding, escalate_on) {
                     let category = finding.category().unwrap(); // Safe: helper guarantees this
-                    let decision = ArbiterDecision::escalate(
+                    let decision = ArbiterDecision::fail_phase(
                         &format!("Category '{}' requires human review", category),
                         1.0,
                         &format!(
@@ -1504,21 +1508,22 @@ mod tests {
         assert!(ArbiterVerdict::Fix.requires_fix());
         assert!(!ArbiterVerdict::Fix.requires_human());
 
-        assert!(!ArbiterVerdict::Escalate.allows_progression());
-        assert!(!ArbiterVerdict::Escalate.requires_fix());
-        assert!(ArbiterVerdict::Escalate.requires_human());
+        assert!(!ArbiterVerdict::FailPhase.allows_progression());
+        assert!(!ArbiterVerdict::FailPhase.requires_fix());
+        assert!(!ArbiterVerdict::FailPhase.requires_human());
+        assert!(ArbiterVerdict::FailPhase.fails_phase());
     }
 
     #[test]
     fn test_arbiter_verdict_default() {
-        assert_eq!(ArbiterVerdict::default(), ArbiterVerdict::Escalate);
+        assert_eq!(ArbiterVerdict::default(), ArbiterVerdict::FailPhase);
     }
 
     #[test]
     fn test_arbiter_verdict_display() {
         assert_eq!(format!("{}", ArbiterVerdict::Proceed), "PROCEED");
         assert_eq!(format!("{}", ArbiterVerdict::Fix), "FIX");
-        assert_eq!(format!("{}", ArbiterVerdict::Escalate), "ESCALATE");
+        assert_eq!(format!("{}", ArbiterVerdict::FailPhase), "FAIL_PHASE");
     }
 
     #[test]
@@ -1542,7 +1547,7 @@ mod tests {
         assert_eq!(decision.reasoning, "Style issues only");
         assert!((decision.confidence - 0.85).abs() < f64::EPSILON);
         assert!(decision.fix_instructions.is_none());
-        assert!(decision.escalation_summary.is_none());
+        assert!(decision.failure_summary.is_none());
     }
 
     #[test]
@@ -1561,15 +1566,15 @@ mod tests {
 
     #[test]
     fn test_arbiter_decision_escalate() {
-        let decision = ArbiterDecision::escalate(
+        let decision = ArbiterDecision::fail_phase(
             "Architectural concerns",
             0.95,
             "Needs human review of approach",
         );
 
-        assert_eq!(decision.decision, ArbiterVerdict::Escalate);
+        assert_eq!(decision.decision, ArbiterVerdict::FailPhase);
         assert_eq!(
-            decision.escalation_summary,
+            decision.failure_summary,
             Some("Needs human review of approach".to_string())
         );
     }
@@ -1593,8 +1598,8 @@ mod tests {
         assert!(fix.summary().contains("FIX"));
         assert!(fix.summary().contains("suggested budget: 5"));
 
-        let escalate = ArbiterDecision::escalate("Complex", 0.95, "Summary");
-        assert!(escalate.summary().contains("ESCALATE"));
+        let fail = ArbiterDecision::fail_phase("Complex", 0.95, "Summary");
+        assert!(fail.summary().contains("FAIL_PHASE"));
     }
 
     #[test]
@@ -1639,7 +1644,7 @@ mod tests {
 
     #[test]
     fn test_arbiter_result_fallback() {
-        let decision = ArbiterDecision::escalate("Fallback", 0.5, "Error occurred");
+        let decision = ArbiterDecision::fail_phase("Fallback", 0.5, "Error occurred");
         let result = ArbiterResult::fallback(decision, "LLM call failed");
 
         assert!(result.has_error());
@@ -1683,7 +1688,7 @@ mod tests {
         assert!(prompt.contains("Recent changes to auth module"));
         assert!(prompt.contains("PROCEED"));
         assert!(prompt.contains("FIX"));
-        assert!(prompt.contains("ESCALATE"));
+        assert!(prompt.contains("FAIL_PHASE"));
     }
 
     #[test]
@@ -1729,14 +1734,14 @@ mod tests {
                 "decision": "ESCALATE",
                 "reasoning": "Architectural concerns require human judgment",
                 "confidence": 0.95,
-                "escalation_summary": "Consider whether to refactor auth module"
+                "failure_summary": "Consider whether to refactor auth module"
             }
             ```
         "#;
 
         let decision = parse_arbiter_response(response).unwrap();
-        assert_eq!(decision.decision, ArbiterVerdict::Escalate);
-        assert!(decision.escalation_summary.is_some());
+        assert_eq!(decision.decision, ArbiterVerdict::FailPhase);
+        assert!(decision.failure_summary.is_some());
     }
 
     #[test]
@@ -1836,7 +1841,7 @@ mod tests {
         let config = ArbiterConfig::default();
 
         let decision = apply_rule_based_decision(&input, &config);
-        assert_eq!(decision.decision, ArbiterVerdict::Escalate);
+        assert_eq!(decision.decision, ArbiterVerdict::FailPhase);
         assert!(decision.reasoning.contains("budget"));
     }
 
@@ -1846,7 +1851,7 @@ mod tests {
         let config = ArbiterConfig::default().with_max_fix_attempts(2);
 
         let decision = apply_rule_based_decision(&input, &config);
-        assert_eq!(decision.decision, ArbiterVerdict::Escalate);
+        assert_eq!(decision.decision, ArbiterVerdict::FailPhase);
         assert!(decision.reasoning.contains("attempts"));
     }
 
@@ -1868,7 +1873,7 @@ mod tests {
         let config = ArbiterConfig::default();
 
         let decision = apply_rule_based_decision(&input, &config);
-        assert_eq!(decision.decision, ArbiterVerdict::Escalate);
+        assert_eq!(decision.decision, ArbiterVerdict::FailPhase);
     }
 
     #[test]
@@ -1879,7 +1884,7 @@ mod tests {
         let config = ArbiterConfig::arbiter_mode().with_escalate_on(vec!["security".to_string()]);
 
         let decision = apply_rule_based_decision(&input, &config);
-        assert_eq!(decision.decision, ArbiterVerdict::Escalate);
+        assert_eq!(decision.decision, ArbiterVerdict::FailPhase);
     }
 
     #[test]
@@ -1910,7 +1915,7 @@ mod tests {
         let config = ArbiterConfig::default();
 
         let decision = apply_rule_based_decision(&input, &config);
-        assert_eq!(decision.decision, ArbiterVerdict::Escalate);
+        assert_eq!(decision.decision, ArbiterVerdict::FailPhase);
     }
 
     // =========================================
