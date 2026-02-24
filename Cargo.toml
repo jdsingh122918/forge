@@ -14,9 +14,13 @@ indicatif = "0.17"
 # Async
 tokio = { version = "1", features = ["full", "process"] }
 futures = "0.3"
+futures-util = "0.3"
 
 # HTTP Server (for swarm callback server)
-axum = "0.7"
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors"] }
+open = "5"
+reqwest = { version = "0.12", features = ["json"] }
 
 # Git
 git2 = "0.20.4"
@@ -38,6 +42,10 @@ toml = "0.8"
 regex = "1"
 textwrap = "0.16"
 terminal_size = "0.4"
+rusqlite = { version = "0.32", features = ["bundled"] }
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+mime_guess = "2"
+bollard = "0.18"
 
 [dev-dependencies]
 tempfile = "3"

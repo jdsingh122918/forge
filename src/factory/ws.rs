@@ -1,0 +1,392 @@
+use axum::{
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        State,
+    },
+    response::IntoResponse,
+};
+use futures_util::{stream::SplitSink, stream::SplitStream, SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::broadcast;
+use tokio::time::Instant;
+
+use super::api::AppState;
+use super::models::*;
+
+/// How often to send WebSocket Ping frames.
+const PING_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How long to wait for a Pong response before considering the connection dead.
+const PONG_TIMEOUT: Duration = Duration::from_secs(60);
+
+// ── WebSocket message types ──────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum WsMessage {
+    IssueCreated {
+        issue: Issue,
+    },
+    IssueUpdated {
+        issue: Issue,
+    },
+    IssueMoved {
+        issue_id: i64,
+        from_column: String,
+        to_column: String,
+        position: i32,
+    },
+    IssueDeleted {
+        issue_id: i64,
+    },
+    PipelineStarted {
+        run: PipelineRun,
+    },
+    PipelineProgress {
+        run_id: i64,
+        phase: i32,
+        iteration: i32,
+        percent: Option<u8>,
+    },
+    PipelineCompleted {
+        run: PipelineRun,
+    },
+    PipelineFailed {
+        run: PipelineRun,
+    },
+    PipelineBranchCreated {
+        run_id: i64,
+        branch_name: String,
+    },
+    PipelinePrCreated {
+        run_id: i64,
+        pr_url: String,
+    },
+    PipelinePhaseStarted {
+        run_id: i64,
+        phase_number: String,
+        phase_name: String,
+        wave: usize,
+    },
+    PipelinePhaseCompleted {
+        run_id: i64,
+        phase_number: String,
+        success: bool,
+    },
+    PipelineReviewStarted {
+        run_id: i64,
+        phase_number: String,
+    },
+    PipelineReviewCompleted {
+        run_id: i64,
+        phase_number: String,
+        passed: bool,
+        findings_count: usize,
+    },
+}
+
+// ── WebSocket handler ────────────────────────────────────────────────
+
+pub async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket(socket, state))
+}
+
+async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
+    let (sender, receiver) = socket.split();
+    let rx = state.ws_tx.subscribe();
+    run_socket_loop(sender, receiver, rx).await;
+}
+
+/// WebSocket handler that accepts a broadcast sender directly (for use with server router).
+pub async fn ws_handler_with_sender(
+    ws: WebSocketUpgrade,
+    tx: broadcast::Sender<String>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket_with_sender(socket, tx))
+}
+
+async fn handle_socket_with_sender(socket: WebSocket, tx: broadcast::Sender<String>) {
+    let (sender, receiver) = socket.split();
+    let rx = tx.subscribe();
+    run_socket_loop(sender, receiver, rx).await;
+}
+
+/// Core WebSocket loop with ping/pong keepalive.
+///
+/// Combines broadcast forwarding, client message receiving, and periodic
+/// ping/pong health checking into a single select loop. If no Pong is
+/// received within [`PONG_TIMEOUT`] after a Ping is sent, the connection
+/// is considered dead and the loop exits.
+async fn run_socket_loop(
+    mut sender: SplitSink<WebSocket, Message>,
+    mut receiver: SplitStream<WebSocket>,
+    mut rx: broadcast::Receiver<String>,
+) {
+    let mut ping_interval = tokio::time::interval(PING_INTERVAL);
+    // The first tick completes immediately; consume it so the first real
+    // ping fires after PING_INTERVAL has elapsed.
+    ping_interval.tick().await;
+
+    let mut last_pong = Instant::now();
+    let mut awaiting_pong = false;
+
+    loop {
+        tokio::select! {
+            // ── Periodic ping ───────────────────────────────────────
+            _ = ping_interval.tick() => {
+                // Check if the previous ping timed out
+                if awaiting_pong && last_pong.elapsed() > PONG_TIMEOUT {
+                    // Connection is dead — no pong received in time
+                    break;
+                }
+                if sender.send(Message::Ping(vec![])).await.is_err() {
+                    break;
+                }
+                awaiting_pong = true;
+            }
+
+            // ── Broadcast forwarding ────────────────────────────────
+            result = rx.recv() => {
+                match result {
+                    Ok(msg) => {
+                        if sender.send(Message::Text(msg.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        // Missed some messages; continue receiving
+                        continue;
+                    }
+                }
+            }
+
+            // ── Client messages (pong, close, etc.) ─────────────────
+            msg = receiver.next() => {
+                match msg {
+                    Some(Ok(Message::Pong(_))) => {
+                        last_pong = Instant::now();
+                        awaiting_pong = false;
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(_)) => {
+                        // Ignore other messages from client (Text, Binary, Ping)
+                    }
+                    Some(Err(_)) => break,
+                }
+            }
+        }
+    }
+
+    // Best-effort close frame
+    let _ = sender.send(Message::Close(None)).await;
+}
+
+// ── Broadcast helper ─────────────────────────────────────────────────
+
+/// Serialize and broadcast a WsMessage to all connected WebSocket clients.
+/// Returns silently even if no clients are connected.
+pub fn broadcast_message(tx: &broadcast::Sender<String>, msg: &WsMessage) {
+    if let Ok(json) = serde_json::to_string(msg) {
+        let _ = tx.send(json); // Ignore error if no receivers
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ws_message_issue_created_serialization() {
+        let issue = Issue {
+            id: 1,
+            project_id: 1,
+            title: "Test".to_string(),
+            description: "Desc".to_string(),
+            column: IssueColumn::Backlog,
+            position: 0,
+            priority: Priority::Medium,
+            labels: vec![],
+            github_issue_number: None,
+            created_at: "2024-01-01".to_string(),
+            updated_at: "2024-01-01".to_string(),
+        };
+        let msg = WsMessage::IssueCreated { issue };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"IssueCreated\""));
+        assert!(json.contains("\"data\""));
+        assert!(json.contains("\"title\":\"Test\""));
+    }
+
+    #[test]
+    fn test_ws_message_issue_moved_serialization() {
+        let msg = WsMessage::IssueMoved {
+            issue_id: 5,
+            from_column: "backlog".to_string(),
+            to_column: "in_progress".to_string(),
+            position: 0,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"IssueMoved\""));
+        assert!(json.contains("\"issue_id\":5"));
+        assert!(json.contains("\"from_column\":\"backlog\""));
+        assert!(json.contains("\"to_column\":\"in_progress\""));
+    }
+
+    #[test]
+    fn test_ws_message_issue_deleted_serialization() {
+        let msg = WsMessage::IssueDeleted { issue_id: 42 };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"IssueDeleted\""));
+        assert!(json.contains("\"issue_id\":42"));
+    }
+
+    #[test]
+    fn test_ws_message_pipeline_started_serialization() {
+        let run = PipelineRun {
+            id: 1,
+            issue_id: 1,
+            status: PipelineStatus::Queued,
+            phase_count: None,
+            current_phase: None,
+            iteration: None,
+            summary: None,
+            error: None,
+            branch_name: None,
+            pr_url: None,
+            started_at: "2024-01-01".to_string(),
+            completed_at: None,
+        };
+        let msg = WsMessage::PipelineStarted { run };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"PipelineStarted\""));
+        assert!(json.contains("\"status\":\"queued\""));
+    }
+
+    #[test]
+    fn test_ws_message_pipeline_progress_serialization() {
+        let msg = WsMessage::PipelineProgress {
+            run_id: 3,
+            phase: 2,
+            iteration: 5,
+            percent: Some(75),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"PipelineProgress\""));
+        assert!(json.contains("\"run_id\":3"));
+        assert!(json.contains("\"percent\":75"));
+    }
+
+    #[test]
+    fn test_ws_message_pipeline_completed_serialization() {
+        let run = PipelineRun {
+            id: 1,
+            issue_id: 1,
+            status: PipelineStatus::Completed,
+            phase_count: Some(5),
+            current_phase: Some(5),
+            iteration: Some(3),
+            summary: Some("All done".to_string()),
+            error: None,
+            branch_name: Some("forge/issue-1-fix-auth".to_string()),
+            pr_url: Some("https://github.com/org/repo/pull/42".to_string()),
+            started_at: "2024-01-01".to_string(),
+            completed_at: Some("2024-01-02".to_string()),
+        };
+        let msg = WsMessage::PipelineCompleted { run };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"PipelineCompleted\""));
+        assert!(json.contains("\"status\":\"completed\""));
+        assert!(json.contains("\"All done\""));
+    }
+
+    #[test]
+    fn test_ws_message_pipeline_failed_serialization() {
+        let run = PipelineRun {
+            id: 2,
+            issue_id: 1,
+            status: PipelineStatus::Failed,
+            phase_count: Some(5),
+            current_phase: Some(3),
+            iteration: Some(8),
+            summary: None,
+            error: Some("OOM killed".to_string()),
+            branch_name: Some("forge/issue-1-fix-auth".to_string()),
+            pr_url: None,
+            started_at: "2024-01-01".to_string(),
+            completed_at: Some("2024-01-02".to_string()),
+        };
+        let msg = WsMessage::PipelineFailed { run };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"PipelineFailed\""));
+        assert!(json.contains("\"OOM killed\""));
+    }
+
+    #[test]
+    fn test_ws_message_roundtrip_deserialization() {
+        let msg = WsMessage::IssueMoved {
+            issue_id: 10,
+            from_column: "ready".to_string(),
+            to_column: "done".to_string(),
+            position: 2,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: WsMessage = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            WsMessage::IssueMoved {
+                issue_id,
+                from_column,
+                to_column,
+                position,
+            } => {
+                assert_eq!(issue_id, 10);
+                assert_eq!(from_column, "ready");
+                assert_eq!(to_column, "done");
+                assert_eq!(position, 2);
+            }
+            _ => panic!("Expected IssueMoved variant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_channel_delivers_to_subscribers() {
+        let (tx, _) = tokio::sync::broadcast::channel::<String>(16);
+        let mut rx1 = tx.subscribe();
+        let mut rx2 = tx.subscribe();
+
+        let msg = WsMessage::IssueDeleted { issue_id: 1 };
+        broadcast_message(&tx, &msg);
+
+        let received1 = rx1.recv().await.unwrap();
+        let received2 = rx2.recv().await.unwrap();
+
+        assert!(received1.contains("IssueDeleted"));
+        assert!(received2.contains("IssueDeleted"));
+        assert_eq!(received1, received2);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_no_receivers_does_not_panic() {
+        let (tx, _) = tokio::sync::broadcast::channel::<String>(16);
+        // Drop all receivers - broadcast_message should not panic
+        let msg = WsMessage::IssueDeleted { issue_id: 1 };
+        broadcast_message(&tx, &msg); // Should not panic
+    }
+
+    #[test]
+    fn test_keepalive_constants() {
+        // Verify the keepalive timing configuration is sensible:
+        // PONG_TIMEOUT must be greater than PING_INTERVAL so we don't
+        // immediately consider a fresh connection dead.
+        assert!(PONG_TIMEOUT > PING_INTERVAL);
+        assert_eq!(PING_INTERVAL, Duration::from_secs(30));
+        assert_eq!(PONG_TIMEOUT, Duration::from_secs(60));
+    }
+}

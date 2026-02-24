@@ -2533,3 +2533,56 @@ mod swarm_context_tests {
         assert!(!SwarmStrategy::Adaptive.description().is_empty());
     }
 }
+
+// =============================================================================
+// Factory CLI Tests
+// =============================================================================
+
+mod factory_cli {
+    use super::*;
+
+    #[test]
+    fn test_factory_command_exists() {
+        forge()
+            .arg("factory")
+            .arg("--help")
+            .assert()
+            .success()
+            .stdout(
+                predicate::str::contains("factory").or(predicate::str::contains("Factory")),
+            );
+    }
+
+    #[test]
+    fn test_factory_command_shows_port_option() {
+        forge()
+            .arg("factory")
+            .arg("--help")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--port"))
+            .stdout(predicate::str::contains("3141"));
+    }
+
+    #[test]
+    fn test_factory_init_creates_database() {
+        let dir = create_temp_project();
+
+        let db_path = dir.path().join("factory.db");
+
+        forge()
+            .current_dir(dir.path())
+            .arg("factory")
+            .arg("--init")
+            .arg("--db-path")
+            .arg(db_path.to_str().unwrap())
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Factory database initialized"));
+
+        assert!(
+            db_path.exists(),
+            "SQLite database file should have been created"
+        );
+    }
+}

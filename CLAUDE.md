@@ -22,6 +22,7 @@ Rust (Edition 2024), clap v4, tokio v1, petgraph v0.6, git2 v0.19, axum v0.7, an
 - **Hooks:** 6 events (PrePhase, PostPhase, PreIteration, PostIteration, OnFailure, OnApproval)
 - **Signals:** `<progress>`, `<blocker>`, `<pivot>` tags parsed from Claude output
 - **Reviews:** security, performance, architecture, simplicity — with arbiter resolution
+- **Factory:** Kanban board UI (`forge factory`) with self-implementing issues — triggers pipeline execution, auto-branching, auto-PR, and real-time phase progress via WebSocket
 
 ## Where to Look
 
@@ -36,11 +37,18 @@ Rust (Edition 2024), clap v4, tokio v1, petgraph v0.6, git2 v0.19, axum v0.7, an
 | Phase definitions | `src/phase.rs` |
 | Configuration | `src/forge_config.rs` |
 | State persistence | `src/orchestrator/state.rs` |
+| Factory API server | `src/factory/api.rs`, `src/factory/server.rs` |
+| Factory database | `src/factory/db.rs` |
+| Factory models | `src/factory/models.rs` |
+| Pipeline execution | `src/factory/pipeline.rs` |
+| WebSocket messages | `src/factory/ws.rs` |
+| Factory UI (React) | `ui/src/` |
 
 ## Environment
 
 - `CLAUDE_CMD` — Claude CLI command (default: `claude`)
 - `SKIP_PERMISSIONS` — Skip permission prompts (default: `true`)
+- `FORGE_CMD` — Forge CLI command used by pipeline execution (default: `forge`)
 
 ## Guidelines
 

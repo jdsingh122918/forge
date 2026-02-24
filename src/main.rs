@@ -106,6 +106,28 @@ pub enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Launch the Code Factory Kanban UI
+    Factory {
+        /// Port to serve on
+        #[arg(short, long, default_value = "3141")]
+        port: u16,
+
+        /// Initialize database only (don't start server)
+        #[arg(long)]
+        init: bool,
+
+        /// Database path
+        #[arg(long, default_value = ".forge/factory.db")]
+        db_path: String,
+
+        /// Auto-open browser after server starts
+        #[arg(long, default_value = "true")]
+        open: bool,
+
+        /// Enable dev mode (CORS permissive for local Vite dev server)
+        #[arg(long)]
+        dev: bool,
+    },
     /// Execute phases in parallel using DAG scheduling with optional reviews
     Swarm {
         #[command(subcommand)]
@@ -297,6 +319,50 @@ async fn main() -> Result<()> {
             } else {
                 cmd_implement(&project_dir, design_doc, *no_tdd, *dry_run)?;
             }
+        }
+        Commands::Factory {
+            port,
+            init,
+            db_path,
+            open,
+            dev,
+        } => {
+            let db_path = std::path::PathBuf::from(&db_path);
+
+            if *init {
+                // Just initialize the database
+                if let Some(parent) = db_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                forge::factory::db::FactoryDb::new(&db_path)?;
+                println!("Factory database initialized at {}", db_path.display());
+                return Ok(());
+            }
+
+            // Spawn browser open before starting the server (which blocks)
+            // Skip in dev mode (no browser inside Docker containers)
+            if *open && !*dev {
+                let url = format!("http://localhost:{}", port);
+                tokio::spawn(async move {
+                    // Small delay to let the server start binding
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    if let Err(e) = open::that(&url) {
+                        eprintln!("Failed to open browser: {}", e);
+                    }
+                });
+            }
+
+            let project_path = std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string());
+
+            forge::factory::server::start_server(forge::factory::server::ServerConfig {
+                port: *port,
+                db_path,
+                project_path,
+                dev_mode: *dev,
+            })
+            .await?;
         }
         Commands::Swarm {
             command,
