@@ -201,6 +201,11 @@ impl PhaseReviewConfig {
     pub fn gating_specialists(&self) -> Vec<&ReviewSpecialist> {
         self.specialists.iter().filter(|s| s.is_gating()).collect()
     }
+
+    /// Override specialists for sensitive phase: all builtins, all gating.
+    pub fn apply_sensitive_overrides(&mut self) {
+        self.specialists = ReviewSpecialist::all_builtin_as_gating();
+    }
 }
 
 /// Result of a review dispatch operation.
@@ -909,6 +914,21 @@ mod tests {
         let gating = config.gating_specialists();
         assert_eq!(gating.len(), 1);
         assert_eq!(gating[0].specialist_type, SpecialistType::SecuritySentinel);
+    }
+
+
+    #[test]
+    fn test_phase_review_config_apply_sensitive_overrides() {
+        let mut config = PhaseReviewConfig::new("05", "database-migration")
+            .add_specialist(ReviewSpecialist::advisory(SpecialistType::SecuritySentinel));
+
+        config.apply_sensitive_overrides();
+
+        // All 4 builtins should be present and gating
+        assert_eq!(config.specialists.len(), 4);
+        for specialist in &config.specialists {
+            assert!(specialist.is_gating());
+        }
     }
 
     // =========================================
