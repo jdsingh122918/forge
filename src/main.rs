@@ -28,6 +28,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub context_limit: Option<String>,
 
+    /// Enable autonomous mode for this run (overrides forge.toml).
+    #[arg(long, global = true)]
+    pub autonomous: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }

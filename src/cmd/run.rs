@@ -32,7 +32,9 @@ pub async fn run_orchestrator(
     };
     use forge::config::Config;
     use forge::forge_config::{ForgeToml, PermissionMode};
-    use forge::gates::{ApprovalGate, GateDecision, IterationDecision, ProgressTracker};
+    use forge::gates::{
+        ApprovalGate, AutonomousGateStrategy, GateDecision, IterationDecision, ProgressTracker,
+    };
     use forge::hooks::{HookAction, HookManager};
     use forge::init::get_forge_dir;
     use forge::orchestrator::{ClaudeRunner, IterationFeedback, PromptContext, StateManager};
@@ -99,6 +101,17 @@ pub async fn run_orchestrator(
             p
         })
         .collect();
+    // Create autonomous gate strategy if enabled (config or CLI flag)
+    let autonomy_enabled = forge_toml.autonomy.enabled || cli.autonomous;
+    let mut autonomous_strategy = if autonomy_enabled {
+        Some(AutonomousGateStrategy::new(
+            forge_toml.autonomy.stale_iterations_before_pivot,
+            forge_toml.autonomy.pivot_prompt.clone(),
+        ))
+    } else {
+        None
+    };
+
     let ui = std::sync::Arc::new(OrchestratorUI::new(phases.len() as u64, cli.verbose));
 
     // Start audit run
@@ -142,8 +155,13 @@ pub async fn run_orchestrator(
                 return Ok(());
             }
             _ => {
-                // No hook decision, use normal approval gate
-                gate.check_phase(&phase, previous_changes.as_ref(), &ui)?
+                if autonomous_strategy.is_some() {
+                    // Autonomous mode: auto-approve all phases
+                    GateDecision::Approved
+                } else {
+                    // Interactive: use normal approval gate
+                    gate.check_phase(&phase, previous_changes.as_ref(), &ui)?
+                }
             }
         };
 
@@ -226,26 +244,41 @@ pub async fn run_orchestrator(
         let mut total_pivots: usize = 0;
         for iter in 1..=phase.budget {
             // === AUTONOMOUS MODE: Check progress before continuing ===
-            if phase.permission_mode == PermissionMode::Autonomous
-                && iter > 1
-                && !gate.check_autonomous_progress(&progress_tracker)
-            {
-                match gate.prompt_no_progress()? {
-                    IterationDecision::Continue => {
-                        // Reset stale counter and continue
-                        progress_tracker.stale_iterations = 0;
+            if phase.permission_mode == PermissionMode::Autonomous && iter > 1 {
+                if let Some(ref mut auto_strategy) = autonomous_strategy {
+                    let pivot_was_issued = auto_strategy.stale_handler.pivot_issued;
+                    match auto_strategy.check_stale_progress(&phase, &mut progress_tracker) {
+                        IterationDecision::StopPhase => {
+                            println!("  Phase stopped: no progress after pivot");
+                            break;
+                        }
+                        IterationDecision::Continue
+                            if !pivot_was_issued && auto_strategy.stale_handler.pivot_issued =>
+                        {
+                            // Pivot was just issued — inject prompt
+                            previous_feedback =
+                                Some(auto_strategy.pivot_prompt().to_string());
+                        }
+                        _ => {}
                     }
-                    IterationDecision::StopPhase => {
-                        println!("  Phase stopped due to no progress");
-                        break;
-                    }
-                    IterationDecision::Abort => {
-                        println!("  Orchestrator aborted by user");
-                        phase_aborted = true;
-                        break;
-                    }
-                    IterationDecision::Skip => {
-                        continue;
+                } else if !gate.check_autonomous_progress(&progress_tracker) {
+                    // Interactive fallback
+                    match gate.prompt_no_progress()? {
+                        IterationDecision::Continue => {
+                            progress_tracker.stale_iterations = 0;
+                        }
+                        IterationDecision::StopPhase => {
+                            println!("  Phase stopped due to no progress");
+                            break;
+                        }
+                        IterationDecision::Abort => {
+                            println!("  Orchestrator aborted by user");
+                            phase_aborted = true;
+                            break;
+                        }
+                        IterationDecision::Skip => {
+                            continue;
+                        }
                     }
                 }
             }
