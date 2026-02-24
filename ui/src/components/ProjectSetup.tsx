@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import type { Project, GitHubDeviceCode, GitHubRepo } from '../types';
+import type { Project, GitHubRepo } from '../types';
 import { api } from '../api/client';
 
 type Tab = 'github' | 'local';
-type GitHubState = 'idle' | 'connecting' | 'connected' | 'no-client-id';
+type GitHubState = 'idle' | 'connected';
 
 interface ProjectSetupProps {
   projects: Project[];
@@ -22,15 +22,16 @@ export function ProjectSetup({ projects, onSelect, onCreate, onClone }: ProjectS
 
   // GitHub auth state
   const [ghState, setGhState] = useState<GitHubState>('idle');
-  const [deviceCode, setDeviceCode] = useState<GitHubDeviceCode | null>(null);
   const [repos, setRepos] = useState<GitHubRepo[]>([]);
   const [repoSearch, setRepoSearch] = useState('');
   const [selectedRepo, setSelectedRepo] = useState<GitHubRepo | null>(null);
   const [showManualInput, setShowManualInput] = useState(false);
+  const [tokenInput, setTokenInput] = useState('');
+  const [connectingToken, setConnectingToken] = useState(false);
 
   const repoRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const tokenRef = useRef<HTMLInputElement>(null);
 
   // Check GitHub auth status on mount
   useEffect(() => {
@@ -41,52 +42,32 @@ export function ProjectSetup({ projects, onSelect, onCreate, onClone }: ProjectS
           api.githubRepos().then(setRepos).catch(console.error);
         }
       })
-      .catch(() => setGhState('no-client-id'));
+      .catch(console.error);
   }, []);
 
   useEffect(() => {
     if (tab === 'github' && showManualInput) repoRef.current?.focus();
+    else if (tab === 'github' && ghState === 'idle') tokenRef.current?.focus();
     else if (tab === 'local') nameRef.current?.focus();
-  }, [tab, showManualInput]);
+  }, [tab, showManualInput, ghState]);
 
-  // Cleanup polling on unmount
-  useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
-  }, []);
-
-  const startDeviceFlow = useCallback(async () => {
+  const handleConnectToken = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tokenInput.trim()) return;
     setError('');
+    setConnectingToken(true);
     try {
-      const dc = await api.githubDeviceCode();
-      setDeviceCode(dc);
-      setGhState('connecting');
-
-      // Open GitHub in a new tab
-      window.open(dc.verification_uri, '_blank');
-
-      // Start polling
-      pollRef.current = setInterval(async () => {
-        try {
-          const result = await api.githubPollToken(dc.device_code);
-          if (result.status === 'complete') {
-            if (pollRef.current) clearInterval(pollRef.current);
-            pollRef.current = null;
-            setGhState('connected');
-            setDeviceCode(null);
-            const fetchedRepos = await api.githubRepos();
-            setRepos(fetchedRepos);
-          }
-        } catch {
-          // Poll errors are non-fatal (could be slow_down)
-        }
-      }, (dc.interval + 1) * 1000);
+      await api.githubConnectToken(tokenInput.trim());
+      setGhState('connected');
+      setTokenInput('');
+      const fetchedRepos = await api.githubRepos();
+      setRepos(fetchedRepos);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to start GitHub auth');
-      setGhState('idle');
+      setError(err instanceof Error ? err.message : 'Failed to connect');
+    } finally {
+      setConnectingToken(false);
     }
-  }, []);
+  }, [tokenInput]);
 
   const handleDisconnect = useCallback(async () => {
     await api.githubDisconnect();
@@ -173,63 +154,68 @@ export function ProjectSetup({ projects, onSelect, onCreate, onClone }: ProjectS
             {/* GitHub tab */}
             {tab === 'github' && (
               <div className="space-y-4">
-                {/* Not connected — show connect button */}
-                {(ghState === 'idle' || ghState === 'no-client-id') && !showManualInput && (
+                {/* Not connected — show token input */}
+                {ghState === 'idle' && !showManualInput && (
                   <>
                     <p className="text-sm text-gray-500">
                       Connect your GitHub account to browse and clone repositories.
                     </p>
-                    {ghState === 'no-client-id' ? (
-                      <p className="text-xs text-amber-600 bg-amber-50 rounded-md px-3 py-2">
-                        Set <code className="font-mono text-xs">GITHUB_CLIENT_ID</code> env var to enable GitHub OAuth.
-                        You can still clone by URL below.
-                      </p>
-                    ) : (
+                    <form onSubmit={handleConnectToken} className="space-y-3">
+                      <div>
+                        <label htmlFor="gh-token" className="block text-xs font-medium text-gray-600 mb-1">
+                          Personal access token
+                        </label>
+                        <input
+                          ref={tokenRef}
+                          id="gh-token"
+                          type="password"
+                          placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+                          value={tokenInput}
+                          onChange={(e) => setTokenInput(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        />
+                        <p className="text-xs text-gray-400 mt-1">
+                          Create a token at{' '}
+                          <a
+                            href="https://github.com/settings/tokens/new?scopes=repo&description=Forge+Factory"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-500 hover:underline"
+                          >
+                            github.com/settings/tokens
+                          </a>
+                          {' '}with <code className="text-xs bg-gray-100 px-1 rounded">repo</code> scope.
+                        </p>
+                      </div>
                       <button
-                        onClick={startDeviceFlow}
-                        className="w-full px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-md hover:bg-gray-800 transition-colors flex items-center justify-center gap-2"
+                        type="submit"
+                        disabled={!tokenInput.trim() || connectingToken}
+                        className="w-full px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-md hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
                       >
-                        <svg className="w-5 h-5" viewBox="0 0 16 16" fill="currentColor">
-                          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
-                        </svg>
-                        Connect GitHub
+                        {connectingToken ? (
+                          <>
+                            <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
+                              <path d="M12 2a10 10 0 0110 10" strokeLinecap="round" />
+                            </svg>
+                            Connecting...
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-5 h-5" viewBox="0 0 16 16" fill="currentColor">
+                              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+                            </svg>
+                            Connect GitHub
+                          </>
+                        )}
                       </button>
-                    )}
+                    </form>
                     <button
                       onClick={() => setShowManualInput(true)}
                       className="w-full text-xs text-gray-400 hover:text-gray-600 transition-colors"
                     >
                       Or clone by URL
                     </button>
-                  </>
-                )}
-
-                {/* Connecting — show device code */}
-                {ghState === 'connecting' && deviceCode && (
-                  <>
-                    <p className="text-sm text-gray-500">
-                      Enter this code on GitHub:
-                    </p>
-                    <div className="flex items-center justify-center py-3">
-                      <code className="text-2xl font-mono font-bold tracking-widest text-gray-900 bg-gray-100 px-4 py-2 rounded-lg">
-                        {deviceCode.user_code}
-                      </code>
-                    </div>
-                    <a
-                      href={deviceCode.verification_uri}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="block w-full px-4 py-2 text-sm font-medium text-center text-blue-600 border border-blue-300 rounded-md hover:bg-blue-50 transition-colors"
-                    >
-                      Open GitHub &rarr;
-                    </a>
-                    <div className="flex items-center justify-center gap-2 text-sm text-gray-400">
-                      <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
-                        <path d="M12 2a10 10 0 0110 10" strokeLinecap="round" />
-                      </svg>
-                      Waiting for authorization...
-                    </div>
                   </>
                 )}
 

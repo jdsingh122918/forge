@@ -68,7 +68,7 @@ export function Header({ project, projects, wsStatus, onNewIssue, onSelectProjec
         )}
       </div>
       <div className="flex items-center gap-4">
-        {project?.github_repo && (
+        {project && (
           <button
             onClick={onSyncGithub}
             disabled={syncing}

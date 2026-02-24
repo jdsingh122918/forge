@@ -2,13 +2,15 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
+const apiHost = process.env.API_HOST || 'localhost'
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     proxy: {
-      '/api': 'http://localhost:3141',
+      '/api': `http://${apiHost}:3141`,
       '/ws': {
-        target: 'ws://localhost:3141',
+        target: `ws://${apiHost}:3141`,
         ws: true,
       },
     },

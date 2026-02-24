@@ -340,7 +340,8 @@ async fn main() -> Result<()> {
             }
 
             // Spawn browser open before starting the server (which blocks)
-            if *open {
+            // Skip in dev mode (no browser inside Docker containers)
+            if *open && !*dev {
                 let url = format!("http://localhost:{}", port);
                 tokio::spawn(async move {
                     // Small delay to let the server start binding

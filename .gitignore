@@ -16,6 +16,8 @@
 # Forge local state and temporary files
 .forge/logs/
 .forge/state
+.forge/factory.db
+.forge/repos/
 
 # Forge audit snapshots (keep current-run.json for CI visibility)
 .forge/audit/runs/
