@@ -64,9 +64,22 @@ pub struct PollTokenRequest {
     pub device_code: String,
 }
 
+#[derive(Deserialize)]
+pub struct ConnectTokenRequest {
+    pub token: String,
+}
+
 #[derive(serde::Serialize)]
 pub struct GitHubAuthStatus {
     pub connected: bool,
+    pub client_id_configured: bool,
+}
+
+#[derive(serde::Serialize)]
+pub struct SyncResult {
+    pub imported: usize,
+    pub skipped: usize,
+    pub total_github: usize,
 }
 
 // ── Error handling ────────────────────────────────────────────────────
@@ -96,6 +109,7 @@ pub fn api_router() -> Router<SharedState> {
         .route("/api/projects/clone", post(clone_project))
         .route("/api/projects/:id", get(get_project))
         .route("/api/projects/:id/board", get(get_board))
+        .route("/api/projects/:id/sync-github", post(sync_github_issues))
         .route("/api/projects/:id/issues", post(create_issue))
         .route(
             "/api/issues/:id",
@@ -108,9 +122,88 @@ pub fn api_router() -> Router<SharedState> {
         .route("/api/github/status", get(github_status))
         .route("/api/github/device-code", post(github_device_code))
         .route("/api/github/poll", post(github_poll_token))
+        .route("/api/github/connect", post(github_connect_token))
         .route("/api/github/repos", get(github_list_repos))
         .route("/api/github/disconnect", post(github_disconnect))
         .route("/health", get(health_check))
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────
+
+/// Extract "owner/repo" from various GitHub URL formats.
+fn parse_github_owner_repo(url: &str) -> Option<String> {
+    let url = url.trim().trim_end_matches('/').trim_end_matches(".git");
+    if let Some(rest) = url.strip_prefix("https://github.com/") {
+        let parts: Vec<&str> = rest.splitn(3, '/').collect();
+        if parts.len() >= 2 {
+            return Some(format!("{}/{}", parts[0], parts[1]));
+        }
+    }
+    if let Some(rest) = url.strip_prefix("git@github.com:") {
+        let parts: Vec<&str> = rest.splitn(3, '/').collect();
+        if parts.len() >= 2 {
+            return Some(format!("{}/{}", parts[0], parts[1]));
+        }
+    }
+    // Bare "owner/repo" format
+    let parts: Vec<&str> = url.splitn(3, '/').collect();
+    if parts.len() == 2 && !parts[0].contains(':') && !parts[0].contains('.') {
+        return Some(format!("{}/{}", parts[0], parts[1]));
+    }
+    None
+}
+
+/// Shared sync logic used by both the endpoint handler and auto-sync after clone.
+async fn do_sync_github_issues(state: &SharedState, project_id: i64) -> Result<SyncResult, ApiError> {
+    let github_repo = {
+        let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
+        let project = db
+            .get_project(project_id)
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| ApiError::NotFound(format!("Project {} not found", project_id)))?;
+        project
+            .github_repo
+            .ok_or_else(|| ApiError::BadRequest("Project has no GitHub repo configured".into()))?
+    };
+
+    let token = state
+        .github_token
+        .lock()
+        .map_err(|_| ApiError::Internal("Lock poisoned".into()))?
+        .clone()
+        .ok_or_else(|| ApiError::BadRequest("Not connected to GitHub".into()))?;
+
+    let gh_issues = super::github::list_issues(&token, &github_repo)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to fetch GitHub issues: {}", e)))?;
+
+    let total_github = gh_issues.len();
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+
+    {
+        let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
+        for gh_issue in &gh_issues {
+            let body = gh_issue.body.as_deref().unwrap_or("");
+            match db
+                .create_issue_from_github(project_id, &gh_issue.title, body, gh_issue.number)
+                .map_err(|e| ApiError::Internal(e.to_string()))?
+            {
+                Some(issue) => {
+                    broadcast_message(
+                        &state.ws_tx,
+                        &WsMessage::IssueCreated { issue },
+                    );
+                    imported += 1;
+                }
+                None => {
+                    skipped += 1;
+                }
+            }
+        }
+    }
+
+    Ok(SyncResult { imported, skipped, total_github })
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────
@@ -213,9 +306,45 @@ async fn clone_project(
     let project = db
         .create_project(&repo_name, &abs_path.to_string_lossy())
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    // Parse and store the GitHub owner/repo from the original URL (before token injection)
+    let github_repo = parse_github_owner_repo(&repo_url);
+    let project = if let Some(ref owner_repo) = github_repo {
+        db.update_project_github_repo(project.id, owner_repo)
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+    } else {
+        project
+    };
+
     let msg = serde_json::json!({"event": "project_created", "project": project}).to_string();
     let _ = state.ws_tx.send(msg);
+
+    // Auto-sync GitHub issues in the background
+    if github_repo.is_some() {
+        let state_clone = Arc::clone(&state);
+        let pid = project.id;
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            match do_sync_github_issues(&state_clone, pid).await {
+                Ok(result) => {
+                    eprintln!("Auto-synced {} GitHub issues for project {}", result.imported, pid);
+                }
+                Err(_) => {
+                    eprintln!("Auto-sync GitHub issues failed for project {}", pid);
+                }
+            }
+        });
+    }
+
     Ok((StatusCode::CREATED, Json(project)))
+}
+
+async fn sync_github_issues(
+    State(state): State<SharedState>,
+    Path(project_id): Path<i64>,
+) -> Result<impl IntoResponse, ApiError> {
+    let result = do_sync_github_issues(&state, project_id).await?;
+    Ok(Json(result))
 }
 
 async fn get_project(
@@ -396,7 +525,8 @@ async fn github_status(
         .lock()
         .map_err(|_| ApiError::Internal("Lock poisoned".into()))?
         .is_some();
-    Ok(Json(GitHubAuthStatus { connected }))
+    let client_id_configured = state.github_client_id.is_some();
+    Ok(Json(GitHubAuthStatus { connected, client_id_configured }))
 }
 
 async fn github_device_code(
@@ -449,6 +579,26 @@ async fn github_list_repos(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(repos))
+}
+
+async fn github_connect_token(
+    State(state): State<SharedState>,
+    Json(req): Json<ConnectTokenRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let token = req.token.trim().to_string();
+    if token.is_empty() {
+        return Err(ApiError::BadRequest("Token is required".into()));
+    }
+    // Validate the token by attempting to list repos
+    super::github::list_repos(&token, 1, 1)
+        .await
+        .map_err(|_| ApiError::BadRequest("Invalid token — could not authenticate with GitHub".into()))?;
+    let mut gh_token = state
+        .github_token
+        .lock()
+        .map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
+    *gh_token = Some(token);
+    Ok(Json(serde_json::json!({"status": "connected"})))
 }
 
 async fn github_disconnect(
