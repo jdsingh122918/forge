@@ -16,6 +16,7 @@ use super::api::{self, AppState};
 use super::db::FactoryDb;
 use super::embedded::Assets;
 use super::pipeline::PipelineRunner;
+use super::sandbox::DockerSandbox;
 use super::ws;
 
 /// Configuration for the factory server.
@@ -86,8 +87,31 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
 
     let db = FactoryDb::new(&config.db_path).context("Failed to initialize factory database")?;
     let (ws_tx, _rx) = broadcast::channel::<String>(256);
-    let pipeline_runner = PipelineRunner::new(&config.project_path, None);
     let github_client_id = std::env::var("GITHUB_CLIENT_ID").ok();
+
+    // Check if Docker sandboxing is enabled
+    let sandbox = if std::env::var("FORGE_SANDBOX").unwrap_or_default() == "true" {
+        match DockerSandbox::new("forge:local".to_string()).await {
+            Some(sandbox) => {
+                eprintln!("[factory] Docker sandbox enabled");
+                let s = Arc::new(sandbox);
+                if let Ok(pruned) = s.prune_stale_containers(7200).await {
+                    if pruned > 0 {
+                        eprintln!("[factory] Pruned {} stale pipeline containers", pruned);
+                    }
+                }
+                Some(s)
+            }
+            None => {
+                eprintln!("[factory] FORGE_SANDBOX=true but Docker is not available, falling back to local execution");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let pipeline_runner = PipelineRunner::new(&config.project_path, sandbox);
 
     let state = Arc::new(AppState {
         db: Arc::new(std::sync::Mutex::new(db)),
