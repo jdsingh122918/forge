@@ -35,7 +35,7 @@ export function Column({ column, onIssueClick, headerAction, topSlot }: ColumnPr
   return (
     <div
       ref={setNodeRef}
-      className={`flex flex-col bg-gray-50 rounded-lg border-t-4 ${COLUMN_COLORS[column.name] || 'border-t-gray-300'} ${
+      className={`flex flex-col min-h-0 bg-gray-50 rounded-lg border-t-4 ${COLUMN_COLORS[column.name] || 'border-t-gray-300'} ${
         isOver ? 'ring-2 ring-blue-300 bg-blue-50/30' : ''
       }`}
     >
@@ -51,7 +51,7 @@ export function Column({ column, onIssueClick, headerAction, topSlot }: ColumnPr
         {headerAction}
       </div>
       <SortableContext items={itemIds} strategy={verticalListSortingStrategy}>
-        <div className="flex-1 px-2 pb-2 space-y-2 min-h-[100px]">
+        <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-2 min-h-[100px]">
           {topSlot}
           {column.issues.map((item) => (
             <IssueCard key={item.issue.id} item={item} onClick={onIssueClick} />

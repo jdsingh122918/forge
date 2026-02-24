@@ -181,7 +181,16 @@ impl PipelineRunner {
         db: Arc<std::sync::Mutex<FactoryDb>>,
         tx: broadcast::Sender<String>,
     ) -> Result<()> {
-        let project_path = self.project_path.clone();
+        // Look up the project path from the DB (per-project, not the global default)
+        let project_path = {
+            let db_guard = db.lock().unwrap();
+            db_guard
+                .get_project(issue.project_id)
+                .ok()
+                .flatten()
+                .map(|p| p.path)
+                .unwrap_or_else(|| self.project_path.clone())
+        };
         let issue_id = issue.id;
         let issue_title = issue.title.clone();
         let issue_description = issue.description.clone();
@@ -414,6 +423,7 @@ fn build_execution_command(
             .arg("--max-parallel")
             .arg("4")
             .arg("--fail-fast")
+            .env_remove("CLAUDECODE")
             .current_dir(project_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -429,6 +439,7 @@ fn build_execution_command(
         cmd.arg("--print")
             .arg("--dangerously-skip-permissions")
             .arg(&prompt)
+            .env_remove("CLAUDECODE")
             .current_dir(project_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
