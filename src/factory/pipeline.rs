@@ -191,6 +191,24 @@ impl PipelineRunner {
         Arc::clone(&self.running_processes)
     }
 
+    /// Stop all active pipeline containers/processes on shutdown.
+    pub async fn shutdown(&self) {
+        let mut processes = self.running_processes.lock().await;
+        for (run_id, handle) in processes.drain() {
+            eprintln!("[factory] Shutting down pipeline run {}", run_id);
+            match handle {
+                RunHandle::Process(mut child) => {
+                    let _ = child.kill().await;
+                }
+                RunHandle::Container(container_id) => {
+                    if let Some(ref sandbox) = self.sandbox {
+                        let _ = sandbox.stop(&container_id).await;
+                    }
+                }
+            }
+        }
+    }
+
     /// Start a pipeline run for the given issue.
     /// Creates a git branch, executes the pipeline, and creates a PR on success.
     pub async fn start_run(

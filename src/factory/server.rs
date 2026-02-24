@@ -121,6 +121,7 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
         github_token: std::sync::Mutex::new(None),
     });
 
+    let state_for_shutdown = Arc::clone(&state);
     let mut app = build_router(state);
 
     if config.dev_mode {
@@ -140,6 +141,9 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("Server error")?;
+
+    // Stop all active pipeline containers/processes
+    state_for_shutdown.pipeline_runner.shutdown().await;
 
     println!("Server shut down gracefully.");
     Ok(())
