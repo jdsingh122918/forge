@@ -126,7 +126,7 @@ impl<'de> serde::Deserialize<'de> for ResolutionMode {
                                     max as u32, model, threshold,
                                 ));
                             }
-                            "auto" | _ => {}
+                            _ => {}
                         }
                     }
                 }

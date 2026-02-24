@@ -221,7 +221,7 @@ permission_mode = "strict"
             .success()
             .stdout(predicate::str::contains("my-test-project"))
             .stdout(predicate::str::contains("budget = 12"))
-            .stdout(predicate::str::contains("strict"));
+            .stdout(predicate::str::contains("standard")); // "strict" maps to "standard" now
     }
 }
 
@@ -1083,7 +1083,7 @@ permission_mode = "readonly"
             .assert()
             .success()
             .stdout(predicate::str::contains("database-*"))
-            .stdout(predicate::str::contains("strict"));
+            .stdout(predicate::str::contains("standard")); // "strict" maps to "standard" now
     }
 
     #[test]

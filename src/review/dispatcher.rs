@@ -278,15 +278,6 @@ impl DispatchResult {
                 .is_none_or(|r| r.decision.decision.fails_phase())
     }
 
-    /// Check if we need human intervention (deprecated — always false in autonomous mode).
-    pub fn needs_escalation(&self) -> bool {
-        self.has_gating_failures
-            && self
-                .arbiter_result
-                .as_ref()
-                .is_none_or(|r| r.decision.decision.requires_human())
-    }
-
     /// Get the fix instructions if the verdict is Fix.
     pub fn fix_instructions(&self) -> Option<&str> {
         self.arbiter_result
@@ -299,11 +290,6 @@ impl DispatchResult {
         self.arbiter_result
             .as_ref()
             .and_then(|r| r.decision.failure_summary.as_deref())
-    }
-
-    /// Get the escalation summary (deprecated — use failure_summary).
-    pub fn escalation_summary(&self) -> Option<&str> {
-        self.failure_summary()
     }
 }
 
@@ -949,7 +935,7 @@ mod tests {
         assert!(!result.requires_action());
         assert!(result.can_proceed());
         assert!(!result.needs_fix());
-        assert!(!result.needs_escalation());
+        assert!(!result.is_phase_failed());
     }
 
     #[test]
@@ -965,7 +951,7 @@ mod tests {
         assert!(result.has_gating_failures);
         assert!(result.requires_action());
         assert!(!result.can_proceed());
-        assert!(result.needs_escalation()); // No arbiter result — unresolved
+        assert!(result.is_phase_failed()); // No arbiter result — unresolved
     }
 
     #[test]
@@ -985,7 +971,7 @@ mod tests {
         assert!(result.has_gating_failures);
         assert!(result.can_proceed()); // Arbiter said proceed
         assert!(!result.needs_fix());
-        assert!(!result.needs_escalation());
+        assert!(!result.is_phase_failed());
     }
 
     #[test]
@@ -1008,7 +994,7 @@ mod tests {
         assert!(result.has_gating_failures);
         assert!(!result.can_proceed());
         assert!(result.needs_fix());
-        assert!(!result.needs_escalation());
+        assert!(!result.is_phase_failed());
         assert_eq!(result.fix_instructions(), Some("Fix the SQL injection"));
     }
 
@@ -1032,7 +1018,6 @@ mod tests {
         assert!(result.has_gating_failures);
         assert!(!result.can_proceed());
         assert!(!result.needs_fix());
-        assert!(!result.needs_escalation());
         assert!(result.is_phase_failed());
         assert_eq!(result.failure_summary(), Some("Critical security issue"));
     }
