@@ -286,17 +286,19 @@ impl Default for ReviewsSection {
     }
 }
 
-/// Resolution mode for review failures.
-/// This mirrors ResolutionMode from the review module for configuration purposes.
+/// Resolution mode for review failures (config-side).
+///
+/// All modes map to Auto now. "manual" and "arbiter" are accepted for backward
+/// compatibility but mapped to Auto with appropriate settings.
 #[derive(Debug, Clone, Default, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReviewMode {
-    /// Always pause for user input.
+    /// Auto-fix mode (deprecated "manual" also maps here).
     #[default]
-    Manual,
-    /// Attempt auto-fix, retry up to N times.
     Auto,
-    /// LLM arbiter decides based on severity and context.
+    /// Backward compat: accepted but treated as Auto.
+    Manual,
+    /// Backward compat: accepted but treated as Auto with LLM.
     Arbiter,
 }
 
@@ -304,9 +306,16 @@ impl ReviewMode {
     /// Convert to ResolutionMode for use with the arbiter.
     pub fn to_resolution_mode(self) -> crate::review::ResolutionMode {
         match self {
-            ReviewMode::Manual => crate::review::ResolutionMode::manual(),
-            ReviewMode::Auto => crate::review::ResolutionMode::auto(2), // default max attempts
-            ReviewMode::Arbiter => crate::review::ResolutionMode::arbiter(),
+            ReviewMode::Manual => {
+                eprintln!("  Warning: 'manual' review mode is deprecated, using auto");
+                crate::review::ResolutionMode::default()
+            }
+            ReviewMode::Auto => crate::review::ResolutionMode::auto(2),
+            ReviewMode::Arbiter => crate::review::ResolutionMode::auto_with_llm(
+                2,
+                "claude-3-sonnet",
+                crate::review::arbiter::DEFAULT_CONFIDENCE_THRESHOLD,
+            ),
         }
     }
 }
@@ -1323,7 +1332,7 @@ auto_approve_threshold = 10
         assert!(!reviews.enabled);
         assert!(reviews.specialists.is_empty());
         assert!(reviews.parallel);
-        assert_eq!(reviews.mode, ReviewMode::Manual);
+        assert_eq!(reviews.mode, ReviewMode::Auto);
         assert!((reviews.confidence_threshold - 0.7).abs() < f64::EPSILON);
     }
 

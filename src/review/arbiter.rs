@@ -1,11 +1,7 @@
 //! LLM-based arbiter for resolving review failures.
 //!
-//! When a gating review fails, the arbiter decides how to proceed. Three
-//! resolution modes are available:
-//!
-//! - **Manual**: Always pause for human input
-//! - **Auto**: Attempt auto-fix with configurable retry limits
-//! - **Arbiter**: LLM decides based on severity and context
+//! When a gating review fails, the arbiter decides how to proceed using a unified
+//! Auto resolution mode with optional LLM support.
 //!
 //! ## Usage
 //!
@@ -13,10 +9,9 @@
 //! use forge::review::arbiter::{ArbiterConfig, ArbiterExecutor, ArbiterInput, ResolutionMode};
 //! use forge::review::{ReviewAggregation, ReviewReport, ReviewVerdict, FindingSeverity, ReviewFinding};
 //!
-//! // Configure arbiter mode
+//! // Configure with LLM support
 //! let config = ArbiterConfig::arbiter_mode()
-//!     .with_confidence_threshold(0.7)
-//!     .with_escalate_on(vec!["security".to_string()]);
+//!     .with_confidence_threshold(0.7);
 //!
 //! // Create input from failed review
 //! let report = ReviewReport::new("05", "security-sentinel", ReviewVerdict::Fail)
@@ -32,11 +27,11 @@
 //!
 //! ## Arbiter Decision Criteria
 //!
-//! The LLM arbiter uses these guidelines:
+//! The arbiter uses these guidelines:
 //!
 //! - **PROCEED**: Style issues only, minor warnings, false positives, acceptable trade-offs
 //! - **FIX**: Clear fix path exists, security/correctness issues, within remaining budget
-//! - **ESCALATE**: Architectural concerns, ambiguous risk, out of budget, policy decisions needed
+//! - **FAIL_PHASE**: Out of budget, unresolvable issues, max fix attempts exceeded
 
 use crate::review::{FindingSeverity, ReviewAggregation, ReviewFinding, ReviewReport};
 use serde::{Deserialize, Serialize};
@@ -44,37 +39,18 @@ use std::fmt;
 
 /// Resolution mode for handling review failures.
 ///
-/// Determines how the system responds when a gating review fails.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case", tag = "mode")]
-pub enum ResolutionMode {
-    /// Always pause for user input.
-    #[default]
-    Manual,
-    /// Attempt auto-fix, retry up to N times.
-    Auto {
-        /// Maximum fix attempts before escalating.
-        max_attempts: u32,
-    },
-    /// LLM decides based on severity and context.
-    Arbiter {
-        /// LLM model to use for decisions (e.g., "claude-3-sonnet").
-        #[serde(default = "default_model")]
-        model: String,
-        /// Minimum confidence threshold for automatic decisions.
-        #[serde(default = "default_confidence_threshold")]
-        confidence_threshold: f64,
-        /// Finding categories that always escalate to human.
-        #[serde(default)]
-        escalate_on: Vec<String>,
-        /// Finding categories that can auto-proceed.
-        #[serde(default)]
-        auto_proceed_on: Vec<String>,
-    },
-}
-
-fn default_model() -> String {
-    "claude-3-sonnet".to_string()
+/// Simplified to Auto-only. Deprecated "manual" and "arbiter" modes are
+/// accepted during deserialization and mapped to Auto with appropriate defaults.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ResolutionMode {
+    /// Maximum fix attempts before failing the phase.
+    pub max_attempts: u32,
+    /// Optional LLM model for arbiter decisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Confidence threshold for LLM decisions (default: 0.7).
+    #[serde(default = "default_confidence_threshold")]
+    pub confidence_threshold: f64,
 }
 
 /// Default confidence threshold for arbiter decisions.
@@ -84,77 +60,157 @@ fn default_confidence_threshold() -> f64 {
     DEFAULT_CONFIDENCE_THRESHOLD
 }
 
-impl ResolutionMode {
-    /// Create a manual resolution mode.
-    pub fn manual() -> Self {
-        Self::Manual
-    }
+fn default_max_attempts() -> u32 {
+    2
+}
 
-    /// Create an auto-fix resolution mode.
-    pub fn auto(max_attempts: u32) -> Self {
-        Self::Auto { max_attempts }
-    }
-
-    /// Create an arbiter resolution mode with defaults.
-    pub fn arbiter() -> Self {
-        Self::Arbiter {
-            model: default_model(),
+impl Default for ResolutionMode {
+    fn default() -> Self {
+        Self {
+            max_attempts: default_max_attempts(),
+            model: None,
             confidence_threshold: default_confidence_threshold(),
-            escalate_on: Vec::new(),
-            auto_proceed_on: Vec::new(),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ResolutionMode {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de;
+
+        // Accept either a string ("manual", "auto", "arbiter") or a full object
+        let value = serde_json::Value::deserialize(deserializer)?;
+
+        match &value {
+            serde_json::Value::String(s) => match s.as_str() {
+                "manual" => {
+                    eprintln!("  Warning: 'manual' resolution mode is deprecated, using auto");
+                    Ok(ResolutionMode::default())
+                }
+                "auto" => Ok(ResolutionMode::default()),
+                "arbiter" => Ok(ResolutionMode::auto_with_llm(
+                    default_max_attempts(),
+                    "claude-3-sonnet",
+                    default_confidence_threshold(),
+                )),
+                other => Err(de::Error::custom(format!(
+                    "unknown resolution mode: {other}"
+                ))),
+            },
+            serde_json::Value::Object(map) => {
+                // Handle tagged enum format: {"mode": "manual|auto|arbiter", ...}
+                if let Some(mode_val) = map.get("mode") {
+                    if let Some(mode_str) = mode_val.as_str() {
+                        match mode_str {
+                            "manual" => {
+                                eprintln!("  Warning: 'manual' resolution mode is deprecated, using auto");
+                                return Ok(ResolutionMode::default());
+                            }
+                            "arbiter" => {
+                                let model = map
+                                    .get("model")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("claude-3-sonnet");
+                                let threshold = map
+                                    .get("confidence_threshold")
+                                    .and_then(|v| v.as_f64())
+                                    .unwrap_or(default_confidence_threshold());
+                                let max = map
+                                    .get("max_attempts")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(default_max_attempts() as u64);
+                                return Ok(ResolutionMode::auto_with_llm(
+                                    max as u32, model, threshold,
+                                ));
+                            }
+                            "auto" | _ => {}
+                        }
+                    }
+                }
+                // Default: extract fields directly
+                let max = map
+                    .get("max_attempts")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(default_max_attempts() as u64);
+                let model = map
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let threshold = map
+                    .get("confidence_threshold")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(default_confidence_threshold());
+                Ok(Self {
+                    max_attempts: max as u32,
+                    model,
+                    confidence_threshold: threshold,
+                })
+            }
+            _ => Err(de::Error::custom("expected string or object for resolution mode")),
+        }
+    }
+}
+
+impl ResolutionMode {
+    /// Create an auto resolution mode with given max attempts.
+    pub fn auto(max_attempts: u32) -> Self {
+        Self {
+            max_attempts,
+            model: None,
+            confidence_threshold: default_confidence_threshold(),
         }
     }
 
-    /// Check if this is manual mode.
-    pub fn is_manual(&self) -> bool {
-        matches!(self, Self::Manual)
+    /// Create an auto resolution mode with LLM arbiter support.
+    pub fn auto_with_llm(max_attempts: u32, model: &str, confidence_threshold: f64) -> Self {
+        Self {
+            max_attempts,
+            model: Some(model.to_string()),
+            confidence_threshold,
+        }
     }
 
-    /// Check if this is auto mode.
+    /// Check if this is auto mode (always true now).
     pub fn is_auto(&self) -> bool {
-        matches!(self, Self::Auto { .. })
+        true
     }
 
-    /// Check if this is arbiter mode.
-    pub fn is_arbiter(&self) -> bool {
-        matches!(self, Self::Arbiter { .. })
-    }
-
-    /// Get the max attempts for auto mode, or None if not auto mode.
+    /// Get the max attempts.
     pub fn max_attempts(&self) -> Option<u32> {
-        match self {
-            Self::Auto { max_attempts } => Some(*max_attempts),
-            _ => None,
-        }
+        Some(self.max_attempts)
     }
 
-    /// Get the confidence threshold for arbiter mode.
+    /// Get the confidence threshold.
     pub fn confidence_threshold(&self) -> Option<f64> {
-        match self {
-            Self::Arbiter {
-                confidence_threshold,
-                ..
-            } => Some(*confidence_threshold),
-            _ => None,
-        }
+        Some(self.confidence_threshold)
+    }
+
+    /// Get the model name.
+    pub fn model(&self) -> Option<&str> {
+        self.model.as_deref()
+    }
+
+    /// Check if LLM arbiter is configured.
+    pub fn has_llm(&self) -> bool {
+        self.model.is_some()
     }
 }
 
 impl fmt::Display for ResolutionMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Manual => write!(f, "manual"),
-            Self::Auto { max_attempts } => write!(f, "auto (max {} attempts)", max_attempts),
-            Self::Arbiter {
-                confidence_threshold,
-                ..
-            } => {
-                write!(
-                    f,
-                    "arbiter (confidence >= {:.0}%)",
-                    confidence_threshold * 100.0
-                )
-            }
+        if let Some(ref model) = self.model {
+            write!(
+                f,
+                "auto+llm ({}, confidence >= {:.0}%, max {} attempts)",
+                model,
+                self.confidence_threshold * 100.0,
+                self.max_attempts
+            )
+        } else {
+            write!(f, "auto (max {} attempts)", self.max_attempts)
         }
     }
 }
@@ -207,63 +263,29 @@ impl Default for ArbiterConfig {
 }
 
 impl ArbiterConfig {
-    /// Create a new arbiter config with manual mode.
-    pub fn manual() -> Self {
-        Self {
-            mode: ResolutionMode::Manual,
-            ..Default::default()
-        }
-    }
-
-    /// Create a new arbiter config with auto mode.
+    /// Create a new arbiter config with auto mode (default).
     pub fn auto(max_attempts: u32) -> Self {
         Self {
-            mode: ResolutionMode::Auto { max_attempts },
+            mode: ResolutionMode::auto(max_attempts),
             ..Default::default()
         }
     }
 
-    /// Create a new arbiter config with arbiter mode.
+    /// Create a new arbiter config with LLM arbiter support (backward compat).
     pub fn arbiter_mode() -> Self {
         Self {
-            mode: ResolutionMode::arbiter(),
+            mode: ResolutionMode::auto_with_llm(
+                default_max_fix_attempts(),
+                "claude-3-sonnet",
+                DEFAULT_CONFIDENCE_THRESHOLD,
+            ),
             ..Default::default()
         }
     }
 
-    /// Set the confidence threshold (only applies to arbiter mode).
+    /// Set the confidence threshold.
     pub fn with_confidence_threshold(mut self, threshold: f64) -> Self {
-        if let ResolutionMode::Arbiter {
-            ref mut confidence_threshold,
-            ..
-        } = self.mode
-        {
-            *confidence_threshold = threshold;
-        }
-        self
-    }
-
-    /// Set categories that should always escalate.
-    pub fn with_escalate_on(mut self, categories: Vec<String>) -> Self {
-        if let ResolutionMode::Arbiter {
-            ref mut escalate_on,
-            ..
-        } = self.mode
-        {
-            *escalate_on = categories;
-        }
-        self
-    }
-
-    /// Set categories that can auto-proceed.
-    pub fn with_auto_proceed_on(mut self, categories: Vec<String>) -> Self {
-        if let ResolutionMode::Arbiter {
-            ref mut auto_proceed_on,
-            ..
-        } = self.mode
-        {
-            *auto_proceed_on = categories;
-        }
+        self.mode.confidence_threshold = threshold;
         self
     }
 
@@ -918,27 +940,6 @@ fn extract_json(response: &str) -> Option<String> {
     None
 }
 
-/// Check if a finding's category matches any in the escalation list.
-fn matches_escalate_category(finding: &ReviewFinding, escalate_on: &[String]) -> bool {
-    finding.category().is_some_and(|cat| {
-        escalate_on
-            .iter()
-            .any(|c| cat.to_lowercase().contains(&c.to_lowercase()))
-    })
-}
-
-/// Check if all findings have categories in the auto-proceed list.
-fn all_findings_auto_proceed(findings: &[ReviewFinding], auto_proceed_on: &[String]) -> bool {
-    !findings.is_empty()
-        && !auto_proceed_on.is_empty()
-        && findings.iter().all(|f| {
-            f.category().is_some_and(|cat| {
-                auto_proceed_on
-                    .iter()
-                    .any(|c| cat.to_lowercase().contains(&c.to_lowercase()))
-            })
-        })
-}
 
 /// Apply rule-based logic to determine decision without LLM.
 ///
@@ -988,31 +989,6 @@ pub fn apply_rule_based_decision(input: &ArbiterInput, config: &ArbiterConfig) -
                     input.remaining_budget()
                 ),
             );
-        }
-    }
-
-    // Check categories for auto-escalate or auto-proceed based on config
-    if let ResolutionMode::Arbiter {
-        ref escalate_on,
-        ref auto_proceed_on,
-        ..
-    } = config.mode
-    {
-        // Check for categories that should always escalate
-        for finding in &input.blocking_findings {
-            if matches_escalate_category(finding, escalate_on) {
-                let category = finding.category().unwrap(); // Safe: matches_escalate_category guarantees this
-                return ArbiterDecision::fail_phase(
-                    &format!("Finding category '{}' requires human review", category),
-                    1.0,
-                    &format!("Category '{}' is configured to always escalate", category),
-                );
-            }
-        }
-
-        // Check if all findings are in auto-proceed categories
-        if all_findings_auto_proceed(&input.blocking_findings, auto_proceed_on) {
-            return ArbiterDecision::proceed("All findings are in auto-proceed categories", 0.9);
         }
     }
 
@@ -1070,78 +1046,53 @@ impl ArbiterExecutor {
         Self { config }
     }
 
-    /// Create an executor with default manual mode.
-    pub fn manual() -> Self {
-        Self::new(ArbiterConfig::manual())
-    }
-
     /// Create an executor with auto mode.
     pub fn auto(max_attempts: u32) -> Self {
         Self::new(ArbiterConfig::auto(max_attempts))
     }
 
-    /// Create an executor with arbiter mode.
+    /// Create an executor with arbiter mode (LLM-backed).
     pub fn arbiter() -> Self {
         Self::new(ArbiterConfig::arbiter_mode())
     }
 
     /// Make a decision on how to handle review failures.
     ///
-    /// The decision process depends on the configured mode:
-    /// - **Manual**: Always returns ESCALATE
-    /// - **Auto**: Uses rule-based logic
-    /// - **Arbiter**: Invokes LLM with fallback to rules
+    /// If LLM model is configured, tries LLM first then falls back to rules.
+    /// Otherwise uses rule-based logic directly.
     pub async fn decide(&self, input: ArbiterInput) -> anyhow::Result<ArbiterResult> {
-        match &self.config.mode {
-            ResolutionMode::Manual => {
-                // Manual mode always escalates to human
-                let decision = ArbiterDecision::fail_phase(
-                    "Manual resolution mode - human decision required",
-                    1.0,
-                    &format!(
-                        "{} finding(s) from {} specialist(s) require review",
-                        input.blocking_findings_count(),
-                        input.failed_specialists.len()
-                    ),
-                );
-                Ok(ArbiterResult::from_config(decision))
-            }
-            ResolutionMode::Auto { .. } => {
-                // Auto mode uses rule-based logic
-                let decision = apply_rule_based_decision(&input, &self.config);
-                Ok(ArbiterResult::rule_based(decision))
-            }
-            ResolutionMode::Arbiter {
-                confidence_threshold,
-                ..
-            } => {
-                // Arbiter mode: try LLM, fall back to rules
-                match self.invoke_llm_arbiter(&input).await {
-                    Ok(result) => {
-                        // Check if decision meets confidence threshold
-                        if result.decision.meets_confidence(*confidence_threshold) {
-                            Ok(result)
-                        } else {
-                            // Low confidence - fall back to rule-based
-                            if self.config.verbose {
-                                eprintln!(
-                                    "[arbiter] LLM confidence ({:.0}%) below threshold ({:.0}%), using rules",
-                                    result.decision.confidence * 100.0,
-                                    confidence_threshold * 100.0
-                                );
-                            }
-                            let decision = apply_rule_based_decision(&input, &self.config);
-                            Ok(ArbiterResult::rule_based(decision))
+        if self.config.mode.has_llm() {
+            // LLM mode: try LLM, fall back to rules
+            let threshold = self.config.mode.confidence_threshold;
+            match self.invoke_llm_arbiter(&input).await {
+                Ok(result) => {
+                    // Check if decision meets confidence threshold
+                    if result.decision.meets_confidence(threshold) {
+                        Ok(result)
+                    } else {
+                        // Low confidence - fall back to rule-based
+                        if self.config.verbose {
+                            eprintln!(
+                                "[arbiter] LLM confidence ({:.0}%) below threshold ({:.0}%), using rules",
+                                result.decision.confidence * 100.0,
+                                threshold * 100.0
+                            );
                         }
-                    }
-                    Err(e) => {
-                        // LLM failed - fall back to rules
-                        eprintln!("[arbiter] Warning: LLM call failed: {}, using rules", e);
                         let decision = apply_rule_based_decision(&input, &self.config);
-                        Ok(ArbiterResult::fallback(decision, &e.to_string()))
+                        Ok(ArbiterResult::rule_based(decision))
                     }
                 }
+                Err(e) => {
+                    // LLM failed - fall back to rules
+                    eprintln!("[arbiter] Warning: LLM call failed: {}, using rules", e);
+                    let decision = apply_rule_based_decision(&input, &self.config);
+                    Ok(ArbiterResult::fallback(decision, &e.to_string()))
+                }
             }
+        } else {
+            // Rule-based only
+            let decision = apply_rule_based_decision(&input, &self.config);
+            Ok(ArbiterResult::rule_based(decision))
         }
     }
 
@@ -1253,7 +1204,7 @@ impl ArbiterExecutor {
             return Some(ArbiterResult::rule_based(decision));
         }
 
-        // Max fix attempts reached - always escalate
+        // Max fix attempts reached - fail phase
         if input.fix_attempts >= self.config.max_fix_attempts {
             let decision = ArbiterDecision::fail_phase(
                 "Max fix attempts reached",
@@ -1261,39 +1212,6 @@ impl ArbiterExecutor {
                 &format!("{} fix attempts made without success", input.fix_attempts),
             );
             return Some(ArbiterResult::rule_based(decision));
-        }
-
-        // Check for forced escalation categories
-        if let ResolutionMode::Arbiter {
-            ref escalate_on, ..
-        } = self.config.mode
-        {
-            for finding in &input.blocking_findings {
-                if matches_escalate_category(finding, escalate_on) {
-                    let category = finding.category().unwrap(); // Safe: helper guarantees this
-                    let decision = ArbiterDecision::fail_phase(
-                        &format!("Category '{}' requires human review", category),
-                        1.0,
-                        &format!(
-                            "Finding in category '{}' configured for escalation",
-                            category
-                        ),
-                    );
-                    return Some(ArbiterResult::from_config(decision));
-                }
-            }
-        }
-
-        // Check for auto-proceed categories (only if all findings match)
-        if let ResolutionMode::Arbiter {
-            ref auto_proceed_on,
-            ..
-        } = self.config.mode
-            && all_findings_auto_proceed(&input.blocking_findings, auto_proceed_on)
-        {
-            let decision =
-                ArbiterDecision::proceed("All findings in auto-proceed categories", 0.95);
-            return Some(ArbiterResult::from_config(decision));
         }
 
         None
@@ -1324,57 +1242,54 @@ mod tests {
     // =========================================
 
     #[test]
-    fn test_resolution_mode_manual() {
-        let mode = ResolutionMode::manual();
-        assert!(mode.is_manual());
-        assert!(!mode.is_auto());
-        assert!(!mode.is_arbiter());
-        assert_eq!(mode.max_attempts(), None);
-    }
-
-    #[test]
     fn test_resolution_mode_auto() {
         let mode = ResolutionMode::auto(3);
-        assert!(!mode.is_manual());
         assert!(mode.is_auto());
-        assert!(!mode.is_arbiter());
         assert_eq!(mode.max_attempts(), Some(3));
+        assert!(!mode.has_llm());
     }
 
     #[test]
-    fn test_resolution_mode_arbiter() {
-        let mode = ResolutionMode::arbiter();
-        assert!(!mode.is_manual());
-        assert!(!mode.is_auto());
-        assert!(mode.is_arbiter());
-        assert_eq!(mode.confidence_threshold(), Some(0.7));
+    fn test_resolution_mode_auto_with_model() {
+        let mode = ResolutionMode::auto_with_llm(2, "claude-3-sonnet", 0.8);
+        assert_eq!(mode.max_attempts(), Some(2));
+        assert_eq!(mode.confidence_threshold(), Some(0.8));
+        assert_eq!(mode.model(), Some("claude-3-sonnet"));
+        assert!(mode.has_llm());
     }
 
     #[test]
     fn test_resolution_mode_default() {
         let mode = ResolutionMode::default();
-        assert!(mode.is_manual());
+        assert!(mode.is_auto());
+        assert_eq!(mode.max_attempts(), Some(2));
     }
 
     #[test]
     fn test_resolution_mode_display() {
-        assert_eq!(format!("{}", ResolutionMode::manual()), "manual");
         assert_eq!(
             format!("{}", ResolutionMode::auto(2)),
             "auto (max 2 attempts)"
         );
-        assert!(format!("{}", ResolutionMode::arbiter()).contains("arbiter"));
+        let llm = ResolutionMode::auto_with_llm(2, "claude-3-sonnet", 0.7);
+        assert!(format!("{}", llm).contains("auto+llm"));
     }
 
     #[test]
-    fn test_resolution_mode_serialization() {
-        let mode = ResolutionMode::Auto { max_attempts: 3 };
-        let json = serde_json::to_string(&mode).unwrap();
-        assert!(json.contains("auto"));
-        assert!(json.contains("3"));
+    fn test_deprecated_manual_deserializes_as_auto() {
+        let json = r#"{"mode":"manual"}"#;
+        let config: ArbiterConfig = serde_json::from_str(json).unwrap();
+        assert!(config.mode.is_auto());
+    }
 
-        let parsed: ResolutionMode = serde_json::from_str(&json).unwrap();
-        assert_eq!(mode, parsed);
+    #[test]
+    fn test_deprecated_arbiter_deserializes_as_auto() {
+        // When mode is a string "arbiter", it maps to auto_with_llm with default threshold
+        let json = r#"{"mode":"arbiter"}"#;
+        let config: ArbiterConfig = serde_json::from_str(json).unwrap();
+        assert!(config.mode.is_auto());
+        assert!(config.mode.has_llm());
+        assert_eq!(config.mode.confidence_threshold(), Some(0.7));
     }
 
     // =========================================
@@ -1384,16 +1299,10 @@ mod tests {
     #[test]
     fn test_arbiter_config_default() {
         let config = ArbiterConfig::default();
-        assert!(config.mode.is_manual());
+        assert!(config.mode.is_auto());
         assert_eq!(config.claude_cmd, "claude");
         assert_eq!(config.max_fix_attempts, 2);
         assert!(config.include_file_context);
-    }
-
-    #[test]
-    fn test_arbiter_config_manual() {
-        let config = ArbiterConfig::manual();
-        assert!(config.mode.is_manual());
     }
 
     #[test]
@@ -1406,11 +1315,9 @@ mod tests {
     #[test]
     fn test_arbiter_config_arbiter_mode() {
         let config = ArbiterConfig::arbiter_mode()
-            .with_confidence_threshold(0.8)
-            .with_escalate_on(vec!["security".to_string()])
-            .with_auto_proceed_on(vec!["style".to_string()]);
+            .with_confidence_threshold(0.8);
 
-        assert!(config.mode.is_arbiter());
+        assert!(config.mode.has_llm());
         assert_eq!(config.mode.confidence_threshold(), Some(0.8));
     }
 
@@ -1877,28 +1784,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rule_based_escalate_on_category() {
-        let finding = ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Issue")
-            .with_category("security-critical");
-        let input = ArbiterInput::new("05", "Test", 20, 5).with_blocking_findings(vec![finding]);
-        let config = ArbiterConfig::arbiter_mode().with_escalate_on(vec!["security".to_string()]);
-
-        let decision = apply_rule_based_decision(&input, &config);
-        assert_eq!(decision.decision, ArbiterVerdict::FailPhase);
-    }
-
-    #[test]
-    fn test_rule_based_auto_proceed_category() {
-        let finding = ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Style issue")
-            .with_category("style-naming");
-        let input = ArbiterInput::new("05", "Test", 20, 5).with_blocking_findings(vec![finding]);
-        let config = ArbiterConfig::arbiter_mode().with_auto_proceed_on(vec!["style".to_string()]);
-
-        let decision = apply_rule_based_decision(&input, &config);
-        assert_eq!(decision.decision, ArbiterVerdict::Proceed);
-    }
-
-    #[test]
     fn test_rule_based_default_fix() {
         let finding = ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Warning");
         let input = ArbiterInput::new("05", "Test", 20, 5).with_blocking_findings(vec![finding]);
@@ -1916,85 +1801,6 @@ mod tests {
 
         let decision = apply_rule_based_decision(&input, &config);
         assert_eq!(decision.decision, ArbiterVerdict::FailPhase);
-    }
-
-    // =========================================
-    // Helper function tests
-    // =========================================
-
-    #[test]
-    fn test_matches_escalate_category_true() {
-        let finding = ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Issue")
-            .with_category("security-vuln");
-        let escalate_on = vec!["security".to_string()];
-
-        assert!(matches_escalate_category(&finding, &escalate_on));
-    }
-
-    #[test]
-    fn test_matches_escalate_category_false() {
-        let finding = ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Issue")
-            .with_category("style-naming");
-        let escalate_on = vec!["security".to_string()];
-
-        assert!(!matches_escalate_category(&finding, &escalate_on));
-    }
-
-    #[test]
-    fn test_matches_escalate_category_no_category() {
-        let finding = ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Issue");
-        let escalate_on = vec!["security".to_string()];
-
-        assert!(!matches_escalate_category(&finding, &escalate_on));
-    }
-
-    #[test]
-    fn test_matches_escalate_category_case_insensitive() {
-        let finding = ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Issue")
-            .with_category("SECURITY-VULN");
-        let escalate_on = vec!["security".to_string()];
-
-        assert!(matches_escalate_category(&finding, &escalate_on));
-    }
-
-    #[test]
-    fn test_all_findings_auto_proceed_true() {
-        let findings = vec![
-            ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Issue").with_category("style-1"),
-            ReviewFinding::new(FindingSeverity::Warning, "b.rs", "Issue").with_category("style-2"),
-        ];
-        let auto_proceed = vec!["style".to_string()];
-
-        assert!(all_findings_auto_proceed(&findings, &auto_proceed));
-    }
-
-    #[test]
-    fn test_all_findings_auto_proceed_false_mixed() {
-        let findings = vec![
-            ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Issue").with_category("style-1"),
-            ReviewFinding::new(FindingSeverity::Warning, "b.rs", "Issue").with_category("security"),
-        ];
-        let auto_proceed = vec!["style".to_string()];
-
-        assert!(!all_findings_auto_proceed(&findings, &auto_proceed));
-    }
-
-    #[test]
-    fn test_all_findings_auto_proceed_empty_findings() {
-        let findings: Vec<ReviewFinding> = vec![];
-        let auto_proceed = vec!["style".to_string()];
-
-        assert!(!all_findings_auto_proceed(&findings, &auto_proceed));
-    }
-
-    #[test]
-    fn test_all_findings_auto_proceed_empty_auto_proceed() {
-        let findings = vec![
-            ReviewFinding::new(FindingSeverity::Warning, "a.rs", "Issue").with_category("style"),
-        ];
-        let auto_proceed: Vec<String> = vec![];
-
-        assert!(!all_findings_auto_proceed(&findings, &auto_proceed));
     }
 
     #[test]
