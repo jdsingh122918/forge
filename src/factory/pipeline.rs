@@ -13,6 +13,43 @@ use super::planner::{Planner, PlanProvider};
 use super::sandbox::{DockerSandbox, SandboxConfig};
 use super::ws::{WsMessage, broadcast_message};
 
+/// Decision for where to move an issue after pipeline completion.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PromoteDecision {
+    /// Clean run — move to Done.
+    Done,
+    /// Has warnings or issues — move to InReview.
+    InReview,
+    /// Pipeline failed — stay as-is.
+    Failed,
+}
+
+/// Policy for auto-promoting issues after pipeline completion.
+pub struct AutoPromotePolicy;
+
+impl AutoPromotePolicy {
+    /// Decide where to move an issue based on pipeline results.
+    ///
+    /// - `pipeline_succeeded`: did the pipeline complete without failures?
+    /// - `has_review_warnings`: did any review produce warnings?
+    /// - `arbiter_proceeded`: did the arbiter have to PROCEED past findings?
+    /// - `fix_attempts`: how many fix cycles were needed?
+    pub fn decide(
+        pipeline_succeeded: bool,
+        has_review_warnings: bool,
+        arbiter_proceeded: bool,
+        fix_attempts: u32,
+    ) -> PromoteDecision {
+        if !pipeline_succeeded {
+            return PromoteDecision::Failed;
+        }
+        if has_review_warnings || arbiter_proceeded || fix_attempts > 0 {
+            return PromoteDecision::InReview;
+        }
+        PromoteDecision::Done
+    }
+}
+
 fn translate_host_path_to_container(path: &str) -> String {
     if path.contains("/.forge/repos/") && !path.starts_with("/app/") {
         if let Some(pos) = path.find("/.forge/repos/") {
@@ -57,6 +94,7 @@ enum PlanOutcome {
     /// Planner returned a single-task sequential plan; caller should fall back to the forge pipeline.
     FallbackToForge,
 }
+
 
 /// Convert a title to a URL-safe slug, limited to `max_len` characters.
 pub fn slugify(title: &str, max_len: usize) -> String {
@@ -2369,5 +2407,40 @@ mod tests {
         ).await.unwrap();
 
         assert!(matches!(result, PlanOutcome::FallbackToForge));
+    }
+
+    #[cfg(test)]
+    mod auto_promote_tests {
+        use super::super::*;
+
+        #[test]
+        fn test_promote_decision_clean_run() {
+            let decision = AutoPromotePolicy::decide(true, false, false, 0);
+            assert_eq!(decision, PromoteDecision::Done);
+        }
+
+        #[test]
+        fn test_promote_decision_with_warnings() {
+            let decision = AutoPromotePolicy::decide(true, true, false, 0);
+            assert_eq!(decision, PromoteDecision::InReview);
+        }
+
+        #[test]
+        fn test_promote_decision_arbiter_proceeded() {
+            let decision = AutoPromotePolicy::decide(true, false, true, 0);
+            assert_eq!(decision, PromoteDecision::InReview);
+        }
+
+        #[test]
+        fn test_promote_decision_with_fix_attempts() {
+            let decision = AutoPromotePolicy::decide(true, false, false, 1);
+            assert_eq!(decision, PromoteDecision::InReview);
+        }
+
+        #[test]
+        fn test_promote_decision_failed_pipeline() {
+            let decision = AutoPromotePolicy::decide(false, false, false, 0);
+            assert_eq!(decision, PromoteDecision::Failed);
+        }
     }
 }
