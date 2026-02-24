@@ -159,12 +159,8 @@ impl ApprovalGate {
                 );
                 Ok(GateDecision::Approved)
             }
-            PermissionMode::Standard | PermissionMode::Strict => {
-                // ── Threshold auto-approval ───────────────────────────────────────────
-                // If the previous phase touched ≤ auto_threshold files (default 5),
-                // and there were *some* changes (> 0), silently approve. This avoids
-                // prompting for trivial clean-up phases while gating large rewrites.
-                // Note: if previous_changes is None (first phase), fall through to prompt.
+            PermissionMode::Standard => {
+                // Standard: use threshold-based auto-approval for phase start
                 if let Some(changes) = previous_changes
                     && changes.total_files() <= self.auto_threshold
                     && changes.total_files() > 0
@@ -183,32 +179,16 @@ impl ApprovalGate {
         }
     }
 
-    /// Check whether an iteration should proceed (for strict mode).
-    /// Called before each iteration in strict mode.
+    /// Check whether an iteration should proceed.
+    /// Always returns Continue (strict mode was removed).
     pub fn check_iteration(
         &mut self,
-        phase: &Phase,
-        iteration: u32,
-        changes: Option<&FileChangeSummary>,
+        _phase: &Phase,
+        _iteration: u32,
+        _changes: Option<&FileChangeSummary>,
         _ui: &OrchestratorUI,
     ) -> Result<IterationDecision> {
-        // Only strict mode requires per-iteration approval
-        if phase.permission_mode != PermissionMode::Strict || self.skip_all {
-            return Ok(IterationDecision::Continue);
-        }
-
-        // Show iteration info
-        if let Some(changes) = changes {
-            println!(
-                "  Iteration {}/{}: {} file(s) changed so far",
-                iteration,
-                phase.budget,
-                changes.total_files()
-            );
-        }
-
-        // Prompt for iteration approval
-        self.prompt_iteration(iteration, phase.budget)
+        Ok(IterationDecision::Continue)
     }
 
     /// Check whether to continue in autonomous mode based on progress.

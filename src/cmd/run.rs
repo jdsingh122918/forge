@@ -225,27 +225,6 @@ pub async fn run_orchestrator(
         let mut any_progress_signaled = false;
         let mut total_pivots: usize = 0;
         for iter in 1..=phase.budget {
-            // === STRICT MODE: Per-iteration approval ===
-            if phase.permission_mode == PermissionMode::Strict {
-                let current_changes = tracker.compute_changes(&snapshot_sha)?;
-                match gate.check_iteration(&phase, iter, Some(&current_changes), &ui)? {
-                    IterationDecision::Continue => {}
-                    IterationDecision::Skip => {
-                        println!("  Iteration {} skipped by user", iter);
-                        continue;
-                    }
-                    IterationDecision::StopPhase => {
-                        println!("  Phase stopped by user at iteration {}", iter);
-                        break;
-                    }
-                    IterationDecision::Abort => {
-                        println!("  Orchestrator aborted by user");
-                        phase_aborted = true;
-                        break;
-                    }
-                }
-            }
-
             // === AUTONOMOUS MODE: Check progress before continuing ===
             if phase.permission_mode == PermissionMode::Autonomous
                 && iter > 1

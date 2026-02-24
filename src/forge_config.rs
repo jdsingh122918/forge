@@ -59,12 +59,11 @@ use std::path::{Path, PathBuf};
 /// available (the *allowed-tools list*) and how the orchestrator handles
 /// iteration approval (the *gate behaviour*).
 ///
-/// | Mode       | When to use              | Gate behavior                           |
-/// |------------|--------------------------|-----------------------------------------|
-/// | `Readonly` | Auditing / inspection    | Restricts toolset to read-only tools; flags any file modifications after the fact |
-/// | `Standard` | Normal development       | Threshold-based auto-approve (≤N files) |
-/// | `Autonomous` | Well-tested, CI        | Auto-approves all; stale-check per iter |
-/// | `Strict`   | Sensitive / high-risk    | Requires manual approval every iteration|
+/// | Mode         | When to use              | Gate behavior                           |
+/// |--------------|-------------------------|-----------------------------------------|
+/// | `Readonly`   | Auditing / inspection   | Restricts toolset to read-only tools; flags any file modifications after the fact |
+/// | `Standard`   | Normal development      | Threshold-based auto-approve (≤N files) |
+/// | `Autonomous` | Well-tested, CI         | Auto-approves all; stale-check per iter |
 ///
 /// `Standard` is the default. The `auto_approve_threshold` field in
 /// `[defaults]` (or a phase override) sets the file-count ceiling for
@@ -72,8 +71,6 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionMode {
-    /// Require approval for every iteration (sensitive phases)
-    Strict,
     /// Approve phase start, auto-continue iterations (default)
     #[default]
     Standard,
@@ -83,10 +80,33 @@ pub enum PermissionMode {
     Readonly,
 }
 
+impl<'de> serde::Deserialize<'de> for PermissionMode {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.to_lowercase().as_str() {
+            "strict" => {
+                eprintln!(
+                    "  Warning: 'strict' permission mode is deprecated and maps to 'standard'"
+                );
+                Ok(PermissionMode::Standard)
+            }
+            "standard" => Ok(PermissionMode::Standard),
+            "autonomous" => Ok(PermissionMode::Autonomous),
+            "readonly" => Ok(PermissionMode::Readonly),
+            _ => Err(serde::de::Error::custom(format!(
+                "Invalid permission mode '{}'. Valid values: standard, autonomous, readonly",
+                s
+            ))),
+        }
+    }
+}
+
 impl std::fmt::Display for PermissionMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PermissionMode::Strict => write!(f, "strict"),
             PermissionMode::Standard => write!(f, "standard"),
             PermissionMode::Autonomous => write!(f, "autonomous"),
             PermissionMode::Readonly => write!(f, "readonly"),
@@ -99,12 +119,17 @@ impl std::str::FromStr for PermissionMode {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "strict" => Ok(PermissionMode::Strict),
+            "strict" => {
+                eprintln!(
+                    "  Warning: 'strict' permission mode is deprecated and maps to 'standard'"
+                );
+                Ok(PermissionMode::Standard)
+            }
             "standard" => Ok(PermissionMode::Standard),
             "autonomous" => Ok(PermissionMode::Autonomous),
             "readonly" => Ok(PermissionMode::Readonly),
             _ => anyhow::bail!(
-                "Invalid permission mode '{}'. Valid values: strict, standard, autonomous, readonly",
+                "Invalid permission mode '{}'. Valid values: standard, autonomous, readonly",
                 s
             ),
         }
@@ -922,17 +947,24 @@ mod tests {
 
     #[test]
     fn test_permission_mode_display() {
-        assert_eq!(PermissionMode::Strict.to_string(), "strict");
         assert_eq!(PermissionMode::Standard.to_string(), "standard");
         assert_eq!(PermissionMode::Autonomous.to_string(), "autonomous");
         assert_eq!(PermissionMode::Readonly.to_string(), "readonly");
     }
 
     #[test]
+    fn test_strict_mode_deserializes_as_standard_with_warning() {
+        // "strict" in config should map to Standard (deprecated)
+        let mode: PermissionMode = serde_json::from_str("\"strict\"").unwrap();
+        assert_eq!(mode, PermissionMode::Standard);
+    }
+
+    #[test]
     fn test_permission_mode_from_str() {
+        // "strict" should map to Standard (deprecated)
         assert_eq!(
             "strict".parse::<PermissionMode>().unwrap(),
-            PermissionMode::Strict
+            PermissionMode::Standard
         );
         assert_eq!(
             "STANDARD".parse::<PermissionMode>().unwrap(),
@@ -1054,7 +1086,7 @@ skip_permissions = false
         let toml = ForgeToml::parse(content).unwrap();
         assert_eq!(toml.defaults.budget, 15);
         assert_eq!(toml.defaults.auto_approve_threshold, 10);
-        assert_eq!(toml.defaults.permission_mode, PermissionMode::Strict);
+        assert_eq!(toml.defaults.permission_mode, PermissionMode::Standard); // "strict" maps to Standard
         assert_eq!(toml.defaults.context_limit, "90%");
         assert!(!toml.defaults.skip_permissions);
     }
@@ -1073,7 +1105,7 @@ permission_mode = "autonomous"
         assert_eq!(toml.phases.overrides.len(), 2);
 
         let db_override = toml.phases.overrides.get("database-*").unwrap();
-        assert_eq!(db_override.permission_mode, Some(PermissionMode::Strict));
+        assert_eq!(db_override.permission_mode, Some(PermissionMode::Standard)); // "strict" maps to Standard
         assert_eq!(db_override.budget, Some(12));
 
         let test_override = toml.phases.overrides.get("test-*").unwrap();
@@ -1110,7 +1142,7 @@ permission_mode = "strict"
 
         let database = toml.phase_settings("database-setup");
         assert_eq!(database.budget, 20);
-        assert_eq!(database.permission_mode, PermissionMode::Strict);
+        assert_eq!(database.permission_mode, PermissionMode::Standard); // "strict" maps to Standard
     }
 
     #[test]
@@ -1546,11 +1578,6 @@ session_continuity = false
     #[test]
     fn test_tools_for_standard_mode() {
         assert!(tools_for_permission_mode(PermissionMode::Standard).is_none());
-    }
-
-    #[test]
-    fn test_tools_for_strict_mode() {
-        assert!(tools_for_permission_mode(PermissionMode::Strict).is_none());
     }
 
     #[test]
