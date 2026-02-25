@@ -321,23 +321,23 @@ async fn clone_project(
     };
 
     // If we have a GitHub token, use it for cloning (enables private repos)
-    let clone_url = {
+    let (clone_url, token) = {
         let gh_token = state.github_token.lock()
             .map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
-        if let Some(ref token) = *gh_token {
+        if let Some(ref t) = *gh_token {
             if clone_url.starts_with("https://github.com/") {
-                clone_url.replacen("https://github.com/", &format!("https://x-access-token:{}@github.com/", token), 1)
+                (clone_url.replacen("https://github.com/", &format!("https://x-access-token:{}@github.com/", t), 1), Some(t.clone()))
             } else {
-                clone_url
+                (clone_url, Some(t.clone()))
             }
         } else {
-            clone_url
+            (clone_url, None)
         }
     };
 
     // Clone into .forge/repos/<repo_name>
     let repos_dir = std::path::PathBuf::from(".forge/repos");
-    std::fs::create_dir_all(&repos_dir)
+    tokio::fs::create_dir_all(&repos_dir).await
         .map_err(|e| ApiError::Internal(format!("Failed to create repos directory: {}", e)))?;
 
     let clone_path = repos_dir.join(&repo_name);
@@ -355,12 +355,26 @@ async fn clone_project(
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ApiError::BadRequest(format!("git clone failed: {}", stderr.trim())));
+            let sanitized_stderr = if let Some(ref t) = token {
+                stderr.trim().replace(t, "***")
+            } else {
+                stderr.trim().to_string()
+            };
+            return Err(ApiError::BadRequest(format!("git clone failed: {}", sanitized_stderr)));
+        }
+
+        // After successful clone, strip token from remote URL to prevent leaking
+        if token.is_some() {
+            let _ = tokio::process::Command::new("git")
+                .args(["remote", "set-url", "origin", &repo_url])
+                .current_dir(&clone_path_str)
+                .output()
+                .await;
         }
     }
 
     // Resolve to absolute path for the project record
-    let abs_path = std::fs::canonicalize(&clone_path)
+    let abs_path = tokio::fs::canonicalize(&clone_path).await
         .map_err(|e| ApiError::Internal(format!("Failed to resolve path: {}", e)))?;
     let abs_path_str = abs_path.to_string_lossy().to_string();
 
@@ -391,8 +405,7 @@ async fn clone_project(
         Ok(project)
     }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    let msg = serde_json::json!({"event": "project_created", "project": project}).to_string();
-    let _ = state.ws_tx.send(msg);
+    broadcast_message(&state.ws_tx, &WsMessage::ProjectCreated { project: project.clone() });
 
     // Auto-sync GitHub issues in the background
     if github_repo.is_some() {
@@ -628,11 +641,6 @@ async fn serve_screenshot(
     State(state): State<SharedState>,
     Path(file_path): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Reject path traversal
-    if file_path.contains("..") {
-        return Err(ApiError::BadRequest("Invalid path".into()));
-    }
-
     let project_path = state.db.call(|db| {
         let projects = db.list_projects()?;
         projects.first()
@@ -640,12 +648,16 @@ async fn serve_screenshot(
             .ok_or_else(|| anyhow::anyhow!("No projects"))
     }).await.map_err(|e| ApiError::NotFound(e.to_string()))?;
 
-    let full_path = std::path::PathBuf::from(&project_path)
-        .join(".forge/screenshots")
-        .join(&file_path);
+    let screenshots_dir = std::path::PathBuf::from(&project_path).join(".forge/screenshots");
+    let full_path = screenshots_dir.join(&file_path);
 
-    if !full_path.exists() {
-        return Err(ApiError::NotFound(format!("Screenshot not found: {}", file_path)));
+    // Verify resolved path is within screenshots directory (prevents path traversal)
+    let canonical_dir = tokio::fs::canonicalize(&screenshots_dir).await
+        .map_err(|_| ApiError::NotFound("Screenshots directory not found".into()))?;
+    let canonical_file = tokio::fs::canonicalize(&full_path).await
+        .map_err(|_| ApiError::NotFound(format!("Screenshot not found: {}", file_path)))?;
+    if !canonical_file.starts_with(&canonical_dir) {
+        return Err(ApiError::BadRequest("Invalid path".into()));
     }
 
     let content_type = match full_path.extension().and_then(|e| e.to_str()) {
@@ -1452,7 +1464,13 @@ mod tests {
                 .body(Body::empty())
                 .unwrap(),
         ).await.unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        // Returns 404 (directory not found) or 400 (traversal detected) depending on
+        // whether the screenshots directory exists. Both correctly reject the request.
+        assert!(
+            res.status() == StatusCode::BAD_REQUEST || res.status() == StatusCode::NOT_FOUND,
+            "Expected 400 or 404, got {}",
+            res.status()
+        );
     }
 
     #[tokio::test]

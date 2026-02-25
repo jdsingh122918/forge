@@ -74,7 +74,9 @@ impl OutputParser {
     /// 4. Other JSON with `"type"` field → event_type "output"
     /// 5. Anything else → event_type "output" (plain text)
     ///
-    /// Note: Valid JSON without a "type" field falls through to rule 5 (plain text).
+    /// Note: Valid JSON without a "type" field falls through to rule 5 (plain text)
+    /// and its metadata will be None, even though the JSON was successfully parsed.
+    /// This is intentional -- only typed JSON is captured with its parsed value.
     pub fn parse_line(line: &str) -> ParsedEvent {
         let trimmed = line.trim();
 
@@ -327,7 +329,13 @@ impl AgentExecutor {
                     }
                     // Flush batch to DB using lock_sync() for brief batch writes
                     {
-                        let db = db_writer.lock_sync();
+                        let db = match db_writer.lock_sync() {
+                            Ok(db) => db,
+                            Err(e) => {
+                                eprintln!("[agent] DB lock poisoned, stopping event writer: {}", e);
+                                break;
+                            }
+                        };
                         for (task_id, event_type, content, metadata) in batch.drain(..) {
                             if let Err(e) = db.create_agent_event(task_id, &event_type, &content, metadata.as_ref()) {
                                 eprintln!("[agent] Failed to write event: {:#}", e);
@@ -337,7 +345,13 @@ impl AgentExecutor {
                 }
                 // Flush remaining
                 if !batch.is_empty() {
-                    let db = db_writer.lock_sync();
+                    let db = match db_writer.lock_sync() {
+                        Ok(db) => db,
+                        Err(e) => {
+                            eprintln!("[agent] DB lock poisoned, dropping {} unflushed events: {}", batch.len(), e);
+                            return;
+                        }
+                    };
                     for (task_id, event_type, content, metadata) in batch.drain(..) {
                         if let Err(e) = db.create_agent_event(task_id, &event_type, &content, metadata.as_ref()) {
                             eprintln!("[agent] Failed to flush event for task {}: {:#}", task_id, e);
@@ -529,6 +543,7 @@ impl AgentExecutor {
     /// WARNING: This performs `git checkout` on the main project directory.
     /// It is NOT safe for concurrent use -- callers must ensure exclusive access
     /// to the project directory during merge operations.
+    /// See `GitLockMap` in `pipeline.rs` which provides per-project mutex serialization for callers.
     pub async fn merge_branch(&self, task_branch: &str, target_branch: &str) -> Result<bool> {
         // Record current HEAD so we can restore on failure
         let head_output = Command::new("git")
@@ -570,13 +585,27 @@ impl AgentExecutor {
             eprintln!("[agent] Merge of {} into {} failed: {}", task_branch, target_branch, stderr.trim());
 
             // Merge failed — abort and restore original branch
-            if let Err(e) = Command::new("git")
+            let abort_output = Command::new("git")
                 .args(["merge", "--abort"])
                 .current_dir(&self.project_path)
                 .output()
-                .await
-            {
-                eprintln!("[agent] CRITICAL: merge --abort failed: {}", e);
+                .await;
+
+            match abort_output {
+                Err(e) => {
+                    anyhow::bail!(
+                        "Merge of {} failed AND merge --abort could not execute: {}",
+                        task_branch, e
+                    );
+                }
+                Ok(output) if !output.status.success() => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    anyhow::bail!(
+                        "Merge of {} failed AND merge --abort failed: {}",
+                        task_branch, stderr.trim()
+                    );
+                }
+                Ok(_) => {} // abort succeeded, continue to return Ok(false)
             }
             if original_branch != target_branch && let Err(e) = Command::new("git")
                 .args(["checkout", &original_branch])

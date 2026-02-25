@@ -106,8 +106,15 @@ export function ProjectSetup({ projects, onSelect, onCreate, onClone }: ProjectS
             const fetchedRepos = await api.githubRepos();
             setRepos(fetchedRepos);
           }
-        } catch {
-          // Polling errors are expected while user hasn't authorized yet
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes('access_denied') || msg.includes('expired_token')) {
+            if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+            setGhState('idle');
+            setDeviceUserCode('');
+            setDeviceVerificationUri('');
+          }
+          // authorization_pending and slow_down are expected -- continue polling
         }
       }, interval);
     } catch (err) {
@@ -117,7 +124,12 @@ export function ProjectSetup({ projects, onSelect, onCreate, onClone }: ProjectS
 
   const handleDisconnect = useCallback(async () => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    await api.githubDisconnect();
+    try {
+      await api.githubDisconnect();
+    } catch (err) {
+      console.error('[github] Disconnect failed:', err);
+    }
+    // Continue with state cleanup regardless
     setGhState('idle');
     setRepos([]);
     setSelectedRepo(null);

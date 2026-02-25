@@ -31,12 +31,19 @@ export function WebSocketProvider({ url, children }: { url: string; children: Re
       }
 
       ws.onmessage = (event) => {
+        let message: WsMessage
         try {
-          const message: WsMessage = JSON.parse(event.data)
-          subscribersRef.current.forEach(fn => fn(message))
+          message = JSON.parse(event.data)
         } catch {
-          // ignore unparseable messages
+          return
         }
+        subscribersRef.current.forEach(fn => {
+          try {
+            fn(message)
+          } catch (err) {
+            console.error('[ws] Subscriber error handling message type:', (message as any)?.type, err)
+          }
+        })
       }
 
       ws.onclose = () => {
@@ -48,11 +55,16 @@ export function WebSocketProvider({ url, children }: { url: string; children: Re
         reconnectTimeoutRef.current = window.setTimeout(connect, delay)
       }
 
-      ws.onerror = () => {
+      ws.onerror = (event) => {
+        console.error('[ws] WebSocket error:', event)
         ws.close()
       }
-    } catch {
+    } catch (err) {
+      console.error('[ws] Failed to create WebSocket connection:', err)
       setStatus('disconnected')
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 30000)
+      reconnectAttemptRef.current += 1
+      reconnectTimeoutRef.current = window.setTimeout(connect, delay)
     }
   }, [url])
 

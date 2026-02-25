@@ -23,9 +23,16 @@ pub struct GitLockMap {
 
 impl GitLockMap {
     pub async fn get(&self, project_path: &str) -> Arc<tokio::sync::Mutex<()>> {
-        let canonical = std::fs::canonicalize(project_path)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| project_path.trim_end_matches('/').to_string());
+        let canonical = match tokio::fs::canonicalize(project_path).await {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(e) => {
+                eprintln!(
+                    "[pipeline] Failed to canonicalize '{}': {}. Using raw path for git lock.",
+                    project_path, e
+                );
+                project_path.trim_end_matches('/').to_string()
+            }
+        };
         let mut map = self.locks.lock().await;
         map.entry(canonical)
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
@@ -267,8 +274,11 @@ impl PipelineRunner {
     /// 5. After each wave, merge completed task branches back into the base branch
     ///    (modifies project directory git state -- requires exclusive access)
     ///
-    /// Returns `Ok(PlanOutcome::FallbackToForge)` for single-task sequential plans to signal
-    /// fallback to the forge pipeline.
+    /// Returns `Ok(PlanOutcome::FallbackToForge)` when the caller should use the sequential
+    /// forge pipeline instead. This happens in two cases:
+    /// - The planner returns a single-task sequential plan (issue is too simple for parallelism)
+    /// - Planning fails entirely (LLM error, parse failure, validation failure) and the
+    ///   generated fallback plan is a single sequential task
     #[allow(clippy::too_many_arguments)]
     async fn execute_agent_team(
         project_path: &str,
@@ -590,9 +600,16 @@ impl PipelineRunner {
 
         // Execute the pipeline (Docker or Local)
         if let Some(sandbox) = sandbox_clone {
-            let timeout = SandboxConfig::load(std::path::Path::new(project_path))
-                .map(|c| c.timeout)
-                .unwrap_or(1800);
+            let timeout = match SandboxConfig::load(std::path::Path::new(project_path)) {
+                Ok(config) => config.timeout,
+                Err(e) => {
+                    eprintln!(
+                        "[pipeline] run_id={}: Failed to load sandbox config, using default timeout (1800s): {:#}",
+                        run_id, e
+                    );
+                    1800
+                }
+            };
             execute_pipeline_docker(
                 run_id,
                 project_path,
@@ -707,7 +724,16 @@ impl PipelineRunner {
                         Some(name)
                     }
                     Err(e) => {
-                        eprintln!("[pipeline] run_id={}: failed to create git branch: {:#}. Continuing without branch isolation.", run_id, e);
+                        eprintln!(
+                            "[pipeline] run_id={}: failed to create git branch: {:#}. Continuing without branch isolation.",
+                            run_id, e
+                        );
+                        broadcast_message(&tx, &WsMessage::AgentSignal {
+                            run_id,
+                            task_id: 0,
+                            signal_type: SignalType::Blocker,
+                            content: format!("[pipeline] Git branch creation failed, continuing without branch isolation: {}", e),
+                        });
                         None
                     }
                 }
@@ -763,6 +789,15 @@ impl PipelineRunner {
                         "[pipeline] run_id={}: agent team failed unexpectedly: {:#}",
                         run_id, e
                     );
+                    broadcast_message(&tx, &WsMessage::AgentSignal {
+                        run_id,
+                        task_id: 0,
+                        signal_type: SignalType::Blocker,
+                        content: format!(
+                            "[pipeline] Agent team execution failed, falling back to sequential pipeline: {}",
+                            e
+                        ),
+                    });
                     // Fall back to forge pipeline
                     Self::run_forge_fallback(
                         run_id,
@@ -854,6 +889,13 @@ impl PipelineRunner {
                                 "[pipeline] run_id={}: CRITICAL: completed but failed to update DB: {:#}",
                                 run_id, e
                             );
+                            // Still broadcast completion so UI doesn't show "running" forever
+                            broadcast_message(&tx, &WsMessage::AgentSignal {
+                                run_id,
+                                task_id: 0,
+                                signal_type: SignalType::Blocker,
+                                content: format!("[pipeline] Pipeline completed but failed to persist status: {}", e),
+                            });
                         }
                     }
                     broadcast_message(
@@ -883,6 +925,13 @@ impl PipelineRunner {
                                 "[pipeline] run_id={}: CRITICAL: failed but could not update DB: {:#}",
                                 run_id, e
                             );
+                            // Still broadcast failure so UI doesn't show "running" forever
+                            broadcast_message(&tx, &WsMessage::AgentSignal {
+                                run_id,
+                                task_id: 0,
+                                signal_type: SignalType::Blocker,
+                                content: format!("[pipeline] Pipeline failed but could not persist error status: {}", e),
+                            });
                         }
                     }
                     // Issue stays in InProgress on failure (error is visible on the card)
@@ -1685,7 +1734,7 @@ mod tests {
         // Give the background task time to complete
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-        let db = db.lock_sync();
+        let db = db.lock_sync().unwrap();
         let updated_run = db.get_pipeline_run(run.id).unwrap().unwrap();
         // Should be either Running (if claude not found) or Failed
         assert!(
@@ -2198,7 +2247,7 @@ mod tests {
         let run = db.create_pipeline_run(issue.id).unwrap();
         let db = DbHandle::new(db);
         {
-            let guard = db.lock_sync();
+            let guard = db.lock_sync().unwrap();
             guard.update_pipeline_run(run.id, &PipelineStatus::Running, None, None).unwrap();
         }
         (db, run.id)

@@ -134,6 +134,13 @@ impl FromStr for PipelineStatus {
     }
 }
 
+impl PipelineStatus {
+    /// Returns true for terminal states that indicate the pipeline is no longer running.
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineRun {
     pub id: i64,
@@ -146,8 +153,46 @@ pub struct PipelineRun {
     pub error: Option<String>,
     pub branch_name: Option<String>,
     pub pr_url: Option<String>,
+    #[serde(default)]
+    pub team_id: Option<i64>,
+    #[serde(default)]
+    pub has_team: bool,
     pub started_at: String,
     pub completed_at: Option<String>,
+}
+
+/// Status of a pipeline phase.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhaseStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+}
+
+impl std::fmt::Display for PhaseStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pending => write!(f, "pending"),
+            Self::Running => write!(f, "running"),
+            Self::Completed => write!(f, "completed"),
+            Self::Failed => write!(f, "failed"),
+        }
+    }
+}
+
+impl std::str::FromStr for PhaseStatus {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pending" => Ok(Self::Pending),
+            "running" => Ok(Self::Running),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            other => anyhow::bail!("Invalid phase status: {}", other),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,7 +201,7 @@ pub struct PipelinePhase {
     pub run_id: i64,
     pub phase_number: String,
     pub phase_name: String,
-    pub status: String,
+    pub status: PhaseStatus,
     pub iteration: Option<i32>,
     pub budget: Option<i32>,
     pub started_at: Option<String>,

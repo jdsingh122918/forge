@@ -116,7 +116,9 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     let pipeline_runner = PipelineRunner::new(&config.project_path, sandbox);
     let db_handle = DbHandle::new(db);
 
-    let persisted_token = db_handle.lock_sync().get_setting("github_token").ok().flatten();
+    let persisted_token = db_handle.lock_sync()
+        .context("Failed to acquire DB lock during startup")?
+        .get_setting("github_token").ok().flatten();
 
     let state = Arc::new(AppState {
         db: db_handle,

@@ -96,9 +96,7 @@ impl PlanResponse {
                     .context("Failed to parse planner response as JSON")?
             }
         };
-        if let Err(e) = plan.validate() {
-            eprintln!("[planner] Plan validation warning: {:#}", e);
-        }
+        plan.validate().context("Planner produced an invalid plan")?;
         Ok(plan)
     }
 
@@ -174,7 +172,7 @@ const PLANNER_SYSTEM_PROMPT: &str = r#"You are a software engineering planner. A
 You MUST respond with valid JSON only (no markdown, no explanation) matching this schema:
 {
   "strategy": "parallel" | "sequential" | "wave_pipeline" | "adaptive",
-  "isolation": "worktree" | "container" | "hybrid" | "shared",
+  "isolation": "worktree" | "hybrid" | "shared",
   "reasoning": "Brief explanation of your decomposition",
   "tasks": [
     {
@@ -183,7 +181,7 @@ You MUST respond with valid JSON only (no markdown, no explanation) matching thi
       "wave": 0,
       "description": "Detailed task prompt for the agent",
       "files": ["files/this/task/touches.rs"],
-      "isolation": "worktree" | "container" | "shared",
+      "isolation": "worktree" | "shared",
       "depends_on": []
     }
   ],
@@ -193,7 +191,6 @@ You MUST respond with valid JSON only (no markdown, no explanation) matching thi
 Rules:
 - Tasks in the same wave run in parallel. Higher waves wait for lower waves.
 - Use "worktree" isolation when tasks touch different files and can run in parallel.
-- Use "container" for risky operations (deleting files, modifying configs, running untrusted code).
 - Use "shared" when tasks must see each other's changes (e.g., integration tests after code changes).
 - Set skip_visual_verification to true for pure backend/library changes with no UI impact.
 - For simple issues, return a single task — don't over-decompose.

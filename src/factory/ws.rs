@@ -371,6 +371,8 @@ mod tests {
             pr_url: None,
             started_at: "2024-01-01".to_string(),
             completed_at: None,
+            team_id: None,
+            has_team: false,
         };
         let msg = WsMessage::PipelineStarted { run };
         let json = serde_json::to_string(&msg).unwrap();
@@ -407,6 +409,8 @@ mod tests {
             pr_url: Some("https://github.com/org/repo/pull/42".to_string()),
             started_at: "2024-01-01".to_string(),
             completed_at: Some("2024-01-02".to_string()),
+            team_id: None,
+            has_team: false,
         };
         let msg = WsMessage::PipelineCompleted { run };
         let json = serde_json::to_string(&msg).unwrap();
@@ -430,6 +434,8 @@ mod tests {
             pr_url: None,
             started_at: "2024-01-01".to_string(),
             completed_at: Some("2024-01-02".to_string()),
+            team_id: None,
+            has_team: false,
         };
         let msg = WsMessage::PipelineFailed { run };
         let json = serde_json::to_string(&msg).unwrap();

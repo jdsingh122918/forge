@@ -1,3 +1,4 @@
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
@@ -111,7 +112,8 @@ pub async fn request_device_code(client_id: &str) -> anyhow::Result<DeviceCodeRe
         .header("Accept", "application/json")
         .form(&[("client_id", client_id), ("scope", "repo")])
         .send()
-        .await?;
+        .await
+        .context("Failed to send device code request to GitHub")?;
 
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         anyhow::bail!(
@@ -121,8 +123,8 @@ pub async fn request_device_code(client_id: &str) -> anyhow::Result<DeviceCodeRe
         );
     }
 
-    let resp = resp.error_for_status()?;
-    Ok(resp.json::<DeviceCodeResponse>().await?)
+    let resp = resp.error_for_status().context("GitHub device code endpoint returned error status")?;
+    Ok(resp.json::<DeviceCodeResponse>().await.context("Failed to parse device code response from GitHub")?)
 }
 
 /// Poll GitHub for the access token. Returns Ok(Some(token)) when authorized,
@@ -138,9 +140,11 @@ pub async fn poll_for_token(client_id: &str, device_code: &str) -> anyhow::Resul
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
         ])
         .send()
-        .await?
+        .await
+        .context("Failed to send token poll request to GitHub")?
         .json::<TokenResponse>()
-        .await?;
+        .await
+        .context("Failed to parse token poll response from GitHub")?;
 
     if let Some(token) = resp.access_token {
         return Ok(Some(token));
@@ -172,10 +176,13 @@ pub async fn list_issues(token: &str, owner_repo: &str) -> anyhow::Result<Vec<Gi
                 ("page", &page.to_string()),
             ])
             .send()
-            .await?
-            .error_for_status()?
+            .await
+            .context("Failed to send issues request to GitHub")?
+            .error_for_status()
+            .context("GitHub issues API returned error status")?
             .json()
-            .await?;
+            .await
+            .context("Failed to parse issues response from GitHub")?;
 
         let count = resp.len();
         // Filter out pull requests (they have a pull_request key)
@@ -203,10 +210,13 @@ pub async fn list_repos(token: &str, page: u32, per_page: u32) -> anyhow::Result
             ("page", &page.to_string()),
         ])
         .send()
-        .await?
-        .error_for_status()?
+        .await
+        .context("Failed to send repos request to GitHub")?
+        .error_for_status()
+        .context("GitHub repos API returned error status")?
         .json::<Vec<GitHubRepo>>()
-        .await?;
+        .await
+        .context("Failed to parse repos response from GitHub")?;
     Ok(repos)
 }
 

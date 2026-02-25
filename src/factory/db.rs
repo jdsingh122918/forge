@@ -40,9 +40,14 @@ impl DbHandle {
         .context("DB task panicked")?
     }
 
-    /// Synchronous lock for use in tests and non-async contexts.
-    pub fn lock_sync(&self) -> std::sync::MutexGuard<'_, FactoryDb> {
-        self.inner.lock().expect("DB lock poisoned")
+    /// Acquire the database mutex synchronously. Used in contexts where blocking
+    /// is acceptable: event batch flushing inside dedicated tasks, startup
+    /// initialization, and tests. Callers must ensure this is NOT called from
+    /// a hot async path to avoid blocking the tokio runtime.
+    pub fn lock_sync(&self) -> Result<std::sync::MutexGuard<'_, FactoryDb>> {
+        self.inner
+            .lock()
+            .map_err(|e| anyhow::anyhow!("DB lock poisoned: {}", e))
     }
 }
 
@@ -233,6 +238,16 @@ impl FactoryDb {
                 );",
             )
             .context("Failed to create settings table")?;
+
+        // Add team_id and has_team columns to pipeline_runs
+        let _ = self.conn.execute(
+            "ALTER TABLE pipeline_runs ADD COLUMN team_id INTEGER",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE pipeline_runs ADD COLUMN has_team INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
 
         Ok(())
     }
@@ -512,7 +527,7 @@ impl FactoryDb {
             // Find active runs for each issue
             for iws in &mut col_issues {
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, issue_id, status, phase_count, current_phase, iteration, summary, error, branch_name, pr_url, started_at, completed_at
+                    "SELECT id, issue_id, status, phase_count, current_phase, iteration, summary, error, branch_name, pr_url, team_id, has_team, started_at, completed_at
                      FROM pipeline_runs
                      WHERE issue_id = ?1 AND status IN ('queued', 'running')
                      ORDER BY id DESC LIMIT 1",
@@ -529,8 +544,10 @@ impl FactoryDb {
                         error: row.get(7)?,
                         branch_name: row.get(8)?,
                         pr_url: row.get(9)?,
-                        started_at: row.get(10)?,
-                        completed_at: row.get(11)?,
+                        team_id: row.get(10)?,
+                        has_team: row.get(11)?,
+                        started_at: row.get(12)?,
+                        completed_at: row.get(13)?,
                     })
                 })?;
                 if let Some(row) = rows.next() {
@@ -559,7 +576,7 @@ impl FactoryDb {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, issue_id, status, phase_count, current_phase, iteration, summary, error, branch_name, pr_url, started_at, completed_at
+                "SELECT id, issue_id, status, phase_count, current_phase, iteration, summary, error, branch_name, pr_url, team_id, has_team, started_at, completed_at
                  FROM pipeline_runs WHERE issue_id = ?1 ORDER BY id",
             )
             .context("Failed to prepare get_issue_detail runs")?;
@@ -576,8 +593,10 @@ impl FactoryDb {
                     error: row.get(7)?,
                     branch_name: row.get(8)?,
                     pr_url: row.get(9)?,
-                    started_at: row.get(10)?,
-                    completed_at: row.get(11)?,
+                    team_id: row.get(10)?,
+                    has_team: row.get(11)?,
+                    started_at: row.get(12)?,
+                    completed_at: row.get(13)?,
                 })
             })
             .context("Failed to query pipeline runs")?;
@@ -613,10 +632,7 @@ impl FactoryDb {
         summary: Option<&str>,
         error: Option<&str>,
     ) -> Result<PipelineRun> {
-        let is_terminal = matches!(
-            status,
-            PipelineStatus::Completed | PipelineStatus::Failed | PipelineStatus::Cancelled
-        );
+        let is_terminal = status.is_terminal();
 
         if is_terminal {
             self.conn
@@ -642,7 +658,7 @@ impl FactoryDb {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, issue_id, status, phase_count, current_phase, iteration, summary, error, branch_name, pr_url, started_at, completed_at
+                "SELECT id, issue_id, status, phase_count, current_phase, iteration, summary, error, branch_name, pr_url, team_id, has_team, started_at, completed_at
                  FROM pipeline_runs WHERE id = ?1",
             )
             .context("Failed to prepare get_pipeline_run")?;
@@ -659,8 +675,10 @@ impl FactoryDb {
                     error: row.get(7)?,
                     branch_name: row.get(8)?,
                     pr_url: row.get(9)?,
-                    started_at: row.get(10)?,
-                    completed_at: row.get(11)?,
+                    team_id: row.get(10)?,
+                    has_team: row.get(11)?,
+                    started_at: row.get(12)?,
+                    completed_at: row.get(13)?,
                 })
             })
             .context("Failed to query pipeline run")?;
@@ -722,6 +740,10 @@ impl FactoryDb {
     // ── Pipeline Phase CRUD ─────────────────────────────────────────
 
     /// Create or update a pipeline phase record.
+    ///
+    /// Accepts a `&str` status for backward compatibility with existing callers.
+    /// The status string is stored as-is in the database and parsed into
+    /// `PhaseStatus` when reading back via `get_pipeline_phases`.
     pub fn upsert_pipeline_phase(
         &self,
         run_id: i64,
@@ -747,6 +769,19 @@ impl FactoryDb {
         Ok(())
     }
 
+    /// Create or update a pipeline phase record using a typed `PhaseStatus`.
+    pub fn upsert_pipeline_phase_typed(
+        &self,
+        run_id: i64,
+        phase_number: &str,
+        phase_name: &str,
+        status: &PhaseStatus,
+        iteration: Option<i32>,
+        budget: Option<i32>,
+    ) -> Result<()> {
+        self.upsert_pipeline_phase(run_id, phase_number, phase_name, &status.to_string(), iteration, budget)
+    }
+
     /// Get all phases for a pipeline run.
     pub fn get_pipeline_phases(&self, run_id: i64) -> Result<Vec<PipelinePhase>> {
         let mut stmt = self
@@ -758,12 +793,16 @@ impl FactoryDb {
             .context("Failed to prepare get_pipeline_phases")?;
         let rows = stmt
             .query_map(params![run_id], |row| {
+                let status_str: String = row.get(4)?;
+                let status = status_str
+                    .parse::<PhaseStatus>()
+                    .unwrap_or(PhaseStatus::Pending);
                 Ok(PipelinePhase {
                     id: row.get(0)?,
                     run_id: row.get(1)?,
                     phase_number: row.get(2)?,
                     phase_name: row.get(3)?,
-                    status: row.get(4)?,
+                    status,
                     iteration: row.get(5)?,
                     budget: row.get(6)?,
                     started_at: row.get(7)?,
@@ -1246,6 +1285,8 @@ struct PipelineRunRow {
     error: Option<String>,
     branch_name: Option<String>,
     pr_url: Option<String>,
+    team_id: Option<i64>,
+    has_team: Option<i64>,
     started_at: String,
     completed_at: Option<String>,
 }
@@ -1266,6 +1307,8 @@ impl PipelineRunRow {
             error: self.error,
             branch_name: self.branch_name,
             pr_url: self.pr_url,
+            team_id: self.team_id,
+            has_team: self.has_team.map(|v| v != 0).unwrap_or(false),
             started_at: self.started_at,
             completed_at: self.completed_at,
         })

@@ -55,10 +55,14 @@ export function useAgentTeam(activeRunId: number | null): AgentTeamState {
             if (!cancelled) {
               setAgentEvents(prev => new Map(prev).set(task.id, events))
             }
-          }).catch(() => {})
+          }).catch(err => {
+            console.error(`[useAgentTeam] Failed to load events for task ${task.id}:`, err)
+          })
         }
       }
-    }).catch(() => {})
+    }).catch(err => {
+      console.error(`[useAgentTeam] Failed to load team for run ${activeRunId}:`, err)
+    })
     return () => { cancelled = true }
   }, [activeRunId])
 
