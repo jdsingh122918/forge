@@ -1,11 +1,11 @@
 use axum::{
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
     response::IntoResponse,
 };
-use futures_util::{stream::SplitSink, stream::SplitStream, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -250,7 +250,7 @@ async fn run_socket_loop(
             result = rx.recv() => {
                 match result {
                     Ok(msg) => {
-                        if sender.send(Message::Text(msg.into())).await.is_err() {
+                        if sender.send(Message::Text(msg)).await.is_err() {
                             break;
                         }
                     }

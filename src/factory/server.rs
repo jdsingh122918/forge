@@ -9,8 +9,8 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::get,
 };
-use tower_http::cors::CorsLayer;
 use tokio::sync::broadcast;
+use tower_http::cors::CorsLayer;
 
 use super::api::{self, AppState};
 use super::db::FactoryDb;
@@ -56,15 +56,15 @@ async fn static_handler(req: Request<Body>) -> impl IntoResponse {
     let path = req.uri().path().trim_start_matches('/');
 
     // Try to serve the exact file
-    if !path.is_empty() {
-        if let Some(content) = Assets::get(path) {
-            let mime = mime_guess::from_path(path).first_or_octet_stream();
-            return Response::builder()
-                .header(header::CONTENT_TYPE, mime.as_ref())
-                .body(Body::from(content.data.to_vec()))
-                .unwrap()
-                .into_response();
-        }
+    if !path.is_empty()
+        && let Some(content) = Assets::get(path)
+    {
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        return Response::builder()
+            .header(header::CONTENT_TYPE, mime.as_ref())
+            .body(Body::from(content.data.to_vec()))
+            .unwrap()
+            .into_response();
     }
 
     // Fall back to index.html for SPA client-side routing
@@ -95,15 +95,17 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
             Some(sandbox) => {
                 eprintln!("[factory] Docker sandbox enabled");
                 let s = Arc::new(sandbox);
-                if let Ok(pruned) = s.prune_stale_containers(7200).await {
-                    if pruned > 0 {
-                        eprintln!("[factory] Pruned {} stale pipeline containers", pruned);
-                    }
+                if let Ok(pruned) = s.prune_stale_containers(7200).await
+                    && pruned > 0
+                {
+                    eprintln!("[factory] Pruned {} stale pipeline containers", pruned);
                 }
                 Some(s)
             }
             None => {
-                eprintln!("[factory] FORGE_SANDBOX=true but Docker is not available, falling back to local execution");
+                eprintln!(
+                    "[factory] FORGE_SANDBOX=true but Docker is not available, falling back to local execution"
+                );
                 None
             }
         }
@@ -128,7 +130,11 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
         app = app.layer(CorsLayer::permissive());
     }
 
-    let host = if config.dev_mode { "0.0.0.0" } else { "127.0.0.1" };
+    let host = if config.dev_mode {
+        "0.0.0.0"
+    } else {
+        "127.0.0.1"
+    };
     let addr = format!("{}:{}", host, config.port);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
@@ -216,10 +222,7 @@ mod tests {
     #[tokio::test]
     async fn test_static_handler_serves_index_html() {
         let app = test_router();
-        let req = Request::builder()
-            .uri("/")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let status = resp.status();
         // If ui/dist/index.html exists, we get 200; otherwise 404

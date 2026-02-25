@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
@@ -97,22 +98,25 @@ impl FactoryDb {
             .context("Failed to create tables")?;
 
         // Additive migrations (columns are nullable, safe to re-run)
-        let _ = self.conn.execute(
-            "ALTER TABLE projects ADD COLUMN github_repo TEXT",
-            [],
-        );
+        let _ = self
+            .conn
+            .execute("ALTER TABLE projects ADD COLUMN github_repo TEXT", []);
         let _ = self.conn.execute(
             "ALTER TABLE issues ADD COLUMN github_issue_number INTEGER",
             [],
         );
-        self.conn.execute_batch(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_github_number
+        self.conn
+            .execute_batch(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_github_number
              ON issues(project_id, github_issue_number)
-             WHERE github_issue_number IS NOT NULL;"
-        ).context("Failed to create github_issue_number index")?;
+             WHERE github_issue_number IS NOT NULL;",
+            )
+            .context("Failed to create github_issue_number index")?;
 
         // Agent team tables migration
-        self.conn.execute_batch("
+        self.conn
+            .execute_batch(
+                "
             CREATE TABLE IF NOT EXISTS agent_teams (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id INTEGER NOT NULL REFERENCES pipeline_runs(id),
@@ -148,7 +152,9 @@ impl FactoryDb {
                 metadata TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
-        ").context("Failed to create agent team tables")?;
+        ",
+            )
+            .context("Failed to create agent team tables")?;
 
         // Add team_id and has_team to pipeline_runs
         // Errors ignored for idempotent migration — column may already exist
@@ -353,8 +359,7 @@ impl FactoryDb {
                 )
                 .context("Failed to update issue description")?;
         }
-        self.get_issue(id)?
-            .context("Issue not found after update")
+        self.get_issue(id)?.context("Issue not found after update")
     }
 
     pub fn move_issue(&self, id: i64, column: &IssueColumn, position: i32) -> Result<Issue> {
@@ -403,7 +408,7 @@ impl FactoryDb {
             params![project_id, title, description, max_pos + 1, github_issue_number],
         ).context("Failed to insert github issue")?;
         let id = self.conn.last_insert_rowid();
-        Ok(self.get_issue(id)?)
+        self.get_issue(id)
     }
 
     // ── Board view ────────────────────────────────────────────────────
@@ -724,10 +729,12 @@ impl FactoryDb {
         let id = self.conn.last_insert_rowid();
 
         // Link team to pipeline run
-        self.conn.execute(
-            "UPDATE pipeline_runs SET team_id = ?1, has_team = 1 WHERE id = ?2",
-            params![id, run_id],
-        ).context("Failed to link agent team to pipeline run")?;
+        self.conn
+            .execute(
+                "UPDATE pipeline_runs SET team_id = ?1, has_team = 1 WHERE id = ?2",
+                params![id, run_id],
+            )
+            .context("Failed to link agent team to pipeline run")?;
 
         Ok(AgentTeam {
             id,
@@ -773,6 +780,7 @@ impl FactoryDb {
 
     // ── Agent Tasks ──────────────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_agent_task(
         &self,
         team_id: i64,
@@ -783,8 +791,8 @@ impl FactoryDb {
         depends_on: &[i64],
         isolation_type: &str,
     ) -> Result<AgentTask> {
-        let depends_json = serde_json::to_string(depends_on)
-            .context("Failed to serialize depends_on")?;
+        let depends_json =
+            serde_json::to_string(depends_on).context("Failed to serialize depends_on")?;
         self.conn.execute(
             "INSERT INTO agent_tasks (team_id, name, description, agent_role, wave, depends_on, isolation_type) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -830,10 +838,12 @@ impl FactoryDb {
                 ).context("Failed to update agent task status to completed/failed")?;
             }
             _ => {
-                self.conn.execute(
-                    "UPDATE agent_tasks SET status = ?1 WHERE id = ?2",
-                    params![status, task_id],
-                ).context("Failed to update agent task status")?;
+                self.conn
+                    .execute(
+                        "UPDATE agent_tasks SET status = ?1 WHERE id = ?2",
+                        params![status, task_id],
+                    )
+                    .context("Failed to update agent task status")?;
             }
         }
         Ok(())
@@ -864,7 +874,10 @@ impl FactoryDb {
             let depends_on: Vec<i64> = match serde_json::from_str(&depends_str) {
                 Ok(v) => v,
                 Err(e) => {
-                    eprintln!("[db] Warning: corrupt depends_on JSON '{}': {}", depends_str, e);
+                    eprintln!(
+                        "[db] Warning: corrupt depends_on JSON '{}': {}",
+                        depends_str, e
+                    );
                     vec![]
                 }
             };
@@ -886,7 +899,8 @@ impl FactoryDb {
                 error: row.get(14)?,
             })
         })?;
-        rows.collect::<Result<Vec<_>, _>>().context("Failed to fetch agent tasks")
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("Failed to fetch agent tasks")
     }
 
     pub fn get_agent_task(&self, task_id: i64) -> Result<AgentTask> {
@@ -970,17 +984,22 @@ impl FactoryDb {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<AgentEvent>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, task_id, event_type, content, metadata, created_at \
-             FROM agent_events WHERE task_id = ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3"
-        ).context("Failed to prepare get_agent_events")?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, task_id, event_type, content, metadata, created_at \
+             FROM agent_events WHERE task_id = ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3",
+            )
+            .context("Failed to prepare get_agent_events")?;
         let rows = stmt.query_map(params![task_id, limit, offset], |row| {
             let metadata_str: Option<String> = row.get(4)?;
             let metadata = metadata_str.and_then(|s| {
-                serde_json::from_str(&s).map_err(|e| {
-                    eprintln!("[db] Warning: corrupt event metadata JSON: {}", e);
-                    e
-                }).ok()
+                serde_json::from_str(&s)
+                    .map_err(|e| {
+                        eprintln!("[db] Warning: corrupt event metadata JSON: {}", e);
+                        e
+                    })
+                    .ok()
             });
             Ok(AgentEvent {
                 id: row.get(0)?,
@@ -991,7 +1010,8 @@ impl FactoryDb {
                 created_at: row.get(5)?,
             })
         })?;
-        rows.collect::<Result<Vec<_>, _>>().context("Failed to fetch agent events")
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("Failed to fetch agent events")
     }
 }
 
@@ -1211,8 +1231,7 @@ mod tests {
     fn test_update_issue_fields() -> Result<()> {
         let db = FactoryDb::new_in_memory()?;
         let project = db.create_project("test", "/tmp/test")?;
-        let issue =
-            db.create_issue(project.id, "Old title", "Old desc", &IssueColumn::Backlog)?;
+        let issue = db.create_issue(project.id, "Old title", "Old desc", &IssueColumn::Backlog)?;
 
         // Update title only
         let updated = db.update_issue(issue.id, Some("New title"), None)?;
@@ -1260,8 +1279,7 @@ mod tests {
     fn test_create_pipeline_run() -> Result<()> {
         let db = FactoryDb::new_in_memory()?;
         let project = db.create_project("test", "/tmp/test")?;
-        let issue =
-            db.create_issue(project.id, "Build feature", "", &IssueColumn::InProgress)?;
+        let issue = db.create_issue(project.id, "Build feature", "", &IssueColumn::InProgress)?;
 
         let run = db.create_pipeline_run(issue.id)?;
         assert!(run.id > 0);
@@ -1282,8 +1300,7 @@ mod tests {
     fn test_update_pipeline_run_status() -> Result<()> {
         let db = FactoryDb::new_in_memory()?;
         let project = db.create_project("test", "/tmp/test")?;
-        let issue =
-            db.create_issue(project.id, "Pipeline test", "", &IssueColumn::InProgress)?;
+        let issue = db.create_issue(project.id, "Pipeline test", "", &IssueColumn::InProgress)?;
         let run = db.create_pipeline_run(issue.id)?;
 
         // Transition to running
@@ -1316,9 +1333,7 @@ mod tests {
         db.update_pipeline_run(run1.id, &PipelineStatus::Failed, None, Some("OOM"))?;
         let _run2 = db.create_pipeline_run(issue.id)?;
 
-        let detail = db
-            .get_issue_detail(issue.id)?
-            .expect("detail should exist");
+        let detail = db.get_issue_detail(issue.id)?.expect("detail should exist");
         assert_eq!(detail.issue.id, issue.id);
         assert_eq!(detail.runs.len(), 2);
         assert_eq!(detail.runs[0].run.status, PipelineStatus::Failed);
@@ -1386,9 +1401,26 @@ mod tests {
         let team = db.create_agent_team(run.id, "parallel", "worktree", "Two tasks")?;
 
         // Create two tasks in wave 0, one in wave 1
-        let task1 = db.create_agent_task(team.id, "Fix API", "Fix the API bug", "coder", 0, &[], "worktree")?;
-        let task2 = db.create_agent_task(team.id, "Fix UI", "Fix the UI", "coder", 0, &[], "worktree")?;
-        let task3 = db.create_agent_task(team.id, "Run tests", "Integration tests", "tester", 1, &[task1.id, task2.id], "shared")?;
+        let task1 = db.create_agent_task(
+            team.id,
+            "Fix API",
+            "Fix the API bug",
+            "coder",
+            0,
+            &[],
+            "worktree",
+        )?;
+        let task2 =
+            db.create_agent_task(team.id, "Fix UI", "Fix the UI", "coder", 0, &[], "worktree")?;
+        let task3 = db.create_agent_task(
+            team.id,
+            "Run tests",
+            "Integration tests",
+            "tester",
+            1,
+            &[task1.id, task2.id],
+            "shared",
+        )?;
 
         assert_eq!(task3.depends_on, vec![task1.id, task2.id]);
         assert_eq!(task1.status, "pending");
@@ -1405,7 +1437,12 @@ mod tests {
         assert!(updated.completed_at.is_some());
 
         // Create events
-        let event = db.create_agent_event(task1.id, "action", "Edited src/api.rs:42", Some(&serde_json::json!({"file": "src/api.rs", "line": 42})))?;
+        let event = db.create_agent_event(
+            task1.id,
+            "action",
+            "Edited src/api.rs:42",
+            Some(&serde_json::json!({"file": "src/api.rs", "line": 42})),
+        )?;
         assert_eq!(event.event_type, "action");
 
         let events = db.get_agent_events(task1.id, 10, 0)?;
@@ -1474,8 +1511,7 @@ mod tests {
     fn test_cancel_pipeline_run() -> Result<()> {
         let db = FactoryDb::new_in_memory()?;
         let project = db.create_project("test", "/tmp/test")?;
-        let issue =
-            db.create_issue(project.id, "Cancel test", "", &IssueColumn::InProgress)?;
+        let issue = db.create_issue(project.id, "Cancel test", "", &IssueColumn::InProgress)?;
         let run = db.create_pipeline_run(issue.id)?;
         assert_eq!(run.status, PipelineStatus::Queued);
 
@@ -1523,7 +1559,8 @@ mod tests {
         let issue = db.create_issue(project.id, "Test", "", &IssueColumn::Backlog)?;
         let run = db.create_pipeline_run(issue.id)?;
         let team = db.create_agent_team(run.id, "parallel", "worktree", "Test")?;
-        let task = db.create_agent_task(team.id, "Task 1", "Do stuff", "coder", 0, &[], "worktree")?;
+        let task =
+            db.create_agent_task(team.id, "Task 1", "Do stuff", "coder", 0, &[], "worktree")?;
 
         // Initially null
         assert!(task.worktree_path.is_none());
@@ -1549,17 +1586,51 @@ mod tests {
     fn test_full_agent_team_pipeline_flow() -> Result<()> {
         let db = FactoryDb::new_in_memory()?;
         let project = db.create_project("test-project", "/tmp/test")?;
-        let issue = db.create_issue(project.id, "Fix bug", "The API returns 400", &IssueColumn::Backlog)?;
+        let issue = db.create_issue(
+            project.id,
+            "Fix bug",
+            "The API returns 400",
+            &IssueColumn::Backlog,
+        )?;
 
         // Simulate pipeline trigger
         let run = db.create_pipeline_run(issue.id)?;
         assert_eq!(run.status, PipelineStatus::Queued);
 
         // Simulate planner creating a team
-        let team = db.create_agent_team(run.id, "wave_pipeline", "worktree", "Two parallel fixes then test")?;
-        let task1 = db.create_agent_task(team.id, "Fix API", "Fix endpoint", "coder", 0, &[], "worktree")?;
-        let task2 = db.create_agent_task(team.id, "Fix validation", "Fix input validation", "coder", 0, &[], "worktree")?;
-        let task3 = db.create_agent_task(team.id, "Run tests", "Integration tests", "tester", 1, &[task1.id, task2.id], "shared")?;
+        let team = db.create_agent_team(
+            run.id,
+            "wave_pipeline",
+            "worktree",
+            "Two parallel fixes then test",
+        )?;
+        let task1 = db.create_agent_task(
+            team.id,
+            "Fix API",
+            "Fix endpoint",
+            "coder",
+            0,
+            &[],
+            "worktree",
+        )?;
+        let task2 = db.create_agent_task(
+            team.id,
+            "Fix validation",
+            "Fix input validation",
+            "coder",
+            0,
+            &[],
+            "worktree",
+        )?;
+        let task3 = db.create_agent_task(
+            team.id,
+            "Run tests",
+            "Integration tests",
+            "tester",
+            1,
+            &[task1.id, task2.id],
+            "shared",
+        )?;
 
         // Verify team detail retrieval
         let detail = db.get_agent_team_detail(run.id)?.unwrap();
@@ -1571,8 +1642,18 @@ mod tests {
 
         // Simulate events
         db.create_agent_event(task1.id, "action", "Read src/api.rs", None)?;
-        db.create_agent_event(task1.id, "action", "Edited src/api.rs:42", Some(&serde_json::json!({"file": "src/api.rs", "line": 42})))?;
-        db.create_agent_event(task1.id, "thinking", "The bug is in the response serialization", None)?;
+        db.create_agent_event(
+            task1.id,
+            "action",
+            "Edited src/api.rs:42",
+            Some(&serde_json::json!({"file": "src/api.rs", "line": 42})),
+        )?;
+        db.create_agent_event(
+            task1.id,
+            "thinking",
+            "The bug is in the response serialization",
+            None,
+        )?;
 
         // Complete wave 0
         db.update_agent_task_status(task1.id, "completed", None)?;

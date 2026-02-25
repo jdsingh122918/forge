@@ -5,11 +5,11 @@ use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{Mutex, broadcast};
 
 use crate::factory::db::FactoryDb;
 use crate::factory::models::AgentTask;
-use crate::factory::ws::{broadcast_message, WsMessage};
+use crate::factory::ws::{WsMessage, broadcast_message};
 
 /// Handle for a running agent process
 pub struct AgentHandle {
@@ -68,45 +68,41 @@ impl OutputParser {
         }
 
         // Try to parse as JSON (tool use or structured output)
-        if trimmed.starts_with('{') {
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if let Some(msg_type) = parsed.get("type").and_then(|t| t.as_str()) {
-                    return match msg_type {
-                        "thinking" => ParsedEvent {
-                            event_type: "thinking".to_string(),
-                            content: parsed
-                                .get("content")
-                                .and_then(|c| c.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            metadata: None,
-                        },
-                        "tool_use" | "tool_result" => {
-                            let summary = format!(
-                                "{} {}",
-                                parsed
-                                    .get("tool")
-                                    .and_then(|t| t.as_str())
-                                    .unwrap_or("unknown"),
-                                parsed
-                                    .get("file")
-                                    .and_then(|f| f.as_str())
-                                    .unwrap_or("")
-                            );
-                            ParsedEvent {
-                                event_type: "action".to_string(),
-                                content: summary.trim().to_string(),
-                                metadata: Some(parsed),
-                            }
-                        }
-                        _ => ParsedEvent {
-                            event_type: "output".to_string(),
-                            content: trimmed.to_string(),
-                            metadata: Some(parsed),
-                        },
-                    };
+        if trimmed.starts_with('{')
+            && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed)
+            && let Some(msg_type) = parsed.get("type").and_then(|t| t.as_str())
+        {
+            return match msg_type {
+                "thinking" => ParsedEvent {
+                    event_type: "thinking".to_string(),
+                    content: parsed
+                        .get("content")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    metadata: None,
+                },
+                "tool_use" | "tool_result" => {
+                    let summary = format!(
+                        "{} {}",
+                        parsed
+                            .get("tool")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("unknown"),
+                        parsed.get("file").and_then(|f| f.as_str()).unwrap_or("")
+                    );
+                    ParsedEvent {
+                        event_type: "action".to_string(),
+                        content: summary.trim().to_string(),
+                        metadata: Some(parsed),
+                    }
                 }
-            }
+                _ => ParsedEvent {
+                    event_type: "output".to_string(),
+                    content: trimmed.to_string(),
+                    metadata: Some(parsed),
+                },
+            };
         }
 
         // Default: plain output
@@ -295,9 +291,7 @@ impl AgentExecutor {
                     "thinking" => {
                         thinking_buffer.push_str(&parsed.content);
                         thinking_buffer.push('\n');
-                        if last_broadcast.elapsed()
-                            >= std::time::Duration::from_millis(500)
-                        {
+                        if last_broadcast.elapsed() >= std::time::Duration::from_millis(500) {
                             broadcast_message(
                                 &self.tx,
                                 &WsMessage::AgentThinking {
@@ -319,16 +313,11 @@ impl AgentExecutor {
                                 action_type: parsed
                                     .metadata
                                     .as_ref()
-                                    .and_then(|m| {
-                                        m.get("tool").and_then(|t| t.as_str())
-                                    })
+                                    .and_then(|m| m.get("tool").and_then(|t| t.as_str()))
                                     .unwrap_or("unknown")
                                     .to_string(),
                                 summary: parsed.content.clone(),
-                                metadata: parsed
-                                    .metadata
-                                    .clone()
-                                    .unwrap_or(serde_json::json!({})),
+                                metadata: parsed.metadata.clone().unwrap_or(serde_json::json!({})),
                             },
                         );
                     }
@@ -341,9 +330,7 @@ impl AgentExecutor {
                                 signal_type: parsed
                                     .metadata
                                     .as_ref()
-                                    .and_then(|m| {
-                                        m.get("signal_type").and_then(|t| t.as_str())
-                                    })
+                                    .and_then(|m| m.get("signal_type").and_then(|t| t.as_str()))
                                     .unwrap_or("progress")
                                     .to_string(),
                                 content: parsed.content.clone(),
@@ -351,9 +338,7 @@ impl AgentExecutor {
                         );
                     }
                     _ => {
-                        if last_broadcast.elapsed()
-                            >= std::time::Duration::from_millis(500)
-                        {
+                        if last_broadcast.elapsed() >= std::time::Duration::from_millis(500) {
                             broadcast_message(
                                 &self.tx,
                                 &WsMessage::AgentOutput {
@@ -432,7 +417,7 @@ impl AgentExecutor {
                 }
             }
 
-            return Ok(success);
+            Ok(success)
         } else {
             eprintln!(
                 "[agent] BUG: process handle for task {} missing from running map",
@@ -452,16 +437,12 @@ impl AgentExecutor {
                     error: "Internal error: process handle lost".to_string(),
                 },
             );
-            return Ok(false);
+            Ok(false)
         }
     }
 
     /// Merge a task's worktree branch into the specified target branch
-    pub async fn merge_branch(
-        &self,
-        task_branch: &str,
-        target_branch: &str,
-    ) -> Result<bool> {
+    pub async fn merge_branch(&self, task_branch: &str, target_branch: &str) -> Result<bool> {
         // Checkout target branch first
         let checkout = Command::new("git")
             .args(["checkout", target_branch])
@@ -502,8 +483,7 @@ impl AgentExecutor {
                 let _ = self.cleanup_worktree(path).await;
             }
             if let Ok(db) = self.db.lock() {
-                let _ =
-                    db.update_agent_task_status(task_id, "failed", Some("Pipeline cancelled"));
+                let _ = db.update_agent_task_status(task_id, "failed", Some("Pipeline cancelled"));
             }
         }
     }

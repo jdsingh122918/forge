@@ -77,7 +77,11 @@ async fn create_pull_request(
     let body = format!(
         "## Summary\n\nAutomated implementation for: **{}**\n\n{}\n\n---\n*Created by Forge Factory*",
         issue_title,
-        if issue_description.is_empty() { "No description provided." } else { issue_description }
+        if issue_description.is_empty() {
+            "No description provided."
+        } else {
+            issue_description
+        }
     );
 
     let output = tokio::process::Command::new("gh")
@@ -169,19 +173,19 @@ impl PipelineRunner {
         broadcast_message(tx, &WsMessage::PipelineFailed { run: run.clone() });
 
         // Auto-move issue back to Ready
-        if let Ok(Some(issue)) = db.get_issue(run.issue_id) {
-            if issue.column == IssueColumn::InProgress {
-                let _ = db.move_issue(run.issue_id, &IssueColumn::Ready, 0);
-                broadcast_message(
-                    tx,
-                    &WsMessage::IssueMoved {
-                        issue_id: run.issue_id,
-                        from_column: "in_progress".to_string(),
-                        to_column: "ready".to_string(),
-                        position: 0,
-                    },
-                );
-            }
+        if let Ok(Some(issue)) = db.get_issue(run.issue_id)
+            && issue.column == IssueColumn::InProgress
+        {
+            let _ = db.move_issue(run.issue_id, &IssueColumn::Ready, 0);
+            broadcast_message(
+                tx,
+                &WsMessage::IssueMoved {
+                    issue_id: run.issue_id,
+                    from_column: "in_progress".to_string(),
+                    to_column: "ready".to_string(),
+                    position: 0,
+                },
+            );
         }
 
         Ok(run)
@@ -218,6 +222,7 @@ impl PipelineRunner {
     /// 4. Execute tasks wave by wave (with worktree isolation and merging between waves)
     ///
     /// Returns `Err` for single-task sequential plans to signal fallback to the forge pipeline.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_agent_team(
         project_path: &str,
         run_id: i64,
@@ -289,8 +294,7 @@ impl PipelineRunner {
         let base_branch = branch_name.as_deref().unwrap_or("main");
 
         for wave in 0..=max_wave {
-            let wave_tasks: Vec<&AgentTask> =
-                db_tasks.iter().filter(|t| t.wave == wave).collect();
+            let wave_tasks: Vec<&AgentTask> = db_tasks.iter().filter(|t| t.wave == wave).collect();
 
             if wave_tasks.is_empty() {
                 continue;
@@ -332,11 +336,7 @@ impl PipelineRunner {
             // Run tasks in parallel
             let mut handles = Vec::new();
             for (task, working_dir, _branch) in &task_working_dirs {
-                let executor_ref = AgentExecutor::new(
-                    project_path,
-                    Arc::clone(db),
-                    tx.clone(),
-                );
+                let executor_ref = AgentExecutor::new(project_path, Arc::clone(db), tx.clone());
                 let task_clone = task.clone();
                 let dir_clone = working_dir.clone();
                 let run_id_clone = run_id;
@@ -349,7 +349,13 @@ impl PipelineRunner {
 
                 let handle = tokio::spawn(async move {
                     executor_ref
-                        .run_task(run_id_clone, &task_clone, use_team, &dir_clone, worktree_path)
+                        .run_task(
+                            run_id_clone,
+                            &task_clone,
+                            use_team,
+                            &dir_clone,
+                            worktree_path,
+                        )
                         .await
                 });
                 handles.push(handle);
@@ -366,7 +372,10 @@ impl PipelineRunner {
                         failed_count += 1;
                     }
                     Ok(Err(e)) => {
-                        eprintln!("[pipeline] run_id={}: task execution error: {:#}", run_id, e);
+                        eprintln!(
+                            "[pipeline] run_id={}: task execution error: {:#}",
+                            run_id, e
+                        );
                         failed_count += 1;
                     }
                     Err(join_err) => {
@@ -377,18 +386,8 @@ impl PipelineRunner {
             }
 
             // Clean up worktrees and merge branches
-            if wave_tasks.len() > 1
-                || task_working_dirs
-                    .iter()
-                    .any(|(_, _, b)| b.is_some())
-            {
-                broadcast_message(
-                    tx,
-                    &WsMessage::MergeStarted {
-                        run_id,
-                        wave,
-                    },
-                );
+            if wave_tasks.len() > 1 || task_working_dirs.iter().any(|(_, _, b)| b.is_some()) {
+                broadcast_message(tx, &WsMessage::MergeStarted { run_id, wave });
 
                 let mut merge_conflicts = false;
                 for (task, _working_dir, task_branch) in &task_working_dirs {
@@ -397,22 +396,28 @@ impl PipelineRunner {
                         match merged {
                             Ok(true) => { /* success */ }
                             Ok(false) => {
-                                eprintln!("[pipeline] run_id={}: merge conflict for branch {}", run_id, branch);
+                                eprintln!(
+                                    "[pipeline] run_id={}: merge conflict for branch {}",
+                                    run_id, branch
+                                );
                                 merge_conflicts = true;
                                 break;
                             }
                             Err(e) => {
-                                eprintln!("[pipeline] run_id={}: merge command failed for branch {}: {:#}", run_id, branch, e);
+                                eprintln!(
+                                    "[pipeline] run_id={}: merge command failed for branch {}: {:#}",
+                                    run_id, branch, e
+                                );
                                 merge_conflicts = true;
                                 break;
                             }
                         }
                     }
                     // Clean up worktree after merge
-                    if task.isolation_type == "worktree" {
-                        if let Some(ref path) = task.worktree_path {
-                            let _ = executor.cleanup_worktree(std::path::Path::new(path)).await;
-                        }
+                    if task.isolation_type == "worktree"
+                        && let Some(ref path) = task.worktree_path
+                    {
+                        let _ = executor.cleanup_worktree(std::path::Path::new(path)).await;
                     }
                 }
 
@@ -439,11 +444,7 @@ impl PipelineRunner {
 
             // If any task failed, abort
             if failed_count > 0 {
-                anyhow::bail!(
-                    "Wave {} had {} failed tasks",
-                    wave,
-                    failed_count
-                );
+                anyhow::bail!("Wave {} had {} failed tasks", wave, failed_count);
             }
         }
 
@@ -546,15 +547,23 @@ impl PipelineRunner {
                 Err(e) => {
                     let err_msg = format!("{:#}", e);
                     if err_msg.contains("Single-task plan") {
-                        eprintln!("[pipeline] run_id={}: {}, using forge pipeline", run_id, err_msg);
+                        eprintln!(
+                            "[pipeline] run_id={}: {}, using forge pipeline",
+                            run_id, err_msg
+                        );
                     } else {
-                        eprintln!("[pipeline] run_id={}: agent team failed unexpectedly: {:#}", run_id, e);
+                        eprintln!(
+                            "[pipeline] run_id={}: agent team failed unexpectedly: {:#}",
+                            run_id, e
+                        );
                     }
                     // Fall back to forge pipeline
 
                     // Auto-generate phases if none exist
                     if !has_forge_phases(&project_path) && is_forge_initialized(&project_path) {
-                        let _ = auto_generate_phases(&project_path, &issue_title, &issue_description).await;
+                        let _ =
+                            auto_generate_phases(&project_path, &issue_title, &issue_description)
+                                .await;
                     }
 
                     // Execute the pipeline (Docker or Local)
@@ -598,10 +607,10 @@ impl PipelineRunner {
             // Check if already cancelled (e.g., by cancel() call)
             {
                 let db_guard = db.lock().unwrap();
-                if let Ok(Some(current_run)) = db_guard.get_pipeline_run(run_id) {
-                    if current_run.status == PipelineStatus::Cancelled {
-                        return;
-                    }
+                if let Ok(Some(current_run)) = db_guard.get_pipeline_run(run_id)
+                    && current_run.status == PipelineStatus::Cancelled
+                {
+                    return;
                 }
             }
 
@@ -622,10 +631,7 @@ impl PipelineRunner {
                                 let _ = db_guard.update_pipeline_pr_url(run_id, &pr_url);
                                 broadcast_message(
                                     &tx,
-                                    &WsMessage::PipelinePrCreated {
-                                        run_id,
-                                        pr_url,
-                                    },
+                                    &WsMessage::PipelinePrCreated { run_id, pr_url },
                                 );
                             }
                             Err(_) => {
@@ -685,9 +691,7 @@ fn has_forge_phases(project_path: &str) -> bool {
 
 /// Check if the project is initialized with `.forge/` directory.
 fn is_forge_initialized(project_path: &str) -> bool {
-    std::path::Path::new(project_path)
-        .join(".forge")
-        .is_dir()
+    std::path::Path::new(project_path).join(".forge").is_dir()
 }
 
 /// Auto-generate spec and phases from an issue description.
@@ -710,7 +714,11 @@ async fn auto_generate_phases(
     let design_content = format!(
         "# {}\n\n## Overview\n\n{}\n\n## Requirements\n\n- Implement the feature described above\n- Ensure all existing tests continue to pass\n- Add tests for new functionality\n",
         issue_title,
-        if issue_description.is_empty() { "No additional details provided." } else { issue_description }
+        if issue_description.is_empty() {
+            "No additional details provided."
+        } else {
+            issue_description
+        }
     );
     let design_path = forge_dir.join("spec.md");
     tokio::fs::write(&design_path, &design_content)
@@ -806,7 +814,11 @@ async fn execute_pipeline_streaming(
     let mut lines = reader.lines();
     let mut all_output = String::new();
 
-    while let Some(line) = lines.next_line().await.context("Failed to read stdout line")? {
+    while let Some(line) = lines
+        .next_line()
+        .await
+        .context("Failed to read stdout line")?
+    {
         all_output.push_str(&line);
         all_output.push('\n');
 
@@ -850,9 +862,10 @@ async fn execute_pipeline_streaming(
         let mut processes = running_processes.lock().await;
         if let Some(handle) = processes.remove(&run_id) {
             match handle {
-                RunHandle::Process(mut child) => {
-                    child.wait().await.context("Failed to wait for child process")?
-                }
+                RunHandle::Process(mut child) => child
+                    .wait()
+                    .await
+                    .context("Failed to wait for child process")?,
                 RunHandle::Container(_) => {
                     anyhow::bail!("Unexpected container handle in local execution path")
                 }
@@ -872,11 +885,15 @@ async fn execute_pipeline_streaming(
         };
         Ok(summary)
     } else {
-        anyhow::bail!("Pipeline process failed with exit code: {:?}", status.code())
+        anyhow::bail!(
+            "Pipeline process failed with exit code: {:?}",
+            status.code()
+        )
     }
 }
 
 /// Execute a pipeline in a Docker container, streaming logs line by line.
+#[allow(clippy::too_many_arguments)]
 async fn execute_pipeline_docker(
     run_id: i64,
     project_path: &str,
@@ -888,20 +905,30 @@ async fn execute_pipeline_docker(
     tx: &broadcast::Sender<String>,
     timeout_secs: u64,
 ) -> Result<String> {
-    let config = SandboxConfig::load(std::path::Path::new(project_path))
-        .unwrap_or_default();
+    let config = SandboxConfig::load(std::path::Path::new(project_path)).unwrap_or_default();
 
     // Build the command — same logic as local
     let command = if has_forge_phases(project_path) {
         let forge_cmd = std::env::var("FORGE_CMD").unwrap_or_else(|_| "forge".to_string());
-        vec![forge_cmd, "swarm".into(), "--max-parallel".into(), "4".into(), "--fail-fast".into()]
+        vec![
+            forge_cmd,
+            "swarm".into(),
+            "--max-parallel".into(),
+            "4".into(),
+            "--fail-fast".into(),
+        ]
     } else {
         let claude_cmd = std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".into());
         let prompt = format!(
             "Implement the following issue:\n\nTitle: {}\n\nDescription: {}\n",
             issue_title, issue_description
         );
-        vec![claude_cmd, "--print".into(), "--dangerously-skip-permissions".into(), prompt]
+        vec![
+            claude_cmd,
+            "--print".into(),
+            "--dangerously-skip-permissions".into(),
+            prompt,
+        ]
     };
 
     // Build environment variables to inject
@@ -981,26 +1008,19 @@ async fn execute_pipeline_docker(
     // Handle timeout
     if stream_result.is_err() {
         sandbox.stop(&container_id).await?;
-        anyhow::bail!(
-            "Pipeline exceeded time limit ({}s)",
-            timeout_secs
-        );
+        anyhow::bail!("Pipeline exceeded time limit ({}s)", timeout_secs);
     }
 
     // Wait for container to finish and check result
     let exit_code = sandbox.wait(&container_id).await.unwrap_or(-1);
 
     // Check for OOM
-    if let Ok(inspect) = sandbox.inspect(&container_id).await {
-        if let Some(state) = inspect.state {
-            if state.oom_killed.unwrap_or(false) {
-                sandbox.stop(&container_id).await?;
-                anyhow::bail!(
-                    "Pipeline exceeded memory limit ({})",
-                    config.memory
-                );
-            }
-        }
+    if let Ok(inspect) = sandbox.inspect(&container_id).await
+        && let Some(state) = inspect.state
+        && state.oom_killed.unwrap_or(false)
+    {
+        sandbox.stop(&container_id).await?;
+        anyhow::bail!("Pipeline exceeded memory limit ({})", config.memory);
     }
 
     // Clean up the container
@@ -1025,24 +1045,22 @@ fn try_parse_progress(line: &str) -> Option<ProgressInfo> {
     let trimmed = line.trim();
 
     // Try direct parse first
-    if let Ok(info) = serde_json::from_str::<ProgressInfo>(trimmed) {
-        if info.phase.is_some() || info.phase_count.is_some() || info.iteration.is_some() {
-            return Some(info);
-        }
+    if let Ok(info) = serde_json::from_str::<ProgressInfo>(trimmed)
+        && (info.phase.is_some() || info.phase_count.is_some() || info.iteration.is_some())
+    {
+        return Some(info);
     }
 
     // Try to find JSON object embedded in the line
-    if let Some(start) = trimmed.find('{') {
-        if let Some(end) = trimmed.rfind('}') {
-            if end > start {
-                let json_str = &trimmed[start..=end];
-                if let Ok(info) = serde_json::from_str::<ProgressInfo>(json_str) {
-                    if info.phase.is_some() || info.phase_count.is_some() || info.iteration.is_some()
-                    {
-                        return Some(info);
-                    }
-                }
-            }
+    if let Some(start) = trimmed.find('{')
+        && let Some(end) = trimmed.rfind('}')
+        && end > start
+    {
+        let json_str = &trimmed[start..=end];
+        if let Ok(info) = serde_json::from_str::<ProgressInfo>(json_str)
+            && (info.phase.is_some() || info.phase_count.is_some() || info.iteration.is_some())
+        {
+            return Some(info);
         }
     }
 
@@ -1065,14 +1083,40 @@ fn compute_percent(progress: &ProgressInfo) -> Option<u8> {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[allow(dead_code)]
 enum PhaseEventJson {
-    Started { phase: String, wave: usize },
-    Progress { phase: String, iteration: u32, budget: u32, percent: Option<u32> },
-    Completed { phase: String, result: serde_json::Value },
-    ReviewStarted { phase: String },
-    ReviewCompleted { phase: String, passed: bool, findings_count: usize },
-    WaveStarted { wave: usize, phases: Vec<String> },
-    WaveCompleted { wave: usize, success_count: usize, failed_count: usize },
-    DagCompleted { success: bool },
+    Started {
+        phase: String,
+        wave: usize,
+    },
+    Progress {
+        phase: String,
+        iteration: u32,
+        budget: u32,
+        percent: Option<u32>,
+    },
+    Completed {
+        phase: String,
+        result: serde_json::Value,
+    },
+    ReviewStarted {
+        phase: String,
+    },
+    ReviewCompleted {
+        phase: String,
+        passed: bool,
+        findings_count: usize,
+    },
+    WaveStarted {
+        wave: usize,
+        phases: Vec<String>,
+    },
+    WaveCompleted {
+        wave: usize,
+        success_count: usize,
+        failed_count: usize,
+    },
+    DagCompleted {
+        success: bool,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -1088,17 +1132,16 @@ fn try_parse_phase_event(line: &str) -> Option<PhaseEventJson> {
         };
     }
     // Try embedded JSON
-    if let Some(start) = trimmed.find('{') {
-        if let Some(end) = trimmed.rfind('}') {
-            if end > start {
-                let json_str = &trimmed[start..=end];
-                if let Ok(event) = serde_json::from_str::<PhaseEventJson>(json_str) {
-                    return match &event {
-                        PhaseEventJson::Unknown => None,
-                        _ => Some(event),
-                    };
-                }
-            }
+    if let Some(start) = trimmed.find('{')
+        && let Some(end) = trimmed.rfind('}')
+        && end > start
+    {
+        let json_str = &trimmed[start..=end];
+        if let Ok(event) = serde_json::from_str::<PhaseEventJson>(json_str) {
+            return match &event {
+                PhaseEventJson::Unknown => None,
+                _ => Some(event),
+            };
         }
     }
     None
@@ -1126,11 +1169,20 @@ fn process_phase_event(
                 },
             );
         }
-        PhaseEventJson::Progress { phase, iteration, budget, percent } => {
+        PhaseEventJson::Progress {
+            phase,
+            iteration,
+            budget,
+            percent,
+        } => {
             let db_guard = db.lock().unwrap();
             let _ = db_guard.upsert_pipeline_phase(
-                run_id, phase, phase, "running",
-                Some(*iteration as i32), Some(*budget as i32),
+                run_id,
+                phase,
+                phase,
+                "running",
+                Some(*iteration as i32),
+                Some(*budget as i32),
             );
             drop(db_guard);
             broadcast_message(
@@ -1144,7 +1196,10 @@ fn process_phase_event(
             );
         }
         PhaseEventJson::Completed { phase, result } => {
-            let success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
+            let success = result
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
             let status = if success { "completed" } else { "failed" };
             let db_guard = db.lock().unwrap();
             let _ = db_guard.upsert_pipeline_phase(run_id, phase, phase, status, None, None);
@@ -1167,7 +1222,11 @@ fn process_phase_event(
                 },
             );
         }
-        PhaseEventJson::ReviewCompleted { phase, passed, findings_count } => {
+        PhaseEventJson::ReviewCompleted {
+            phase,
+            passed,
+            findings_count,
+        } => {
             broadcast_message(
                 tx,
                 &WsMessage::PipelineReviewCompleted {
@@ -1195,14 +1254,14 @@ pub fn is_cancellable(status: &PipelineStatus) -> bool {
 
 /// Validate that a pipeline status transition is valid.
 pub fn is_valid_transition(from: &PipelineStatus, to: &PipelineStatus) -> bool {
-    match (from, to) {
-        (PipelineStatus::Queued, PipelineStatus::Running) => true,
-        (PipelineStatus::Queued, PipelineStatus::Cancelled) => true,
-        (PipelineStatus::Running, PipelineStatus::Completed) => true,
-        (PipelineStatus::Running, PipelineStatus::Failed) => true,
-        (PipelineStatus::Running, PipelineStatus::Cancelled) => true,
-        _ => false,
-    }
+    matches!(
+        (from, to),
+        (PipelineStatus::Queued, PipelineStatus::Running)
+            | (PipelineStatus::Queued, PipelineStatus::Cancelled)
+            | (PipelineStatus::Running, PipelineStatus::Completed)
+            | (PipelineStatus::Running, PipelineStatus::Failed)
+            | (PipelineStatus::Running, PipelineStatus::Cancelled)
+    )
 }
 
 #[cfg(test)]
@@ -1229,22 +1288,55 @@ mod tests {
     #[test]
     fn test_valid_transitions() {
         // Valid transitions
-        assert!(is_valid_transition(&PipelineStatus::Queued, &PipelineStatus::Running));
-        assert!(is_valid_transition(&PipelineStatus::Queued, &PipelineStatus::Cancelled));
-        assert!(is_valid_transition(&PipelineStatus::Running, &PipelineStatus::Completed));
-        assert!(is_valid_transition(&PipelineStatus::Running, &PipelineStatus::Failed));
-        assert!(is_valid_transition(&PipelineStatus::Running, &PipelineStatus::Cancelled));
+        assert!(is_valid_transition(
+            &PipelineStatus::Queued,
+            &PipelineStatus::Running
+        ));
+        assert!(is_valid_transition(
+            &PipelineStatus::Queued,
+            &PipelineStatus::Cancelled
+        ));
+        assert!(is_valid_transition(
+            &PipelineStatus::Running,
+            &PipelineStatus::Completed
+        ));
+        assert!(is_valid_transition(
+            &PipelineStatus::Running,
+            &PipelineStatus::Failed
+        ));
+        assert!(is_valid_transition(
+            &PipelineStatus::Running,
+            &PipelineStatus::Cancelled
+        ));
     }
 
     #[test]
     fn test_invalid_transitions() {
         // Invalid transitions
-        assert!(!is_valid_transition(&PipelineStatus::Completed, &PipelineStatus::Running));
-        assert!(!is_valid_transition(&PipelineStatus::Failed, &PipelineStatus::Running));
-        assert!(!is_valid_transition(&PipelineStatus::Cancelled, &PipelineStatus::Running));
-        assert!(!is_valid_transition(&PipelineStatus::Completed, &PipelineStatus::Failed));
-        assert!(!is_valid_transition(&PipelineStatus::Queued, &PipelineStatus::Completed));
-        assert!(!is_valid_transition(&PipelineStatus::Queued, &PipelineStatus::Failed));
+        assert!(!is_valid_transition(
+            &PipelineStatus::Completed,
+            &PipelineStatus::Running
+        ));
+        assert!(!is_valid_transition(
+            &PipelineStatus::Failed,
+            &PipelineStatus::Running
+        ));
+        assert!(!is_valid_transition(
+            &PipelineStatus::Cancelled,
+            &PipelineStatus::Running
+        ));
+        assert!(!is_valid_transition(
+            &PipelineStatus::Completed,
+            &PipelineStatus::Failed
+        ));
+        assert!(!is_valid_transition(
+            &PipelineStatus::Queued,
+            &PipelineStatus::Completed
+        ));
+        assert!(!is_valid_transition(
+            &PipelineStatus::Queued,
+            &PipelineStatus::Failed
+        ));
     }
 
     #[test]
@@ -1337,14 +1429,19 @@ mod tests {
 
         let db = FactoryDb::new_in_memory().unwrap();
         let project = db.create_project("test", "/tmp/nonexistent").unwrap();
-        let issue = db.create_issue(project.id, "Test issue", "Test desc", &IssueColumn::Backlog).unwrap();
+        let issue = db
+            .create_issue(project.id, "Test issue", "Test desc", &IssueColumn::Backlog)
+            .unwrap();
         let run = db.create_pipeline_run(issue.id).unwrap();
 
         let db = Arc::new(std::sync::Mutex::new(db));
         let (tx, _rx) = broadcast::channel(16);
 
         let runner = PipelineRunner::new("/tmp/nonexistent", None);
-        runner.start_run(run.id, &issue, db.clone(), tx).await.unwrap();
+        runner
+            .start_run(run.id, &issue, db.clone(), tx)
+            .await
+            .unwrap();
 
         // Give the background task time to complete
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -1353,8 +1450,10 @@ mod tests {
         let updated_run = db.get_pipeline_run(run.id).unwrap().unwrap();
         // Should be either Running (if claude not found) or Failed
         assert!(
-            updated_run.status == PipelineStatus::Failed || updated_run.status == PipelineStatus::Running,
-            "Expected Failed or Running, got {:?}", updated_run.status
+            updated_run.status == PipelineStatus::Failed
+                || updated_run.status == PipelineStatus::Running,
+            "Expected Failed or Running, got {:?}",
+            updated_run.status
         );
 
         // Clean up
@@ -1367,24 +1466,30 @@ mod tests {
 
         let db = FactoryDb::new_in_memory().unwrap();
         let project = db.create_project("test", "/tmp/test").unwrap();
-        let issue = db.create_issue(project.id, "Broadcast test", "", &IssueColumn::Backlog).unwrap();
+        let issue = db
+            .create_issue(project.id, "Broadcast test", "", &IssueColumn::Backlog)
+            .unwrap();
         let run = db.create_pipeline_run(issue.id).unwrap();
 
         let db = Arc::new(std::sync::Mutex::new(db));
         let (tx, mut rx) = broadcast::channel(16);
 
         let runner = PipelineRunner::new("/tmp", None);
-        runner.start_run(run.id, &issue, db.clone(), tx).await.unwrap();
+        runner
+            .start_run(run.id, &issue, db.clone(), tx)
+            .await
+            .unwrap();
 
         // Should receive a PipelineStarted message
-        let msg = tokio::time::timeout(
-            tokio::time::Duration::from_secs(2),
-            rx.recv()
-        ).await;
+        let msg = tokio::time::timeout(tokio::time::Duration::from_secs(2), rx.recv()).await;
 
         assert!(msg.is_ok(), "Should receive a broadcast message");
         let msg_str = msg.unwrap().unwrap();
-        assert!(msg_str.contains("PipelineStarted"), "First message should be PipelineStarted, got: {}", msg_str);
+        assert!(
+            msg_str.contains("PipelineStarted"),
+            "First message should be PipelineStarted, got: {}",
+            msg_str
+        );
 
         unsafe { std::env::remove_var("CLAUDE_CMD") };
     }
@@ -1400,14 +1505,19 @@ mod tests {
 
         let db = FactoryDb::new_in_memory().unwrap();
         let project = db.create_project("test", "/tmp").unwrap();
-        let issue = db.create_issue(project.id, "Cancel test", "", &IssueColumn::Backlog).unwrap();
+        let issue = db
+            .create_issue(project.id, "Cancel test", "", &IssueColumn::Backlog)
+            .unwrap();
         let run = db.create_pipeline_run(issue.id).unwrap();
 
         let db = Arc::new(std::sync::Mutex::new(db));
         let (tx, _rx) = broadcast::channel(16);
 
         let runner = PipelineRunner::new("/tmp", None);
-        runner.start_run(run.id, &issue, db.clone(), tx.clone()).await.unwrap();
+        runner
+            .start_run(run.id, &issue, db.clone(), tx.clone())
+            .await
+            .unwrap();
 
         // Wait for the process to be registered in the running_processes map.
         // We poll because the spawned task needs to actually call spawn() and insert.
@@ -1429,7 +1539,10 @@ mod tests {
         // Process should be removed from tracking
         {
             let processes = runner.running_processes.lock().await;
-            assert!(!processes.contains_key(&run.id), "Process should be removed after cancel");
+            assert!(
+                !processes.contains_key(&run.id),
+                "Process should be removed after cancel"
+            );
         }
 
         // Clean up
@@ -1444,14 +1557,19 @@ mod tests {
 
         let db = FactoryDb::new_in_memory().unwrap();
         let project = db.create_project("test", "/tmp").unwrap();
-        let issue = db.create_issue(project.id, "Cleanup test", "", &IssueColumn::Backlog).unwrap();
+        let issue = db
+            .create_issue(project.id, "Cleanup test", "", &IssueColumn::Backlog)
+            .unwrap();
         let run = db.create_pipeline_run(issue.id).unwrap();
 
         let db = Arc::new(std::sync::Mutex::new(db));
         let (tx, _rx) = broadcast::channel(16);
 
         let runner = PipelineRunner::new("/tmp", None);
-        runner.start_run(run.id, &issue, db.clone(), tx).await.unwrap();
+        runner
+            .start_run(run.id, &issue, db.clone(), tx)
+            .await
+            .unwrap();
 
         // Give the background task time to complete (includes planner fallback attempt + forge execution)
         tokio::time::sleep(tokio::time::Duration::from_millis(5000)).await;
@@ -1459,7 +1577,10 @@ mod tests {
         // Process should be cleaned up
         {
             let processes = runner.running_processes.lock().await;
-            assert!(!processes.contains_key(&run.id), "Process should be removed after completion");
+            assert!(
+                !processes.contains_key(&run.id),
+                "Process should be removed after completion"
+            );
         }
 
         // Clean up

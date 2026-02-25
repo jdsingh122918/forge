@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,8 +31,12 @@ impl IssueColumn {
             Self::Done => "done",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Result<Self, String> {
+impl FromStr for IssueColumn {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "backlog" => Ok(Self::Backlog),
             "ready" => Ok(Self::Ready),
@@ -60,8 +66,12 @@ impl Priority {
             Self::Critical => "critical",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Result<Self, String> {
+impl FromStr for Priority {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "low" => Ok(Self::Low),
             "medium" => Ok(Self::Medium),
@@ -107,8 +117,12 @@ impl PipelineStatus {
             Self::Cancelled => "cancelled",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Result<Self, String> {
+impl FromStr for PipelineStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "queued" => Ok(Self::Queued),
             "running" => Ok(Self::Running),
@@ -205,8 +219,12 @@ impl IsolationStrategy {
             Self::Shared => "shared",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Result<Self, String> {
+impl FromStr for IsolationStrategy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "worktree" => Ok(Self::Worktree),
             "container" => Ok(Self::Container),
@@ -242,8 +260,12 @@ impl AgentRole {
             Self::TestVerifier => "test_verifier",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Result<Self, String> {
+impl FromStr for AgentRole {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "planner" => Ok(Self::Planner),
             "coder" => Ok(Self::Coder),
@@ -275,8 +297,12 @@ impl AgentTaskStatus {
             Self::Failed => "failed",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Result<Self, String> {
+impl FromStr for AgentTaskStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "pending" => Ok(Self::Pending),
             "running" => Ok(Self::Running),
@@ -308,8 +334,12 @@ impl AgentEventType {
             Self::Error => "error",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Result<Self, String> {
+impl FromStr for AgentEventType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "thinking" => Ok(Self::Thinking),
             "action" => Ok(Self::Action),

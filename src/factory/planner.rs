@@ -127,20 +127,28 @@ impl Planner {
         issue_labels: &[String],
     ) -> Result<PlanResponse> {
         let repo_context = self.gather_repo_context().await?;
-        let prompt =
-            self.build_prompt(issue_title, issue_description, issue_labels, &repo_context);
+        let prompt = self.build_prompt(issue_title, issue_description, issue_labels, &repo_context);
 
         match self.call_claude(&prompt).await {
             Ok(response) => match PlanResponse::parse(&response) {
                 Ok(plan) => Ok(plan),
                 Err(e) => {
-                    eprintln!("[planner] Invalid JSON response, falling back to single-task plan: {}", e);
-                    eprintln!("[planner] Raw response (first 500 chars): {}", response.chars().take(500).collect::<String>());
+                    eprintln!(
+                        "[planner] Invalid JSON response, falling back to single-task plan: {}",
+                        e
+                    );
+                    eprintln!(
+                        "[planner] Raw response (first 500 chars): {}",
+                        response.chars().take(500).collect::<String>()
+                    );
                     Ok(PlanResponse::fallback(issue_title, issue_description))
                 }
             },
             Err(e) => {
-                eprintln!("[planner] Claude CLI call failed, falling back to single-task plan: {}", e);
+                eprintln!(
+                    "[planner] Claude CLI call failed, falling back to single-task plan: {}",
+                    e
+                );
                 Ok(PlanResponse::fallback(issue_title, issue_description))
             }
         }
@@ -191,7 +199,10 @@ impl Planner {
             .await
             .context("Failed to list project files")?;
         if !tree_output.status.success() {
-            eprintln!("[planner] find command failed: {}", String::from_utf8_lossy(&tree_output.stderr));
+            eprintln!(
+                "[planner] find command failed: {}",
+                String::from_utf8_lossy(&tree_output.stderr)
+            );
         }
         let tree = String::from_utf8_lossy(&tree_output.stdout);
 
@@ -202,7 +213,10 @@ impl Planner {
             .await
             .context("Failed to get git log")?;
         if !log_output.status.success() {
-            eprintln!("[planner] git log failed: {}", String::from_utf8_lossy(&log_output.stderr));
+            eprintln!(
+                "[planner] git log failed: {}",
+                String::from_utf8_lossy(&log_output.stderr)
+            );
         }
         let log = String::from_utf8_lossy(&log_output.stdout);
 
