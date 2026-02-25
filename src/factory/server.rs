@@ -13,7 +13,7 @@ use tower_http::cors::CorsLayer;
 use tokio::sync::broadcast;
 
 use super::api::{self, AppState};
-use super::db::FactoryDb;
+use super::db::{DbHandle, FactoryDb};
 use super::embedded::Assets;
 use super::pipeline::PipelineRunner;
 use super::sandbox::DockerSandbox;
@@ -116,7 +116,7 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     let pipeline_runner = PipelineRunner::new(&config.project_path, sandbox);
 
     let state = Arc::new(AppState {
-        db: Arc::new(std::sync::Mutex::new(db)),
+        db: DbHandle::new(db),
         ws_tx,
         pipeline_runner,
         github_client_id,
@@ -171,7 +171,7 @@ mod tests {
         let (ws_tx, _) = broadcast::channel(16);
         let pipeline_runner = PipelineRunner::new("/tmp/test", None);
         let state = Arc::new(AppState {
-            db: Arc::new(std::sync::Mutex::new(db)),
+            db: DbHandle::new(db),
             ws_tx,
             pipeline_runner,
             github_client_id: None,

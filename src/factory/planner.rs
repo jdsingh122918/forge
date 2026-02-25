@@ -1,7 +1,19 @@
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use tokio::process::Command;
+
+/// Abstraction over the planning step for testability.
+#[async_trait]
+pub trait PlanProvider: Send + Sync {
+    async fn plan(
+        &self,
+        issue_title: &str,
+        issue_description: &str,
+        issue_labels: &[String],
+    ) -> Result<PlanResponse>;
+}
 
 /// Produced by the LLM planner; represents a decomposition of an issue into parallelizable tasks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,7 +216,7 @@ impl Planner {
     ///
     /// Returns errors on CLI or parse failures -- the caller is responsible
     /// for deciding whether to fall back to a single-task plan.
-    pub async fn plan(
+    pub async fn create_plan(
         &self,
         issue_title: &str,
         issue_description: &str,
@@ -319,6 +331,18 @@ impl Planner {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+}
+
+#[async_trait]
+impl PlanProvider for Planner {
+    async fn plan(
+        &self,
+        issue_title: &str,
+        issue_description: &str,
+        issue_labels: &[String],
+    ) -> Result<PlanResponse> {
+        self.create_plan(issue_title, issue_description, issue_labels).await
     }
 }
 

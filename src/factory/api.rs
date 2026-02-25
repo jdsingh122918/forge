@@ -11,6 +11,8 @@ use axum::{
 use serde::Deserialize;
 use tokio::sync::broadcast;
 
+use super::db::DbHandle;
+#[cfg(test)]
 use super::db::FactoryDb;
 use super::models::IssueColumn;
 use super::pipeline::PipelineRunner;
@@ -19,7 +21,7 @@ use super::ws::{WsMessage, broadcast_message};
 // ── Shared application state ──────────────────────────────────────────
 
 pub struct AppState {
-    pub db: Arc<Mutex<FactoryDb>>,
+    pub db: DbHandle,
     pub ws_tx: broadcast::Sender<String>,
     pub pipeline_runner: PipelineRunner,
     pub github_client_id: Option<String>,
@@ -159,14 +161,19 @@ fn parse_github_owner_repo(url: &str) -> Option<String> {
 /// Shared sync logic used by both the endpoint handler and auto-sync after clone.
 async fn do_sync_github_issues(state: &SharedState, project_id: i64) -> Result<SyncResult, ApiError> {
     let github_repo = {
-        let (existing_repo, project_path) = {
-            let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
+        let (existing_repo, project_path) = state.db.call(move |db| {
             let project = db
-                .get_project(project_id)
-                .map_err(|e| ApiError::Internal(e.to_string()))?
-                .ok_or_else(|| ApiError::NotFound(format!("Project {} not found", project_id)))?;
-            (project.github_repo.clone(), project.path.clone())
-        };
+                .get_project(project_id)?
+                .ok_or_else(|| anyhow::anyhow!("Project {} not found", project_id))?;
+            Ok((project.github_repo.clone(), project.path.clone()))
+        }).await.map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("not found") {
+                ApiError::NotFound(msg)
+            } else {
+                ApiError::Internal(msg)
+            }
+        })?;
 
         match existing_repo {
             Some(repo) => repo,
@@ -174,8 +181,10 @@ async fn do_sync_github_issues(state: &SharedState, project_id: i64) -> Result<S
                 // Try to detect github_repo from git remote (async to avoid blocking)
                 let detected = detect_github_repo_from_path(&project_path).await;
                 if let Some(ref owner_repo) = detected {
-                    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
-                    let _ = db.update_project_github_repo(project_id, owner_repo);
+                    let owner_repo = owner_repo.clone();
+                    let _ = state.db.call(move |db| {
+                        db.update_project_github_repo(project_id, &owner_repo)
+                    }).await;
                 }
                 detected.ok_or_else(|| {
                     ApiError::BadRequest(
@@ -202,13 +211,29 @@ async fn do_sync_github_issues(state: &SharedState, project_id: i64) -> Result<S
     let mut skipped = 0usize;
 
     {
-        let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
-        for gh_issue in &gh_issues {
-            let body = gh_issue.body.as_deref().unwrap_or("");
-            match db
-                .create_issue_from_github(project_id, &gh_issue.title, body, gh_issue.number)
-                .map_err(|e| ApiError::Internal(e.to_string()))?
-            {
+        // Collect data needed for DB closure (must be owned)
+        let gh_data: Vec<(String, String, i64)> = gh_issues
+            .iter()
+            .map(|gh| {
+                (
+                    gh.title.clone(),
+                    gh.body.clone().unwrap_or_default(),
+                    gh.number,
+                )
+            })
+            .collect();
+
+        let results = state.db.call(move |db| {
+            let mut created = Vec::new();
+            for (title, body, number) in &gh_data {
+                let result = db.create_issue_from_github(project_id, title, body, *number)?;
+                created.push(result);
+            }
+            Ok(created)
+        }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+
+        for result in results {
+            match result {
                 Some(issue) => {
                     broadcast_message(
                         &state.ws_tx,
@@ -247,10 +272,9 @@ async fn health_check() -> &'static str {
 }
 
 async fn list_projects(State(state): State<SharedState>) -> Result<impl IntoResponse, ApiError> {
-    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
-    let projects = db
-        .list_projects()
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let projects = state.db.call(move |db| {
+        db.list_projects()
+    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(projects))
 }
 
@@ -258,10 +282,11 @@ async fn create_project(
     State(state): State<SharedState>,
     Json(req): Json<CreateProjectRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
-    let project = db
-        .create_project(&req.name, &req.path)
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let name = req.name;
+    let path = req.path;
+    let project = state.db.call(move |db| {
+        db.create_project(&name, &path)
+    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
     let msg = serde_json::json!({"event": "project_created", "project": project}).to_string();
     let _ = state.ws_tx.send(msg);
     Ok((StatusCode::CREATED, Json(project)))
@@ -337,29 +362,32 @@ async fn clone_project(
         .map_err(|e| ApiError::Internal(format!("Failed to resolve path: {}", e)))?;
     let abs_path_str = abs_path.to_string_lossy().to_string();
 
-    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
-
-    // Check if a project already exists for this path
-    let existing = db.list_projects()
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .into_iter()
-        .find(|p| p.path == abs_path_str);
-
-    let project = if let Some(project) = existing {
-        project
-    } else {
-        db.create_project(&repo_name, &abs_path_str)
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-    };
-
-    // Parse and store the GitHub owner/repo from the original URL (before token injection)
+    // Parse the GitHub owner/repo from the original URL (before token injection)
     let github_repo = parse_github_owner_repo(&repo_url);
-    let project = if let Some(ref owner_repo) = github_repo {
-        db.update_project_github_repo(project.id, owner_repo)
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-    } else {
-        project
-    };
+
+    let repo_name_clone = repo_name.clone();
+    let abs_path_clone = abs_path_str.clone();
+    let github_repo_clone = github_repo.clone();
+    let project = state.db.call(move |db| {
+        // Check if a project already exists for this path
+        let existing = db.list_projects()?
+            .into_iter()
+            .find(|p| p.path == abs_path_clone);
+
+        let project = if let Some(project) = existing {
+            project
+        } else {
+            db.create_project(&repo_name_clone, &abs_path_clone)?
+        };
+
+        // Store the GitHub owner/repo
+        let project = if let Some(ref owner_repo) = github_repo_clone {
+            db.update_project_github_repo(project.id, owner_repo)?
+        } else {
+            project
+        };
+        Ok(project)
+    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
 
     let msg = serde_json::json!({"event": "project_created", "project": project}).to_string();
     let _ = state.ws_tx.send(msg);
@@ -396,11 +424,10 @@ async fn get_project(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
-    match db
-        .get_project(id)
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-    {
+    let project = state.db.call(move |db| {
+        db.get_project(id)
+    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    match project {
         Some(project) => Ok(Json(project)),
         None => Err(ApiError::NotFound(format!("Project {} not found", id))),
     }
@@ -410,10 +437,9 @@ async fn get_board(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
-    let board = db
-        .get_board(id)
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let board = state.db.call(move |db| {
+        db.get_board(id)
+    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(board))
 }
 
@@ -426,11 +452,11 @@ async fn create_issue(
         Some(c) => IssueColumn::from_str(c).map_err(ApiError::BadRequest)?,
         None => IssueColumn::Backlog,
     };
-    let description = req.description.as_deref().unwrap_or("");
-    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
-    let issue = db
-        .create_issue(project_id, &req.title, description, &column)
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let title = req.title;
+    let description = req.description.unwrap_or_default();
+    let issue = state.db.call(move |db| {
+        db.create_issue(project_id, &title, &description, &column)
+    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
     broadcast_message(&state.ws_tx, &WsMessage::IssueCreated { issue: issue.clone() });
     Ok((StatusCode::CREATED, Json(issue)))
 }
@@ -439,11 +465,10 @@ async fn get_issue(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
-    match db
-        .get_issue_detail(id)
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-    {
+    let detail = state.db.call(move |db| {
+        db.get_issue_detail(id)
+    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    match detail {
         Some(detail) => Ok(Json(detail)),
         None => Err(ApiError::NotFound(format!("Issue {} not found", id))),
     }
@@ -454,10 +479,11 @@ async fn update_issue(
     Path(id): Path<i64>,
     Json(req): Json<UpdateIssueRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
-    let issue = db
-        .update_issue(id, req.title.as_deref(), req.description.as_deref())
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let title = req.title;
+    let description = req.description;
+    let issue = state.db.call(move |db| {
+        db.update_issue(id, title.as_deref(), description.as_deref())
+    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
     broadcast_message(&state.ws_tx, &WsMessage::IssueUpdated { issue: issue.clone() });
     Ok(Json(issue))
 }
@@ -468,16 +494,16 @@ async fn move_issue(
     Json(req): Json<MoveIssueRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let column = IssueColumn::from_str(&req.column).map_err(ApiError::BadRequest)?;
-    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
-    // Capture the original column before the move for the WsMessage
-    let from_column = db
-        .get_issue(id)
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .map(|i| i.column.as_str().to_string())
-        .unwrap_or_default();
-    let issue = db
-        .move_issue(id, &column, req.position)
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let position = req.position;
+    let (from_column, issue) = state.db.call(move |db| {
+        // Capture the original column before the move for the WsMessage
+        let from_column = db
+            .get_issue(id)?
+            .map(|i| i.column.as_str().to_string())
+            .unwrap_or_default();
+        let issue = db.move_issue(id, &column, position)?;
+        Ok((from_column, issue))
+    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
     broadcast_message(
         &state.ws_tx,
         &WsMessage::IssueMoved {
@@ -494,11 +520,10 @@ async fn delete_issue(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
-    match db
-        .delete_issue(id)
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-    {
+    let deleted = state.db.call(move |db| {
+        db.delete_issue(id)
+    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    match deleted {
         true => {
             broadcast_message(&state.ws_tx, &WsMessage::IssueDeleted { issue_id: id });
             Ok(StatusCode::NO_CONTENT)
@@ -511,22 +536,25 @@ async fn trigger_pipeline(
     State(state): State<SharedState>,
     Path(issue_id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let (run, issue) = {
-        let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
+    let (run, issue) = state.db.call(move |db| {
         let issue = db
-            .get_issue(issue_id)
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-            .ok_or_else(|| ApiError::NotFound(format!("Issue {} not found", issue_id)))?;
-        let run = db
-            .create_pipeline_run(issue_id)
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
-        (run, issue)
-    };
+            .get_issue(issue_id)?
+            .ok_or_else(|| anyhow::anyhow!("Issue {} not found", issue_id))?;
+        let run = db.create_pipeline_run(issue_id)?;
+        Ok((run, issue))
+    }).await.map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("not found") {
+            ApiError::NotFound(msg)
+        } else {
+            ApiError::Internal(msg)
+        }
+    })?;
 
     // Start pipeline execution in a background task
     state
         .pipeline_runner
-        .start_run(run.id, &issue, Arc::clone(&state.db), state.ws_tx.clone())
+        .start_run(run.id, &issue, state.db.clone(), state.ws_tx.clone())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -537,11 +565,10 @@ async fn get_pipeline_run(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let db = state.db.lock().map_err(|_| ApiError::Internal("Lock poisoned".to_string()))?;
-    match db
-        .get_pipeline_run(id)
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-    {
+    let run = state.db.call(move |db| {
+        db.get_pipeline_run(id)
+    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    match run {
         Some(run) => Ok(Json(run)),
         None => Err(ApiError::NotFound(format!("Pipeline run {} not found", id))),
     }
@@ -672,7 +699,7 @@ mod tests {
         let (ws_tx, _) = broadcast::channel(16);
         let pipeline_runner = PipelineRunner::new("/tmp/test", None);
         let state = Arc::new(AppState {
-            db: Arc::new(Mutex::new(db)),
+            db: DbHandle::new(db),
             ws_tx,
             pipeline_runner,
             github_client_id: None,
@@ -1226,7 +1253,7 @@ mod tests {
         let (ws_tx, _) = broadcast::channel(16);
         let pipeline_runner = PipelineRunner::new("/tmp/test", None);
         let state = Arc::new(AppState {
-            db: Arc::new(Mutex::new(db)),
+            db: DbHandle::new(db),
             ws_tx: ws_tx.clone(),
             pipeline_runner,
             github_client_id: None,

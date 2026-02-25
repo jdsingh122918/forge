@@ -1,10 +1,50 @@
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
 
 use super::models::*;
+
+/// Async-safe handle to the factory database.
+///
+/// Wraps `FactoryDb` behind `Arc<Mutex>` and runs all access on tokio's
+/// blocking thread pool via `spawn_blocking`, preventing synchronous SQLite
+/// I/O from tying up async worker threads.
+#[derive(Clone)]
+pub struct DbHandle {
+    inner: Arc<std::sync::Mutex<FactoryDb>>,
+}
+
+impl DbHandle {
+    pub fn new(db: FactoryDb) -> Self {
+        Self {
+            inner: Arc::new(std::sync::Mutex::new(db)),
+        }
+    }
+
+    /// Run a closure with access to the database on a blocking thread.
+    /// All data passed into `f` must be owned (`'static`).
+    pub async fn call<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&FactoryDb) -> Result<R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let db = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let guard = db.lock().map_err(|e| anyhow::anyhow!("DB lock poisoned: {}", e))?;
+            f(&guard)
+        })
+        .await
+        .context("DB task panicked")?
+    }
+
+    /// Synchronous lock for use in tests and non-async contexts.
+    pub fn lock_sync(&self) -> std::sync::MutexGuard<'_, FactoryDb> {
+        self.inner.lock().expect("DB lock poisoned")
+    }
+}
 
 pub struct FactoryDb {
     conn: Connection,

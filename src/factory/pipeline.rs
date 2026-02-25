@@ -6,12 +6,32 @@ use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::broadcast;
 
-use super::agent_executor::AgentExecutor;
-use super::db::FactoryDb;
+use super::agent_executor::{AgentExecutor, TaskRunner};
+use super::db::DbHandle;
 use super::models::*;
-use super::planner::Planner;
+use super::planner::{Planner, PlanProvider};
 use super::sandbox::{DockerSandbox, SandboxConfig};
 use super::ws::{WsMessage, broadcast_message};
+
+/// Per-project mutex map that serializes git-mutating operations.
+/// Long-running agent execution remains parallel — only short git
+/// mutations (checkout, merge, push) are serialized.
+#[derive(Clone, Default)]
+pub struct GitLockMap {
+    locks: Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+}
+
+impl GitLockMap {
+    pub async fn get(&self, project_path: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let canonical = std::fs::canonicalize(project_path)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| project_path.trim_end_matches('/').to_string());
+        let mut map = self.locks.lock().await;
+        map.entry(canonical)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+}
 
 /// Result of agent team execution
 enum PlanOutcome {
@@ -142,6 +162,8 @@ pub struct PipelineRunner {
     running_processes: Arc<tokio::sync::Mutex<HashMap<i64, RunHandle>>>,
     /// Docker sandbox, if available and enabled.
     sandbox: Option<Arc<DockerSandbox>>,
+    /// Per-project git lock map for serializing git-mutating operations.
+    git_locks: GitLockMap,
 }
 
 impl PipelineRunner {
@@ -150,6 +172,7 @@ impl PipelineRunner {
             project_path: project_path.to_string(),
             running_processes: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             sandbox,
+            git_locks: GitLockMap::default(),
         }
     }
 
@@ -158,7 +181,7 @@ impl PipelineRunner {
     pub async fn cancel(
         &self,
         run_id: i64,
-        db: &Arc<std::sync::Mutex<FactoryDb>>,
+        db: &DbHandle,
         tx: &broadcast::Sender<String>,
     ) -> Result<PipelineRun> {
         // Kill the child process or stop the container if it exists
@@ -183,15 +206,16 @@ impl PipelineRunner {
         }
 
         // Update DB status to Cancelled and move issue back to Ready
-        let db = db.lock().map_err(|e| anyhow::anyhow!("DB lock poisoned: {}", e))?;
-        let run = db.cancel_pipeline_run(run_id)?;
+        let run = db.call(move |db| db.cancel_pipeline_run(run_id)).await?;
         broadcast_message(tx, &WsMessage::PipelineFailed { run: run.clone() });
 
         // Auto-move issue back to Ready
-        if let Ok(Some(issue)) = db.get_issue(run.issue_id)
-            && issue.column == IssueColumn::InProgress
-        {
-            if let Err(e) = db.move_issue(run.issue_id, &IssueColumn::Ready, 0) {
+        let issue_id = run.issue_id;
+        let should_move = db.call(move |db| {
+            Ok(db.get_issue(issue_id)?.map_or(false, |issue| issue.column == IssueColumn::InProgress))
+        }).await?;
+        if should_move {
+            if let Err(e) = db.call(move |db| db.move_issue(issue_id, &IssueColumn::Ready, 0)).await {
                 eprintln!("[pipeline] run_id={}: failed to move issue to Ready: {:#}", run_id, e);
             }
             broadcast_message(
@@ -253,11 +277,13 @@ impl PipelineRunner {
         issue_description: &str,
         issue_labels: &[String],
         branch_name: &Option<String>,
-        db: &Arc<std::sync::Mutex<FactoryDb>>,
+        db: &DbHandle,
         tx: &broadcast::Sender<String>,
+        git_locks: &GitLockMap,
+        planner: &dyn PlanProvider,
+        task_runner: &Arc<dyn TaskRunner>,
     ) -> Result<PlanOutcome> {
         // Step 1: Plan
-        let planner = Planner::new(project_path);
         let plan = match planner.plan(issue_title, issue_description, issue_labels).await {
             Ok(plan) => plan,
             Err(e) => {
@@ -284,43 +310,54 @@ impl PipelineRunner {
         }
 
         // Step 2: Create team + tasks in DB
-        let (team, db_tasks) = {
-            let db_guard = db.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
-            let strategy: ExecutionStrategy = plan.strategy.parse()
-                .map_err(|_| anyhow::anyhow!("Invalid strategy from planner: '{}'", plan.strategy))?;
-            let isolation: IsolationStrategy = plan.isolation.parse()
-                .map_err(|_| anyhow::anyhow!("Invalid isolation from planner: '{}'", plan.isolation))?;
-            let team = db_guard.create_agent_team(
+        // Parse strategy/isolation/roles outside the closure (they use &str references from plan)
+        let strategy: ExecutionStrategy = plan.strategy.parse()
+            .map_err(|_| anyhow::anyhow!("Invalid strategy from planner: '{}'", plan.strategy))?;
+        let isolation: IsolationStrategy = plan.isolation.parse()
+            .map_err(|_| anyhow::anyhow!("Invalid isolation from planner: '{}'", plan.isolation))?;
+        let mut parsed_tasks: Vec<(String, String, AgentRole, i32, Vec<i32>, IsolationStrategy)> = Vec::new();
+        for plan_task in &plan.tasks {
+            let role: AgentRole = plan_task.role.parse()
+                .map_err(|_| anyhow::anyhow!("Invalid role from planner: '{}'", plan_task.role))?;
+            let task_isolation: IsolationStrategy = plan_task.isolation.parse()
+                .map_err(|_| anyhow::anyhow!("Invalid isolation from planner: '{}'", plan_task.isolation))?;
+            parsed_tasks.push((
+                plan_task.name.clone(),
+                plan_task.description.clone(),
+                role,
+                plan_task.wave,
+                plan_task.depends_on.clone(),
+                task_isolation,
+            ));
+        }
+        let reasoning = plan.reasoning.clone();
+        let (team, db_tasks) = db.call(move |db| {
+            let team = db.create_agent_team(
                 run_id,
                 &strategy,
                 &isolation,
-                &plan.reasoning,
+                &reasoning,
             )?;
 
             let mut db_tasks = Vec::new();
-            for plan_task in &plan.tasks {
-                let depends: Vec<i64> = plan_task
-                    .depends_on
+            for (name, description, role, wave, depends_on, task_isolation) in &parsed_tasks {
+                let depends: Vec<i64> = depends_on
                     .iter()
                     .filter_map(|&idx| db_tasks.get(idx as usize).map(|t: &AgentTask| t.id))
                     .collect();
-                let role: AgentRole = plan_task.role.parse()
-                    .map_err(|_| anyhow::anyhow!("Invalid role from planner: '{}'", plan_task.role))?;
-                let task_isolation: IsolationStrategy = plan_task.isolation.parse()
-                    .map_err(|_| anyhow::anyhow!("Invalid isolation from planner: '{}'", plan_task.isolation))?;
-                let task = db_guard.create_agent_task(
+                let task = db.create_agent_task(
                     team.id,
-                    &plan_task.name,
-                    &plan_task.description,
-                    &role,
-                    plan_task.wave,
+                    name,
+                    description,
+                    role,
+                    *wave,
                     &depends,
-                    &task_isolation,
+                    task_isolation,
                 )?;
                 db_tasks.push(task);
             }
-            (team, db_tasks)
-        };
+            Ok((team, db_tasks))
+        }).await?;
 
         // Step 3: Broadcast TeamCreated
         broadcast_message(
@@ -336,7 +373,7 @@ impl PipelineRunner {
         );
 
         // Step 4: Execute wave by wave
-        let executor = AgentExecutor::new(project_path, Arc::clone(db), tx.clone());
+        let executor = Arc::clone(task_runner);
         let max_wave = plan.max_wave();
         let base_branch = branch_name.as_deref().unwrap_or("main");
 
@@ -398,7 +435,7 @@ impl PipelineRunner {
             // Run tasks in parallel
             let mut handles = Vec::new();
             for (task, working_dir, _branch) in &task_working_dirs {
-                let executor_ref = AgentExecutor::new(project_path, Arc::clone(db), tx.clone());
+                let executor_ref = Arc::clone(task_runner);
                 let task_clone = task.clone();
                 let dir_clone = working_dir.clone();
                 let run_id_clone = run_id;
@@ -453,8 +490,11 @@ impl PipelineRunner {
                 .map(|(_, dir, _)| dir.clone())
                 .collect();
 
-            // Merge branches from worktrees
+            // Merge branches from worktrees (under project lock)
             if wave_tasks.len() > 1 || task_working_dirs.iter().any(|(_, _, b)| b.is_some()) {
+                let git_lock = git_locks.get(project_path).await;
+                let _guard = git_lock.lock().await;
+
                 broadcast_message(tx, &WsMessage::MergeStarted { run_id, wave });
 
                 let mut merge_conflicts = false;
@@ -491,6 +531,7 @@ impl PipelineRunner {
                         conflicts: merge_conflicts,
                     },
                 );
+                // git lock released at end of block
             }
 
             // Always clean up ALL worktrees, even after merge conflict
@@ -533,7 +574,7 @@ impl PipelineRunner {
         issue_description: &str,
         sandbox_clone: &Option<Arc<DockerSandbox>>,
         running_processes: &Arc<tokio::sync::Mutex<HashMap<i64, RunHandle>>>,
-        db: &Arc<std::sync::Mutex<FactoryDb>>,
+        db: &DbHandle,
         tx: &broadcast::Sender<String>,
     ) -> Result<String> {
         // Auto-generate phases if none exist
@@ -585,42 +626,46 @@ impl PipelineRunner {
         &self,
         run_id: i64,
         issue: &Issue,
-        db: Arc<std::sync::Mutex<FactoryDb>>,
+        db: DbHandle,
         tx: broadcast::Sender<String>,
     ) -> Result<()> {
         // Look up the project path from the DB (per-project, not the global default)
-        let project_path = {
-            let db_guard = db.lock().map_err(|e| anyhow::anyhow!("DB lock poisoned: {}", e))?;
-            match db_guard.get_project(issue.project_id) {
-                Ok(Some(project)) => project.path,
+        let project_id = issue.project_id;
+        let project_path = db.call(move |db| {
+            match db.get_project(project_id) {
+                Ok(Some(project)) => Ok(project.path),
                 Ok(None) => {
-                    anyhow::bail!("Project {} not found in DB", issue.project_id);
+                    anyhow::bail!("Project {} not found in DB", project_id);
                 }
                 Err(e) => {
-                    return Err(e.context(format!("Failed to look up project {}", issue.project_id)));
+                    Err(e.context(format!("Failed to look up project {}", project_id)))
                 }
             }
-        };
+        }).await?;
         let issue_id = issue.id;
         let issue_title = issue.title.clone();
         let issue_description = issue.description.clone();
         let issue_labels = issue.labels.clone();
         let running_processes = Arc::clone(&self.running_processes);
         let sandbox_clone = self.sandbox.clone();
+        let git_locks = self.git_locks.clone();
 
         let from_column = issue.column.as_str().to_string();
 
         // Update status to Running and move issue to InProgress
         {
-            let db = db.lock().map_err(|e| anyhow::anyhow!("DB lock poisoned: {}", e))?;
-            let run = db.update_pipeline_run(run_id, &PipelineStatus::Running, None, None)?;
-            broadcast_message(&tx, &WsMessage::PipelineStarted { run });
-
-            // Auto-move issue to InProgress
-            if issue.column != IssueColumn::InProgress {
-                if let Err(e) = db.move_issue(issue_id, &IssueColumn::InProgress, 0) {
-                    eprintln!("[pipeline] run_id={}: failed to move issue to InProgress: {:#}", run_id, e);
+            let need_move = issue.column != IssueColumn::InProgress;
+            let run = db.call(move |db| {
+                let run = db.update_pipeline_run(run_id, &PipelineStatus::Running, None, None)?;
+                if need_move {
+                    if let Err(e) = db.move_issue(issue_id, &IssueColumn::InProgress, 0) {
+                        eprintln!("[pipeline] run_id={}: failed to move issue to InProgress: {:#}", run_id, e);
+                    }
                 }
+                Ok(run)
+            }).await?;
+            broadcast_message(&tx, &WsMessage::PipelineStarted { run });
+            if issue.column != IssueColumn::InProgress {
                 broadcast_message(
                     &tx,
                     &WsMessage::IssueMoved {
@@ -635,33 +680,44 @@ impl PipelineRunner {
 
         // Spawn background task for execution
         tokio::spawn(async move {
-            // Step 1: Create a git branch for isolation
-            let branch_name = match create_git_branch(&project_path, issue_id, &issue_title).await {
-                Ok(name) => {
-                    // Store branch name in DB and broadcast
-                    {
-                        let Ok(db_guard) = db.lock() else {
-                            eprintln!("[pipeline] run_id={}: DB lock poisoned, cannot update branch", run_id);
-                            return;
-                        };
-                        if let Err(e) = db_guard.update_pipeline_branch(run_id, &name) {
-                            eprintln!("[pipeline] run_id={}: failed to update pipeline branch: {:#}", run_id, e);
+            // Step 1: Create a git branch for isolation (under project lock)
+            let branch_name = {
+                let git_result = {
+                    let git_lock = git_locks.get(&project_path).await;
+                    let _guard = git_lock.lock().await;
+                    create_git_branch(&project_path, issue_id, &issue_title).await
+                };
+                // git lock released — now safe to acquire DB lock
+                match git_result {
+                    Ok(name) => {
+                        // Store branch name in DB and broadcast
+                        {
+                            let name_clone = name.clone();
+                            if let Err(e) = db.call(move |db| db.update_pipeline_branch(run_id, &name_clone)).await {
+                                eprintln!("[pipeline] run_id={}: failed to update pipeline branch: {:#}", run_id, e);
+                            }
                         }
+                        broadcast_message(
+                            &tx,
+                            &WsMessage::PipelineBranchCreated {
+                                run_id,
+                                branch_name: name.clone(),
+                            },
+                        );
+                        Some(name)
                     }
-                    broadcast_message(
-                        &tx,
-                        &WsMessage::PipelineBranchCreated {
-                            run_id,
-                            branch_name: name.clone(),
-                        },
-                    );
-                    Some(name)
-                }
-                Err(e) => {
-                    eprintln!("[pipeline] run_id={}: failed to create git branch: {:#}. Continuing without branch isolation.", run_id, e);
-                    None
+                    Err(e) => {
+                        eprintln!("[pipeline] run_id={}: failed to create git branch: {:#}. Continuing without branch isolation.", run_id, e);
+                        None
+                    }
                 }
             };
+
+            // Construct real planner and task runner for the agent team
+            let planner = Planner::new(&project_path);
+            let task_runner: Arc<dyn TaskRunner> = Arc::new(
+                AgentExecutor::new(&project_path, db.clone(), tx.clone())
+            );
 
             // Step 2: Try agent team pipeline first, fall back to forge pipeline
             let team_result = Self::execute_agent_team(
@@ -673,6 +729,9 @@ impl PipelineRunner {
                 &branch_name,
                 &db,
                 &tx,
+                &git_locks,
+                &planner,
+                &task_runner,
             )
             .await;
 
@@ -727,35 +786,40 @@ impl PipelineRunner {
 
             // Check if already cancelled (e.g., by cancel() call)
             {
-                let Ok(db_guard) = db.lock() else {
-                    eprintln!("[pipeline] run_id={}: DB lock poisoned, cannot check cancellation", run_id);
-                    return;
+                let is_cancelled = match db.call(move |db| {
+                    Ok(db.get_pipeline_run(run_id)?.map_or(false, |r| r.status == PipelineStatus::Cancelled))
+                }).await {
+                    Ok(cancelled) => cancelled,
+                    Err(e) => {
+                        eprintln!("[pipeline] run_id={}: DB error checking cancellation: {:#}", run_id, e);
+                        return;
+                    }
                 };
-                if let Ok(Some(current_run)) = db_guard.get_pipeline_run(run_id)
-                    && current_run.status == PipelineStatus::Cancelled
-                {
+                if is_cancelled {
                     return;
                 }
             }
 
             match result {
                 Ok(summary) => {
-                    // Step 3: On success, create a PR if we have a branch
+                    // Step 3: On success, create a PR if we have a branch (under project lock)
                     if let Some(ref branch) = branch_name {
-                        match create_pull_request(
-                            &project_path,
-                            branch,
-                            &issue_title,
-                            &issue_description,
-                        )
-                        .await
-                        {
+                        let pr_result = {
+                            let git_lock = git_locks.get(&project_path).await;
+                            let _guard = git_lock.lock().await;
+                            create_pull_request(
+                                &project_path,
+                                branch,
+                                &issue_title,
+                                &issue_description,
+                            )
+                            .await
+                        };
+                        // git lock released — now safe to acquire DB lock
+                        match pr_result {
                             Ok(pr_url) => {
-                                let Ok(db_guard) = db.lock() else {
-                                    eprintln!("[pipeline] run_id={}: DB lock poisoned, cannot update PR URL", run_id);
-                                    return;
-                                };
-                                if let Err(e) = db_guard.update_pipeline_pr_url(run_id, &pr_url) {
+                                let pr_url_clone = pr_url.clone();
+                                if let Err(e) = db.call(move |db| db.update_pipeline_pr_url(run_id, &pr_url_clone)).await {
                                     eprintln!("[pipeline] run_id={}: failed to update pipeline PR URL: {:#}", run_id, e);
                                 }
                                 broadcast_message(
@@ -769,16 +833,21 @@ impl PipelineRunner {
                         }
                     }
 
-                    let Ok(db_guard) = db.lock() else {
-                        eprintln!("[pipeline] run_id={}: DB lock poisoned, cannot update completed status", run_id);
-                        return;
-                    };
-                    match db_guard.update_pipeline_run(
-                        run_id,
-                        &PipelineStatus::Completed,
-                        Some(&summary),
-                        None,
-                    ) {
+                    match db.call({
+                        let summary = summary.clone();
+                        move |db| {
+                            let run = db.update_pipeline_run(
+                                run_id,
+                                &PipelineStatus::Completed,
+                                Some(&summary),
+                                None,
+                            )?;
+                            if let Err(e) = db.move_issue(issue_id, &IssueColumn::InReview, 0) {
+                                eprintln!("[pipeline] run_id={}: failed to move issue to InReview: {:#}", run_id, e);
+                            }
+                            Ok(run)
+                        }
+                    }).await {
                         Ok(run) => broadcast_message(&tx, &WsMessage::PipelineCompleted { run }),
                         Err(e) => {
                             eprintln!(
@@ -786,10 +855,6 @@ impl PipelineRunner {
                                 run_id, e
                             );
                         }
-                    }
-                    // Auto-move issue to InReview
-                    if let Err(e) = db_guard.move_issue(issue_id, &IssueColumn::InReview, 0) {
-                        eprintln!("[pipeline] run_id={}: failed to move issue to InReview: {:#}", run_id, e);
                     }
                     broadcast_message(
                         &tx,
@@ -803,16 +868,15 @@ impl PipelineRunner {
                 }
                 Err(e) => {
                     let error_msg = format!("{:#}", e);
-                    let Ok(db_guard) = db.lock() else {
-                        eprintln!("[pipeline] run_id={}: DB lock poisoned, cannot update failed status", run_id);
-                        return;
-                    };
-                    match db_guard.update_pipeline_run(
-                        run_id,
-                        &PipelineStatus::Failed,
-                        None,
-                        Some(&error_msg),
-                    ) {
+                    match db.call({
+                        let error_msg = error_msg.clone();
+                        move |db| db.update_pipeline_run(
+                            run_id,
+                            &PipelineStatus::Failed,
+                            None,
+                            Some(&error_msg),
+                        )
+                    }).await {
                         Ok(run) => broadcast_message(&tx, &WsMessage::PipelineFailed { run }),
                         Err(e) => {
                             eprintln!(
@@ -941,7 +1005,7 @@ async fn execute_pipeline_streaming(
     issue_title: &str,
     issue_description: &str,
     running_processes: &Arc<tokio::sync::Mutex<HashMap<i64, RunHandle>>>,
-    db: &Arc<std::sync::Mutex<FactoryDb>>,
+    db: &DbHandle,
     tx: &broadcast::Sender<String>,
 ) -> Result<String> {
     let mut cmd = build_execution_command(project_path, issue_title, issue_description);
@@ -974,7 +1038,7 @@ async fn execute_pipeline_streaming(
 
         // Try to parse as DAG executor PhaseEvent first (from forge swarm)
         if let Some(event) = try_parse_phase_event(&line) {
-            process_phase_event(&event, run_id, db, tx);
+            process_phase_event(&event, run_id, db, tx).await;
             continue;
         }
 
@@ -982,13 +1046,12 @@ async fn execute_pipeline_streaming(
         if let Some(progress) = try_parse_progress(&line) {
             // Update DB with progress
             {
-                let db_guard = db.lock().map_err(|e| anyhow::anyhow!("DB lock poisoned: {}", e))?;
-                if let Err(e) = db_guard.update_pipeline_progress(
-                    run_id,
-                    progress.phase_count,
-                    progress.phase,
-                    progress.iteration,
-                ) {
+                let phase_count = progress.phase_count;
+                let phase = progress.phase;
+                let iteration = progress.iteration;
+                if let Err(e) = db.call(move |db| {
+                    db.update_pipeline_progress(run_id, phase_count, phase, iteration)
+                }).await {
                     eprintln!("[pipeline] run_id={}: failed to update pipeline progress: {:#}", run_id, e);
                 }
             }
@@ -1053,7 +1116,7 @@ async fn execute_pipeline_docker(
     issue_description: &str,
     sandbox: &Arc<DockerSandbox>,
     running_processes: &Arc<tokio::sync::Mutex<HashMap<i64, RunHandle>>>,
-    db: &Arc<std::sync::Mutex<FactoryDb>>,
+    db: &DbHandle,
     tx: &broadcast::Sender<String>,
     timeout_secs: u64,
 ) -> Result<String> {
@@ -1129,21 +1192,17 @@ async fn execute_pipeline_docker(
 
             // Parse progress — same logic as local
             if let Some(event) = try_parse_phase_event(&line) {
-                process_phase_event(&event, run_id, db, tx);
+                process_phase_event(&event, run_id, db, tx).await;
                 continue;
             }
             if let Some(progress) = try_parse_progress(&line) {
-                if let Ok(db_guard) = db.lock() {
-                    if let Err(e) = db_guard.update_pipeline_progress(
-                        run_id,
-                        progress.phase_count,
-                        progress.phase,
-                        progress.iteration,
-                    ) {
-                        eprintln!("[pipeline] run_id={}: failed to update pipeline progress: {:#}", run_id, e);
-                    }
-                } else {
-                    eprintln!("[pipeline] run_id={}: DB lock poisoned, cannot update progress", run_id);
+                let phase_count = progress.phase_count;
+                let phase = progress.phase;
+                let iteration = progress.iteration;
+                if let Err(e) = db.call(move |db| {
+                    db.update_pipeline_progress(run_id, phase_count, phase, iteration)
+                }).await {
+                    eprintln!("[pipeline] run_id={}: failed to update pipeline progress: {:#}", run_id, e);
                 }
 
                 let percent = compute_percent(&progress);
@@ -1304,22 +1363,20 @@ fn try_parse_phase_event(line: &str) -> Option<PhaseEventJson> {
 }
 
 /// Process a PhaseEvent and emit corresponding WsMessages + DB updates.
-fn process_phase_event(
+async fn process_phase_event(
     event: &PhaseEventJson,
     run_id: i64,
-    db: &Arc<std::sync::Mutex<FactoryDb>>,
+    db: &DbHandle,
     tx: &broadcast::Sender<String>,
 ) {
     match event {
         PhaseEventJson::Started { phase, wave } => {
-            let Ok(db_guard) = db.lock() else {
-                eprintln!("[pipeline] run_id={}: DB lock poisoned, cannot update phase", run_id);
-                return;
-            };
-            if let Err(e) = db_guard.upsert_pipeline_phase(run_id, phase, phase, "running", None, None) {
+            let phase_owned = phase.clone();
+            if let Err(e) = db.call(move |db| {
+                db.upsert_pipeline_phase(run_id, &phase_owned, &phase_owned, "running", None, None)
+            }).await {
                 eprintln!("[pipeline] run_id={}: failed to upsert pipeline phase: {:#}", run_id, e);
             }
-            drop(db_guard);
             broadcast_message(
                 tx,
                 &WsMessage::PipelinePhaseStarted {
@@ -1336,21 +1393,21 @@ fn process_phase_event(
             budget,
             percent,
         } => {
-            let Ok(db_guard) = db.lock() else {
-                eprintln!("[pipeline] run_id={}: DB lock poisoned, cannot update phase", run_id);
-                return;
-            };
-            if let Err(e) = db_guard.upsert_pipeline_phase(
-                run_id,
-                phase,
-                phase,
-                "running",
-                Some(*iteration as i32),
-                Some(*budget as i32),
-            ) {
+            let phase_owned = phase.clone();
+            let iteration_val = *iteration as i32;
+            let budget_val = *budget as i32;
+            if let Err(e) = db.call(move |db| {
+                db.upsert_pipeline_phase(
+                    run_id,
+                    &phase_owned,
+                    &phase_owned,
+                    "running",
+                    Some(iteration_val),
+                    Some(budget_val),
+                )
+            }).await {
                 eprintln!("[pipeline] run_id={}: failed to upsert pipeline phase: {:#}", run_id, e);
             }
-            drop(db_guard);
             broadcast_message(
                 tx,
                 &WsMessage::PipelineProgress {
@@ -1366,15 +1423,14 @@ fn process_phase_event(
                 .get("success")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            let status = if success { "completed" } else { "failed" };
-            let Ok(db_guard) = db.lock() else {
-                eprintln!("[pipeline] run_id={}: DB lock poisoned, cannot update phase", run_id);
-                return;
-            };
-            if let Err(e) = db_guard.upsert_pipeline_phase(run_id, phase, phase, status, None, None) {
+            let status_str = if success { "completed" } else { "failed" };
+            let phase_owned = phase.clone();
+            let status_owned = status_str.to_string();
+            if let Err(e) = db.call(move |db| {
+                db.upsert_pipeline_phase(run_id, &phase_owned, &phase_owned, &status_owned, None, None)
+            }).await {
                 eprintln!("[pipeline] run_id={}: failed to upsert pipeline phase: {:#}", run_id, e);
             }
-            drop(db_guard);
             broadcast_message(
                 tx,
                 &WsMessage::PipelinePhaseCompleted {
@@ -1438,8 +1494,13 @@ pub fn is_valid_transition(from: &PipelineStatus, to: &PipelineStatus) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    use super::super::agent_executor::TaskRunner;
+    use super::super::db::{DbHandle, FactoryDb};
+    use super::super::planner::{PlanProvider, PlanResponse, PlanTask};
 
     /// Mutex to serialize tests that mutate environment variables.
     /// `std::env::set_var` is unsafe in multi-threaded contexts, so tests
@@ -1612,7 +1673,7 @@ mod tests {
             .unwrap();
         let run = db.create_pipeline_run(issue.id).unwrap();
 
-        let db = Arc::new(std::sync::Mutex::new(db));
+        let db = DbHandle::new(db);
         let (tx, _rx) = broadcast::channel(16);
 
         let runner = PipelineRunner::new("/tmp/nonexistent", None);
@@ -1624,7 +1685,7 @@ mod tests {
         // Give the background task time to complete
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-        let db = db.lock().unwrap();
+        let db = db.lock_sync();
         let updated_run = db.get_pipeline_run(run.id).unwrap().unwrap();
         // Should be either Running (if claude not found) or Failed
         assert!(
@@ -1650,7 +1711,7 @@ mod tests {
             .unwrap();
         let run = db.create_pipeline_run(issue.id).unwrap();
 
-        let db = Arc::new(std::sync::Mutex::new(db));
+        let db = DbHandle::new(db);
         let (tx, mut rx) = broadcast::channel(16);
 
         let runner = PipelineRunner::new("/tmp", None);
@@ -1696,7 +1757,7 @@ mod tests {
             .unwrap();
         let run = db.create_pipeline_run(issue.id).unwrap();
 
-        let db = Arc::new(std::sync::Mutex::new(db));
+        let db = DbHandle::new(db);
         let (tx, _rx) = broadcast::channel(16);
 
         let runner = PipelineRunner::new("/tmp", None);
@@ -1759,7 +1820,7 @@ mod tests {
             .unwrap();
         let run = db.create_pipeline_run(issue.id).unwrap();
 
-        let db = Arc::new(std::sync::Mutex::new(db));
+        let db = DbHandle::new(db);
         let (tx, _rx) = broadcast::channel(16);
 
         let runner = PipelineRunner::new("/tmp", None);
@@ -1965,5 +2026,271 @@ mod tests {
             }
             other => panic!("Expected DagCompleted, got {:?}", other),
         }
+    }
+
+    // ── GitLockMap tests ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_git_lock_map_same_path_returns_same_lock() {
+        let map = GitLockMap::default();
+        let lock1 = map.get("/tmp/test-project").await;
+        let lock2 = map.get("/tmp/test-project").await;
+        assert!(Arc::ptr_eq(&lock1, &lock2));
+    }
+
+    #[tokio::test]
+    async fn test_git_lock_map_different_paths_return_different_locks() {
+        let map = GitLockMap::default();
+        let lock1 = map.get("/tmp/project-a").await;
+        let lock2 = map.get("/tmp/project-b").await;
+        assert!(!Arc::ptr_eq(&lock1, &lock2));
+    }
+
+    #[tokio::test]
+    async fn test_git_lock_map_trailing_slash_normalized() {
+        let map = GitLockMap::default();
+        let lock1 = map.get("/nonexistent/path").await;
+        let lock2 = map.get("/nonexistent/path/").await;
+        assert!(Arc::ptr_eq(&lock1, &lock2));
+    }
+
+    #[tokio::test]
+    async fn test_git_lock_map_serializes_access() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let map = GitLockMap::default();
+        let counter = Arc::new(AtomicU32::new(0));
+        let max_concurrent = Arc::new(AtomicU32::new(0));
+
+        let mut handles = vec![];
+        for _ in 0..5 {
+            let map = map.clone();
+            let counter = counter.clone();
+            let max_concurrent = max_concurrent.clone();
+            handles.push(tokio::spawn(async move {
+                let lock = map.get("/tmp/serialize-test").await;
+                let _guard = lock.lock().await;
+                let current = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                max_concurrent.fetch_max(current, Ordering::SeqCst);
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                counter.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        assert_eq!(max_concurrent.load(Ordering::SeqCst), 1);
+    }
+
+    // ── Agent team test infrastructure ──────────────────────────────
+
+    /// Mock planner that returns a pre-configured plan
+    struct MockPlanProvider {
+        plan: std::sync::Mutex<Option<Result<PlanResponse>>>,
+    }
+
+    impl MockPlanProvider {
+        fn new(plan: Result<PlanResponse>) -> Self {
+            Self { plan: std::sync::Mutex::new(Some(plan)) }
+        }
+        fn returning_plan(plan: PlanResponse) -> Self {
+            Self::new(Ok(plan))
+        }
+        fn returning_error(msg: &str) -> Self {
+            Self::new(Err(anyhow::anyhow!("{}", msg)))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PlanProvider for MockPlanProvider {
+        async fn plan(
+            &self,
+            _issue_title: &str,
+            _issue_description: &str,
+            _issue_labels: &[String],
+        ) -> Result<PlanResponse> {
+            self.plan.lock().unwrap().take()
+                .unwrap_or_else(|| Err(anyhow::anyhow!("MockPlanProvider: plan already consumed")))
+        }
+    }
+
+    /// Mock task runner that simulates task execution
+    struct MockTaskRunner {
+        results: std::sync::Mutex<HashMap<String, bool>>,
+        #[allow(dead_code)]
+        merge_results: std::sync::Mutex<HashMap<String, bool>>,
+    }
+
+    impl MockTaskRunner {
+        fn all_succeed() -> Self {
+            Self {
+                results: std::sync::Mutex::new(HashMap::new()),
+                merge_results: std::sync::Mutex::new(HashMap::new()),
+            }
+        }
+
+        #[allow(dead_code)]
+        fn with_task_result(self, task_name: &str, success: bool) -> Self {
+            self.results.lock().unwrap().insert(task_name.to_string(), success);
+            self
+        }
+
+        #[allow(dead_code)]
+        fn with_merge_result(self, branch: &str, success: bool) -> Self {
+            self.merge_results.lock().unwrap().insert(branch.to_string(), success);
+            self
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl TaskRunner for MockTaskRunner {
+        async fn setup_worktree(
+            &self,
+            _run_id: i64,
+            task: &AgentTask,
+            _base_branch: &str,
+        ) -> Result<(PathBuf, String)> {
+            let branch = format!("mock-branch-{}", task.id);
+            Ok((PathBuf::from(format!("/tmp/mock-worktree-{}", task.id)), branch))
+        }
+
+        async fn cleanup_worktree(&self, _worktree_path: &Path) -> Result<()> {
+            Ok(())
+        }
+
+        async fn run_task(
+            &self,
+            _run_id: i64,
+            task: &AgentTask,
+            _use_team: bool,
+            _working_dir: &Path,
+            _worktree_path: Option<PathBuf>,
+        ) -> Result<bool> {
+            let results = self.results.lock().unwrap();
+            Ok(*results.get(&task.name).unwrap_or(&true))
+        }
+
+        async fn merge_branch(&self, task_branch: &str, _target_branch: &str) -> Result<bool> {
+            let results = self.merge_results.lock().unwrap();
+            Ok(*results.get(task_branch).unwrap_or(&true))
+        }
+
+        async fn cancel_all(&self) {}
+    }
+
+    /// Helper to make a simple plan task
+    fn make_task(name: &str, wave: i32, isolation: &str) -> PlanTask {
+        PlanTask {
+            name: name.to_string(),
+            role: "coder".to_string(),
+            wave,
+            description: format!("Test task: {}", name),
+            files: vec![],
+            isolation: isolation.to_string(),
+            depends_on: vec![],
+        }
+    }
+
+    /// Helper: set up DB with project, issue, and pipeline run
+    fn setup_test_db() -> (DbHandle, i64) {
+        let db = FactoryDb::new_in_memory().unwrap();
+        let project = db.create_project("test", "/tmp/test-project").unwrap();
+        let issue = db.create_issue(project.id, "Test issue", "Test desc", &IssueColumn::Backlog).unwrap();
+        let run = db.create_pipeline_run(issue.id).unwrap();
+        let db = DbHandle::new(db);
+        {
+            let guard = db.lock_sync();
+            guard.update_pipeline_run(run.id, &PipelineStatus::Running, None, None).unwrap();
+        }
+        (db, run.id)
+    }
+
+    // ── FallbackToForge decision tests ──────────────────────────────
+
+    #[tokio::test]
+    async fn test_single_sequential_task_triggers_fallback() {
+        let (db, run_id) = setup_test_db();
+        let (tx, _rx) = broadcast::channel(16);
+        let plan = PlanResponse {
+            strategy: "sequential".to_string(),
+            isolation: "shared".to_string(),
+            reasoning: "single task".to_string(),
+            tasks: vec![make_task("only-task", 0, "shared")],
+            skip_visual_verification: true,
+        };
+        let planner = MockPlanProvider::returning_plan(plan);
+        let runner: Arc<dyn TaskRunner> = Arc::new(MockTaskRunner::all_succeed());
+        let git_locks = GitLockMap::default();
+
+        let result = PipelineRunner::execute_agent_team(
+            "/tmp/test-project", run_id, "Test", "desc", &[], &Some("main".to_string()),
+            &db, &tx, &git_locks, &planner, &runner,
+        ).await.unwrap();
+
+        assert!(matches!(result, PlanOutcome::FallbackToForge));
+    }
+
+    #[tokio::test]
+    async fn test_single_parallel_task_does_not_fallback() {
+        let (db, run_id) = setup_test_db();
+        let (tx, _rx) = broadcast::channel(16);
+        let plan = PlanResponse {
+            strategy: "parallel".to_string(),
+            isolation: "shared".to_string(),
+            reasoning: "single parallel task".to_string(),
+            tasks: vec![make_task("only-task", 0, "shared")],
+            skip_visual_verification: true,
+        };
+        let planner = MockPlanProvider::returning_plan(plan);
+        let runner: Arc<dyn TaskRunner> = Arc::new(MockTaskRunner::all_succeed());
+        let git_locks = GitLockMap::default();
+
+        let result = PipelineRunner::execute_agent_team(
+            "/tmp/test-project", run_id, "Test", "desc", &[], &Some("main".to_string()),
+            &db, &tx, &git_locks, &planner, &runner,
+        ).await.unwrap();
+
+        assert!(matches!(result, PlanOutcome::TeamExecuted(_)));
+    }
+
+    #[tokio::test]
+    async fn test_multi_task_sequential_does_not_fallback() {
+        let (db, run_id) = setup_test_db();
+        let (tx, _rx) = broadcast::channel(16);
+        let plan = PlanResponse {
+            strategy: "sequential".to_string(),
+            isolation: "shared".to_string(),
+            reasoning: "two tasks".to_string(),
+            tasks: vec![
+                make_task("task-1", 0, "shared"),
+                make_task("task-2", 1, "shared"),
+            ],
+            skip_visual_verification: true,
+        };
+        let planner = MockPlanProvider::returning_plan(plan);
+        let runner: Arc<dyn TaskRunner> = Arc::new(MockTaskRunner::all_succeed());
+        let git_locks = GitLockMap::default();
+
+        let result = PipelineRunner::execute_agent_team(
+            "/tmp/test-project", run_id, "Test", "desc", &[], &Some("main".to_string()),
+            &db, &tx, &git_locks, &planner, &runner,
+        ).await.unwrap();
+
+        assert!(matches!(result, PlanOutcome::TeamExecuted(_)));
+    }
+
+    #[tokio::test]
+    async fn test_planner_failure_triggers_fallback_plan() {
+        let (db, run_id) = setup_test_db();
+        let (tx, _rx) = broadcast::channel(16);
+        let planner = MockPlanProvider::returning_error("LLM unavailable");
+        let runner: Arc<dyn TaskRunner> = Arc::new(MockTaskRunner::all_succeed());
+        let git_locks = GitLockMap::default();
+
+        let result = PipelineRunner::execute_agent_team(
+            "/tmp/test-project", run_id, "Test", "desc", &[], &Some("main".to_string()),
+            &db, &tx, &git_locks, &planner, &runner,
+        ).await.unwrap();
+
+        assert!(matches!(result, PlanOutcome::FallbackToForge));
     }
 }
