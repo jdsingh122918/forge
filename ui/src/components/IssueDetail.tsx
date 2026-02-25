@@ -132,7 +132,14 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
               {runs.slice().reverse().map((run) => (
                 <div key={run.id} className="bg-gray-50 rounded-md p-3 text-sm">
                   <div className="flex items-center justify-between mb-1">
-                    <PipelineStatus run={run} />
+                    <div className="flex items-center gap-1.5">
+                      <PipelineStatus run={run} />
+                      {run.has_team && (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-purple-50 text-purple-600 font-medium">
+                          Team
+                        </span>
+                      )}
+                    </div>
                     <span className="text-xs text-gray-400">#{run.id}</span>
                   </div>
                   {run.branch_name && (
