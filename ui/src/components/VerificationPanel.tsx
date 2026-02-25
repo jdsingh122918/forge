@@ -67,7 +67,7 @@ export function VerificationPanel({ run, verificationEvents }: VerificationPanel
                                     onClick={() => setExpandedScreenshot(src)}
                                     className="w-20 h-14 rounded border border-gray-200 overflow-hidden hover:ring-2 ring-blue-300 transition-all"
                                 >
-                                    <img src={`data:image/png;base64,${src}`} alt={`Screenshot ${i + 1}`} className="w-full h-full object-cover" />
+                                    <img src={`/api/screenshots/${src}`} alt={`Screenshot ${i + 1}`} className="w-full h-full object-cover" />
                                 </button>
                             ))}
                         </div>
@@ -81,7 +81,7 @@ export function VerificationPanel({ run, verificationEvents }: VerificationPanel
                     onClick={() => setExpandedScreenshot(null)}
                 >
                     <img
-                        src={`data:image/png;base64,${expandedScreenshot}`}
+                        src={`/api/screenshots/${expandedScreenshot}`}
                         alt="Screenshot"
                         className="max-w-full max-h-full rounded-lg shadow-2xl"
                     />
