@@ -90,8 +90,8 @@ pub enum WsMessage {
     TeamCreated {
         run_id: i64,
         team_id: i64,
-        strategy: String,
-        isolation: String,
+        strategy: ExecutionStrategy,
+        isolation: IsolationStrategy,
         plan_summary: String,
         tasks: Vec<AgentTask>,
     },
@@ -116,7 +116,7 @@ pub enum WsMessage {
         run_id: i64,
         task_id: i64,
         name: String,
-        role: String,
+        role: AgentRole,
         wave: i32,
     },
     AgentTaskCompleted {
@@ -486,14 +486,16 @@ mod tests {
         let msg = WsMessage::TeamCreated {
             run_id: 1,
             team_id: 2,
-            strategy: "wave_pipeline".to_string(),
-            isolation: "hybrid".to_string(),
+            strategy: ExecutionStrategy::WavePipeline,
+            isolation: IsolationStrategy::Hybrid,
             plan_summary: "Two parallel tasks".to_string(),
             tasks: vec![],
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"TeamCreated\""));
         assert!(json.contains("\"run_id\":1"));
+        assert!(json.contains("\"strategy\":\"wave_pipeline\""));
+        assert!(json.contains("\"isolation\":\"hybrid\""));
     }
 
     #[test]

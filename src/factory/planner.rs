@@ -34,7 +34,8 @@ fn default_isolation() -> String {
 
 impl PlanResponse {
     pub fn parse(json: &str) -> Result<Self> {
-        // Try to extract JSON from markdown code blocks if present
+        // Extract the outermost JSON object by finding the first '{' and last '}'.
+        // This handles markdown code blocks, leading/trailing prose, or any wrapper text.
         let cleaned = if let Some(start) = json.find('{') {
             if let Some(end) = json.rfind('}') {
                 &json[start..=end]
@@ -77,6 +78,8 @@ impl PlanResponse {
     }
 }
 
+// NOTE: The top-level `isolation` field is stored in agent_teams.isolation but is informational only.
+// Actual isolation behavior is driven by per-task `isolation` values.
 const PLANNER_SYSTEM_PROMPT: &str = r#"You are a software engineering planner. Analyze the given issue and produce a JSON task decomposition.
 
 You MUST respond with valid JSON only (no markdown, no explanation) matching this schema:
@@ -134,19 +137,19 @@ impl Planner {
                 Ok(plan) => Ok(plan),
                 Err(e) => {
                     eprintln!(
-                        "[planner] Invalid JSON response, falling back to single-task plan: {}",
+                        "[planner] Failed to parse plan response, falling back to single task: {:#}",
                         e
                     );
                     eprintln!(
-                        "[planner] Raw response (first 500 chars): {}",
-                        response.chars().take(500).collect::<String>()
+                        "[planner] Raw response was: {}",
+                        &response[..response.len().min(500)]
                     );
                     Ok(PlanResponse::fallback(issue_title, issue_description))
                 }
             },
             Err(e) => {
                 eprintln!(
-                    "[planner] Claude CLI call failed, falling back to single-task plan: {}",
+                    "[planner] Claude CLI call failed, falling back to single task: {:#}",
                     e
                 );
                 Ok(PlanResponse::fallback(issue_title, issue_description))
@@ -200,8 +203,9 @@ impl Planner {
             .context("Failed to list project files")?;
         if !tree_output.status.success() {
             eprintln!(
-                "[planner] find command failed: {}",
-                String::from_utf8_lossy(&tree_output.stderr)
+                "[planner] File tree command failed ({}): {}. Planner will have reduced repo context.",
+                tree_output.status,
+                String::from_utf8_lossy(&tree_output.stderr).trim()
             );
         }
         let tree = String::from_utf8_lossy(&tree_output.stdout);

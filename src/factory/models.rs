@@ -199,9 +199,9 @@ pub struct PipelineRunDetail {
 // Agent team execution models
 
 /// Isolation strategy for agent task execution.
-/// Worktree and Container provide full isolation; Hybrid uses both;
-/// Shared runs in the main project directory.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Currently only Worktree and Shared are implemented.
+/// Container and Hybrid are reserved for future use.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IsolationStrategy {
     Worktree,
@@ -221,6 +221,12 @@ impl IsolationStrategy {
     }
 }
 
+impl std::fmt::Display for IsolationStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl FromStr for IsolationStrategy {
     type Err = String;
 
@@ -236,9 +242,10 @@ impl FromStr for IsolationStrategy {
 }
 
 /// Roles that agents can assume during execution.
-/// Planner, BrowserVerifier, and TestVerifier are system-assigned;
-/// the LLM planner may only assign Coder, Tester, and Reviewer.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// By convention, the LLM planner assigns Coder, Tester, and Reviewer.
+/// Planner, BrowserVerifier, and TestVerifier are intended for future
+/// system-assigned tasks but are not yet used.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRole {
     Planner,
@@ -262,6 +269,12 @@ impl AgentRole {
     }
 }
 
+impl std::fmt::Display for AgentRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl FromStr for AgentRole {
     type Err = String;
 
@@ -279,7 +292,7 @@ impl FromStr for AgentRole {
 }
 
 /// Status of an individual agent task in the execution lifecycle.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentTaskStatus {
     Pending,
@@ -299,6 +312,12 @@ impl AgentTaskStatus {
     }
 }
 
+impl std::fmt::Display for AgentTaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl FromStr for AgentTaskStatus {
     type Err = String;
 
@@ -314,7 +333,7 @@ impl FromStr for AgentTaskStatus {
 }
 
 /// Types of events emitted by agents during execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentEventType {
     Thinking,
@@ -336,6 +355,12 @@ impl AgentEventType {
     }
 }
 
+impl std::fmt::Display for AgentEventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl FromStr for AgentEventType {
     type Err = String;
 
@@ -351,14 +376,55 @@ impl FromStr for AgentEventType {
     }
 }
 
+/// Execution strategy for agent team coordination.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionStrategy {
+    Parallel,
+    Sequential,
+    WavePipeline,
+    Adaptive,
+}
+
+impl ExecutionStrategy {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Parallel => "parallel",
+            Self::Sequential => "sequential",
+            Self::WavePipeline => "wave_pipeline",
+            Self::Adaptive => "adaptive",
+        }
+    }
+}
+
+impl std::fmt::Display for ExecutionStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ExecutionStrategy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "parallel" => Ok(Self::Parallel),
+            "sequential" => Ok(Self::Sequential),
+            "wave_pipeline" => Ok(Self::WavePipeline),
+            "adaptive" => Ok(Self::Adaptive),
+            _ => Err(format!("Unknown execution strategy: {}", s)),
+        }
+    }
+}
+
 /// A team of agents assigned to execute a pipeline run.
 /// Created by the planner after analyzing the issue.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTeam {
     pub id: i64,
     pub run_id: i64,
-    pub strategy: String,
-    pub isolation: String,
+    pub strategy: ExecutionStrategy,
+    pub isolation: IsolationStrategy,
     pub plan_summary: String,
     pub created_at: String,
 }
@@ -371,11 +437,11 @@ pub struct AgentTask {
     pub team_id: i64,
     pub name: String,
     pub description: String,
-    pub agent_role: String,
+    pub agent_role: AgentRole,
     pub wave: i32,
     pub depends_on: Vec<i64>,
-    pub status: String,
-    pub isolation_type: String,
+    pub status: AgentTaskStatus,
+    pub isolation_type: IsolationStrategy,
     pub worktree_path: Option<String>,
     pub container_id: Option<String>,
     pub branch_name: Option<String>,
@@ -390,7 +456,7 @@ pub struct AgentTask {
 pub struct AgentEvent {
     pub id: i64,
     pub task_id: i64,
-    pub event_type: String,
+    pub event_type: AgentEventType,
     pub content: String,
     pub metadata: Option<serde_json::Value>,
     pub created_at: String,
@@ -402,4 +468,102 @@ pub struct AgentEvent {
 pub struct AgentTeamDetail {
     pub team: AgentTeam,
     pub tasks: Vec<AgentTask>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_isolation_strategy_roundtrip() {
+        for s in &["worktree", "container", "hybrid", "shared"] {
+            let parsed: IsolationStrategy = s.parse().unwrap();
+            assert_eq!(parsed.as_str(), *s);
+        }
+        assert!("invalid".parse::<IsolationStrategy>().is_err());
+    }
+
+    #[test]
+    fn test_agent_role_roundtrip() {
+        for s in &[
+            "planner",
+            "coder",
+            "tester",
+            "reviewer",
+            "browser_verifier",
+            "test_verifier",
+        ] {
+            let parsed: AgentRole = s.parse().unwrap();
+            assert_eq!(parsed.as_str(), *s);
+        }
+        assert!("invalid".parse::<AgentRole>().is_err());
+    }
+
+    #[test]
+    fn test_agent_task_status_roundtrip() {
+        for s in &["pending", "running", "completed", "failed"] {
+            let parsed: AgentTaskStatus = s.parse().unwrap();
+            assert_eq!(parsed.as_str(), *s);
+        }
+        assert!("invalid".parse::<AgentTaskStatus>().is_err());
+    }
+
+    #[test]
+    fn test_agent_event_type_roundtrip() {
+        for s in &["thinking", "action", "output", "signal", "error"] {
+            let parsed: AgentEventType = s.parse().unwrap();
+            assert_eq!(parsed.as_str(), *s);
+        }
+        assert!("invalid".parse::<AgentEventType>().is_err());
+    }
+
+    #[test]
+    fn test_execution_strategy_roundtrip() {
+        for s in &["parallel", "sequential", "wave_pipeline", "adaptive"] {
+            let parsed: ExecutionStrategy = s.parse().unwrap();
+            assert_eq!(parsed.as_str(), *s);
+        }
+        assert!("invalid".parse::<ExecutionStrategy>().is_err());
+    }
+
+    #[test]
+    fn test_serde_produces_lowercase_strings() {
+        // Verify JSON serialization uses lowercase snake_case, not PascalCase
+        assert_eq!(
+            serde_json::to_string(&AgentTaskStatus::Running).unwrap(),
+            "\"running\""
+        );
+        assert_eq!(
+            serde_json::to_string(&IsolationStrategy::Worktree).unwrap(),
+            "\"worktree\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentRole::BrowserVerifier).unwrap(),
+            "\"browser_verifier\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentEventType::Thinking).unwrap(),
+            "\"thinking\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ExecutionStrategy::WavePipeline).unwrap(),
+            "\"wave_pipeline\""
+        );
+    }
+
+    #[test]
+    fn test_serde_deserialize_lowercase_strings() {
+        assert_eq!(
+            serde_json::from_str::<AgentTaskStatus>("\"running\"").unwrap(),
+            AgentTaskStatus::Running
+        );
+        assert_eq!(
+            serde_json::from_str::<IsolationStrategy>("\"worktree\"").unwrap(),
+            IsolationStrategy::Worktree
+        );
+        assert_eq!(
+            serde_json::from_str::<ExecutionStrategy>("\"wave_pipeline\"").unwrap(),
+            ExecutionStrategy::WavePipeline
+        );
+    }
 }

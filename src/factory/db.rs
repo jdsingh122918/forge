@@ -739,8 +739,8 @@ impl FactoryDb {
         Ok(AgentTeam {
             id,
             run_id,
-            strategy: strategy.to_string(),
-            isolation: isolation.to_string(),
+            strategy: strategy.parse().unwrap_or(ExecutionStrategy::Sequential),
+            isolation: isolation.parse().unwrap_or(IsolationStrategy::Shared),
             plan_summary: plan_summary.to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
         })
@@ -753,8 +753,8 @@ impl FactoryDb {
             |row| Ok(AgentTeam {
                 id: row.get(0)?,
                 run_id: row.get(1)?,
-                strategy: row.get(2)?,
-                isolation: row.get(3)?,
+                strategy: row.get::<_, String>(2)?.parse().unwrap_or(ExecutionStrategy::Sequential),
+                isolation: row.get::<_, String>(3)?.parse().unwrap_or(IsolationStrategy::Shared),
                 plan_summary: row.get(4)?,
                 created_at: row.get(5)?,
             }),
@@ -769,8 +769,8 @@ impl FactoryDb {
             Ok(AgentTeam {
                 id: row.get(0)?,
                 run_id: row.get(1)?,
-                strategy: row.get(2)?,
-                isolation: row.get(3)?,
+                strategy: row.get::<_, String>(2)?.parse().unwrap_or(ExecutionStrategy::Sequential),
+                isolation: row.get::<_, String>(3)?.parse().unwrap_or(IsolationStrategy::Shared),
                 plan_summary: row.get(4)?,
                 created_at: row.get(5)?,
             })
@@ -804,11 +804,11 @@ impl FactoryDb {
             team_id,
             name: name.to_string(),
             description: description.to_string(),
-            agent_role: agent_role.to_string(),
+            agent_role: agent_role.parse().unwrap_or(AgentRole::Coder),
             wave,
             depends_on: depends_on.to_vec(),
-            status: "pending".to_string(),
-            isolation_type: isolation_type.to_string(),
+            status: AgentTaskStatus::Pending,
+            isolation_type: isolation_type.parse().unwrap_or(IsolationStrategy::Shared),
             worktree_path: None,
             container_id: None,
             branch_name: None,
@@ -821,27 +821,28 @@ impl FactoryDb {
     pub fn update_agent_task_status(
         &self,
         task_id: i64,
-        status: &str,
+        status: &AgentTaskStatus,
         error: Option<&str>,
     ) -> Result<()> {
+        let status_str = status.as_str();
         match status {
-            "running" => {
+            AgentTaskStatus::Running => {
                 self.conn.execute(
                     "UPDATE agent_tasks SET status = ?1, started_at = datetime('now') WHERE id = ?2",
-                    params![status, task_id],
+                    params![status_str, task_id],
                 ).context("Failed to update agent task status to running")?;
             }
-            "completed" | "failed" => {
+            AgentTaskStatus::Completed | AgentTaskStatus::Failed => {
                 self.conn.execute(
                     "UPDATE agent_tasks SET status = ?1, error = ?2, completed_at = datetime('now') WHERE id = ?3",
-                    params![status, error, task_id],
+                    params![status_str, error, task_id],
                 ).context("Failed to update agent task status to completed/failed")?;
             }
             _ => {
                 self.conn
                     .execute(
                         "UPDATE agent_tasks SET status = ?1 WHERE id = ?2",
-                        params![status, task_id],
+                        params![status_str, task_id],
                     )
                     .context("Failed to update agent task status")?;
             }
@@ -886,11 +887,11 @@ impl FactoryDb {
                 team_id: row.get(1)?,
                 name: row.get(2)?,
                 description: row.get(3)?,
-                agent_role: row.get(4)?,
+                agent_role: row.get::<_, String>(4)?.parse().unwrap_or(AgentRole::Coder),
                 wave: row.get(5)?,
                 depends_on,
-                status: row.get(7)?,
-                isolation_type: row.get(8)?,
+                status: row.get::<_, String>(7)?.parse().unwrap_or(AgentTaskStatus::Pending),
+                isolation_type: row.get::<_, String>(8)?.parse().unwrap_or(IsolationStrategy::Shared),
                 worktree_path: row.get(9)?,
                 container_id: row.get(10)?,
                 branch_name: row.get(11)?,
@@ -923,11 +924,11 @@ impl FactoryDb {
                     team_id: row.get(1)?,
                     name: row.get(2)?,
                     description: row.get(3)?,
-                    agent_role: row.get(4)?,
+                    agent_role: row.get::<_, String>(4)?.parse().unwrap_or(AgentRole::Coder),
                     wave: row.get(5)?,
                     depends_on,
-                    status: row.get(7)?,
-                    isolation_type: row.get(8)?,
+                    status: row.get::<_, String>(7)?.parse().unwrap_or(AgentTaskStatus::Pending),
+                    isolation_type: row.get::<_, String>(8)?.parse().unwrap_or(IsolationStrategy::Shared),
                     worktree_path: row.get(9)?,
                     container_id: row.get(10)?,
                     branch_name: row.get(11)?,
@@ -971,7 +972,7 @@ impl FactoryDb {
         Ok(AgentEvent {
             id,
             task_id,
-            event_type: event_type.to_string(),
+            event_type: event_type.parse().unwrap_or(AgentEventType::Output),
             content: content.to_string(),
             metadata: metadata.cloned(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -1004,7 +1005,7 @@ impl FactoryDb {
             Ok(AgentEvent {
                 id: row.get(0)?,
                 task_id: row.get(1)?,
-                event_type: row.get(2)?,
+                event_type: row.get::<_, String>(2)?.parse().unwrap_or(AgentEventType::Output),
                 content: row.get(3)?,
                 metadata,
                 created_at: row.get(5)?,
@@ -1386,8 +1387,8 @@ mod tests {
 
         assert!(team.id > 0);
         assert_eq!(team.run_id, run.id);
-        assert_eq!(team.strategy, "wave_pipeline");
-        assert_eq!(team.isolation, "hybrid");
+        assert_eq!(team.strategy, ExecutionStrategy::WavePipeline);
+        assert_eq!(team.isolation, IsolationStrategy::Hybrid);
 
         Ok(())
     }
@@ -1423,17 +1424,17 @@ mod tests {
         )?;
 
         assert_eq!(task3.depends_on, vec![task1.id, task2.id]);
-        assert_eq!(task1.status, "pending");
+        assert_eq!(task1.status, AgentTaskStatus::Pending);
 
         // Update status
-        db.update_agent_task_status(task1.id, "running", None)?;
+        db.update_agent_task_status(task1.id, &AgentTaskStatus::Running, None)?;
         let updated = db.get_agent_task(task1.id)?;
-        assert_eq!(updated.status, "running");
+        assert_eq!(updated.status, AgentTaskStatus::Running);
         assert!(updated.started_at.is_some());
 
-        db.update_agent_task_status(task1.id, "completed", None)?;
+        db.update_agent_task_status(task1.id, &AgentTaskStatus::Completed, None)?;
         let updated = db.get_agent_task(task1.id)?;
-        assert_eq!(updated.status, "completed");
+        assert_eq!(updated.status, AgentTaskStatus::Completed);
         assert!(updated.completed_at.is_some());
 
         // Create events
@@ -1443,7 +1444,7 @@ mod tests {
             "Edited src/api.rs:42",
             Some(&serde_json::json!({"file": "src/api.rs", "line": 42})),
         )?;
-        assert_eq!(event.event_type, "action");
+        assert_eq!(event.event_type, AgentEventType::Action);
 
         let events = db.get_agent_events(task1.id, 10, 0)?;
         assert_eq!(events.len(), 1);
@@ -1452,7 +1453,7 @@ mod tests {
         // Get team detail
         let detail = db.get_agent_team_detail(run.id)?.unwrap();
         assert_eq!(detail.tasks.len(), 3);
-        assert_eq!(detail.team.strategy, "parallel");
+        assert_eq!(detail.team.strategy, ExecutionStrategy::Parallel);
 
         Ok(())
     }
@@ -1637,8 +1638,8 @@ mod tests {
         assert_eq!(detail.tasks.len(), 3);
 
         // Simulate wave 0 execution
-        db.update_agent_task_status(task1.id, "running", None)?;
-        db.update_agent_task_status(task2.id, "running", None)?;
+        db.update_agent_task_status(task1.id, &AgentTaskStatus::Running, None)?;
+        db.update_agent_task_status(task2.id, &AgentTaskStatus::Running, None)?;
 
         // Simulate events
         db.create_agent_event(task1.id, "action", "Read src/api.rs", None)?;
@@ -1656,12 +1657,12 @@ mod tests {
         )?;
 
         // Complete wave 0
-        db.update_agent_task_status(task1.id, "completed", None)?;
-        db.update_agent_task_status(task2.id, "completed", None)?;
+        db.update_agent_task_status(task1.id, &AgentTaskStatus::Completed, None)?;
+        db.update_agent_task_status(task2.id, &AgentTaskStatus::Completed, None)?;
 
         // Wave 1
-        db.update_agent_task_status(task3.id, "running", None)?;
-        db.update_agent_task_status(task3.id, "completed", None)?;
+        db.update_agent_task_status(task3.id, &AgentTaskStatus::Running, None)?;
+        db.update_agent_task_status(task3.id, &AgentTaskStatus::Completed, None)?;
 
         // Verify events
         let events = db.get_agent_events(task1.id, 100, 0)?;
@@ -1669,7 +1670,7 @@ mod tests {
 
         // Verify all tasks completed
         let tasks = db.get_agent_tasks(team.id)?;
-        assert!(tasks.iter().all(|t| t.status == "completed"));
+        assert!(tasks.iter().all(|t| t.status == AgentTaskStatus::Completed));
 
         Ok(())
     }

@@ -104,9 +104,15 @@ impl DockerSandbox {
     /// Connect to the Docker daemon via the unix socket.
     /// Returns None if Docker is not available.
     pub async fn new(default_image: String) -> Option<Self> {
-        let docker = Docker::connect_with_socket_defaults().ok()?;
-        // Verify connectivity
-        if docker.ping().await.is_err() {
+        let docker = match Docker::connect_with_socket_defaults() {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("[sandbox] Failed to connect to Docker daemon: {}", e);
+                return None;
+            }
+        };
+        if let Err(e) = docker.ping().await {
+            eprintln!("[sandbox] Docker daemon not responding to ping: {}", e);
             return None;
         }
         Some(Self {
@@ -231,10 +237,18 @@ impl DockerSandbox {
                 ..Default::default()
             };
             let mut stream = docker.logs(&cid, Some(opts));
-            while let Some(Ok(output)) = stream.next().await {
-                let text = output.to_string();
-                for line in text.lines() {
-                    if line_tx.send(line.to_string()).await.is_err() {
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(output) => {
+                        let text = output.to_string();
+                        for line in text.lines() {
+                            if line_tx.send(line.to_string()).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[sandbox] Docker log stream error for container: {}", e);
                         break;
                     }
                 }
@@ -246,23 +260,18 @@ impl DockerSandbox {
 
     /// Stop and remove a container.
     pub async fn stop(&self, container_id: &str) -> Result<()> {
-        // Stop with 10s grace period
         let stop_opts = StopContainerOptions { t: 10 };
-        let _ = self
-            .docker
-            .stop_container(container_id, Some(stop_opts))
-            .await;
-
-        // Remove the container
+        if let Err(e) = self.docker.stop_container(container_id, Some(stop_opts)).await {
+            eprintln!("[sandbox] Warning: failed to stop container {}: {}", container_id, e);
+        }
         let remove_opts = RemoveContainerOptions {
             force: true,
             ..Default::default()
         };
-        let _ = self
-            .docker
-            .remove_container(container_id, Some(remove_opts))
-            .await;
-
+        if let Err(e) = self.docker.remove_container(container_id, Some(remove_opts)).await {
+            // Only warn — container may have been auto-removed
+            eprintln!("[sandbox] Warning: failed to remove container {}: {}", container_id, e);
+        }
         Ok(())
     }
 

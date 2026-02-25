@@ -420,8 +420,11 @@ async fn clone_project(
                         result.imported, pid
                     );
                 }
-                Err(_) => {
-                    eprintln!("Auto-sync GitHub issues failed for project {}", pid);
+                Err(e) => {
+                    let msg = match &e {
+                        ApiError::NotFound(s) | ApiError::BadRequest(s) | ApiError::Internal(s) => s.as_str(),
+                    };
+                    eprintln!("Auto-sync GitHub issues failed for project {}: {}", pid, msg);
                 }
             }
         });
@@ -752,7 +755,11 @@ async fn get_agent_team(
         .lock()
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     match db.get_agent_team_detail(run_id)? {
-        Some(detail) => Ok(Json(serde_json::to_value(detail).unwrap())),
+        Some(detail) => {
+            let value = serde_json::to_value(detail)
+                .map_err(|e| ApiError::Internal(format!("Failed to serialize agent team: {}", e)))?;
+            Ok(Json(value))
+        }
         None => Err(ApiError::NotFound("No agent team for this run".to_string())),
     }
 }

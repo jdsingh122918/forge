@@ -8,7 +8,7 @@ use tokio::process::Command;
 use tokio::sync::{Mutex, broadcast};
 
 use crate::factory::db::FactoryDb;
-use crate::factory::models::AgentTask;
+use crate::factory::models::{AgentTask, AgentTaskStatus};
 use crate::factory::ws::{WsMessage, broadcast_message};
 
 /// Handle for a running agent process
@@ -145,7 +145,12 @@ impl AgentExecutor {
             .join(".worktrees")
             .join(format!("task-{}", task.id));
 
-        tokio::fs::create_dir_all(worktree_path.parent().unwrap()).await?;
+        let parent = worktree_path.parent()
+            .context("Worktree path has no parent directory")?;
+        tokio::fs::create_dir_all(parent).await?;
+
+        let worktree_str = worktree_path.to_str()
+            .context("Worktree path contains invalid UTF-8")?;
 
         let output = Command::new("git")
             .args([
@@ -153,7 +158,7 @@ impl AgentExecutor {
                 "add",
                 "-b",
                 &branch_name,
-                worktree_path.to_str().unwrap(),
+                worktree_str,
                 base_branch,
             ])
             .current_dir(&self.project_path)
@@ -170,7 +175,8 @@ impl AgentExecutor {
             let db = self.db.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
             db.update_agent_task_isolation(
                 task.id,
-                Some(worktree_path.to_str().unwrap()),
+                Some(worktree_path.to_str()
+                    .context("Worktree path contains invalid UTF-8")?),
                 None,
                 Some(&branch_name),
             )?;
@@ -182,27 +188,16 @@ impl AgentExecutor {
     /// Clean up worktree after task completes
     pub async fn cleanup_worktree(&self, worktree_path: &Path) -> Result<()> {
         let output = Command::new("git")
-            .args([
-                "worktree",
-                "remove",
-                "--force",
-                worktree_path.to_str().unwrap(),
-            ])
+            .args(["worktree", "remove", "--force"])
+            .arg(worktree_path)
             .current_dir(&self.project_path)
             .output()
-            .await;
-        match output {
-            Ok(o) if !o.status.success() => {
-                eprintln!(
-                    "[agent] Failed to clean up worktree {}: {}",
-                    worktree_path.display(),
-                    String::from_utf8_lossy(&o.stderr)
-                );
-            }
-            Err(e) => {
-                eprintln!("[agent] Failed to run git worktree remove: {}", e);
-            }
-            _ => {}
+            .await
+            .context("Failed to run git worktree remove")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("git worktree remove failed: {}", stderr.trim());
         }
         Ok(())
     }
@@ -229,7 +224,7 @@ impl AgentExecutor {
 
         {
             let db = self.db.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
-            db.update_agent_task_status(task.id, "running", None)?;
+            db.update_agent_task_status(task.id, &AgentTaskStatus::Running, None)?;
         }
 
         let claude_cmd = std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".to_string());
@@ -390,7 +385,7 @@ impl AgentExecutor {
             {
                 let db = self.db.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
                 if success {
-                    db.update_agent_task_status(task_id, "completed", None)?;
+                    db.update_agent_task_status(task_id, &AgentTaskStatus::Completed, None)?;
                     broadcast_message(
                         &self.tx,
                         &WsMessage::AgentTaskCompleted {
@@ -405,7 +400,7 @@ impl AgentExecutor {
                     } else {
                         format!("Agent failed: {}", stderr_content.trim())
                     };
-                    db.update_agent_task_status(task_id, "failed", Some(&error_msg))?;
+                    db.update_agent_task_status(task_id, &AgentTaskStatus::Failed, Some(&error_msg))?;
                     broadcast_message(
                         &self.tx,
                         &WsMessage::AgentTaskFailed {
@@ -426,7 +421,7 @@ impl AgentExecutor {
             let db = self.db.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
             db.update_agent_task_status(
                 task_id,
-                "failed",
+                &AgentTaskStatus::Failed,
                 Some("Internal error: process handle lost"),
             )?;
             broadcast_message(
@@ -441,8 +436,21 @@ impl AgentExecutor {
         }
     }
 
-    /// Merge a task's worktree branch into the specified target branch
+    /// Merge a task branch into the target branch.
+    ///
+    /// WARNING: This performs `git checkout` on the main project directory.
+    /// It is NOT safe for concurrent use -- callers must ensure exclusive access
+    /// to the project directory during merge operations.
     pub async fn merge_branch(&self, task_branch: &str, target_branch: &str) -> Result<bool> {
+        // Record current HEAD so we can restore on failure
+        let head_output = Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(&self.project_path)
+            .output()
+            .await
+            .context("Failed to determine current branch before merge")?;
+        let original_branch = String::from_utf8_lossy(&head_output.stdout).trim().to_string();
+
         // Checkout target branch first
         let checkout = Command::new("git")
             .args(["checkout", target_branch])
@@ -469,7 +477,24 @@ impl AgentExecutor {
             .await
             .context("Failed to merge branch")?;
 
-        Ok(output.status.success())
+        if !output.status.success() {
+            // Merge failed — abort and restore original branch
+            let _ = Command::new("git")
+                .args(["merge", "--abort"])
+                .current_dir(&self.project_path)
+                .output()
+                .await;
+            if original_branch != target_branch {
+                let _ = Command::new("git")
+                    .args(["checkout", &original_branch])
+                    .current_dir(&self.project_path)
+                    .output()
+                    .await;
+            }
+            return Ok(false);
+        }
+
+        Ok(true)
     }
 
     /// Kill all running agents (for cancellation)
@@ -480,10 +505,19 @@ impl AgentExecutor {
                 eprintln!("[agent] Failed to kill task {}: {}", task_id, e);
             }
             if let Some(path) = &handle.worktree_path {
-                let _ = self.cleanup_worktree(path).await;
+                if let Err(e) = self.cleanup_worktree(path).await {
+                    eprintln!("[agent] Failed to clean up worktree for task {}: {}", task_id, e);
+                }
             }
-            if let Ok(db) = self.db.lock() {
-                let _ = db.update_agent_task_status(task_id, "failed", Some("Pipeline cancelled"));
+            match self.db.lock() {
+                Ok(db) => {
+                    if let Err(e) = db.update_agent_task_status(task_id, &AgentTaskStatus::Failed, Some("Pipeline cancelled")) {
+                        eprintln!("[agent] Failed to update cancelled task {} status: {}", task_id, e);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[agent] DB lock poisoned — cannot mark task {} as cancelled: {}", task_id, e);
+                }
             }
         }
     }
