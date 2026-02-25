@@ -3,7 +3,7 @@ import type { Project, GitHubRepo } from '../types';
 import { api } from '../api/client';
 
 type Tab = 'github' | 'local';
-type GitHubState = 'idle' | 'connected';
+type GitHubState = 'idle' | 'device_flow' | 'connected';
 
 interface ProjectSetupProps {
   projects: Project[];
@@ -28,6 +28,13 @@ export function ProjectSetup({ projects, onSelect, onCreate, onClone }: ProjectS
   const [showManualInput, setShowManualInput] = useState(false);
   const [tokenInput, setTokenInput] = useState('');
   const [connectingToken, setConnectingToken] = useState(false);
+  const [clientIdConfigured, setClientIdConfigured] = useState(false);
+  const [showPatInput, setShowPatInput] = useState(false);
+
+  // Device flow state
+  const [deviceUserCode, setDeviceUserCode] = useState('');
+  const [deviceVerificationUri, setDeviceVerificationUri] = useState('');
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const repoRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -37,12 +44,20 @@ export function ProjectSetup({ projects, onSelect, onCreate, onClone }: ProjectS
   useEffect(() => {
     api.githubStatus()
       .then((s) => {
+        setClientIdConfigured(s.client_id_configured);
         if (s.connected) {
           setGhState('connected');
           api.githubRepos().then(setRepos).catch(console.error);
         }
       })
       .catch(console.error);
+  }, []);
+
+  // Cleanup device flow polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -69,12 +84,47 @@ export function ProjectSetup({ projects, onSelect, onCreate, onClone }: ProjectS
     }
   }, [tokenInput]);
 
+  const handleDeviceFlow = useCallback(async () => {
+    setError('');
+    try {
+      const result = await api.githubDeviceCode();
+      setDeviceUserCode(result.user_code);
+      setDeviceVerificationUri(result.verification_uri);
+      setGhState('device_flow');
+
+      // Start polling for token completion
+      const interval = Math.max(result.interval, 5) * 1000;
+      pollRef.current = setInterval(async () => {
+        try {
+          const poll = await api.githubPollToken(result.device_code);
+          if (poll.status === 'complete') {
+            if (pollRef.current) clearInterval(pollRef.current);
+            pollRef.current = null;
+            setGhState('connected');
+            setDeviceUserCode('');
+            setDeviceVerificationUri('');
+            const fetchedRepos = await api.githubRepos();
+            setRepos(fetchedRepos);
+          }
+        } catch {
+          // Polling errors are expected while user hasn't authorized yet
+        }
+      }, interval);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start device flow');
+    }
+  }, []);
+
   const handleDisconnect = useCallback(async () => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     await api.githubDisconnect();
     setGhState('idle');
     setRepos([]);
     setSelectedRepo(null);
     setRepoSearch('');
+    setDeviceUserCode('');
+    setDeviceVerificationUri('');
+    setShowPatInput(false);
   }, []);
 
   const handleCloneRepo = async (repo: GitHubRepo) => {
@@ -154,67 +204,131 @@ export function ProjectSetup({ projects, onSelect, onCreate, onClone }: ProjectS
             {/* GitHub tab */}
             {tab === 'github' && (
               <div className="space-y-4">
-                {/* Not connected — show token input */}
+                {/* Not connected — device flow or PAT input */}
                 {ghState === 'idle' && !showManualInput && (
                   <>
                     <p className="text-sm text-gray-500">
                       Connect your GitHub account to browse and clone repositories.
                     </p>
-                    <form onSubmit={handleConnectToken} className="space-y-3">
-                      <div>
-                        <label htmlFor="gh-token" className="block text-xs font-medium text-gray-600 mb-1">
-                          Personal access token
-                        </label>
-                        <input
-                          ref={tokenRef}
-                          id="gh-token"
-                          type="password"
-                          placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
-                          value={tokenInput}
-                          onChange={(e) => setTokenInput(e.target.value)}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                        />
-                        <p className="text-xs text-gray-400 mt-1">
-                          Create a token at{' '}
-                          <a
-                            href="https://github.com/settings/tokens/new?scopes=repo&description=Forge+Factory"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-500 hover:underline"
-                          >
-                            github.com/settings/tokens
-                          </a>
-                          {' '}with <code className="text-xs bg-gray-100 px-1 rounded">repo</code> scope.
-                        </p>
+
+                    {/* Device Flow button (when client_id is configured and PAT input not toggled) */}
+                    {clientIdConfigured && !showPatInput && (
+                      <div className="space-y-3">
+                        <button
+                          onClick={handleDeviceFlow}
+                          className="w-full px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-md hover:bg-gray-800 transition-colors flex items-center justify-center gap-2"
+                        >
+                          <svg className="w-5 h-5" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+                          </svg>
+                          Sign in with GitHub
+                        </button>
+                        <button
+                          onClick={() => setShowPatInput(true)}
+                          className="w-full text-xs text-gray-400 hover:text-gray-600 transition-colors"
+                        >
+                          Or use a personal access token
+                        </button>
                       </div>
-                      <button
-                        type="submit"
-                        disabled={!tokenInput.trim() || connectingToken}
-                        className="w-full px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-md hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
-                      >
-                        {connectingToken ? (
-                          <>
-                            <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
-                              <path d="M12 2a10 10 0 0110 10" strokeLinecap="round" />
-                            </svg>
-                            Connecting...
-                          </>
-                        ) : (
-                          <>
-                            <svg className="w-5 h-5" viewBox="0 0 16 16" fill="currentColor">
-                              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
-                            </svg>
-                            Connect GitHub
-                          </>
+                    )}
+
+                    {/* PAT input (shown when no client_id or user toggled to PAT mode) */}
+                    {(!clientIdConfigured || showPatInput) && (
+                      <div className="space-y-3">
+                        <form onSubmit={handleConnectToken} className="space-y-3">
+                          <div>
+                            <label htmlFor="gh-token" className="block text-xs font-medium text-gray-600 mb-1">
+                              Personal access token
+                            </label>
+                            <input
+                              ref={tokenRef}
+                              id="gh-token"
+                              type="password"
+                              placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+                              value={tokenInput}
+                              onChange={(e) => setTokenInput(e.target.value)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            />
+                            <p className="text-xs text-gray-400 mt-1">
+                              Create a token at{' '}
+                              <a
+                                href="https://github.com/settings/tokens/new?scopes=repo&description=Forge+Factory"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-500 hover:underline"
+                              >
+                                github.com/settings/tokens
+                              </a>
+                              {' '}with <code className="text-xs bg-gray-100 px-1 rounded">repo</code> scope.
+                            </p>
+                          </div>
+                          <button
+                            type="submit"
+                            disabled={!tokenInput.trim() || connectingToken}
+                            className="w-full px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-md hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                          >
+                            {connectingToken ? (
+                              <>
+                                <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
+                                  <path d="M12 2a10 10 0 0110 10" strokeLinecap="round" />
+                                </svg>
+                                Connecting...
+                              </>
+                            ) : (
+                              'Connect with token'
+                            )}
+                          </button>
+                        </form>
+                        {clientIdConfigured && showPatInput && (
+                          <button
+                            onClick={() => setShowPatInput(false)}
+                            className="w-full text-xs text-gray-400 hover:text-gray-600 transition-colors"
+                          >
+                            &larr; Back to GitHub sign in
+                          </button>
                         )}
-                      </button>
-                    </form>
+                      </div>
+                    )}
+
                     <button
                       onClick={() => setShowManualInput(true)}
                       className="w-full text-xs text-gray-400 hover:text-gray-600 transition-colors"
                     >
                       Or clone by URL
+                    </button>
+                  </>
+                )}
+
+                {/* Device flow — waiting for user authorization */}
+                {ghState === 'device_flow' && !showManualInput && (
+                  <>
+                    <div className="text-center space-y-4">
+                      <p className="text-sm text-gray-600">
+                        Enter this code on GitHub:
+                      </p>
+                      <div className="bg-gray-50 border border-gray-200 rounded-lg py-4 px-6">
+                        <code className="text-2xl font-mono font-bold text-gray-900 tracking-wider">
+                          {deviceUserCode}
+                        </code>
+                      </div>
+                      <a
+                        href={deviceVerificationUri}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-block px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-md hover:bg-gray-800 transition-colors"
+                      >
+                        Open GitHub
+                      </a>
+                      <p className="text-xs text-gray-400">
+                        Waiting for authorization...
+                      </p>
+                    </div>
+                    <button
+                      onClick={handleDisconnect}
+                      className="w-full text-xs text-gray-400 hover:text-red-500 transition-colors mt-2"
+                    >
+                      Cancel
                     </button>
                   </>
                 )}
