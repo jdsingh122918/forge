@@ -3,6 +3,8 @@ import type { BoardView, IssueColumn, WsMessage, IssueWithStatus, AgentTeamDetai
 import { api } from '../api/client';
 import { useWebSocket } from './useWebSocket';
 
+let nextEventId = 0;
+
 export function useBoard(projectId: number | null) {
   const [board, setBoard] = useState<BoardView | null>(null);
   const [loading, setLoading] = useState(false);
@@ -267,7 +269,7 @@ export function useBoard(projectId: number | null) {
         case 'AgentSignal': {
             const { task_id } = msg.data;
             const event: AgentEvent = {
-                id: Date.now(),
+                id: ++nextEventId,
                 task_id,
                 event_type: msg.type === 'AgentThinking' ? 'thinking'
                     : msg.type === 'AgentAction' ? 'action'
@@ -292,7 +294,7 @@ export function useBoard(projectId: number | null) {
         case 'VerificationResult': {
             const { task_id } = msg.data;
             const event: AgentEvent = {
-                id: Date.now(),
+                id: ++nextEventId,
                 task_id,
                 event_type: 'output',
                 content: msg.data.summary,
@@ -385,17 +387,11 @@ export function useBoard(projectId: number | null) {
   }, []);
 
   const fetchAgentEvents = useCallback(async (taskId: number, limit = 200, offset = 0): Promise<AgentEvent[]> => {
-    try {
-        const resp = await fetch(`/api/tasks/${taskId}/events?limit=${limit}&offset=${offset}`);
-        if (!resp.ok) {
-            console.error(`Failed to fetch events for task ${taskId}: ${resp.status} ${resp.statusText}`);
-            return [];
-        }
-        return await resp.json();
-    } catch (e) {
-        console.error(`Network error fetching events for task ${taskId}:`, e);
-        return [];
+    const resp = await fetch(`/api/tasks/${taskId}/events?limit=${limit}&offset=${offset}`);
+    if (!resp.ok) {
+        throw new Error(`Failed to fetch events for task ${taskId}: ${resp.status} ${resp.statusText}`);
     }
+    return await resp.json();
   }, []);
 
   return { board, loading, error, wsStatus, agentTeams, agentEvents, moveIssue, createIssue, deleteIssue, triggerPipeline, fetchAgentEvents, refresh: fetchBoard };

@@ -783,7 +783,10 @@ impl ForgeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     // =========================================
     // PermissionMode tests
@@ -984,6 +987,8 @@ permission_mode = "strict"
 
     #[test]
     fn test_forge_toml_claude_cmd_priority() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
         // Save and clear CLAUDE_CMD to isolate from other tests
         let saved = std::env::var("CLAUDE_CMD").ok();
         unsafe { std::env::remove_var("CLAUDE_CMD") };

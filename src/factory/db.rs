@@ -97,14 +97,23 @@ impl FactoryDb {
             )
             .context("Failed to create tables")?;
 
-        // Additive migrations (columns are nullable, safe to re-run)
-        let _ = self
-            .conn
-            .execute("ALTER TABLE projects ADD COLUMN github_repo TEXT", []);
-        let _ = self.conn.execute(
-            "ALTER TABLE issues ADD COLUMN github_issue_number INTEGER",
-            [],
-        );
+        // Additive migrations (columns are nullable, safe to re-run).
+        // We only ignore "duplicate column" errors — any other error is propagated.
+        match self.conn.execute("ALTER TABLE projects ADD COLUMN github_repo TEXT", []) {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column") => {}
+            Err(e) => return Err(anyhow::anyhow!("Failed to add github_repo column: {}", e)),
+        }
+        match self.conn.execute("ALTER TABLE issues ADD COLUMN github_issue_number INTEGER", []) {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column") => {}
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to add github_issue_number column: {}",
+                    e
+                ))
+            }
+        }
         self.conn
             .execute_batch(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_github_number
@@ -739,26 +748,40 @@ impl FactoryDb {
         Ok(AgentTeam {
             id,
             run_id,
-            strategy: strategy.parse().unwrap_or(ExecutionStrategy::Sequential),
-            isolation: isolation.parse().unwrap_or(IsolationStrategy::Shared),
+            strategy: {
+                let val = strategy;
+                val.parse().map_err(|_| anyhow::anyhow!("invalid strategy in database: '{}'", val))?
+            },
+            isolation: {
+                let val = isolation;
+                val.parse().map_err(|_| anyhow::anyhow!("invalid isolation in database: '{}'", val))?
+            },
             plan_summary: plan_summary.to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
         })
     }
 
     pub fn get_agent_team(&self, team_id: i64) -> Result<AgentTeam> {
-        self.conn.query_row(
+        let (id, run_id, strategy_str, isolation_str, plan_summary, created_at) = self.conn.query_row(
             "SELECT id, run_id, strategy, isolation, plan_summary, created_at FROM agent_teams WHERE id = ?1",
             params![team_id],
-            |row| Ok(AgentTeam {
-                id: row.get(0)?,
-                run_id: row.get(1)?,
-                strategy: row.get::<_, String>(2)?.parse().unwrap_or(ExecutionStrategy::Sequential),
-                isolation: row.get::<_, String>(3)?.parse().unwrap_or(IsolationStrategy::Shared),
-                plan_summary: row.get(4)?,
-                created_at: row.get(5)?,
-            }),
-        ).context("Agent team not found")
+            |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            )),
+        ).context("Agent team not found")?;
+        Ok(AgentTeam {
+            id,
+            run_id,
+            strategy: strategy_str.parse().map_err(|_| anyhow::anyhow!("invalid strategy in database: '{}'", strategy_str))?,
+            isolation: isolation_str.parse().map_err(|_| anyhow::anyhow!("invalid isolation in database: '{}'", isolation_str))?,
+            plan_summary,
+            created_at,
+        })
     }
 
     pub fn get_agent_team_by_run(&self, run_id: i64) -> Result<Option<AgentTeam>> {
@@ -766,16 +789,29 @@ impl FactoryDb {
             "SELECT id, run_id, strategy, isolation, plan_summary, created_at FROM agent_teams WHERE run_id = ?1"
         ).context("Failed to prepare get_agent_team_by_run")?;
         let mut rows = stmt.query_map(params![run_id], |row| {
-            Ok(AgentTeam {
-                id: row.get(0)?,
-                run_id: row.get(1)?,
-                strategy: row.get::<_, String>(2)?.parse().unwrap_or(ExecutionStrategy::Sequential),
-                isolation: row.get::<_, String>(3)?.parse().unwrap_or(IsolationStrategy::Shared),
-                plan_summary: row.get(4)?,
-                created_at: row.get(5)?,
-            })
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
         })?;
-        Ok(rows.next().transpose()?)
+        match rows.next() {
+            Some(row) => {
+                let (id, run_id, strategy_str, isolation_str, plan_summary, created_at) = row?;
+                Ok(Some(AgentTeam {
+                    id,
+                    run_id,
+                    strategy: strategy_str.parse().map_err(|_| anyhow::anyhow!("invalid strategy in database: '{}'", strategy_str))?,
+                    isolation: isolation_str.parse().map_err(|_| anyhow::anyhow!("invalid isolation in database: '{}'", isolation_str))?,
+                    plan_summary,
+                    created_at,
+                }))
+            }
+            None => Ok(None),
+        }
     }
 
     // ── Agent Tasks ──────────────────────────────────────────────────
@@ -804,11 +840,17 @@ impl FactoryDb {
             team_id,
             name: name.to_string(),
             description: description.to_string(),
-            agent_role: agent_role.parse().unwrap_or(AgentRole::Coder),
+            agent_role: {
+                let val = agent_role;
+                val.parse().map_err(|_| anyhow::anyhow!("invalid agent_role in database: '{}'", val))?
+            },
             wave,
             depends_on: depends_on.to_vec(),
             status: AgentTaskStatus::Pending,
-            isolation_type: isolation_type.parse().unwrap_or(IsolationStrategy::Shared),
+            isolation_type: {
+                let val = isolation_type;
+                val.parse().map_err(|_| anyhow::anyhow!("invalid isolation_type in database: '{}'", val))?
+            },
             worktree_path: None,
             container_id: None,
             branch_name: None,
@@ -871,73 +913,96 @@ impl FactoryDb {
              FROM agent_tasks WHERE team_id = ?1 ORDER BY wave, id"
         ).context("Failed to prepare get_agent_tasks")?;
         let rows = stmt.query_map(params![team_id], |row| {
-            let depends_str: String = row.get(6)?;
-            let depends_on: Vec<i64> = match serde_json::from_str(&depends_str) {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!(
-                        "[db] Warning: corrupt depends_on JSON '{}': {}",
-                        depends_str, e
-                    );
-                    vec![]
-                }
-            };
-            Ok(AgentTask {
-                id: row.get(0)?,
-                team_id: row.get(1)?,
-                name: row.get(2)?,
-                description: row.get(3)?,
-                agent_role: row.get::<_, String>(4)?.parse().unwrap_or(AgentRole::Coder),
-                wave: row.get(5)?,
-                depends_on,
-                status: row.get::<_, String>(7)?.parse().unwrap_or(AgentTaskStatus::Pending),
-                isolation_type: row.get::<_, String>(8)?.parse().unwrap_or(IsolationStrategy::Shared),
-                worktree_path: row.get(9)?,
-                container_id: row.get(10)?,
-                branch_name: row.get(11)?,
-                started_at: row.get(12)?,
-                completed_at: row.get(13)?,
-                error: row.get(14)?,
-            })
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i32>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(12)?,
+                row.get::<_, Option<String>>(13)?,
+                row.get::<_, Option<String>>(14)?,
+            ))
         })?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .context("Failed to fetch agent tasks")
+        let mut tasks = Vec::new();
+        for row in rows {
+            let (id, team_id, name, description, agent_role_str, wave, depends_str, status_str,
+                 isolation_str, worktree_path, container_id, branch_name, started_at, completed_at, error) = row?;
+            let depends_on: Vec<i64> = serde_json::from_str(&depends_str)
+                .map_err(|e| anyhow::anyhow!("corrupt depends_on JSON '{}': {}", depends_str, e))?;
+            tasks.push(AgentTask {
+                id,
+                team_id,
+                name,
+                description,
+                agent_role: agent_role_str.parse().map_err(|_| anyhow::anyhow!("invalid agent_role in database: '{}'", agent_role_str))?,
+                wave,
+                depends_on,
+                status: status_str.parse().map_err(|_| anyhow::anyhow!("invalid status in database: '{}'", status_str))?,
+                isolation_type: isolation_str.parse().map_err(|_| anyhow::anyhow!("invalid isolation_type in database: '{}'", isolation_str))?,
+                worktree_path,
+                container_id,
+                branch_name,
+                started_at,
+                completed_at,
+                error,
+            });
+        }
+        Ok(tasks)
     }
 
     pub fn get_agent_task(&self, task_id: i64) -> Result<AgentTask> {
-        self.conn.query_row(
-            "SELECT id, team_id, name, description, agent_role, wave, depends_on, status, \
-             isolation_type, worktree_path, container_id, branch_name, started_at, completed_at, error \
-             FROM agent_tasks WHERE id = ?1",
-            params![task_id],
-            |row| {
-                let depends_str: String = row.get(6)?;
-                let depends_on: Vec<i64> = match serde_json::from_str(&depends_str) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        eprintln!("[db] Warning: corrupt depends_on JSON '{}': {}", depends_str, e);
-                        vec![]
-                    }
-                };
-                Ok(AgentTask {
-                    id: row.get(0)?,
-                    team_id: row.get(1)?,
-                    name: row.get(2)?,
-                    description: row.get(3)?,
-                    agent_role: row.get::<_, String>(4)?.parse().unwrap_or(AgentRole::Coder),
-                    wave: row.get(5)?,
-                    depends_on,
-                    status: row.get::<_, String>(7)?.parse().unwrap_or(AgentTaskStatus::Pending),
-                    isolation_type: row.get::<_, String>(8)?.parse().unwrap_or(IsolationStrategy::Shared),
-                    worktree_path: row.get(9)?,
-                    container_id: row.get(10)?,
-                    branch_name: row.get(11)?,
-                    started_at: row.get(12)?,
-                    completed_at: row.get(13)?,
-                    error: row.get(14)?,
-                })
-            },
-        ).context("Agent task not found")
+        let (id, team_id, name, description, agent_role_str, wave, depends_str, status_str,
+             isolation_str, worktree_path, container_id, branch_name, started_at, completed_at, error) =
+            self.conn.query_row(
+                "SELECT id, team_id, name, description, agent_role, wave, depends_on, status, \
+                 isolation_type, worktree_path, container_id, branch_name, started_at, completed_at, error \
+                 FROM agent_tasks WHERE id = ?1",
+                params![task_id],
+                |row| Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i32>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
+                    row.get::<_, Option<String>>(13)?,
+                    row.get::<_, Option<String>>(14)?,
+                )),
+            ).context("Agent task not found")?;
+        let depends_on: Vec<i64> = serde_json::from_str(&depends_str)
+            .map_err(|e| anyhow::anyhow!("corrupt depends_on JSON '{}': {}", depends_str, e))?;
+        Ok(AgentTask {
+            id,
+            team_id,
+            name,
+            description,
+            agent_role: agent_role_str.parse().map_err(|_| anyhow::anyhow!("invalid agent_role in database: '{}'", agent_role_str))?,
+            wave,
+            depends_on,
+            status: status_str.parse().map_err(|_| anyhow::anyhow!("invalid status in database: '{}'", status_str))?,
+            isolation_type: isolation_str.parse().map_err(|_| anyhow::anyhow!("invalid isolation_type in database: '{}'", isolation_str))?,
+            worktree_path,
+            container_id,
+            branch_name,
+            started_at,
+            completed_at,
+            error,
+        })
     }
 
     pub fn get_agent_team_detail(&self, run_id: i64) -> Result<Option<AgentTeamDetail>> {
@@ -958,12 +1023,10 @@ impl FactoryDb {
         content: &str,
         metadata: Option<&serde_json::Value>,
     ) -> Result<AgentEvent> {
-        let metadata_str = metadata.map(|m| {
-            serde_json::to_string(m).unwrap_or_else(|e| {
-                eprintln!("[db] Warning: failed to serialize event metadata: {}", e);
-                "{}".to_string()
-            })
-        });
+        let metadata_str = match metadata {
+            Some(m) => Some(serde_json::to_string(m).context("Failed to serialize event metadata")?),
+            None => None,
+        };
         self.conn.execute(
             "INSERT INTO agent_events (task_id, event_type, content, metadata) VALUES (?1, ?2, ?3, ?4)",
             params![task_id, event_type, content, metadata_str],
@@ -972,7 +1035,10 @@ impl FactoryDb {
         Ok(AgentEvent {
             id,
             task_id,
-            event_type: event_type.parse().unwrap_or(AgentEventType::Output),
+            event_type: {
+                let val = event_type;
+                val.parse().map_err(|_| anyhow::anyhow!("invalid event_type in database: '{}'", val))?
+            },
             content: content.to_string(),
             metadata: metadata.cloned(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -993,26 +1059,33 @@ impl FactoryDb {
             )
             .context("Failed to prepare get_agent_events")?;
         let rows = stmt.query_map(params![task_id, limit, offset], |row| {
-            let metadata_str: Option<String> = row.get(4)?;
-            let metadata = metadata_str.and_then(|s| {
-                serde_json::from_str(&s)
-                    .map_err(|e| {
-                        eprintln!("[db] Warning: corrupt event metadata JSON: {}", e);
-                        e
-                    })
-                    .ok()
-            });
-            Ok(AgentEvent {
-                id: row.get(0)?,
-                task_id: row.get(1)?,
-                event_type: row.get::<_, String>(2)?.parse().unwrap_or(AgentEventType::Output),
-                content: row.get(3)?,
-                metadata,
-                created_at: row.get(5)?,
-            })
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(5)?,
+            ))
         })?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .context("Failed to fetch agent events")
+        let mut events = Vec::new();
+        for row in rows {
+            let (id, task_id, event_type_str, content, metadata_str, created_at) = row?;
+            let metadata: Option<serde_json::Value> = match metadata_str {
+                Some(s) => Some(serde_json::from_str(&s)
+                    .map_err(|e| anyhow::anyhow!("corrupt event metadata JSON '{}': {}", s, e))?),
+                None => None,
+            };
+            events.push(AgentEvent {
+                id,
+                task_id,
+                event_type: event_type_str.parse().map_err(|_| anyhow::anyhow!("invalid event_type in database: '{}'", event_type_str))?,
+                content,
+                metadata,
+                created_at,
+            });
+        }
+        Ok(events)
     }
 }
 
@@ -1671,6 +1744,100 @@ mod tests {
         // Verify all tasks completed
         let tasks = db.get_agent_tasks(team.id)?;
         assert!(tasks.iter().all(|t| t.status == AgentTaskStatus::Completed));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pipeline_run_failed_with_error_message() -> Result<()> {
+        let db = FactoryDb::new_in_memory()?;
+        let project = db.create_project("error-test", "/tmp/error-test")?;
+        let issue = db.create_issue(project.id, "Task that fails", "", &IssueColumn::InProgress)?;
+        let run = db.create_pipeline_run(issue.id)?;
+
+        // Transition through running → failed with an error message
+        db.update_pipeline_run(run.id, &PipelineStatus::Running, None, None)?;
+        let failed = db.update_pipeline_run(
+            run.id,
+            &PipelineStatus::Failed,
+            None,
+            Some("OOM killed"),
+        )?;
+
+        // Verify the returned value
+        assert_eq!(failed.status, PipelineStatus::Failed);
+        let err = failed.error.as_deref().expect("error should be Some");
+        assert!(
+            err.contains("OOM killed"),
+            "expected error to contain 'OOM killed', got: {err}"
+        );
+        assert!(
+            failed.completed_at.is_some(),
+            "completed_at should be set for a terminal status"
+        );
+
+        // Verify persistence by reading back from the database
+        let fetched = db
+            .get_pipeline_run(run.id)?
+            .expect("pipeline run should still exist");
+        assert_eq!(fetched.status, PipelineStatus::Failed);
+        let fetched_err = fetched.error.as_deref().expect("persisted error should be Some");
+        assert!(
+            fetched_err.contains("OOM killed"),
+            "expected persisted error to contain 'OOM killed', got: {fetched_err}"
+        );
+        assert!(
+            fetched.completed_at.is_some(),
+            "persisted completed_at should be set"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_pipeline_phases_ordering() -> Result<()> {
+        let db = FactoryDb::new_in_memory()?;
+        let project = db.create_project("phase-test", "/tmp/phase-test")?;
+        let issue = db.create_issue(project.id, "Multi-phase task", "", &IssueColumn::InProgress)?;
+        let run = db.create_pipeline_run(issue.id)?;
+
+        // Insert 5 phases out of natural insertion order to confirm ORDER BY takes effect
+        let phases_input = [
+            ("03", "Lint"),
+            ("01", "Setup"),
+            ("05", "Deploy"),
+            ("02", "Build"),
+            ("04", "Test"),
+        ];
+        for (number, name) in &phases_input {
+            db.upsert_pipeline_phase(run.id, number, name, "completed", Some(1), Some(5))?;
+        }
+
+        let phases = db.get_pipeline_phases(run.id)?;
+        assert_eq!(phases.len(), 5, "expected 5 pipeline phases");
+
+        // Phases must be sorted by phase_number ASC
+        let numbers: Vec<&str> = phases.iter().map(|p| p.phase_number.as_str()).collect();
+        assert_eq!(numbers, vec!["01", "02", "03", "04", "05"]);
+
+        // Verify corresponding names are in the same sorted order
+        let names: Vec<&str> = phases.iter().map(|p| p.phase_name.as_str()).collect();
+        assert_eq!(names, vec!["Setup", "Build", "Lint", "Test", "Deploy"]);
+
+        // Simulate "pagination": first two phases
+        let first_two = &phases[..2];
+        assert_eq!(first_two[0].phase_number, "01");
+        assert_eq!(first_two[1].phase_number, "02");
+
+        // Next two phases
+        let next_two = &phases[2..4];
+        assert_eq!(next_two[0].phase_number, "03");
+        assert_eq!(next_two[1].phase_number, "04");
+
+        // Final phase
+        let last = &phases[4];
+        assert_eq!(last.phase_number, "05");
+        assert_eq!(last.phase_name, "Deploy");
 
         Ok(())
     }

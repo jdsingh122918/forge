@@ -32,6 +32,7 @@ pub enum WsMessage {
     IssueUpdated {
         issue: Issue,
     },
+    // TODO: from_column/to_column should be IssueColumn once callers in pipeline.rs are updated
     IssueMoved {
         issue_id: i64,
         from_column: String,
@@ -529,6 +530,174 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["data"]["passed"], true);
         assert!(parsed["data"]["screenshots"].is_array());
+    }
+
+    #[test]
+    fn test_wave_started_serialization() {
+        let msg = WsMessage::WaveStarted {
+            run_id: 1,
+            team_id: 2,
+            wave: 0,
+            task_ids: vec![10, 11, 12],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"WaveStarted\""));
+        assert!(json.contains("\"wave\":0"));
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::WaveStarted { run_id, wave, task_ids, .. } => {
+                assert_eq!(run_id, 1);
+                assert_eq!(wave, 0);
+                assert_eq!(task_ids, vec![10, 11, 12]);
+            }
+            _ => panic!("Expected WaveStarted"),
+        }
+    }
+
+    #[test]
+    fn test_wave_completed_serialization() {
+        let msg = WsMessage::WaveCompleted {
+            run_id: 1,
+            team_id: 2,
+            wave: 0,
+            success_count: 2,
+            failed_count: 1,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"WaveCompleted\""));
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::WaveCompleted { success_count, failed_count, .. } => {
+                assert_eq!(success_count, 2);
+                assert_eq!(failed_count, 1);
+            }
+            _ => panic!("Expected WaveCompleted"),
+        }
+    }
+
+    #[test]
+    fn test_agent_task_started_serialization() {
+        let msg = WsMessage::AgentTaskStarted {
+            run_id: 1,
+            task_id: 5,
+            name: "Fix API".to_string(),
+            role: AgentRole::Coder,
+            wave: 0,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"AgentTaskStarted\""));
+        assert!(json.contains("\"role\":\"coder\""));
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::AgentTaskStarted { task_id, name, role, .. } => {
+                assert_eq!(task_id, 5);
+                assert_eq!(name, "Fix API");
+                assert_eq!(role, AgentRole::Coder);
+            }
+            _ => panic!("Expected AgentTaskStarted"),
+        }
+    }
+
+    #[test]
+    fn test_agent_task_completed_serialization() {
+        let msg = WsMessage::AgentTaskCompleted {
+            run_id: 1,
+            task_id: 5,
+            success: true,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"AgentTaskCompleted\""));
+        assert!(json.contains("\"success\":true"));
+    }
+
+    #[test]
+    fn test_agent_task_failed_serialization() {
+        let msg = WsMessage::AgentTaskFailed {
+            run_id: 1,
+            task_id: 5,
+            error: "OOM killed".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"AgentTaskFailed\""));
+        assert!(json.contains("\"OOM killed\""));
+    }
+
+    #[test]
+    fn test_agent_thinking_serialization() {
+        let msg = WsMessage::AgentThinking {
+            run_id: 1,
+            task_id: 5,
+            content: "Analyzing the API response format".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"AgentThinking\""));
+        assert!(json.contains("\"content\":\"Analyzing"));
+    }
+
+    #[test]
+    fn test_agent_output_serialization() {
+        let msg = WsMessage::AgentOutput {
+            run_id: 1,
+            task_id: 5,
+            content: "Fixed the serialization bug".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"AgentOutput\""));
+    }
+
+    #[test]
+    fn test_agent_signal_serialization() {
+        let msg = WsMessage::AgentSignal {
+            run_id: 1,
+            task_id: 5,
+            signal_type: "progress".to_string(),
+            content: "50% complete".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"AgentSignal\""));
+        assert!(json.contains("\"signal_type\":\"progress\""));
+    }
+
+    #[test]
+    fn test_merge_started_serialization() {
+        let msg = WsMessage::MergeStarted {
+            run_id: 1,
+            wave: 0,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"MergeStarted\""));
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::MergeStarted { run_id, wave } => {
+                assert_eq!(run_id, 1);
+                assert_eq!(wave, 0);
+            }
+            _ => panic!("Expected MergeStarted"),
+        }
+    }
+
+    #[test]
+    fn test_merge_completed_serialization() {
+        let msg = WsMessage::MergeCompleted {
+            run_id: 1,
+            wave: 0,
+            conflicts: false,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"MergeCompleted\""));
+        assert!(json.contains("\"conflicts\":false"));
+    }
+
+    #[test]
+    fn test_merge_conflict_serialization() {
+        let msg = WsMessage::MergeConflict {
+            run_id: 1,
+            wave: 0,
+            files: vec!["src/api.rs".to_string(), "src/handler.rs".to_string()],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"MergeConflict\""));
+        assert!(json.contains("\"src/api.rs\""));
     }
 
     #[test]

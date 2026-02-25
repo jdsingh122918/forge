@@ -78,10 +78,12 @@ export interface IssueDetail {
 // Agent team types
 
 export type AgentRole = 'planner' | 'coder' | 'tester' | 'reviewer' | 'browser_verifier' | 'test_verifier';
-export type AgentTaskStatus = 'pending' | 'running' | 'completed' | 'failed';
+export type AgentTaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type AgentEventType = 'thinking' | 'action' | 'output' | 'signal' | 'error';
 export type ExecutionStrategy = 'parallel' | 'sequential' | 'wave_pipeline' | 'adaptive';
 export type IsolationStrategy = 'worktree' | 'container' | 'hybrid' | 'shared';
+export type SignalType = 'progress' | 'blocker' | 'pivot';
+export type VerificationType = 'browser' | 'test_build';
 
 export interface AgentTeam {
   id: number;
@@ -125,7 +127,7 @@ export interface AgentTeamDetail {
 }
 
 export interface VerificationResultData {
-  verification_type: 'browser' | 'test_build';
+  verification_type: VerificationType;
   passed: boolean;
   summary: string;
   screenshots: string[];
@@ -156,7 +158,7 @@ export type WsMessage =
   | { type: 'AgentThinking'; data: { run_id: number; task_id: number; content: string } }
   | { type: 'AgentAction'; data: { run_id: number; task_id: number; action_type: string; summary: string; metadata: Record<string, unknown> } }
   | { type: 'AgentOutput'; data: { run_id: number; task_id: number; content: string } }
-  | { type: 'AgentSignal'; data: { run_id: number; task_id: number; signal_type: string; content: string } }
+  | { type: 'AgentSignal'; data: { run_id: number; task_id: number; signal_type: SignalType; content: string } }
   | { type: 'MergeStarted'; data: { run_id: number; wave: number } }
   | { type: 'MergeCompleted'; data: { run_id: number; wave: number; conflicts: boolean } }
   | { type: 'MergeConflict'; data: { run_id: number; wave: number; files: string[] } }

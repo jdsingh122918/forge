@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import type { AgentTask, AgentEvent } from '../types';
+import type { AgentTask, AgentEvent, AgentTaskStatus, AgentRole } from '../types';
 
 interface AgentCardProps {
     task: AgentTask;
@@ -7,14 +7,15 @@ interface AgentCardProps {
     defaultExpanded?: boolean;
 }
 
-const STATUS_STYLES: Record<string, { bg: string; icon: string; pulse?: boolean }> = {
+const STATUS_STYLES: Record<AgentTaskStatus, { bg: string; icon: string; pulse?: boolean }> = {
     pending: { bg: 'bg-gray-100 border-gray-200', icon: '\u23f3' },
     running: { bg: 'bg-blue-50 border-blue-200', icon: '\ud83d\udfe2', pulse: true },
     completed: { bg: 'bg-green-50 border-green-200', icon: '\u2713' },
     failed: { bg: 'bg-red-50 border-red-200', icon: '\u2717' },
+    cancelled: { bg: 'bg-gray-50 border-gray-300', icon: '\u2014' },
 };
 
-const ROLE_LABELS: Record<string, string> = {
+const ROLE_LABELS: Record<AgentRole, string> = {
     planner: 'Planner',
     coder: 'Coder',
     tester: 'Tester',

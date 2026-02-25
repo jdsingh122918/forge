@@ -8,7 +8,7 @@ use tokio::process::Command;
 use tokio::sync::{Mutex, broadcast};
 
 use crate::factory::db::FactoryDb;
-use crate::factory::models::{AgentTask, AgentTaskStatus};
+use crate::factory::models::{AgentEventType, AgentTask, AgentTaskStatus};
 use crate::factory::ws::{WsMessage, broadcast_message};
 
 /// Handle for a running agent process
@@ -29,7 +29,7 @@ pub struct AgentExecutor {
 /// Parsed output event from agent stdout
 #[derive(Debug, Clone)]
 pub struct ParsedEvent {
-    pub event_type: String,
+    pub event_type: AgentEventType,
     pub content: String,
     pub metadata: Option<serde_json::Value>,
 }
@@ -45,6 +45,8 @@ impl OutputParser {
     /// 3. JSON with `"type": "tool_use"|"tool_result"` → event_type "action"
     /// 4. Other JSON with `"type"` field → event_type "output"
     /// 5. Anything else → event_type "output" (plain text)
+    ///
+    /// Note: Valid JSON without a "type" field falls through to rule 5 (plain text).
     pub fn parse_line(line: &str) -> ParsedEvent {
         let trimmed = line.trim();
 
@@ -60,7 +62,7 @@ impl OutputParser {
                     &trimmed[content_start..]
                 };
                 return ParsedEvent {
-                    event_type: "signal".to_string(),
+                    event_type: AgentEventType::Signal,
                     content: content.to_string(),
                     metadata: Some(serde_json::json!({"signal_type": signal})),
                 };
@@ -74,7 +76,7 @@ impl OutputParser {
         {
             return match msg_type {
                 "thinking" => ParsedEvent {
-                    event_type: "thinking".to_string(),
+                    event_type: AgentEventType::Thinking,
                     content: parsed
                         .get("content")
                         .and_then(|c| c.as_str())
@@ -92,13 +94,13 @@ impl OutputParser {
                         parsed.get("file").and_then(|f| f.as_str()).unwrap_or("")
                     );
                     ParsedEvent {
-                        event_type: "action".to_string(),
+                        event_type: AgentEventType::Action,
                         content: summary.trim().to_string(),
                         metadata: Some(parsed),
                     }
                 }
                 _ => ParsedEvent {
-                    event_type: "output".to_string(),
+                    event_type: AgentEventType::Output,
                     content: trimmed.to_string(),
                     metadata: Some(parsed),
                 },
@@ -107,7 +109,7 @@ impl OutputParser {
 
         // Default: plain output
         ParsedEvent {
-            event_type: "output".to_string(),
+            event_type: AgentEventType::Output,
             content: trimmed.to_string(),
             metadata: None,
         }
@@ -232,6 +234,7 @@ impl AgentExecutor {
         let mut cmd = Command::new(&claude_cmd);
         cmd.args([
             "--print",
+            "--dangerously-skip-permissions",
             "--output-format",
             "stream-json",
             "-p",
@@ -269,21 +272,51 @@ impl AgentExecutor {
             let mut last_broadcast = std::time::Instant::now();
             let mut thinking_buffer = String::new();
 
+            // Channel-based event batching for DB writes
+            let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<(i64, String, String, Option<serde_json::Value>)>();
+
+            let db_writer = self.db.clone();
+            let writer_task = tokio::spawn(async move {
+                let mut batch = Vec::new();
+                loop {
+                    // Wait for first event
+                    match event_rx.recv().await {
+                        Some(event) => batch.push(event),
+                        None => break, // Channel closed
+                    }
+                    // Drain any additional ready events (up to 50)
+                    while batch.len() < 50 {
+                        match event_rx.try_recv() {
+                            Ok(event) => batch.push(event),
+                            Err(_) => break,
+                        }
+                    }
+                    // Flush batch to DB
+                    if let Ok(db) = db_writer.lock() {
+                        for (task_id, event_type, content, metadata) in batch.drain(..) {
+                            if let Err(e) = db.create_agent_event(task_id, &event_type, &content, metadata.as_ref()) {
+                                eprintln!("[agent] Failed to write event: {:#}", e);
+                            }
+                        }
+                    }
+                }
+                // Flush remaining
+                if !batch.is_empty() {
+                    if let Ok(db) = db_writer.lock() {
+                        for (task_id, event_type, content, metadata) in batch.drain(..) {
+                            let _ = db.create_agent_event(task_id, &event_type, &content, metadata.as_ref());
+                        }
+                    }
+                }
+            });
+
             while let Ok(Some(line)) = lines.next_line().await {
                 let parsed = OutputParser::parse_line(&line);
 
-                {
-                    let db = self.db.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
-                    db.create_agent_event(
-                        task_id,
-                        &parsed.event_type,
-                        &parsed.content,
-                        parsed.metadata.as_ref(),
-                    )?;
-                }
+                let _ = event_tx.send((task_id, parsed.event_type.as_str().to_string(), parsed.content.clone(), parsed.metadata.clone()));
 
-                match parsed.event_type.as_str() {
-                    "thinking" => {
+                match parsed.event_type {
+                    AgentEventType::Thinking => {
                         thinking_buffer.push_str(&parsed.content);
                         thinking_buffer.push('\n');
                         if last_broadcast.elapsed() >= std::time::Duration::from_millis(500) {
@@ -299,7 +332,7 @@ impl AgentExecutor {
                             last_broadcast = std::time::Instant::now();
                         }
                     }
-                    "action" => {
+                    AgentEventType::Action => {
                         broadcast_message(
                             &self.tx,
                             &WsMessage::AgentAction {
@@ -316,7 +349,7 @@ impl AgentExecutor {
                             },
                         );
                     }
-                    "signal" => {
+                    AgentEventType::Signal => {
                         broadcast_message(
                             &self.tx,
                             &WsMessage::AgentSignal {
@@ -347,6 +380,9 @@ impl AgentExecutor {
                     }
                 }
             }
+
+            drop(event_tx);
+            let _ = writer_task.await;
 
             if !thinking_buffer.is_empty() {
                 broadcast_message(
@@ -478,18 +514,27 @@ impl AgentExecutor {
             .context("Failed to merge branch")?;
 
         if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("[agent] Merge of {} into {} failed: {}", task_branch, target_branch, stderr.trim());
+
             // Merge failed — abort and restore original branch
-            let _ = Command::new("git")
+            if let Err(e) = Command::new("git")
                 .args(["merge", "--abort"])
                 .current_dir(&self.project_path)
                 .output()
-                .await;
+                .await
+            {
+                eprintln!("[agent] CRITICAL: merge --abort failed: {}", e);
+            }
             if original_branch != target_branch {
-                let _ = Command::new("git")
+                if let Err(e) = Command::new("git")
                     .args(["checkout", &original_branch])
                     .current_dir(&self.project_path)
                     .output()
-                    .await;
+                    .await
+                {
+                    eprintln!("[agent] CRITICAL: checkout recovery to {} failed: {}", original_branch, e);
+                }
             }
             return Ok(false);
         }
@@ -531,7 +576,7 @@ mod tests {
     fn test_parse_output_line_progress_signal() {
         let line = "Working on it... <progress>50% through file edits</progress>";
         let event = OutputParser::parse_line(line);
-        assert_eq!(event.event_type, "signal");
+        assert_eq!(event.event_type, AgentEventType::Signal);
         assert!(event.content.contains("50%"));
     }
 
@@ -539,14 +584,14 @@ mod tests {
     fn test_parse_output_line_tool_use() {
         let line = r#"{"type":"tool_use","tool":"Edit","file":"src/main.rs","line":42}"#;
         let event = OutputParser::parse_line(line);
-        assert_eq!(event.event_type, "action");
+        assert_eq!(event.event_type, AgentEventType::Action);
     }
 
     #[test]
     fn test_parse_output_line_plain_text() {
         let line = "Analyzing the codebase structure...";
         let event = OutputParser::parse_line(line);
-        assert_eq!(event.event_type, "output");
+        assert_eq!(event.event_type, AgentEventType::Output);
         assert_eq!(event.content, line);
     }
 
@@ -554,14 +599,14 @@ mod tests {
     fn test_parse_output_line_thinking() {
         let line = r#"{"type":"thinking","content":"Let me analyze this..."}"#;
         let event = OutputParser::parse_line(line);
-        assert_eq!(event.event_type, "thinking");
+        assert_eq!(event.event_type, AgentEventType::Thinking);
     }
 
     #[test]
     fn test_parse_output_line_blocker_signal() {
         let line = "Found issue <blocker>Missing dependency foo</blocker>";
         let event = OutputParser::parse_line(line);
-        assert_eq!(event.event_type, "signal");
+        assert_eq!(event.event_type, AgentEventType::Signal);
         assert_eq!(event.content, "Missing dependency foo");
         let metadata = event.metadata.unwrap();
         assert_eq!(metadata["signal_type"], "blocker");
@@ -571,7 +616,7 @@ mod tests {
     fn test_parse_output_line_unknown_json() {
         let line = r#"{"type":"unknown_type","data":"something"}"#;
         let event = OutputParser::parse_line(line);
-        assert_eq!(event.event_type, "output");
+        assert_eq!(event.event_type, AgentEventType::Output);
     }
 
     #[test]
@@ -579,13 +624,13 @@ mod tests {
         let line = r#"{"key":"value","count":42}"#;
         let event = OutputParser::parse_line(line);
         // No "type" field, so it stays as plain output
-        assert_eq!(event.event_type, "output");
+        assert_eq!(event.event_type, AgentEventType::Output);
     }
 
     #[test]
     fn test_parse_output_line_empty_string() {
         let event = OutputParser::parse_line("");
-        assert_eq!(event.event_type, "output");
+        assert_eq!(event.event_type, AgentEventType::Output);
         assert_eq!(event.content, "");
     }
 
@@ -593,7 +638,7 @@ mod tests {
     fn test_parse_output_line_pivot_signal() {
         let line = "<pivot>Changing approach to use caching</pivot>";
         let event = OutputParser::parse_line(line);
-        assert_eq!(event.event_type, "signal");
+        assert_eq!(event.event_type, AgentEventType::Signal);
         assert!(event.content.contains("Changing approach"));
     }
 
@@ -601,7 +646,7 @@ mod tests {
     fn test_parse_output_line_unclosed_signal_tag() {
         let line = "<progress>50% through file edits";
         let event = OutputParser::parse_line(line);
-        assert_eq!(event.event_type, "signal");
+        assert_eq!(event.event_type, AgentEventType::Signal);
         assert!(event.content.contains("50%"));
     }
 
@@ -609,7 +654,7 @@ mod tests {
     fn test_parse_output_line_malformed_json() {
         let line = "{truncated json";
         let event = OutputParser::parse_line(line);
-        assert_eq!(event.event_type, "output");
+        assert_eq!(event.event_type, AgentEventType::Output);
         assert_eq!(event.content, "{truncated json");
     }
 
@@ -617,7 +662,7 @@ mod tests {
     fn test_parse_output_line_blocker_signal_standalone() {
         let line = "<blocker>Missing API credentials</blocker>";
         let event = OutputParser::parse_line(line);
-        assert_eq!(event.event_type, "signal");
+        assert_eq!(event.event_type, AgentEventType::Signal);
         assert!(event.content.contains("Missing API credentials"));
     }
 }

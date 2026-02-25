@@ -32,20 +32,49 @@ fn default_isolation() -> String {
     "shared".to_string()
 }
 
+/// Extract the first balanced JSON object from text, handling nested braces and strings correctly.
+fn extract_json_object(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    for (i, ch) in text[start..].char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_string => escape = true,
+            '"' => in_string = !in_string,
+            '{' if !in_string => depth += 1,
+            '}' if !in_string => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[start..=start + i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 impl PlanResponse {
     pub fn parse(json: &str) -> Result<Self> {
-        // Extract the outermost JSON object by finding the first '{' and last '}'.
-        // This handles markdown code blocks, leading/trailing prose, or any wrapper text.
-        let cleaned = if let Some(start) = json.find('{') {
-            if let Some(end) = json.rfind('}') {
-                &json[start..=end]
-            } else {
-                json
-            }
-        } else {
-            json
-        };
-        serde_json::from_str(cleaned).context("Failed to parse planner response as JSON")
+        // Try direct parse first
+        if let Ok(plan) = serde_json::from_str::<PlanResponse>(json) {
+            return Ok(plan);
+        }
+        // Strip markdown code blocks
+        let cleaned = json.replace("```json", "").replace("```", "");
+        if let Ok(plan) = serde_json::from_str::<PlanResponse>(cleaned.trim()) {
+            return Ok(plan);
+        }
+        // Extract first balanced JSON object
+        let extracted = extract_json_object(&cleaned)
+            .unwrap_or(cleaned.trim());
+        serde_json::from_str(extracted)
+            .context("Failed to parse planner response as JSON")
     }
 
     pub fn fallback(title: &str, description: &str) -> Self {
@@ -123,6 +152,10 @@ impl Planner {
         }
     }
 
+    /// Decompose an issue into a task plan by calling the Claude CLI.
+    ///
+    /// Returns errors on CLI or parse failures -- the caller is responsible
+    /// for deciding whether to fall back to a single-task plan.
     pub async fn plan(
         &self,
         issue_title: &str,
@@ -132,29 +165,10 @@ impl Planner {
         let repo_context = self.gather_repo_context().await?;
         let prompt = self.build_prompt(issue_title, issue_description, issue_labels, &repo_context);
 
-        match self.call_claude(&prompt).await {
-            Ok(response) => match PlanResponse::parse(&response) {
-                Ok(plan) => Ok(plan),
-                Err(e) => {
-                    eprintln!(
-                        "[planner] Failed to parse plan response, falling back to single task: {:#}",
-                        e
-                    );
-                    eprintln!(
-                        "[planner] Raw response was: {}",
-                        &response[..response.len().min(500)]
-                    );
-                    Ok(PlanResponse::fallback(issue_title, issue_description))
-                }
-            },
-            Err(e) => {
-                eprintln!(
-                    "[planner] Claude CLI call failed, falling back to single task: {:#}",
-                    e
-                );
-                Ok(PlanResponse::fallback(issue_title, issue_description))
-            }
-        }
+        let response = self.call_claude(&prompt).await
+            .context("Claude CLI call failed during planning")?;
+        PlanResponse::parse(&response)
+            .context("Failed to parse planner response")
     }
 
     fn build_prompt(
@@ -389,5 +403,63 @@ Some trailing text"#;
 
         let plan = PlanResponse::parse(with_text).unwrap();
         assert_eq!(plan.strategy, "parallel");
+    }
+
+    #[test]
+    fn test_parse_plan_minimal_task_fields() {
+        // Only name, role, description are required; wave, files, isolation, depends_on have defaults
+        let json = r#"{
+            "strategy": "sequential",
+            "isolation": "shared",
+            "reasoning": "minimal",
+            "tasks": [
+                {"name": "Do thing", "role": "coder", "description": "Do the thing"}
+            ]
+        }"#;
+        let plan = PlanResponse::parse(json).unwrap();
+        assert_eq!(plan.tasks.len(), 1);
+        assert_eq!(plan.tasks[0].wave, 0);
+        assert_eq!(plan.tasks[0].isolation, "shared");
+        assert!(plan.tasks[0].files.is_empty());
+        assert!(plan.tasks[0].depends_on.is_empty());
+    }
+
+    #[test]
+    fn test_parse_plan_trailing_text_with_curly_braces() {
+        // LLM response has valid JSON followed by text that contains extra curly braces
+        let response = r#"{"strategy": "sequential", "isolation": "shared", "reasoning": "test", "tasks": [{"name": "a", "role": "coder", "description": "d"}]}
+
+Here's an explanation of the plan. The task uses shared isolation because {reasons explained above}."#;
+
+        let plan = PlanResponse::parse(response).unwrap();
+        assert_eq!(plan.strategy, "sequential");
+        assert_eq!(plan.tasks.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_plan_with_markdown_code_block() {
+        let response = "Sure, here is the plan:\n\n```json\n{\"strategy\": \"parallel\", \"isolation\": \"worktree\", \"reasoning\": \"test\", \"tasks\": [{\"name\": \"a\", \"role\": \"coder\", \"description\": \"d\"}]}\n```\n";
+        let plan = PlanResponse::parse(response).unwrap();
+        assert_eq!(plan.strategy, "parallel");
+        assert_eq!(plan.tasks.len(), 1);
+    }
+
+    #[test]
+    fn test_extract_json_object_balanced_braces() {
+        let text = r#"prefix {"key": "value with {nested} braces"} suffix"#;
+        let extracted = extract_json_object(text).unwrap();
+        assert_eq!(extracted, r#"{"key": "value with {nested} braces"}"#);
+    }
+
+    #[test]
+    fn test_extract_json_object_no_json() {
+        assert!(extract_json_object("no json here").is_none());
+    }
+
+    #[test]
+    fn test_extract_json_object_escaped_quotes() {
+        let text = r#"{"msg": "hello \"world\""}"#;
+        let extracted = extract_json_object(text).unwrap();
+        assert_eq!(extracted, text);
     }
 }

@@ -417,6 +417,77 @@ impl FromStr for ExecutionStrategy {
     }
 }
 
+/// Type of signal emitted by an agent during execution.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalType {
+    Progress,
+    Blocker,
+    Pivot,
+}
+
+impl SignalType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Progress => "progress",
+            Self::Blocker => "blocker",
+            Self::Pivot => "pivot",
+        }
+    }
+}
+
+impl std::fmt::Display for SignalType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SignalType {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "progress" => Ok(Self::Progress),
+            "blocker" => Ok(Self::Blocker),
+            "pivot" => Ok(Self::Pivot),
+            _ => Err(format!("Unknown signal type: {}", s)),
+        }
+    }
+}
+
+/// Type of verification performed after pipeline execution.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationType {
+    Browser,
+    TestBuild,
+}
+
+impl VerificationType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Browser => "browser",
+            Self::TestBuild => "test_build",
+        }
+    }
+}
+
+impl std::fmt::Display for VerificationType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for VerificationType {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "browser" => Ok(Self::Browser),
+            "test_build" => Ok(Self::TestBuild),
+            _ => Err(format!("Unknown verification type: {}", s)),
+        }
+    }
+}
+
 /// A team of agents assigned to execute a pipeline run.
 /// Created by the planner after analyzing the issue.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -548,6 +619,48 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&ExecutionStrategy::WavePipeline).unwrap(),
             "\"wave_pipeline\""
+        );
+    }
+
+    #[test]
+    fn test_signal_type_roundtrip() {
+        for s in &["progress", "blocker", "pivot"] {
+            let parsed: SignalType = s.parse().unwrap();
+            assert_eq!(parsed.as_str(), *s);
+        }
+        assert!("invalid".parse::<SignalType>().is_err());
+    }
+
+    #[test]
+    fn test_verification_type_roundtrip() {
+        for s in &["browser", "test_build"] {
+            let parsed: VerificationType = s.parse().unwrap();
+            assert_eq!(parsed.as_str(), *s);
+        }
+        assert!("invalid".parse::<VerificationType>().is_err());
+    }
+
+    #[test]
+    fn test_signal_type_serde() {
+        assert_eq!(
+            serde_json::to_string(&SignalType::Progress).unwrap(),
+            "\"progress\""
+        );
+        assert_eq!(
+            serde_json::from_str::<SignalType>("\"blocker\"").unwrap(),
+            SignalType::Blocker
+        );
+    }
+
+    #[test]
+    fn test_verification_type_serde() {
+        assert_eq!(
+            serde_json::to_string(&VerificationType::TestBuild).unwrap(),
+            "\"test_build\""
+        );
+        assert_eq!(
+            serde_json::from_str::<VerificationType>("\"browser\"").unwrap(),
+            VerificationType::Browser
         );
     }
 

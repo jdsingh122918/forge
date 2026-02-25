@@ -17,7 +17,7 @@ use super::ws::{WsMessage, broadcast_message};
 enum PlanOutcome {
     /// Team successfully executed the plan
     TeamExecuted(String),
-    /// Single-task plan detected; caller should fall back to forge pipeline
+    /// Planner returned a single-task sequential plan; caller should fall back to the forge pipeline.
     FallbackToForge,
 }
 
@@ -151,7 +151,7 @@ impl PipelineRunner {
     }
 
     /// Cancel a running pipeline by killing its child process and updating the DB.
-    /// Returns the updated PipelineRun if found, or an error.
+    /// Returns the updated PipelineRun or an error if the run doesn't exist or DB update fails.
     pub async fn cancel(
         &self,
         run_id: i64,
@@ -164,11 +164,15 @@ impl PipelineRunner {
             if let Some(handle) = processes.remove(&run_id) {
                 match handle {
                     RunHandle::Process(mut child) => {
-                        let _ = child.kill().await;
+                        if let Err(e) = child.kill().await {
+                            eprintln!("[factory] WARNING: failed to kill process for run {}: {}", run_id, e);
+                        }
                     }
                     RunHandle::Container(container_id) => {
                         if let Some(ref sandbox) = self.sandbox {
-                            let _ = sandbox.stop(&container_id).await;
+                            if let Err(e) = sandbox.stop(&container_id).await {
+                                eprintln!("[factory] WARNING: failed to stop container {} for run {}: {}", container_id, run_id, e);
+                            }
                         }
                     }
                 }
@@ -201,8 +205,7 @@ impl PipelineRunner {
         Ok(run)
     }
 
-    /// Returns a clone of the running_processes map handle, so external code
-    /// (e.g., API cancel handler) can also kill processes.
+    /// Returns a shared handle to the running process map for external monitoring or test inspection.
     pub fn running_processes(&self) -> Arc<tokio::sync::Mutex<HashMap<i64, RunHandle>>> {
         Arc::clone(&self.running_processes)
     }
@@ -214,11 +217,15 @@ impl PipelineRunner {
             eprintln!("[factory] Shutting down pipeline run {}", run_id);
             match handle {
                 RunHandle::Process(mut child) => {
-                    let _ = child.kill().await;
+                    if let Err(e) = child.kill().await {
+                        eprintln!("[factory] WARNING: failed to kill process for run {}: {}", run_id, e);
+                    }
                 }
                 RunHandle::Container(container_id) => {
                     if let Some(ref sandbox) = self.sandbox {
-                        let _ = sandbox.stop(&container_id).await;
+                        if let Err(e) = sandbox.stop(&container_id).await {
+                            eprintln!("[factory] WARNING: failed to stop container {} for run {}: {}", container_id, run_id, e);
+                        }
                     }
                 }
             }
@@ -246,9 +253,20 @@ impl PipelineRunner {
     ) -> Result<PlanOutcome> {
         // Step 1: Plan
         let planner = Planner::new(project_path);
-        let plan = planner
-            .plan(issue_title, issue_description, issue_labels)
-            .await?;
+        let plan = match planner.plan(issue_title, issue_description, issue_labels).await {
+            Ok(plan) => plan,
+            Err(e) => {
+                eprintln!("[pipeline] run_id={}: Planning failed, falling back to single task: {:#}", run_id, e);
+                // Broadcast a warning to the UI
+                broadcast_message(tx, &WsMessage::AgentSignal {
+                    run_id,
+                    task_id: 0,
+                    signal_type: "warning".to_string(),
+                    content: format!("Planning failed, using single-task fallback: {}", e),
+                });
+                super::planner::PlanResponse::fallback(issue_title, issue_description)
+            }
+        };
 
         // If it's a single sequential task, signal fallback
         if plan.tasks.len() <= 1 && plan.strategy == "sequential" {
@@ -335,6 +353,12 @@ impl PipelineRunner {
                                  Falling back to shared directory.",
                                 run_id, task.id, task.name, e
                             );
+                            broadcast_message(tx, &WsMessage::AgentSignal {
+                                run_id,
+                                task_id: task.id,
+                                signal_type: "warning".to_string(),
+                                content: format!("Worktree isolation failed, running in shared directory: {}", e),
+                            });
                             (std::path::PathBuf::from(project_path), None)
                         }
                     }
@@ -396,12 +420,18 @@ impl PipelineRunner {
                 }
             }
 
-            // Clean up worktrees and merge branches
+            // Collect worktree paths for cleanup (before merge loop, so we clean all even on conflict)
+            let worktree_paths: Vec<_> = task_working_dirs.iter()
+                .filter(|(task, _, _)| task.isolation_type == IsolationStrategy::Worktree)
+                .map(|(_, dir, _)| dir.clone())
+                .collect();
+
+            // Merge branches from worktrees
             if wave_tasks.len() > 1 || task_working_dirs.iter().any(|(_, _, b)| b.is_some()) {
                 broadcast_message(tx, &WsMessage::MergeStarted { run_id, wave });
 
                 let mut merge_conflicts = false;
-                for (task, working_dir, task_branch) in &task_working_dirs {
+                for (_task, _working_dir, task_branch) in &task_working_dirs {
                     if let Some(branch) = task_branch {
                         let merged = executor.merge_branch(branch, base_branch).await;
                         match merged {
@@ -424,12 +454,6 @@ impl PipelineRunner {
                             }
                         }
                     }
-                    // Clean up worktree after merge
-                    if task.isolation_type == IsolationStrategy::Worktree {
-                        if let Err(e) = executor.cleanup_worktree(working_dir).await {
-                            eprintln!("[pipeline] run_id={}: failed to clean up worktree for task {}: {:#}", run_id, task.id, e);
-                        }
-                    }
                 }
 
                 broadcast_message(
@@ -440,6 +464,13 @@ impl PipelineRunner {
                         conflicts: merge_conflicts,
                     },
                 );
+            }
+
+            // Always clean up ALL worktrees, even after merge conflict
+            for dir in &worktree_paths {
+                if let Err(e) = executor.cleanup_worktree(dir).await {
+                    eprintln!("[pipeline] Failed to clean up worktree {}: {:#}", dir.display(), e);
+                }
             }
 
             broadcast_message(
@@ -533,16 +564,28 @@ impl PipelineRunner {
         // Look up the project path from the DB (per-project, not the global default)
         let project_path = {
             let db_guard = db.lock().map_err(|e| anyhow::anyhow!("DB lock poisoned: {}", e))?;
-            db_guard
-                .get_project(issue.project_id)
-                .ok()
-                .flatten()
-                .map(|p| p.path)
-                .unwrap_or_else(|| self.project_path.clone())
+            match db_guard.get_project(issue.project_id) {
+                Ok(Some(project)) => project.path,
+                Ok(None) => {
+                    eprintln!(
+                        "[pipeline] run_id={}: project {} not found in DB, using default path",
+                        run_id, issue.project_id
+                    );
+                    self.project_path.clone()
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[pipeline] run_id={}: failed to look up project {}: {:#}. Using default path.",
+                        run_id, issue.project_id, e
+                    );
+                    self.project_path.clone()
+                }
+            }
         };
         let issue_id = issue.id;
         let issue_title = issue.title.clone();
         let issue_description = issue.description.clone();
+        let issue_labels = issue.labels.clone();
         let running_processes = Arc::clone(&self.running_processes);
         let sandbox_clone = self.sandbox.clone();
 
@@ -602,7 +645,6 @@ impl PipelineRunner {
             };
 
             // Step 2: Try agent team pipeline first, fall back to forge pipeline
-            let issue_labels: Vec<String> = Vec::new(); // TODO: pass labels from issue
             let team_result = Self::execute_agent_team(
                 &project_path,
                 run_id,
@@ -712,13 +754,19 @@ impl PipelineRunner {
                         eprintln!("[pipeline] run_id={}: DB lock poisoned, cannot update completed status", run_id);
                         return;
                     };
-                    if let Ok(run) = db_guard.update_pipeline_run(
+                    match db_guard.update_pipeline_run(
                         run_id,
                         &PipelineStatus::Completed,
                         Some(&summary),
                         None,
                     ) {
-                        broadcast_message(&tx, &WsMessage::PipelineCompleted { run });
+                        Ok(run) => broadcast_message(&tx, &WsMessage::PipelineCompleted { run }),
+                        Err(e) => {
+                            eprintln!(
+                                "[pipeline] run_id={}: CRITICAL: completed but failed to update DB: {:#}",
+                                run_id, e
+                            );
+                        }
                     }
                     // Auto-move issue to InReview
                     if let Err(e) = db_guard.move_issue(issue_id, &IssueColumn::InReview, 0) {
@@ -740,13 +788,19 @@ impl PipelineRunner {
                         eprintln!("[pipeline] run_id={}: DB lock poisoned, cannot update failed status", run_id);
                         return;
                     };
-                    if let Ok(run) = db_guard.update_pipeline_run(
+                    match db_guard.update_pipeline_run(
                         run_id,
                         &PipelineStatus::Failed,
                         None,
                         Some(&error_msg),
                     ) {
-                        broadcast_message(&tx, &WsMessage::PipelineFailed { run });
+                        Ok(run) => broadcast_message(&tx, &WsMessage::PipelineFailed { run }),
+                        Err(e) => {
+                            eprintln!(
+                                "[pipeline] run_id={}: CRITICAL: failed but could not update DB: {:#}",
+                                run_id, e
+                            );
+                        }
                     }
                     // Issue stays in InProgress on failure (error is visible on the card)
                 }
@@ -771,7 +825,7 @@ fn is_forge_initialized(project_path: &str) -> bool {
 }
 
 /// Auto-generate spec and phases from an issue description.
-/// Writes a design doc to `.forge/issue-design.md`, then runs `forge generate`.
+/// Writes a design doc to `.forge/spec.md`, then runs `forge generate`.
 /// Returns Ok(true) if phases were generated, Ok(false) if skipped.
 async fn auto_generate_phases(
     project_path: &str,
@@ -1773,10 +1827,11 @@ mod tests {
         assert!(!result.ends_with('-'));
     }
 
-    /// Test that when a wave has failed tasks, subsequent waves are not executed.
-    /// This validates the abort-on-failure logic in execute_agent_team.
+    /// Test that when a wave has failed tasks, subsequent wave tasks remain pending.
+    /// This validates the precondition for the abort-on-failure logic in execute_agent_team:
+    /// if wave 0 tasks fail, wave 1 tasks should never be started.
     #[tokio::test]
-    async fn test_wave_failure_aborts_subsequent_waves() {
+    async fn test_failed_wave_leaves_subsequent_tasks_pending() -> Result<()> {
         // Set up DB with a team that has tasks in wave 0 and wave 1
         let db = FactoryDb::new_in_memory().unwrap();
         let project = db.create_project("test", "/tmp/test-wave").unwrap();
@@ -1790,30 +1845,105 @@ mod tests {
 
         // Create two tasks: wave 0 and wave 1
         let task_w0 = db
-            .create_agent_task(team.id, "task-w0", "wave 0 task", "builder", 0, &[], "shared")
+            .create_agent_task(team.id, "task-w0", "wave 0 task", "coder", 0, &[], "shared")
             .unwrap();
         let task_w1 = db
-            .create_agent_task(team.id, "task-w1", "wave 1 task", "builder", 1, &[], "shared")
+            .create_agent_task(team.id, "task-w1", "wave 1 task", "coder", 1, &[], "shared")
             .unwrap();
 
-        // Simulate: mark wave 0 task as failed
-        db.update_agent_task_status(task_w0.id, &AgentTaskStatus::Failed, Some("simulated failure"))
-            .unwrap();
+        // Set wave 0 task to Failed
+        db.update_agent_task_status(task_w0.id, &AgentTaskStatus::Failed, Some("test error"))?;
 
-        // Mark wave 1 task as still pending (the default)
-        // Now verify that wave 1 task is still pending -- it was never started
-        let w1_task = db.get_agent_task(task_w1.id).unwrap();
-        assert_eq!(
-            w1_task.status, AgentTaskStatus::Pending,
-            "Wave 1 task should remain pending when wave 0 has failures"
-        );
+        // Verify wave 1 task is still Pending (never started)
+        let task_w1_updated = db.get_agent_task(task_w1.id)?;
+        assert_eq!(task_w1_updated.status, AgentTaskStatus::Pending);
+        assert!(task_w1_updated.started_at.is_none(), "Wave 1 task should not have been started");
 
-        // Verify the abort logic: if failed_count > 0, bail! is called.
-        // We test this by checking that the wave 0 failure count would be > 0:
-        let failed_count: u32 = 1; // simulating what execute_agent_team computes
-        assert!(
-            failed_count > 0,
-            "failed_count > 0 should trigger abort of subsequent waves"
-        );
+        // Verify the failed task has its error recorded
+        let task_w0_updated = db.get_agent_task(task_w0.id)?;
+        assert_eq!(task_w0_updated.status, AgentTaskStatus::Failed);
+        assert_eq!(task_w0_updated.error.as_deref(), Some("test error"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_try_parse_phase_event_started() {
+        let line = r#"{"type": "started", "phase": "1", "wave": 0}"#;
+        let event = try_parse_phase_event(line).expect("should parse Started event");
+        match event {
+            PhaseEventJson::Started { phase, wave } => {
+                assert_eq!(phase, "1");
+                assert_eq!(wave, 0);
+            }
+            other => panic!("Expected Started, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_try_parse_phase_event_completed() {
+        let line = r#"{"type": "completed", "phase": "2", "result": {"success": true}}"#;
+        let event = try_parse_phase_event(line).expect("should parse Completed event");
+        match event {
+            PhaseEventJson::Completed { phase, result } => {
+                assert_eq!(phase, "2");
+                assert_eq!(result.get("success").and_then(|v| v.as_bool()), Some(true));
+            }
+            other => panic!("Expected Completed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_try_parse_phase_event_progress() {
+        let line = r#"{"type": "progress", "phase": "3", "iteration": 5, "budget": 10, "percent": 50}"#;
+        let event = try_parse_phase_event(line).expect("should parse Progress event");
+        match event {
+            PhaseEventJson::Progress { phase, iteration, budget, percent } => {
+                assert_eq!(phase, "3");
+                assert_eq!(iteration, 5);
+                assert_eq!(budget, 10);
+                assert_eq!(percent, Some(50));
+            }
+            other => panic!("Expected Progress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_try_parse_phase_event_embedded_json() {
+        let line = r#"[2024-01-15T10:30:00Z] {"type": "progress", "phase": "1", "iteration": 2, "budget": 5}"#;
+        let event = try_parse_phase_event(line).expect("should parse embedded JSON");
+        match event {
+            PhaseEventJson::Progress { phase, iteration, budget, .. } => {
+                assert_eq!(phase, "1");
+                assert_eq!(iteration, 2);
+                assert_eq!(budget, 5);
+            }
+            other => panic!("Expected Progress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_try_parse_phase_event_unknown_returns_none() {
+        // An unrecognized event type should be captured by #[serde(other)] and return None
+        let line = r#"{"type": "some_unknown_event", "data": 42}"#;
+        assert!(try_parse_phase_event(line).is_none());
+    }
+
+    #[test]
+    fn test_try_parse_phase_event_plain_text_returns_none() {
+        let line = "Just some regular log output";
+        assert!(try_parse_phase_event(line).is_none());
+    }
+
+    #[test]
+    fn test_try_parse_phase_event_dag_completed() {
+        let line = r#"{"type": "dag_completed", "success": true}"#;
+        let event = try_parse_phase_event(line).expect("should parse DagCompleted event");
+        match event {
+            PhaseEventJson::DagCompleted { success } => {
+                assert!(success);
+            }
+            other => panic!("Expected DagCompleted, got {:?}", other),
+        }
     }
 }
