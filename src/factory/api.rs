@@ -130,6 +130,7 @@ pub fn api_router() -> Router<SharedState> {
         .route("/api/github/connect", post(github_connect_token))
         .route("/api/github/repos", get(github_list_repos))
         .route("/api/github/disconnect", post(github_disconnect))
+        .route("/api/screenshots/*path", get(serve_screenshot))
         .route("/health", get(health_check))
 }
 
@@ -620,6 +621,51 @@ async fn get_task_events(
         db.get_agent_events_for_task(task_id, limit)
     }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(events))
+}
+
+// ── Screenshot handler ────────────────────────────────────────────────
+
+async fn serve_screenshot(
+    State(state): State<SharedState>,
+    Path(file_path): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Reject path traversal
+    if file_path.contains("..") {
+        return Err(ApiError::BadRequest("Invalid path".into()));
+    }
+
+    let project_path = state.db.call(|db| {
+        let projects = db.list_projects()?;
+        projects.first()
+            .map(|p| p.path.clone())
+            .ok_or_else(|| anyhow::anyhow!("No projects"))
+    }).await.map_err(|e| ApiError::NotFound(e.to_string()))?;
+
+    let full_path = std::path::PathBuf::from(&project_path)
+        .join(".forge/screenshots")
+        .join(&file_path);
+
+    if !full_path.exists() {
+        return Err(ApiError::NotFound(format!("Screenshot not found: {}", file_path)));
+    }
+
+    let content_type = match full_path.extension().and_then(|e| e.to_str()) {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => "application/octet-stream",
+    };
+
+    let bytes = tokio::fs::read(&full_path)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to read screenshot: {}", e)))?;
+
+    Ok((
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, content_type)],
+        bytes,
+    ))
 }
 
 // ── GitHub OAuth handlers ─────────────────────────────────────────────
@@ -1396,6 +1442,18 @@ mod tests {
 
         let res = app.oneshot(Request::builder().uri(&format!("/api/runs/{}/team", rid)).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_screenshot_route_rejects_path_traversal() {
+        let app = test_app();
+        let res = app.oneshot(
+            Request::builder()
+                .uri("/api/screenshots/../../../etc/passwd")
+                .body(Body::empty())
+                .unwrap(),
+        ).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
