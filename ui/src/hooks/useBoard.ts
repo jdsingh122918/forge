@@ -1,17 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { BoardView, IssueColumn, WsMessage, IssueWithStatus, AgentTeamDetail, AgentEvent } from '../types';
+import type { BoardView, IssueColumn, WsMessage, IssueWithStatus } from '../types';
 import { api } from '../api/client';
 import { useWebSocket } from './useWebSocket';
-
-let nextEventId = 0;
 
 export function useBoard(projectId: number | null) {
   const [board, setBoard] = useState<BoardView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const prevBoardRef = useRef<BoardView | null>(null);
-  const [agentTeams, setAgentTeams] = useState<Map<number, AgentTeamDetail>>(new Map());
-  const [agentEvents, setAgentEvents] = useState<Map<number, AgentEvent[]>>(new Map());
 
   const wsUrl = `ws://${window.location.host}/ws`;
   const { lastMessage, connectionStatus: wsStatus } = useWebSocket(wsUrl);
@@ -181,143 +177,27 @@ export function useBoard(projectId: number | null) {
             })),
           };
         }
-        case 'PipelinePhaseStarted':
-        case 'PipelinePhaseCompleted':
-        case 'PipelineReviewStarted':
-        case 'PipelineReviewCompleted':
-          // Intentionally ignored: no board-level state change needed for phase/review progress
-          return prev;
+        case 'TeamCreated':
+        case 'WaveStarted':
+        case 'WaveCompleted':
+        case 'AgentTaskStarted':
+        case 'AgentTaskCompleted':
+        case 'AgentTaskFailed':
+        case 'AgentThinking':
+        case 'AgentAction':
+        case 'AgentOutput':
+        case 'AgentSignal':
+        case 'MergeStarted':
+        case 'MergeCompleted':
+        case 'MergeConflict':
+        case 'VerificationResult':
+          return prev; // Handled outside setBoard callback
         default:
           // Unknown message type — fall back to full re-fetch
           fetchBoard();
           return prev;
       }
     });
-
-    // Handle agent-specific messages outside of setBoard
-    switch (msg.type) {
-        case 'TeamCreated': {
-            const { run_id, team_id, strategy, isolation, plan_summary, tasks } = msg.data;
-            setAgentTeams(prev => {
-                const next = new Map(prev);
-                next.set(run_id, {
-                    team: { id: team_id, run_id, strategy, isolation, plan_summary, created_at: new Date().toISOString() },
-                    tasks,
-                });
-                return next;
-            });
-            break;
-        }
-
-        case 'AgentTaskStarted': {
-            const { run_id, task_id } = msg.data;
-            setAgentTeams(prev => {
-                const next = new Map(prev);
-                const team = next.get(run_id);
-                if (team) {
-                    next.set(run_id, {
-                        ...team,
-                        tasks: team.tasks.map(t =>
-                            t.id === task_id ? { ...t, status: 'running' as const, started_at: new Date().toISOString() } : t
-                        ),
-                    });
-                }
-                return next;
-            });
-            break;
-        }
-
-        case 'AgentTaskCompleted': {
-            const { run_id, task_id } = msg.data;
-            setAgentTeams(prev => {
-                const next = new Map(prev);
-                const team = next.get(run_id);
-                if (team) {
-                    next.set(run_id, {
-                        ...team,
-                        tasks: team.tasks.map(t =>
-                            t.id === task_id ? { ...t, status: 'completed' as const, completed_at: new Date().toISOString() } : t
-                        ),
-                    });
-                }
-                return next;
-            });
-            break;
-        }
-
-        case 'AgentTaskFailed': {
-            const { run_id, task_id, error } = msg.data;
-            setAgentTeams(prev => {
-                const next = new Map(prev);
-                const team = next.get(run_id);
-                if (team) {
-                    next.set(run_id, {
-                        ...team,
-                        tasks: team.tasks.map(t =>
-                            t.id === task_id ? { ...t, status: 'failed' as const, error, completed_at: new Date().toISOString() } : t
-                        ),
-                    });
-                }
-                return next;
-            });
-            break;
-        }
-
-        case 'AgentThinking':
-        case 'AgentAction':
-        case 'AgentOutput':
-        case 'AgentSignal': {
-            const { task_id } = msg.data;
-            const event: AgentEvent = {
-                id: ++nextEventId,
-                task_id,
-                event_type: msg.type === 'AgentThinking' ? 'thinking'
-                    : msg.type === 'AgentAction' ? 'action'
-                    : msg.type === 'AgentSignal' ? 'signal'
-                    : 'output',
-                content: 'content' in msg.data ? (msg.data as { content: string }).content
-                    : 'summary' in msg.data ? (msg.data as { summary: string }).summary
-                    : '',
-                metadata: 'metadata' in msg.data ? (msg.data as { metadata: Record<string, unknown> }).metadata : undefined,
-                created_at: new Date().toISOString(),
-            };
-            setAgentEvents(prev => {
-                const next = new Map(prev);
-                const existing = next.get(task_id) || [];
-                const updated = [...existing, event].slice(-200);
-                next.set(task_id, updated);
-                return next;
-            });
-            break;
-        }
-
-        case 'VerificationResult': {
-            const { task_id } = msg.data;
-            const event: AgentEvent = {
-                id: ++nextEventId,
-                task_id,
-                event_type: 'output',
-                content: msg.data.summary,
-                metadata: msg.data as unknown as Record<string, unknown>,
-                created_at: new Date().toISOString(),
-            };
-            setAgentEvents(prev => {
-                const next = new Map(prev);
-                const existing = next.get(task_id) || [];
-                next.set(task_id, [...existing, event]);
-                return next;
-            });
-            break;
-        }
-
-        case 'WaveStarted':
-        case 'WaveCompleted':
-        case 'MergeStarted':
-        case 'MergeCompleted':
-        case 'MergeConflict':
-            // Currently unhandled: wave/merge progress not yet reflected in UI state
-            break;
-    }
   }, [lastMessage, fetchBoard]);
 
   // Optimistic move: update local state immediately, rollback on error
@@ -386,13 +266,5 @@ export function useBoard(projectId: number | null) {
     }
   }, []);
 
-  const fetchAgentEvents = useCallback(async (taskId: number, limit = 200, offset = 0): Promise<AgentEvent[]> => {
-    const resp = await fetch(`/api/tasks/${taskId}/events?limit=${limit}&offset=${offset}`);
-    if (!resp.ok) {
-        throw new Error(`Failed to fetch events for task ${taskId}: ${resp.status} ${resp.statusText}`);
-    }
-    return await resp.json();
-  }, []);
-
-  return { board, loading, error, wsStatus, agentTeams, agentEvents, moveIssue, createIssue, deleteIssue, triggerPipeline, fetchAgentEvents, refresh: fetchBoard };
+  return { board, loading, error, wsStatus, moveIssue, createIssue, deleteIssue, triggerPipeline, refresh: fetchBoard };
 }

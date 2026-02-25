@@ -3,9 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use tokio::process::Command;
 
+/// Produced by the LLM planner; represents a decomposition of an issue into parallelizable tasks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanResponse {
+    /// Execution strategy (parallel, sequential, wave_pipeline, adaptive) — should match `ExecutionStrategy` enum values.
     pub strategy: String,
+    /// Default isolation strategy — informational only; actual behavior driven by per-task `isolation` values.
     pub isolation: String,
     pub reasoning: String,
     pub tasks: Vec<PlanTask>,
@@ -13,10 +16,13 @@ pub struct PlanResponse {
     pub skip_visual_verification: bool,
 }
 
+/// A single task in the plan, assigned to one agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanTask {
     pub name: String,
+    /// Agent role (coder, tester, reviewer) — should match `AgentRole` enum values.
     pub role: String,
+    /// 0-indexed execution group; tasks in the same wave run in parallel.
     #[serde(default)]
     pub wave: i32,
     pub description: String,
@@ -24,6 +30,7 @@ pub struct PlanTask {
     pub files: Vec<String>,
     #[serde(default = "default_isolation")]
     pub isolation: String,
+    /// 0-based indices into the parent `PlanResponse`'s `tasks` array; referenced tasks must be in earlier waves.
     #[serde(default)]
     pub depends_on: Vec<i32>,
 }
@@ -62,19 +69,60 @@ fn extract_json_object(text: &str) -> Option<&str> {
 impl PlanResponse {
     pub fn parse(json: &str) -> Result<Self> {
         // Try direct parse first
-        if let Ok(plan) = serde_json::from_str::<PlanResponse>(json) {
-            return Ok(plan);
+        let plan = if let Ok(plan) = serde_json::from_str::<PlanResponse>(json) {
+            plan
+        } else {
+            // Strip markdown code blocks
+            let cleaned = json.replace("```json", "").replace("```", "");
+            if let Ok(plan) = serde_json::from_str::<PlanResponse>(cleaned.trim()) {
+                plan
+            } else {
+                // Extract first balanced JSON object
+                let extracted = extract_json_object(&cleaned)
+                    .unwrap_or(cleaned.trim());
+                serde_json::from_str(extracted)
+                    .context("Failed to parse planner response as JSON")?
+            }
+        };
+        if let Err(e) = plan.validate() {
+            eprintln!("[planner] Plan validation warning: {:#}", e);
         }
-        // Strip markdown code blocks
-        let cleaned = json.replace("```json", "").replace("```", "");
-        if let Ok(plan) = serde_json::from_str::<PlanResponse>(cleaned.trim()) {
-            return Ok(plan);
+        Ok(plan)
+    }
+
+    /// Validate that the plan's fields contain valid enum values and dependency indices.
+    pub fn validate(&self) -> Result<()> {
+        use super::models::{ExecutionStrategy, AgentRole, IsolationStrategy};
+
+        self.strategy.parse::<ExecutionStrategy>()
+            .map_err(|_| anyhow::anyhow!("Invalid strategy '{}' from planner", self.strategy))?;
+
+        self.isolation.parse::<IsolationStrategy>()
+            .map_err(|_| anyhow::anyhow!("Invalid isolation '{}' from planner", self.isolation))?;
+
+        for (i, task) in self.tasks.iter().enumerate() {
+            task.role.parse::<AgentRole>()
+                .map_err(|_| anyhow::anyhow!("Invalid role '{}' for task {} ('{}')", task.role, i, task.name))?;
+
+            task.isolation.parse::<IsolationStrategy>()
+                .map_err(|_| anyhow::anyhow!("Invalid isolation '{}' for task {} ('{}')", task.isolation, i, task.name))?;
+
+            for &dep_idx in &task.depends_on {
+                if dep_idx < 0 || dep_idx as usize >= self.tasks.len() {
+                    anyhow::bail!("Task {} ('{}') has out-of-bounds depends_on index {}", i, task.name, dep_idx);
+                }
+                if let Some(dep_task) = self.tasks.get(dep_idx as usize)
+                    && dep_task.wave >= task.wave
+                {
+                    anyhow::bail!(
+                        "Task {} ('{}', wave {}) depends on task {} ('{}', wave {}) which is not in an earlier wave",
+                        i, task.name, task.wave, dep_idx, dep_task.name, dep_task.wave
+                    );
+                }
+            }
         }
-        // Extract first balanced JSON object
-        let extracted = extract_json_object(&cleaned)
-            .unwrap_or(cleaned.trim());
-        serde_json::from_str(extracted)
-            .context("Failed to parse planner response as JSON")
+
+        Ok(())
     }
 
     pub fn fallback(title: &str, description: &str) -> Self {
@@ -461,5 +509,72 @@ Here's an explanation of the plan. The task uses shared isolation because {reaso
         let text = r#"{"msg": "hello \"world\""}"#;
         let extracted = extract_json_object(text).unwrap();
         assert_eq!(extracted, text);
+    }
+
+    fn make_valid_plan() -> PlanResponse {
+        PlanResponse {
+            strategy: "wave_pipeline".to_string(),
+            isolation: "shared".to_string(),
+            reasoning: "test".to_string(),
+            tasks: vec![
+                PlanTask {
+                    name: "task-a".to_string(),
+                    role: "coder".to_string(),
+                    wave: 0,
+                    description: "first".to_string(),
+                    files: vec![],
+                    isolation: "worktree".to_string(),
+                    depends_on: vec![],
+                },
+                PlanTask {
+                    name: "task-b".to_string(),
+                    role: "tester".to_string(),
+                    wave: 1,
+                    description: "second".to_string(),
+                    files: vec![],
+                    isolation: "shared".to_string(),
+                    depends_on: vec![0],
+                },
+            ],
+            skip_visual_verification: false,
+        }
+    }
+
+    #[test]
+    fn test_valid_plan_passes_validation() {
+        assert!(make_valid_plan().validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_strategy_caught() {
+        let mut plan = make_valid_plan();
+        plan.strategy = "turbo_mode".to_string();
+        let err = plan.validate().unwrap_err();
+        assert!(err.to_string().contains("Invalid strategy"));
+    }
+
+    #[test]
+    fn test_invalid_role_caught() {
+        let mut plan = make_valid_plan();
+        plan.tasks[0].role = "wizard".to_string();
+        let err = plan.validate().unwrap_err();
+        assert!(err.to_string().contains("Invalid role"));
+    }
+
+    #[test]
+    fn test_out_of_bounds_depends_on_caught() {
+        let mut plan = make_valid_plan();
+        plan.tasks[1].depends_on = vec![5];
+        let err = plan.validate().unwrap_err();
+        assert!(err.to_string().contains("out-of-bounds"));
+    }
+
+    #[test]
+    fn test_same_wave_dependency_caught() {
+        let mut plan = make_valid_plan();
+        plan.tasks[1].wave = 0; // same wave as task-a
+        plan.tasks[1].depends_on = vec![0];
+        let err = plan.validate().unwrap_err();
+        assert!(err.to_string().contains("not in an earlier wave"));
     }
 }

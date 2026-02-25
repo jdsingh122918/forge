@@ -9,6 +9,7 @@ export interface Project {
 export type IssueColumn = 'backlog' | 'ready' | 'in_progress' | 'in_review' | 'done';
 export type Priority = 'low' | 'medium' | 'high' | 'critical';
 export type PipelineStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type AgentTaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 export interface Issue {
   id: number;
@@ -75,65 +76,6 @@ export interface IssueDetail {
   runs: PipelineRunDetail[];
 }
 
-// Agent team types
-
-export type AgentRole = 'planner' | 'coder' | 'tester' | 'reviewer' | 'browser_verifier' | 'test_verifier';
-export type AgentTaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
-export type AgentEventType = 'thinking' | 'action' | 'output' | 'signal' | 'error';
-export type ExecutionStrategy = 'parallel' | 'sequential' | 'wave_pipeline' | 'adaptive';
-export type IsolationStrategy = 'worktree' | 'container' | 'hybrid' | 'shared';
-export type SignalType = 'progress' | 'blocker' | 'pivot';
-export type VerificationType = 'browser' | 'test_build';
-
-export interface AgentTeam {
-  id: number;
-  run_id: number;
-  strategy: ExecutionStrategy;
-  isolation: IsolationStrategy;
-  plan_summary: string;
-  created_at: string;
-}
-
-export interface AgentTask {
-  id: number;
-  team_id: number;
-  name: string;
-  description: string;
-  agent_role: AgentRole;
-  wave: number;
-  depends_on: number[];
-  status: AgentTaskStatus;
-  isolation_type: IsolationStrategy;
-  worktree_path?: string;
-  container_id?: string;
-  branch_name?: string;
-  started_at?: string;
-  completed_at?: string;
-  error?: string;
-}
-
-export interface AgentEvent {
-  id: number;
-  task_id: number;
-  event_type: AgentEventType;
-  content: string;
-  metadata?: Record<string, unknown>;
-  created_at: string;
-}
-
-export interface AgentTeamDetail {
-  team: AgentTeam;
-  tasks: AgentTask[];
-}
-
-export interface VerificationResultData {
-  verification_type: VerificationType;
-  passed: boolean;
-  summary: string;
-  screenshots: string[];
-  details: Record<string, unknown>;
-}
-
 export type WsMessage =
   | { type: 'IssueCreated'; data: { issue: Issue } }
   | { type: 'IssueUpdated'; data: { issue: Issue } }
@@ -148,21 +90,7 @@ export type WsMessage =
   | { type: 'PipelinePhaseStarted'; data: { run_id: number; phase_number: string; phase_name: string; wave: number } }
   | { type: 'PipelinePhaseCompleted'; data: { run_id: number; phase_number: string; success: boolean } }
   | { type: 'PipelineReviewStarted'; data: { run_id: number; phase_number: string } }
-  | { type: 'PipelineReviewCompleted'; data: { run_id: number; phase_number: string; passed: boolean; findings_count: number } }
-  | { type: 'TeamCreated'; data: { run_id: number; team_id: number; strategy: ExecutionStrategy; isolation: IsolationStrategy; plan_summary: string; tasks: AgentTask[] } }
-  | { type: 'WaveStarted'; data: { run_id: number; team_id: number; wave: number; task_ids: number[] } }
-  | { type: 'WaveCompleted'; data: { run_id: number; team_id: number; wave: number; success_count: number; failed_count: number } }
-  | { type: 'AgentTaskStarted'; data: { run_id: number; task_id: number; name: string; role: AgentRole; wave: number } }
-  | { type: 'AgentTaskCompleted'; data: { run_id: number; task_id: number; success: boolean } }
-  | { type: 'AgentTaskFailed'; data: { run_id: number; task_id: number; error: string } }
-  | { type: 'AgentThinking'; data: { run_id: number; task_id: number; content: string } }
-  | { type: 'AgentAction'; data: { run_id: number; task_id: number; action_type: string; summary: string; metadata: Record<string, unknown> } }
-  | { type: 'AgentOutput'; data: { run_id: number; task_id: number; content: string } }
-  | { type: 'AgentSignal'; data: { run_id: number; task_id: number; signal_type: SignalType; content: string } }
-  | { type: 'MergeStarted'; data: { run_id: number; wave: number } }
-  | { type: 'MergeCompleted'; data: { run_id: number; wave: number; conflicts: boolean } }
-  | { type: 'MergeConflict'; data: { run_id: number; wave: number; files: string[] } }
-  | { type: 'VerificationResult'; data: { run_id: number; task_id: number } & VerificationResultData };
+  | { type: 'PipelineReviewCompleted'; data: { run_id: number; phase_number: string; passed: boolean; findings_count: number } };
 
 // GitHub OAuth types
 export interface GitHubDeviceCode {

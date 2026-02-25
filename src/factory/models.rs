@@ -299,6 +299,7 @@ pub enum AgentTaskStatus {
     Running,
     Completed,
     Failed,
+    Cancelled,
 }
 
 impl AgentTaskStatus {
@@ -308,6 +309,7 @@ impl AgentTaskStatus {
             Self::Running => "running",
             Self::Completed => "completed",
             Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
         }
     }
 }
@@ -327,6 +329,7 @@ impl FromStr for AgentTaskStatus {
             "running" => Ok(Self::Running),
             "completed" => Ok(Self::Completed),
             "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
             _ => Err(format!("Invalid agent task status: {}", s)),
         }
     }
@@ -572,7 +575,7 @@ mod tests {
 
     #[test]
     fn test_agent_task_status_roundtrip() {
-        for s in &["pending", "running", "completed", "failed"] {
+        for s in &["pending", "running", "completed", "failed", "cancelled"] {
             let parsed: AgentTaskStatus = s.parse().unwrap();
             assert_eq!(parsed.as_str(), *s);
         }
@@ -603,6 +606,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&AgentTaskStatus::Running).unwrap(),
             "\"running\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentTaskStatus::Cancelled).unwrap(),
+            "\"cancelled\""
         );
         assert_eq!(
             serde_json::to_string(&IsolationStrategy::Worktree).unwrap(),
@@ -669,6 +676,10 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<AgentTaskStatus>("\"running\"").unwrap(),
             AgentTaskStatus::Running
+        );
+        assert_eq!(
+            serde_json::from_str::<AgentTaskStatus>("\"cancelled\"").unwrap(),
+            AgentTaskStatus::Cancelled
         );
         assert_eq!(
             serde_json::from_str::<IsolationStrategy>("\"worktree\"").unwrap(),

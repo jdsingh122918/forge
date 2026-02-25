@@ -4,11 +4,11 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use bollard::Docker;
 use bollard::container::{
-    Config, CreateContainerOptions, LogsOptions, RemoveContainerOptions, StartContainerOptions,
-    StopContainerOptions, WaitContainerOptions,
+    Config, CreateContainerOptions, LogsOptions, RemoveContainerOptions,
+    StartContainerOptions, StopContainerOptions, WaitContainerOptions,
 };
 use bollard::image::CreateImageOptions;
-use bollard::models::{ContainerInspectResponse, HostConfig, Mount, MountTypeEnum};
+use bollard::models::{HostConfig, Mount, MountTypeEnum, ContainerInspectResponse};
 use futures_util::StreamExt;
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -104,21 +104,12 @@ impl DockerSandbox {
     /// Connect to the Docker daemon via the unix socket.
     /// Returns None if Docker is not available.
     pub async fn new(default_image: String) -> Option<Self> {
-        let docker = match Docker::connect_with_socket_defaults() {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("[sandbox] Failed to connect to Docker daemon: {}", e);
-                return None;
-            }
-        };
-        if let Err(e) = docker.ping().await {
-            eprintln!("[sandbox] Docker daemon not responding to ping: {}", e);
+        let docker = Docker::connect_with_socket_defaults().ok()?;
+        // Verify connectivity
+        if docker.ping().await.is_err() {
             return None;
         }
-        Some(Self {
-            docker,
-            default_image,
-        })
+        Some(Self { docker, default_image })
     }
 
     /// Check if Docker is reachable.
@@ -142,9 +133,7 @@ impl DockerSandbox {
         run_id: i64,
         project_name: &str,
     ) -> Result<(String, mpsc::Receiver<String>)> {
-        let image = config
-            .image
-            .as_deref()
+        let image = config.image.as_deref()
             .unwrap_or(&self.default_image)
             .to_string();
 
@@ -152,13 +141,15 @@ impl DockerSandbox {
         self.ensure_image(&image).await?;
 
         // Build mounts
-        let mut mounts = vec![Mount {
-            target: Some("/workspace".to_string()),
-            source: Some(project_path.to_string_lossy().to_string()),
-            typ: Some(MountTypeEnum::BIND),
-            read_only: Some(false),
-            ..Default::default()
-        }];
+        let mut mounts = vec![
+            Mount {
+                target: Some("/workspace".to_string()),
+                source: Some(project_path.to_string_lossy().to_string()),
+                typ: Some(MountTypeEnum::BIND),
+                read_only: Some(false),
+                ..Default::default()
+            },
+        ];
 
         // Add configured volume mounts
         for (container_path, volume_name) in &config.volumes {
@@ -210,8 +201,7 @@ impl DockerSandbox {
             platform: None,
         };
 
-        let response = self
-            .docker
+        let response = self.docker
             .create_container(Some(create_opts), container_config)
             .await
             .context("Failed to create pipeline container")?;
@@ -237,18 +227,10 @@ impl DockerSandbox {
                 ..Default::default()
             };
             let mut stream = docker.logs(&cid, Some(opts));
-            while let Some(result) = stream.next().await {
-                match result {
-                    Ok(output) => {
-                        let text = output.to_string();
-                        for line in text.lines() {
-                            if line_tx.send(line.to_string()).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("[sandbox] Docker log stream error for container: {}", e);
+            while let Some(Ok(output)) = stream.next().await {
+                let text = output.to_string();
+                for line in text.lines() {
+                    if line_tx.send(line.to_string()).await.is_err() {
                         break;
                     }
                 }
@@ -260,18 +242,21 @@ impl DockerSandbox {
 
     /// Stop and remove a container.
     pub async fn stop(&self, container_id: &str) -> Result<()> {
+        // Stop with 10s grace period
         let stop_opts = StopContainerOptions { t: 10 };
-        if let Err(e) = self.docker.stop_container(container_id, Some(stop_opts)).await {
-            eprintln!("[sandbox] Warning: failed to stop container {}: {}", container_id, e);
-        }
+        let _ = self.docker
+            .stop_container(container_id, Some(stop_opts))
+            .await;
+
+        // Remove the container
         let remove_opts = RemoveContainerOptions {
             force: true,
             ..Default::default()
         };
-        if let Err(e) = self.docker.remove_container(container_id, Some(remove_opts)).await {
-            // Only warn — container may have been auto-removed
-            eprintln!("[sandbox] Warning: failed to remove container {}: {}", container_id, e);
-        }
+        let _ = self.docker
+            .remove_container(container_id, Some(remove_opts))
+            .await;
+
         Ok(())
     }
 
@@ -285,8 +270,7 @@ impl DockerSandbox {
 
     /// Wait for a container to finish and return the exit code.
     pub async fn wait(&self, container_id: &str) -> Result<i64> {
-        let mut stream = self
-            .docker
+        let mut stream = self.docker
             .wait_container(container_id, None::<WaitContainerOptions<String>>);
 
         if let Some(result) = stream.next().await {
@@ -331,8 +315,7 @@ impl DockerSandbox {
             ..Default::default()
         };
 
-        let containers = self
-            .docker
+        let containers = self.docker
             .list_containers(Some(opts))
             .await
             .context("Failed to list containers for pruning")?;
@@ -345,8 +328,12 @@ impl DockerSandbox {
             if now - created > max_age_secs
                 && let Some(ref id) = container.id
             {
-                let _ = self.stop(id).await;
-                pruned += 1;
+                match self.stop(id).await {
+                    Ok(()) => pruned += 1,
+                    Err(e) => {
+                        eprintln!("[sandbox] Failed to prune stale container {}: {}", id, e);
+                    }
+                }
             }
         }
 
@@ -364,8 +351,7 @@ fn parse_memory_limit(s: &str) -> Result<i64> {
         let n: f64 = num.parse().context("Invalid memory value")?;
         Ok((n * 1_048_576.0) as i64)
     } else {
-        s.parse::<i64>()
-            .context("Invalid memory limit — use '4g' or '512m' format")
+        s.parse::<i64>().context("Invalid memory limit — use '4g' or '512m' format")
     }
 }
 
@@ -421,10 +407,7 @@ NODE_ENV = "production"
         assert_eq!(config.memory, "8g");
         assert_eq!(config.cpus, 4.0);
         assert_eq!(config.timeout, 3600);
-        assert_eq!(
-            config.volumes.get("/app/node_modules").unwrap(),
-            "dep-cache"
-        );
+        assert_eq!(config.volumes.get("/app/node_modules").unwrap(), "dep-cache");
         assert_eq!(config.env.get("NODE_ENV").unwrap(), "production");
     }
 
@@ -445,7 +428,7 @@ image = "python:3.12-slim"
         let config = SandboxConfig::load(dir.path()).unwrap();
         assert_eq!(config.image.as_deref(), Some("python:3.12-slim"));
         assert_eq!(config.memory, "4g"); // default
-        assert_eq!(config.cpus, 2.0); // default
+        assert_eq!(config.cpus, 2.0);    // default
         assert_eq!(config.timeout, 1800); // default
     }
 

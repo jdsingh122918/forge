@@ -8,7 +8,7 @@ use tokio::process::Command;
 use tokio::sync::{Mutex, broadcast};
 
 use crate::factory::db::FactoryDb;
-use crate::factory::models::{AgentEventType, AgentTask, AgentTaskStatus};
+use crate::factory::models::{AgentEventType, AgentTask, AgentTaskStatus, SignalType};
 use crate::factory::ws::{WsMessage, broadcast_message};
 
 /// Handle for a running agent process
@@ -204,7 +204,8 @@ impl AgentExecutor {
         Ok(())
     }
 
-    /// Execute a single agent task
+    /// Execute a single agent task. Returns Ok(true) on success, Ok(false) if the agent
+    /// process failed (status updated in DB), or Err on infrastructure failures.
     pub async fn run_task(
         &self,
         run_id: i64,
@@ -302,18 +303,29 @@ impl AgentExecutor {
                 }
                 // Flush remaining
                 if !batch.is_empty() {
-                    if let Ok(db) = db_writer.lock() {
-                        for (task_id, event_type, content, metadata) in batch.drain(..) {
-                            let _ = db.create_agent_event(task_id, &event_type, &content, metadata.as_ref());
+                    match db_writer.lock() {
+                        Ok(db) => {
+                            for (task_id, event_type, content, metadata) in batch.drain(..) {
+                                if let Err(e) = db.create_agent_event(task_id, &event_type, &content, metadata.as_ref()) {
+                                    eprintln!("[agent] Failed to flush event for task {}: {:#}", task_id, e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[agent] DB lock poisoned during event flush -- {} events lost: {}", batch.len(), e);
                         }
                     }
                 }
             });
 
+            let mut channel_closed = false;
             while let Ok(Some(line)) = lines.next_line().await {
                 let parsed = OutputParser::parse_line(&line);
 
-                let _ = event_tx.send((task_id, parsed.event_type.as_str().to_string(), parsed.content.clone(), parsed.metadata.clone()));
+                if !channel_closed && event_tx.send((task_id, parsed.event_type.as_str().to_string(), parsed.content.clone(), parsed.metadata.clone())).is_err() {
+                    eprintln!("[agent] Event channel closed for task {} -- remaining events will not be persisted", task_id);
+                    channel_closed = true;
+                }
 
                 match parsed.event_type {
                     AgentEventType::Thinking => {
@@ -359,8 +371,8 @@ impl AgentExecutor {
                                     .metadata
                                     .as_ref()
                                     .and_then(|m| m.get("signal_type").and_then(|t| t.as_str()))
-                                    .unwrap_or("progress")
-                                    .to_string(),
+                                    .and_then(|s| s.parse::<SignalType>().ok())
+                                    .unwrap_or(SignalType::Progress),
                                 content: parsed.content.clone(),
                             },
                         );
@@ -382,7 +394,9 @@ impl AgentExecutor {
             }
 
             drop(event_tx);
-            let _ = writer_task.await;
+            if let Err(e) = writer_task.await {
+                eprintln!("[agent] Event writer task for task {} panicked: {}", task_id, e);
+            }
 
             if !thinking_buffer.is_empty() {
                 broadcast_message(
@@ -526,15 +540,13 @@ impl AgentExecutor {
             {
                 eprintln!("[agent] CRITICAL: merge --abort failed: {}", e);
             }
-            if original_branch != target_branch {
-                if let Err(e) = Command::new("git")
-                    .args(["checkout", &original_branch])
-                    .current_dir(&self.project_path)
-                    .output()
-                    .await
-                {
-                    eprintln!("[agent] CRITICAL: checkout recovery to {} failed: {}", original_branch, e);
-                }
+            if original_branch != target_branch && let Err(e) = Command::new("git")
+                .args(["checkout", &original_branch])
+                .current_dir(&self.project_path)
+                .output()
+                .await
+            {
+                eprintln!("[agent] CRITICAL: checkout recovery to {} failed: {}", original_branch, e);
             }
             return Ok(false);
         }
@@ -549,14 +561,14 @@ impl AgentExecutor {
             if let Err(e) = handle.process.kill().await {
                 eprintln!("[agent] Failed to kill task {}: {}", task_id, e);
             }
-            if let Some(path) = &handle.worktree_path {
-                if let Err(e) = self.cleanup_worktree(path).await {
-                    eprintln!("[agent] Failed to clean up worktree for task {}: {}", task_id, e);
-                }
+            if let Some(path) = &handle.worktree_path
+                && let Err(e) = self.cleanup_worktree(path).await
+            {
+                eprintln!("[agent] Failed to clean up worktree for task {}: {}", task_id, e);
             }
             match self.db.lock() {
                 Ok(db) => {
-                    if let Err(e) = db.update_agent_task_status(task_id, &AgentTaskStatus::Failed, Some("Pipeline cancelled")) {
+                    if let Err(e) = db.update_agent_task_status(task_id, &AgentTaskStatus::Cancelled, Some("Pipeline cancelled")) {
                         eprintln!("[agent] Failed to update cancelled task {} status: {}", task_id, e);
                     }
                 }

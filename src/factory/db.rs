@@ -166,15 +166,22 @@ impl FactoryDb {
             .context("Failed to create agent team tables")?;
 
         // Add team_id and has_team to pipeline_runs
-        // Errors ignored for idempotent migration — column may already exist
-        let _ = self.conn.execute(
+        match self.conn.execute(
             "ALTER TABLE pipeline_runs ADD COLUMN team_id INTEGER REFERENCES agent_teams(id)",
             [],
-        );
-        let _ = self.conn.execute(
+        ) {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column") => {}
+            Err(e) => return Err(anyhow::anyhow!("Failed to add team_id column: {}", e)),
+        }
+        match self.conn.execute(
             "ALTER TABLE pipeline_runs ADD COLUMN has_team INTEGER NOT NULL DEFAULT 0",
             [],
-        );
+        ) {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column") => {}
+            Err(e) => return Err(anyhow::anyhow!("Failed to add has_team column: {}", e)),
+        }
 
         Ok(())
     }
@@ -727,13 +734,13 @@ impl FactoryDb {
     pub fn create_agent_team(
         &self,
         run_id: i64,
-        strategy: &str,
-        isolation: &str,
+        strategy: &ExecutionStrategy,
+        isolation: &IsolationStrategy,
         plan_summary: &str,
     ) -> Result<AgentTeam> {
         self.conn.execute(
             "INSERT INTO agent_teams (run_id, strategy, isolation, plan_summary) VALUES (?1, ?2, ?3, ?4)",
-            params![run_id, strategy, isolation, plan_summary],
+            params![run_id, strategy.as_str(), isolation.as_str(), plan_summary],
         ).context("Failed to insert agent team")?;
         let id = self.conn.last_insert_rowid();
 
@@ -748,14 +755,8 @@ impl FactoryDb {
         Ok(AgentTeam {
             id,
             run_id,
-            strategy: {
-                let val = strategy;
-                val.parse().map_err(|_| anyhow::anyhow!("invalid strategy in database: '{}'", val))?
-            },
-            isolation: {
-                let val = isolation;
-                val.parse().map_err(|_| anyhow::anyhow!("invalid isolation in database: '{}'", val))?
-            },
+            strategy: strategy.clone(),
+            isolation: isolation.clone(),
             plan_summary: plan_summary.to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
         })
@@ -822,17 +823,17 @@ impl FactoryDb {
         team_id: i64,
         name: &str,
         description: &str,
-        agent_role: &str,
+        agent_role: &AgentRole,
         wave: i32,
         depends_on: &[i64],
-        isolation_type: &str,
+        isolation_type: &IsolationStrategy,
     ) -> Result<AgentTask> {
         let depends_json =
             serde_json::to_string(depends_on).context("Failed to serialize depends_on")?;
         self.conn.execute(
             "INSERT INTO agent_tasks (team_id, name, description, agent_role, wave, depends_on, isolation_type) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![team_id, name, description, agent_role, wave, depends_json, isolation_type],
+            params![team_id, name, description, agent_role.as_str(), wave, depends_json, isolation_type.as_str()],
         ).context("Failed to insert agent task")?;
         let id = self.conn.last_insert_rowid();
         Ok(AgentTask {
@@ -840,17 +841,11 @@ impl FactoryDb {
             team_id,
             name: name.to_string(),
             description: description.to_string(),
-            agent_role: {
-                let val = agent_role;
-                val.parse().map_err(|_| anyhow::anyhow!("invalid agent_role in database: '{}'", val))?
-            },
+            agent_role: agent_role.clone(),
             wave,
             depends_on: depends_on.to_vec(),
             status: AgentTaskStatus::Pending,
-            isolation_type: {
-                let val = isolation_type;
-                val.parse().map_err(|_| anyhow::anyhow!("invalid isolation_type in database: '{}'", val))?
-            },
+            isolation_type: isolation_type.clone(),
             worktree_path: None,
             container_id: None,
             branch_name: None,
@@ -874,11 +869,11 @@ impl FactoryDb {
                     params![status_str, task_id],
                 ).context("Failed to update agent task status to running")?;
             }
-            AgentTaskStatus::Completed | AgentTaskStatus::Failed => {
+            AgentTaskStatus::Completed | AgentTaskStatus::Failed | AgentTaskStatus::Cancelled => {
                 self.conn.execute(
                     "UPDATE agent_tasks SET status = ?1, error = ?2, completed_at = datetime('now') WHERE id = ?3",
                     params![status_str, error, task_id],
-                ).context("Failed to update agent task status to completed/failed")?;
+                ).context("Failed to update agent task status to terminal")?;
             }
             _ => {
                 self.conn
@@ -1453,8 +1448,8 @@ mod tests {
 
         let team = db.create_agent_team(
             run.id,
-            "wave_pipeline",
-            "hybrid",
+            &ExecutionStrategy::WavePipeline,
+            &IsolationStrategy::Hybrid,
             "Two parallel tasks, one depends on both",
         )?;
 
@@ -1472,28 +1467,28 @@ mod tests {
         let project = db.create_project("test", "/tmp/test")?;
         let issue = db.create_issue(project.id, "Test issue", "", &IssueColumn::Backlog)?;
         let run = db.create_pipeline_run(issue.id)?;
-        let team = db.create_agent_team(run.id, "parallel", "worktree", "Two tasks")?;
+        let team = db.create_agent_team(run.id, &ExecutionStrategy::Parallel, &IsolationStrategy::Worktree, "Two tasks")?;
 
         // Create two tasks in wave 0, one in wave 1
         let task1 = db.create_agent_task(
             team.id,
             "Fix API",
             "Fix the API bug",
-            "coder",
+            &AgentRole::Coder,
             0,
             &[],
-            "worktree",
+            &IsolationStrategy::Worktree,
         )?;
         let task2 =
-            db.create_agent_task(team.id, "Fix UI", "Fix the UI", "coder", 0, &[], "worktree")?;
+            db.create_agent_task(team.id, "Fix UI", "Fix the UI", &AgentRole::Coder, 0, &[], &IsolationStrategy::Worktree)?;
         let task3 = db.create_agent_task(
             team.id,
             "Run tests",
             "Integration tests",
-            "tester",
+            &AgentRole::Tester,
             1,
             &[task1.id, task2.id],
-            "shared",
+            &IsolationStrategy::Shared,
         )?;
 
         assert_eq!(task3.depends_on, vec![task1.id, task2.id]);
@@ -1632,9 +1627,9 @@ mod tests {
         let project = db.create_project("test", "/tmp/test")?;
         let issue = db.create_issue(project.id, "Test", "", &IssueColumn::Backlog)?;
         let run = db.create_pipeline_run(issue.id)?;
-        let team = db.create_agent_team(run.id, "parallel", "worktree", "Test")?;
+        let team = db.create_agent_team(run.id, &ExecutionStrategy::Parallel, &IsolationStrategy::Worktree, "Test")?;
         let task =
-            db.create_agent_task(team.id, "Task 1", "Do stuff", "coder", 0, &[], "worktree")?;
+            db.create_agent_task(team.id, "Task 1", "Do stuff", &AgentRole::Coder, 0, &[], &IsolationStrategy::Worktree)?;
 
         // Initially null
         assert!(task.worktree_path.is_none());
@@ -1674,36 +1669,36 @@ mod tests {
         // Simulate planner creating a team
         let team = db.create_agent_team(
             run.id,
-            "wave_pipeline",
-            "worktree",
+            &ExecutionStrategy::WavePipeline,
+            &IsolationStrategy::Worktree,
             "Two parallel fixes then test",
         )?;
         let task1 = db.create_agent_task(
             team.id,
             "Fix API",
             "Fix endpoint",
-            "coder",
+            &AgentRole::Coder,
             0,
             &[],
-            "worktree",
+            &IsolationStrategy::Worktree,
         )?;
         let task2 = db.create_agent_task(
             team.id,
             "Fix validation",
             "Fix input validation",
-            "coder",
+            &AgentRole::Coder,
             0,
             &[],
-            "worktree",
+            &IsolationStrategy::Worktree,
         )?;
         let task3 = db.create_agent_task(
             team.id,
             "Run tests",
             "Integration tests",
-            "tester",
+            &AgentRole::Tester,
             1,
             &[task1.id, task2.id],
-            "shared",
+            &IsolationStrategy::Shared,
         )?;
 
         // Verify team detail retrieval

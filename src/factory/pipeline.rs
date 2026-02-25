@@ -33,7 +33,9 @@ pub fn slugify(title: &str, max_len: usize) -> String {
         .collect::<Vec<_>>()
         .join("-");
     if slug.len() > max_len {
-        slug[..max_len].trim_end_matches('-').to_string()
+        slug[..slug.floor_char_boundary(max_len)]
+            .trim_end_matches('-')
+            .to_string()
     } else {
         slug
     }
@@ -134,6 +136,7 @@ pub enum RunHandle {
 /// Manages pipeline execution for factory issues.
 /// Tracks running child processes so they can be cancelled.
 pub struct PipelineRunner {
+    #[allow(dead_code)] // Used by tests; start_run now requires DB project lookup
     project_path: String,
     /// Map from run_id to the run handle for running pipelines.
     running_processes: Arc<tokio::sync::Mutex<HashMap<i64, RunHandle>>>,
@@ -169,10 +172,10 @@ impl PipelineRunner {
                         }
                     }
                     RunHandle::Container(container_id) => {
-                        if let Some(ref sandbox) = self.sandbox {
-                            if let Err(e) = sandbox.stop(&container_id).await {
-                                eprintln!("[factory] WARNING: failed to stop container {} for run {}: {}", container_id, run_id, e);
-                            }
+                        if let Some(ref sandbox) = self.sandbox
+                            && let Err(e) = sandbox.stop(&container_id).await
+                        {
+                            eprintln!("[factory] WARNING: failed to stop container {} for run {}: {}", container_id, run_id, e);
                         }
                     }
                 }
@@ -222,10 +225,10 @@ impl PipelineRunner {
                     }
                 }
                 RunHandle::Container(container_id) => {
-                    if let Some(ref sandbox) = self.sandbox {
-                        if let Err(e) = sandbox.stop(&container_id).await {
-                            eprintln!("[factory] WARNING: failed to stop container {} for run {}: {}", container_id, run_id, e);
-                        }
+                    if let Some(ref sandbox) = self.sandbox
+                        && let Err(e) = sandbox.stop(&container_id).await
+                    {
+                        eprintln!("[factory] WARNING: failed to stop container {} for run {}: {}", container_id, run_id, e);
                     }
                 }
             }
@@ -237,6 +240,8 @@ impl PipelineRunner {
     /// 2. Create team + tasks in DB
     /// 3. Broadcast TeamCreated to connected WebSocket clients
     /// 4. Execute tasks wave by wave (with worktree isolation and merging between waves)
+    /// 5. After each wave, merge completed task branches back into the base branch
+    ///    (modifies project directory git state -- requires exclusive access)
     ///
     /// Returns `Ok(PlanOutcome::FallbackToForge)` for single-task sequential plans to signal
     /// fallback to the forge pipeline.
@@ -261,7 +266,7 @@ impl PipelineRunner {
                 broadcast_message(tx, &WsMessage::AgentSignal {
                     run_id,
                     task_id: 0,
-                    signal_type: "warning".to_string(),
+                    signal_type: SignalType::Blocker,
                     content: format!("Planning failed, using single-task fallback: {}", e),
                 });
                 super::planner::PlanResponse::fallback(issue_title, issue_description)
@@ -269,17 +274,26 @@ impl PipelineRunner {
         };
 
         // If it's a single sequential task, signal fallback
-        if plan.tasks.len() <= 1 && plan.strategy == "sequential" {
+        let is_sequential = plan
+            .strategy
+            .parse::<super::models::ExecutionStrategy>()
+            .map(|s| s == super::models::ExecutionStrategy::Sequential)
+            .unwrap_or(false);
+        if plan.tasks.len() <= 1 && is_sequential {
             return Ok(PlanOutcome::FallbackToForge);
         }
 
         // Step 2: Create team + tasks in DB
         let (team, db_tasks) = {
             let db_guard = db.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
+            let strategy: ExecutionStrategy = plan.strategy.parse()
+                .map_err(|_| anyhow::anyhow!("Invalid strategy from planner: '{}'", plan.strategy))?;
+            let isolation: IsolationStrategy = plan.isolation.parse()
+                .map_err(|_| anyhow::anyhow!("Invalid isolation from planner: '{}'", plan.isolation))?;
             let team = db_guard.create_agent_team(
                 run_id,
-                &plan.strategy,
-                &plan.isolation,
+                &strategy,
+                &isolation,
                 &plan.reasoning,
             )?;
 
@@ -290,14 +304,18 @@ impl PipelineRunner {
                     .iter()
                     .filter_map(|&idx| db_tasks.get(idx as usize).map(|t: &AgentTask| t.id))
                     .collect();
+                let role: AgentRole = plan_task.role.parse()
+                    .map_err(|_| anyhow::anyhow!("Invalid role from planner: '{}'", plan_task.role))?;
+                let task_isolation: IsolationStrategy = plan_task.isolation.parse()
+                    .map_err(|_| anyhow::anyhow!("Invalid isolation from planner: '{}'", plan_task.isolation))?;
                 let task = db_guard.create_agent_task(
                     team.id,
                     &plan_task.name,
                     &plan_task.description,
-                    &plan_task.role,
+                    &role,
                     plan_task.wave,
                     &depends,
-                    &plan_task.isolation,
+                    &task_isolation,
                 )?;
                 db_tasks.push(task);
             }
@@ -348,15 +366,24 @@ impl PipelineRunner {
                     match executor.setup_worktree(run_id, task, base_branch).await {
                         Ok((path, branch)) => (path, Some(branch)),
                         Err(e) => {
+                            if wave_tasks.len() > 1 {
+                                // Multiple parallel tasks need isolation; falling back to shared
+                                // directory would cause conflicts.
+                                anyhow::bail!(
+                                    "Worktree setup failed for task {} ({}) in parallel wave \
+                                     (wave has {} tasks, shared directory fallback is unsafe): {:#}",
+                                    task.id, task.name, wave_tasks.len(), e
+                                );
+                            }
                             eprintln!(
                                 "[pipeline] run_id={}: worktree setup failed for task {} ({}): {:#}. \
-                                 Falling back to shared directory.",
+                                 Falling back to shared directory (single-task wave).",
                                 run_id, task.id, task.name, e
                             );
                             broadcast_message(tx, &WsMessage::AgentSignal {
                                 run_id,
                                 task_id: task.id,
-                                signal_type: "warning".to_string(),
+                                signal_type: SignalType::Blocker,
                                 content: format!("Worktree isolation failed, running in shared directory: {}", e),
                             });
                             (std::path::PathBuf::from(project_path), None)
@@ -510,14 +537,14 @@ impl PipelineRunner {
         tx: &broadcast::Sender<String>,
     ) -> Result<String> {
         // Auto-generate phases if none exist
-        if !has_forge_phases(project_path) && is_forge_initialized(project_path) {
-            if let Err(e) = auto_generate_phases(project_path, issue_title, issue_description).await
-            {
-                eprintln!(
-                    "[pipeline] run_id={}: failed to auto-generate phases: {:#}",
-                    run_id, e
-                );
-            }
+        if !has_forge_phases(project_path)
+            && is_forge_initialized(project_path)
+            && let Err(e) = auto_generate_phases(project_path, issue_title, issue_description).await
+        {
+            eprintln!(
+                "[pipeline] run_id={}: failed to auto-generate phases: {:#}",
+                run_id, e
+            );
         }
 
         // Execute the pipeline (Docker or Local)
@@ -567,18 +594,10 @@ impl PipelineRunner {
             match db_guard.get_project(issue.project_id) {
                 Ok(Some(project)) => project.path,
                 Ok(None) => {
-                    eprintln!(
-                        "[pipeline] run_id={}: project {} not found in DB, using default path",
-                        run_id, issue.project_id
-                    );
-                    self.project_path.clone()
+                    anyhow::bail!("Project {} not found in DB", issue.project_id);
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[pipeline] run_id={}: failed to look up project {}: {:#}. Using default path.",
-                        run_id, issue.project_id, e
-                    );
-                    self.project_path.clone()
+                    return Err(e.context(format!("Failed to look up project {}", issue.project_id)));
                 }
             }
         };
@@ -826,7 +845,8 @@ fn is_forge_initialized(project_path: &str) -> bool {
 
 /// Auto-generate spec and phases from an issue description.
 /// Writes a design doc to `.forge/spec.md`, then runs `forge generate`.
-/// Returns Ok(true) if phases were generated, Ok(false) if skipped.
+/// Returns Ok(true) if phases were generated successfully, Ok(false) if generation
+/// failed or produced no output (caller should fall back to direct invocation).
 async fn auto_generate_phases(
     project_path: &str,
     issue_title: &str,
@@ -1840,15 +1860,15 @@ mod tests {
             .unwrap();
         let run = db.create_pipeline_run(issue.id).unwrap();
         let team = db
-            .create_agent_team(run.id, "parallel", "worktree", "test reasoning")
+            .create_agent_team(run.id, &ExecutionStrategy::Parallel, &IsolationStrategy::Worktree, "test reasoning")
             .unwrap();
 
         // Create two tasks: wave 0 and wave 1
         let task_w0 = db
-            .create_agent_task(team.id, "task-w0", "wave 0 task", "coder", 0, &[], "shared")
+            .create_agent_task(team.id, "task-w0", "wave 0 task", &AgentRole::Coder, 0, &[], &IsolationStrategy::Shared)
             .unwrap();
         let task_w1 = db
-            .create_agent_task(team.id, "task-w1", "wave 1 task", "coder", 1, &[], "shared")
+            .create_agent_task(team.id, "task-w1", "wave 1 task", &AgentRole::Coder, 1, &[], &IsolationStrategy::Shared)
             .unwrap();
 
         // Set wave 0 task to Failed

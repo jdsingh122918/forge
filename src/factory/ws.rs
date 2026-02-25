@@ -7,6 +7,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
 use serde::{Deserialize, Serialize};
+use super::models::{SignalType, VerificationType};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -152,7 +153,7 @@ pub enum WsMessage {
     AgentSignal {
         run_id: i64,
         task_id: i64,
-        signal_type: String,
+        signal_type: SignalType,
         content: String,
     },
 
@@ -176,7 +177,7 @@ pub enum WsMessage {
     VerificationResult {
         run_id: i64,
         task_id: i64,
-        verification_type: String,
+        verification_type: VerificationType,
         passed: bool,
         summary: String,
         screenshots: Vec<String>,
@@ -520,7 +521,7 @@ mod tests {
         let msg = WsMessage::VerificationResult {
             run_id: 1,
             task_id: 10,
-            verification_type: "browser".to_string(),
+            verification_type: VerificationType::Browser,
             passed: true,
             summary: "No visual regressions".to_string(),
             screenshots: vec!["base64data...".to_string()],
@@ -650,7 +651,7 @@ mod tests {
         let msg = WsMessage::AgentSignal {
             run_id: 1,
             task_id: 5,
-            signal_type: "progress".to_string(),
+            signal_type: SignalType::Progress,
             content: "50% complete".to_string(),
         };
         let json = serde_json::to_string(&msg).unwrap();
