@@ -122,6 +122,8 @@ pub fn api_router() -> Router<SharedState> {
         .route("/api/issues/:id/run", post(trigger_pipeline))
         .route("/api/runs/:id", get(get_pipeline_run))
         .route("/api/runs/:id/cancel", post(cancel_pipeline_run))
+        .route("/api/runs/:id/team", get(get_run_team))
+        .route("/api/tasks/:id/events", get(get_task_events))
         .route("/api/github/status", get(github_status))
         .route("/api/github/device-code", post(github_device_code))
         .route("/api/github/poll", post(github_poll_token))
@@ -585,6 +587,39 @@ async fn cancel_pipeline_run(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(run))
+}
+
+// ── Agent Team handlers ──────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct EventsQuery {
+    pub limit: Option<i64>,
+}
+
+async fn get_run_team(
+    State(state): State<SharedState>,
+    Path(run_id): Path<i64>,
+) -> Result<impl IntoResponse, ApiError> {
+    let detail = state.db.call(move |db| {
+        db.get_agent_team_for_run(run_id)
+    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    match detail {
+        Some(d) => Ok(Json(d).into_response()),
+        None => Err(ApiError::NotFound(format!("No agent team for run {}", run_id))),
+    }
+}
+
+async fn get_task_events(
+    State(state): State<SharedState>,
+    Path(task_id): Path<i64>,
+    axum::extract::Query(query): axum::extract::Query<EventsQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let limit = query.limit.unwrap_or(100).min(500);
+    let events = state.db.call(move |db| {
+        db.get_agent_events_for_task(task_id, limit)
+    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(events))
 }
 
 // ── GitHub OAuth handlers ─────────────────────────────────────────────
@@ -1341,5 +1376,37 @@ mod tests {
         );
         // Invalid
         assert_eq!(parse_github_owner_repo("not-a-url"), None);
+    }
+
+    #[tokio::test]
+    async fn test_get_agent_team_returns_404_when_no_team() {
+        let app = test_app();
+        // Create project + issue + run
+        let body = r#"{"name":"test","path":"/tmp"}"#;
+        let res = app.clone().oneshot(Request::builder().method("POST").uri("/api/projects").header("Content-Type", "application/json").body(Body::from(body)).unwrap()).await.unwrap();
+        let project: serde_json::Value = body_json(res.into_body()).await;
+        let pid = project["id"].as_i64().unwrap();
+        let body = r#"{"title":"Test issue","description":"desc"}"#;
+        let res = app.clone().oneshot(Request::builder().method("POST").uri(&format!("/api/projects/{}/issues", pid)).header("Content-Type", "application/json").body(Body::from(body)).unwrap()).await.unwrap();
+        let issue: serde_json::Value = body_json(res.into_body()).await;
+        let iid = issue["id"].as_i64().unwrap();
+        let res = app.clone().oneshot(Request::builder().method("POST").uri(&format!("/api/issues/{}/run", iid)).header("Content-Type", "application/json").body(Body::empty()).unwrap()).await.unwrap();
+        let run: serde_json::Value = body_json(res.into_body()).await;
+        let rid = run["id"].as_i64().unwrap();
+
+        let res = app.oneshot(Request::builder().uri(&format!("/api/runs/{}/team", rid)).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_github_token_persisted_in_settings() {
+        let db = FactoryDb::new_in_memory().unwrap();
+        db.set_setting("github_token", "ghp_test_token").unwrap();
+        let val = db.get_setting("github_token").unwrap();
+        assert_eq!(val, Some("ghp_test_token".to_string()));
+
+        // Simulate disconnect
+        db.delete_setting("github_token").unwrap();
+        assert!(db.get_setting("github_token").unwrap().is_none());
     }
 }
