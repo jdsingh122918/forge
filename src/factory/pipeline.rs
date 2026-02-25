@@ -1270,6 +1270,12 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    /// Mutex to serialize tests that mutate environment variables.
+    /// `std::env::set_var` is unsafe in multi-threaded contexts, so tests
+    /// that touch CLAUDE_CMD must hold this lock.
+    static ENV_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
     #[test]
     fn test_pipeline_runner_new() {
         let runner = PipelineRunner::new("/tmp/my-project", None);
@@ -1424,6 +1430,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipeline_runner_updates_db_on_failure() {
+        let _lock = ENV_MUTEX.lock().await;
         // Use a command that will fail
         unsafe { std::env::set_var("CLAUDE_CMD", "false") };
 
@@ -1462,6 +1469,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipeline_broadcasts_started_message() {
+        let _lock = ENV_MUTEX.lock().await;
         unsafe { std::env::set_var("CLAUDE_CMD", "echo") };
 
         let db = FactoryDb::new_in_memory().unwrap();
@@ -1496,9 +1504,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipeline_cancel_kills_process() {
-        // Create a script that sleeps for a long time, ignoring any arguments
+        let _lock = ENV_MUTEX.lock().await;
+        // Create a script that:
+        // - Exits with error immediately when called with --system (planner call) so it falls back fast
+        // - Sleeps for 60s otherwise (pipeline execution) so we can cancel it
         let script_path = "/tmp/forge_test_sleep_cancel.sh";
-        std::fs::write(script_path, "#!/bin/sh\nsleep 60\n").unwrap();
+        std::fs::write(
+            script_path,
+            "#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in --system) exit 1;; esac; done\nsleep 60\n",
+        )
+        .unwrap();
         std::fs::set_permissions(script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         unsafe { std::env::set_var("CLAUDE_CMD", script_path) };
@@ -1553,8 +1568,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipeline_completed_cleans_up_process() {
-        // Use 'echo' which exits immediately
-        unsafe { std::env::set_var("CLAUDE_CMD", "echo") };
+        let _lock = ENV_MUTEX.lock().await;
+        // Create a script that exits with error for planner calls (--system arg)
+        // and exits immediately for pipeline calls (echo-like behavior)
+        let script_path = "/tmp/forge_test_echo_cleanup.sh";
+        std::fs::write(
+            script_path,
+            "#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in --system) exit 1;; esac; done\necho done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        unsafe { std::env::set_var("CLAUDE_CMD", script_path) };
 
         let db = FactoryDb::new_in_memory().unwrap();
         let project = db.create_project("test", "/tmp").unwrap();
@@ -1572,20 +1597,24 @@ mod tests {
             .await
             .unwrap();
 
-        // Give the background task time to complete (includes planner fallback attempt + forge execution)
-        tokio::time::sleep(tokio::time::Duration::from_millis(10000)).await;
-
-        // Process should be cleaned up
-        {
+        // Poll until the process is cleaned up (planner fallback + pipeline execution)
+        let mut cleaned = false;
+        for _ in 0..100 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             let processes = runner.running_processes.lock().await;
-            assert!(
-                !processes.contains_key(&run.id),
-                "Process should be removed after completion"
-            );
+            if !processes.contains_key(&run.id) {
+                cleaned = true;
+                break;
+            }
         }
+        assert!(
+            cleaned,
+            "Process should be removed after completion within 10 seconds"
+        );
 
         // Clean up
         unsafe { std::env::remove_var("CLAUDE_CMD") };
+        let _ = std::fs::remove_file(script_path);
     }
 
     #[tokio::test]
