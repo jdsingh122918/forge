@@ -35,6 +35,13 @@ if [ "$has_api_key" = false ] && [ "$has_oauth" = false ]; then
     echo ""
 fi
 
+# Inform about optional GitHub integration
+if [ -z "${GITHUB_TOKEN:-}" ] && [ -z "${GITHUB_CLIENT_ID:-}" ]; then
+    echo "NOTE: GitHub integration not configured (optional)."
+    echo "      Set GITHUB_TOKEN and/or GITHUB_CLIENT_ID in .env for GitHub features."
+    echo ""
+fi
+
 usage() {
     echo "Usage: ./start.sh [command]"
     echo ""
