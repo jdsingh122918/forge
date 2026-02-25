@@ -1521,16 +1521,17 @@ mod tests {
 
         // Wait for the process to be registered in the running_processes map.
         // We poll because the spawned task needs to actually call spawn() and insert.
+        // The planner step may take several seconds (tries Claude CLI, fails, falls back).
         let mut tracked = false;
-        for _ in 0..20 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        for _ in 0..100 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             let processes = runner.running_processes.lock().await;
             if processes.contains_key(&run.id) {
                 tracked = true;
                 break;
             }
         }
-        assert!(tracked, "Process should be tracked within 1 second");
+        assert!(tracked, "Process should be tracked within 10 seconds");
 
         // Cancel it
         let cancelled_run = runner.cancel(run.id, &db, &tx).await.unwrap();
@@ -1572,7 +1573,7 @@ mod tests {
             .unwrap();
 
         // Give the background task time to complete (includes planner fallback attempt + forge execution)
-        tokio::time::sleep(tokio::time::Duration::from_millis(5000)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(10000)).await;
 
         // Process should be cleaned up
         {
