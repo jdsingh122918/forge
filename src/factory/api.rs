@@ -290,8 +290,7 @@ async fn create_project(
     let project = state.db.call(move |db| {
         db.create_project(&name, &path)
     }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
-    let msg = serde_json::json!({"event": "project_created", "project": project}).to_string();
-    let _ = state.ws_tx.send(msg);
+    broadcast_message(&state.ws_tx, &WsMessage::ProjectCreated { project: project.clone() });
     Ok((StatusCode::CREATED, Json(project)))
 }
 

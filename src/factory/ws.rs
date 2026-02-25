@@ -183,6 +183,11 @@ pub enum WsMessage {
         screenshots: Vec<String>,
         details: serde_json::Value,
     },
+
+    // Project lifecycle
+    ProjectCreated {
+        project: Project,
+    },
 }
 
 // ── WebSocket handler ────────────────────────────────────────────────
@@ -699,6 +704,21 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"MergeConflict\""));
         assert!(json.contains("\"src/api.rs\""));
+    }
+
+    #[test]
+    fn test_project_created_serialization() {
+        let project = Project {
+            id: 1,
+            name: "test".to_string(),
+            path: "/tmp/test".to_string(),
+            github_repo: None,
+            created_at: "2024-01-01".to_string(),
+        };
+        let msg = WsMessage::ProjectCreated { project };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"ProjectCreated\""));
+        assert!(json.contains("\"name\":\"test\""));
     }
 
     #[test]
