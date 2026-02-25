@@ -223,6 +223,17 @@ impl FactoryDb {
             Err(e) => return Err(anyhow::anyhow!("Failed to add has_team column: {}", e)),
         }
 
+        // Settings key-value table
+        self.conn
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );",
+            )
+            .context("Failed to create settings table")?;
+
         Ok(())
     }
 
@@ -1122,6 +1133,60 @@ impl FactoryDb {
         }
         Ok(events)
     }
+
+    // ── Settings ──────────────────────────────────────────────────────
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM settings WHERE key = ?1")
+            .context("Failed to prepare get_setting")?;
+        let mut rows = stmt
+            .query_map(params![key], |row| row.get::<_, String>(0))
+            .context("Failed to query setting")?;
+        match rows.next() {
+            Some(row) => Ok(Some(row.context("Failed to read setting")?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, datetime('now'))
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
+                params![key, value],
+            )
+            .context("Failed to upsert setting")?;
+        Ok(())
+    }
+
+    pub fn delete_setting(&self, key: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM settings WHERE key = ?1", params![key])
+            .context("Failed to delete setting")?;
+        Ok(())
+    }
+
+    // ── Agent team queries ────────────────────────────────────────────
+
+    pub fn get_agent_team_for_run(&self, run_id: i64) -> Result<Option<AgentTeamDetail>> {
+        self.get_agent_team_detail(run_id)
+    }
+
+    pub fn get_agent_events_for_task(&self, task_id: i64, limit: i64) -> Result<Vec<AgentEvent>> {
+        self.get_agent_events(task_id, limit, 0)
+    }
+
+    pub fn insert_agent_event(
+        &self,
+        task_id: i64,
+        event_type: &str,
+        content: &str,
+        metadata: Option<&serde_json::Value>,
+    ) -> Result<AgentEvent> {
+        self.create_agent_event(task_id, event_type, content, metadata)
+    }
 }
 
 // ── Internal row helpers ──────────────────────────────────────────────
@@ -1875,5 +1940,100 @@ mod tests {
         assert_eq!(last.phase_name, "Deploy");
 
         Ok(())
+    }
+
+    #[test]
+    fn test_get_setting_returns_none_for_missing_key() {
+        let db = FactoryDb::new_in_memory().unwrap();
+        assert!(db.get_setting("nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_set_and_get_setting() {
+        let db = FactoryDb::new_in_memory().unwrap();
+        db.set_setting("github_token", "ghp_test123").unwrap();
+        let val = db.get_setting("github_token").unwrap();
+        assert_eq!(val, Some("ghp_test123".to_string()));
+    }
+
+    #[test]
+    fn test_set_setting_overwrites_existing() {
+        let db = FactoryDb::new_in_memory().unwrap();
+        db.set_setting("key", "value1").unwrap();
+        db.set_setting("key", "value2").unwrap();
+        assert_eq!(db.get_setting("key").unwrap(), Some("value2".to_string()));
+    }
+
+    #[test]
+    fn test_delete_setting() {
+        let db = FactoryDb::new_in_memory().unwrap();
+        db.set_setting("key", "value").unwrap();
+        db.delete_setting("key").unwrap();
+        assert!(db.get_setting("key").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_delete_nonexistent_setting_is_ok() {
+        let db = FactoryDb::new_in_memory().unwrap();
+        db.delete_setting("nonexistent").unwrap(); // should not error
+    }
+
+    #[test]
+    fn test_get_agent_team_for_run_returns_none_when_no_team() {
+        let db = FactoryDb::new_in_memory().unwrap();
+        let project = db.create_project("test", "/tmp/test").unwrap();
+        let issue = db.create_issue(project.id, "Test", "", &IssueColumn::Backlog).unwrap();
+        let run = db.create_pipeline_run(issue.id).unwrap();
+        assert!(db.get_agent_team_for_run(run.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_get_agent_team_for_run_returns_team_with_tasks() {
+        let db = FactoryDb::new_in_memory().unwrap();
+        let project = db.create_project("test", "/tmp/test").unwrap();
+        let issue = db.create_issue(project.id, "Test", "", &IssueColumn::Backlog).unwrap();
+        let run = db.create_pipeline_run(issue.id).unwrap();
+        let team = db.create_agent_team(run.id, &ExecutionStrategy::WavePipeline, &IsolationStrategy::Worktree, "Two tasks").unwrap();
+        db.create_agent_task(team.id, "Fix API", "Fix it", &AgentRole::Coder, 0, &[], &IsolationStrategy::Worktree).unwrap();
+        db.create_agent_task(team.id, "Add tests", "Test it", &AgentRole::Tester, 1, &[], &IsolationStrategy::Worktree).unwrap();
+
+        let detail = db.get_agent_team_for_run(run.id).unwrap().unwrap();
+        assert_eq!(detail.team.id, team.id);
+        assert_eq!(detail.tasks.len(), 2);
+        assert_eq!(detail.tasks[0].name, "Fix API");
+    }
+
+    #[test]
+    fn test_get_agent_events_for_task() {
+        let db = FactoryDb::new_in_memory().unwrap();
+        let project = db.create_project("test", "/tmp/test").unwrap();
+        let issue = db.create_issue(project.id, "Test", "", &IssueColumn::Backlog).unwrap();
+        let run = db.create_pipeline_run(issue.id).unwrap();
+        let team = db.create_agent_team(run.id, &ExecutionStrategy::Parallel, &IsolationStrategy::Shared, "").unwrap();
+        let task = db.create_agent_task(team.id, "Fix", "", &AgentRole::Coder, 0, &[], &IsolationStrategy::Shared).unwrap();
+
+        db.insert_agent_event(task.id, "action", "Edited file", None).unwrap();
+        db.insert_agent_event(task.id, "thinking", "Analyzing...", None).unwrap();
+        db.insert_agent_event(task.id, "output", "Done", None).unwrap();
+
+        let events = db.get_agent_events_for_task(task.id, 100).unwrap();
+        assert_eq!(events.len(), 3);
+    }
+
+    #[test]
+    fn test_get_agent_events_respects_limit() {
+        let db = FactoryDb::new_in_memory().unwrap();
+        let project = db.create_project("test", "/tmp/test").unwrap();
+        let issue = db.create_issue(project.id, "Test", "", &IssueColumn::Backlog).unwrap();
+        let run = db.create_pipeline_run(issue.id).unwrap();
+        let team = db.create_agent_team(run.id, &ExecutionStrategy::Parallel, &IsolationStrategy::Shared, "").unwrap();
+        let task = db.create_agent_task(team.id, "Fix", "", &AgentRole::Coder, 0, &[], &IsolationStrategy::Shared).unwrap();
+
+        for i in 0..10 {
+            db.insert_agent_event(task.id, "output", &format!("Event {}", i), None).unwrap();
+        }
+
+        let events = db.get_agent_events_for_task(task.id, 3).unwrap();
+        assert_eq!(events.len(), 3);
     }
 }

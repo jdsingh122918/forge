@@ -665,22 +665,34 @@ async fn github_connect_token(
     super::github::list_repos(&token, 1, 1)
         .await
         .map_err(|_| ApiError::BadRequest("Invalid token — could not authenticate with GitHub".into()))?;
-    let mut gh_token = state
-        .github_token
-        .lock()
-        .map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
-    *gh_token = Some(token);
+    let token_for_db = token.clone();
+    {
+        let mut gh_token = state
+            .github_token
+            .lock()
+            .map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
+        *gh_token = Some(token);
+    }
+    // Persist token to DB settings
+    state.db.call(move |db| {
+        db.set_setting("github_token", &token_for_db)
+    }).await.map_err(|e| ApiError::Internal(format!("Failed to persist token: {}", e)))?;
     Ok(Json(serde_json::json!({"status": "connected"})))
 }
 
 async fn github_disconnect(
     State(state): State<SharedState>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let mut token = state
-        .github_token
-        .lock()
-        .map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
-    *token = None;
+    {
+        let mut token = state
+            .github_token
+            .lock()
+            .map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
+        *token = None;
+    }
+    state.db.call(move |db| {
+        db.delete_setting("github_token")
+    }).await.map_err(|e| ApiError::Internal(format!("Failed to delete token: {}", e)))?;
     Ok(Json(serde_json::json!({"status": "disconnected"})))
 }
 

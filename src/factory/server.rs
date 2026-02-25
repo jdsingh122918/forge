@@ -114,13 +114,16 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     };
 
     let pipeline_runner = PipelineRunner::new(&config.project_path, sandbox);
+    let db_handle = DbHandle::new(db);
+
+    let persisted_token = db_handle.lock_sync().get_setting("github_token").ok().flatten();
 
     let state = Arc::new(AppState {
-        db: DbHandle::new(db),
+        db: db_handle,
         ws_tx,
         pipeline_runner,
         github_client_id,
-        github_token: std::sync::Mutex::new(None),
+        github_token: std::sync::Mutex::new(persisted_token),
     });
 
     let state_for_shutdown = Arc::clone(&state);
