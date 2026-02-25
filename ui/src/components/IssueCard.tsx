@@ -61,6 +61,11 @@ export function IssueCard({ item, onClick, onTriggerPipeline }: IssueCardProps) 
           <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${PRIORITY_COLORS[issue.priority]}`}>
             {issue.priority}
           </span>
+          {issue.github_issue_number && (
+            <span className="text-xs px-1.5 py-0.5 rounded font-mono bg-gray-100 text-gray-500">
+              #{issue.github_issue_number}
+            </span>
+          )}
           <PipelineStatus run={active_run} compact />
         </div>
         {issue.labels.length > 0 && (
