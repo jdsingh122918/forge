@@ -181,3 +181,195 @@ pub struct PipelineRunDetail {
     pub run: PipelineRun,
     pub phases: Vec<PipelinePhase>,
 }
+
+// Agent team execution models
+
+/// Isolation strategy for agent task execution.
+/// Worktree and Container provide full isolation; Hybrid uses both;
+/// Shared runs in the main project directory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IsolationStrategy {
+    Worktree,
+    Container,
+    Hybrid,
+    Shared,
+}
+
+impl IsolationStrategy {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Worktree => "worktree",
+            Self::Container => "container",
+            Self::Hybrid => "hybrid",
+            Self::Shared => "shared",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "worktree" => Ok(Self::Worktree),
+            "container" => Ok(Self::Container),
+            "hybrid" => Ok(Self::Hybrid),
+            "shared" => Ok(Self::Shared),
+            _ => Err(format!("Invalid isolation strategy: {}", s)),
+        }
+    }
+}
+
+/// Roles that agents can assume during execution.
+/// Planner, BrowserVerifier, and TestVerifier are system-assigned;
+/// the LLM planner may only assign Coder, Tester, and Reviewer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRole {
+    Planner,
+    Coder,
+    Tester,
+    Reviewer,
+    BrowserVerifier,
+    TestVerifier,
+}
+
+impl AgentRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Planner => "planner",
+            Self::Coder => "coder",
+            Self::Tester => "tester",
+            Self::Reviewer => "reviewer",
+            Self::BrowserVerifier => "browser_verifier",
+            Self::TestVerifier => "test_verifier",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "planner" => Ok(Self::Planner),
+            "coder" => Ok(Self::Coder),
+            "tester" => Ok(Self::Tester),
+            "reviewer" => Ok(Self::Reviewer),
+            "browser_verifier" => Ok(Self::BrowserVerifier),
+            "test_verifier" => Ok(Self::TestVerifier),
+            _ => Err(format!("Invalid agent role: {}", s)),
+        }
+    }
+}
+
+/// Status of an individual agent task in the execution lifecycle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTaskStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+}
+
+impl AgentTaskStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "pending" => Ok(Self::Pending),
+            "running" => Ok(Self::Running),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            _ => Err(format!("Invalid agent task status: {}", s)),
+        }
+    }
+}
+
+/// Types of events emitted by agents during execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentEventType {
+    Thinking,
+    Action,
+    Output,
+    Signal,
+    Error,
+}
+
+impl AgentEventType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Thinking => "thinking",
+            Self::Action => "action",
+            Self::Output => "output",
+            Self::Signal => "signal",
+            Self::Error => "error",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "thinking" => Ok(Self::Thinking),
+            "action" => Ok(Self::Action),
+            "output" => Ok(Self::Output),
+            "signal" => Ok(Self::Signal),
+            "error" => Ok(Self::Error),
+            _ => Err(format!("Invalid agent event type: {}", s)),
+        }
+    }
+}
+
+/// A team of agents assigned to execute a pipeline run.
+/// Created by the planner after analyzing the issue.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTeam {
+    pub id: i64,
+    pub run_id: i64,
+    pub strategy: String,
+    pub isolation: String,
+    pub plan_summary: String,
+    pub created_at: String,
+}
+
+/// An individual task within an agent team, assigned to a specific agent role.
+/// Tasks are organized into waves for dependency-ordered parallel execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTask {
+    pub id: i64,
+    pub team_id: i64,
+    pub name: String,
+    pub description: String,
+    pub agent_role: String,
+    pub wave: i32,
+    pub depends_on: Vec<i64>,
+    pub status: String,
+    pub isolation_type: String,
+    pub worktree_path: Option<String>,
+    pub container_id: Option<String>,
+    pub branch_name: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub error: Option<String>,
+}
+
+/// A real-time event emitted by an agent during task execution.
+/// Streamed to the UI via WebSocket for live progress updates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentEvent {
+    pub id: i64,
+    pub task_id: i64,
+    pub event_type: String,
+    pub content: String,
+    pub metadata: Option<serde_json::Value>,
+    pub created_at: String,
+}
+
+/// Aggregated view of an agent team and all its tasks,
+/// used for API responses and the agent dashboard UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTeamDetail {
+    pub team: AgentTeam,
+    pub tasks: Vec<AgentTask>,
+}

@@ -11,7 +11,7 @@ use serde::Deserialize;
 use tokio::sync::broadcast;
 
 use super::db::FactoryDb;
-use super::models::IssueColumn;
+use super::models::{AgentEvent, IssueColumn};
 use super::pipeline::PipelineRunner;
 use super::ws::{WsMessage, broadcast_message};
 
@@ -82,6 +82,12 @@ pub struct SyncResult {
     pub total_github: usize,
 }
 
+#[derive(Deserialize)]
+struct PaginationParams {
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
 // ── Error handling ────────────────────────────────────────────────────
 
 pub enum ApiError {
@@ -98,6 +104,12 @@ impl IntoResponse for ApiError {
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
         (status, Json(serde_json::json!({"error": message}))).into_response()
+    }
+}
+
+impl From<anyhow::Error> for ApiError {
+    fn from(err: anyhow::Error) -> Self {
+        ApiError::Internal(err.to_string())
     }
 }
 
@@ -119,6 +131,8 @@ pub fn api_router() -> Router<SharedState> {
         .route("/api/issues/:id/run", post(trigger_pipeline))
         .route("/api/runs/:id", get(get_pipeline_run))
         .route("/api/runs/:id/cancel", post(cancel_pipeline_run))
+        .route("/api/runs/:id/team", get(get_agent_team))
+        .route("/api/tasks/:id/events", get(get_agent_events))
         .route("/api/github/status", get(github_status))
         .route("/api/github/device-code", post(github_device_code))
         .route("/api/github/poll", post(github_poll_token))
@@ -649,6 +663,31 @@ async fn github_disconnect(
         .map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
     *token = None;
     Ok(Json(serde_json::json!({"status": "disconnected"})))
+}
+
+// ── Agent team handlers ───────────────────────────────────────────────
+
+async fn get_agent_team(
+    State(state): State<SharedState>,
+    Path(run_id): Path<i64>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let db = state.db.lock().map_err(|e| ApiError::Internal(e.to_string()))?;
+    match db.get_agent_team_detail(run_id)? {
+        Some(detail) => Ok(Json(serde_json::to_value(detail).unwrap())),
+        None => Err(ApiError::NotFound("No agent team for this run".to_string())),
+    }
+}
+
+async fn get_agent_events(
+    State(state): State<SharedState>,
+    Path(task_id): Path<i64>,
+    axum::extract::Query(params): axum::extract::Query<PaginationParams>,
+) -> Result<Json<Vec<AgentEvent>>, ApiError> {
+    let db = state.db.lock().map_err(|e| ApiError::Internal(e.to_string()))?;
+    let limit = params.limit.unwrap_or(200);
+    let offset = params.offset.unwrap_or(0);
+    let events = db.get_agent_events(task_id, limit, offset)?;
+    Ok(Json(events))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────
@@ -1266,7 +1305,116 @@ mod tests {
         assert_eq!(parsed["data"]["issue"]["title"], "WS test issue");
     }
 
-    // 16. parse_github_owner_repo
+    // 16. Get agent team - not found
+    #[tokio::test]
+    async fn test_get_agent_team_not_found() {
+        let db = FactoryDb::new_in_memory().unwrap();
+        let (ws_tx, _) = broadcast::channel(16);
+        let pipeline_runner = PipelineRunner::new("/tmp/test", None);
+
+        // Create project, issue, and run directly via DB
+        db.create_project("team-proj", "/tmp/team").unwrap();
+        db.create_issue(1, "Team issue", "desc", &IssueColumn::Backlog).unwrap();
+        db.create_pipeline_run(1).unwrap();
+
+        let state = Arc::new(AppState {
+            db: Arc::new(Mutex::new(db)),
+            ws_tx,
+            pipeline_runner,
+            github_client_id: None,
+            github_token: Mutex::new(None),
+        });
+        let app = api_router().with_state(state);
+
+        // GET /api/runs/1/team => 404 (no team created)
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/runs/1/team")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    // 17. Get agent team - exists
+    #[tokio::test]
+    async fn test_get_agent_team_exists() {
+        let db = FactoryDb::new_in_memory().unwrap();
+        let (ws_tx, _) = broadcast::channel(16);
+        let pipeline_runner = PipelineRunner::new("/tmp/test", None);
+
+        // Create project, issue, run, team, and task via DB
+        db.create_project("team-proj", "/tmp/team").unwrap();
+        db.create_issue(1, "Team issue", "desc", &IssueColumn::Backlog).unwrap();
+        db.create_pipeline_run(1).unwrap();
+        let team = db.create_agent_team(1, "wave_pipeline", "worktree", "Two tasks").unwrap();
+        db.create_agent_task(team.id, "Fix API", "Fix the API endpoint", "coder", 0, &[], "shared").unwrap();
+
+        let state = Arc::new(AppState {
+            db: Arc::new(Mutex::new(db)),
+            ws_tx,
+            pipeline_runner,
+            github_client_id: None,
+            github_token: Mutex::new(None),
+        });
+        let app = api_router().with_state(state);
+
+        // GET /api/runs/1/team => 200
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/runs/1/team")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let detail: serde_json::Value = body_json(response.into_body()).await;
+        assert!(detail["team"].is_object());
+        assert!(detail["tasks"].is_array());
+        assert_eq!(detail["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(detail["team"]["strategy"], "wave_pipeline");
+    }
+
+    // 18. Get agent events - empty
+    #[tokio::test]
+    async fn test_get_agent_events_empty() {
+        let db = FactoryDb::new_in_memory().unwrap();
+        let (ws_tx, _) = broadcast::channel(16);
+        let pipeline_runner = PipelineRunner::new("/tmp/test", None);
+
+        // Create project, issue, run, team, and task via DB
+        db.create_project("events-proj", "/tmp/events").unwrap();
+        db.create_issue(1, "Events issue", "desc", &IssueColumn::Backlog).unwrap();
+        db.create_pipeline_run(1).unwrap();
+        let team = db.create_agent_team(1, "sequential", "shared", "One task").unwrap();
+        db.create_agent_task(team.id, "Fix bug", "Fix it", "coder", 0, &[], "shared").unwrap();
+
+        let state = Arc::new(AppState {
+            db: Arc::new(Mutex::new(db)),
+            ws_tx,
+            pipeline_runner,
+            github_client_id: None,
+            github_token: Mutex::new(None),
+        });
+        let app = api_router().with_state(state);
+
+        // GET /api/tasks/1/events => 200, empty array
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/tasks/1/events")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let events: Vec<serde_json::Value> = body_json(response.into_body()).await;
+        assert!(events.is_empty());
+    }
+
+    // 19. parse_github_owner_repo
     #[test]
     fn test_parse_github_owner_repo() {
         // Standard HTTPS

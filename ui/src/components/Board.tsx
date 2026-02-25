@@ -8,18 +8,21 @@ import {
   closestCorners,
 } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
-import type { BoardView, IssueColumn } from '../types';
+import type { BoardView, IssueColumn, AgentTeamDetail, AgentEvent } from '../types';
 import { Column } from './Column';
 
 interface BoardProps {
   board: BoardView;
+  agentTeams?: Map<number, AgentTeamDetail>;
+  agentEvents?: Map<number, AgentEvent[]>;
   onMoveIssue: (issueId: number, column: IssueColumn, position: number) => void;
   onIssueClick: (issueId: number) => void;
+  onTriggerPipeline?: (issueId: number) => void;
   backlogHeaderAction?: ReactNode;
   backlogTopSlot?: ReactNode;
 }
 
-export function Board({ board, onMoveIssue, onIssueClick, backlogHeaderAction, backlogTopSlot }: BoardProps) {
+export function Board({ board, agentTeams, agentEvents, onMoveIssue, onIssueClick, onTriggerPipeline, backlogHeaderAction, backlogTopSlot }: BoardProps) {
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 8 },
@@ -32,19 +35,15 @@ export function Board({ board, onMoveIssue, onIssueClick, backlogHeaderAction, b
 
     const issueId = parseInt(active.id as string, 10);
 
-    // Find which column the issue was dropped into
-    // The `over` can be either a column (droppable) or another card (sortable)
     let targetColumn: IssueColumn | null = null;
     let targetPosition = 0;
 
-    // Check if dropped over a column directly
     for (const col of board.columns) {
       if (col.name === over.id) {
         targetColumn = col.name;
         targetPosition = col.issues.length;
         break;
       }
-      // Check if dropped over a card in this column
       const cardIndex = col.issues.findIndex(
         (item) => item.issue.id.toString() === over.id
       );
@@ -72,6 +71,9 @@ export function Board({ board, onMoveIssue, onIssueClick, backlogHeaderAction, b
             key={column.name}
             column={column}
             onIssueClick={onIssueClick}
+            onTriggerPipeline={onTriggerPipeline}
+            agentTeams={agentTeams}
+            agentEvents={agentEvents}
             headerAction={column.name === 'backlog' ? backlogHeaderAction : undefined}
             topSlot={column.name === 'backlog' ? backlogTopSlot : undefined}
           />

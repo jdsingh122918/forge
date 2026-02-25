@@ -111,6 +111,56 @@ impl FactoryDb {
              WHERE github_issue_number IS NOT NULL;"
         ).context("Failed to create github_issue_number index")?;
 
+        // Agent team tables migration
+        self.conn.execute_batch("
+            CREATE TABLE IF NOT EXISTS agent_teams (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL REFERENCES pipeline_runs(id),
+                strategy TEXT NOT NULL,
+                isolation TEXT NOT NULL,
+                plan_summary TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                team_id INTEGER NOT NULL REFERENCES agent_teams(id),
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                agent_role TEXT NOT NULL DEFAULT 'coder',
+                wave INTEGER NOT NULL DEFAULT 0,
+                depends_on TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'pending',
+                isolation_type TEXT NOT NULL DEFAULT 'shared',
+                worktree_path TEXT,
+                container_id TEXT,
+                branch_name TEXT,
+                started_at TEXT,
+                completed_at TEXT,
+                error TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL REFERENCES agent_tasks(id),
+                event_type TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                metadata TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+        ").context("Failed to create agent team tables")?;
+
+        // Add team_id and has_team to pipeline_runs
+        // Errors ignored for idempotent migration — column may already exist
+        let _ = self.conn.execute(
+            "ALTER TABLE pipeline_runs ADD COLUMN team_id INTEGER REFERENCES agent_teams(id)",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE pipeline_runs ADD COLUMN has_team INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+
         Ok(())
     }
 
@@ -657,6 +707,292 @@ impl FactoryDb {
         }
         Ok(phases)
     }
+
+    // ── Agent Teams ──────────────────────────────────────────────────
+
+    pub fn create_agent_team(
+        &self,
+        run_id: i64,
+        strategy: &str,
+        isolation: &str,
+        plan_summary: &str,
+    ) -> Result<AgentTeam> {
+        self.conn.execute(
+            "INSERT INTO agent_teams (run_id, strategy, isolation, plan_summary) VALUES (?1, ?2, ?3, ?4)",
+            params![run_id, strategy, isolation, plan_summary],
+        ).context("Failed to insert agent team")?;
+        let id = self.conn.last_insert_rowid();
+
+        // Link team to pipeline run
+        self.conn.execute(
+            "UPDATE pipeline_runs SET team_id = ?1, has_team = 1 WHERE id = ?2",
+            params![id, run_id],
+        ).context("Failed to link agent team to pipeline run")?;
+
+        Ok(AgentTeam {
+            id,
+            run_id,
+            strategy: strategy.to_string(),
+            isolation: isolation.to_string(),
+            plan_summary: plan_summary.to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        })
+    }
+
+    pub fn get_agent_team(&self, team_id: i64) -> Result<AgentTeam> {
+        self.conn.query_row(
+            "SELECT id, run_id, strategy, isolation, plan_summary, created_at FROM agent_teams WHERE id = ?1",
+            params![team_id],
+            |row| Ok(AgentTeam {
+                id: row.get(0)?,
+                run_id: row.get(1)?,
+                strategy: row.get(2)?,
+                isolation: row.get(3)?,
+                plan_summary: row.get(4)?,
+                created_at: row.get(5)?,
+            }),
+        ).context("Agent team not found")
+    }
+
+    pub fn get_agent_team_by_run(&self, run_id: i64) -> Result<Option<AgentTeam>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, run_id, strategy, isolation, plan_summary, created_at FROM agent_teams WHERE run_id = ?1"
+        ).context("Failed to prepare get_agent_team_by_run")?;
+        let mut rows = stmt.query_map(params![run_id], |row| {
+            Ok(AgentTeam {
+                id: row.get(0)?,
+                run_id: row.get(1)?,
+                strategy: row.get(2)?,
+                isolation: row.get(3)?,
+                plan_summary: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?;
+        Ok(rows.next().transpose()?)
+    }
+
+    // ── Agent Tasks ──────────────────────────────────────────────────
+
+    pub fn create_agent_task(
+        &self,
+        team_id: i64,
+        name: &str,
+        description: &str,
+        agent_role: &str,
+        wave: i32,
+        depends_on: &[i64],
+        isolation_type: &str,
+    ) -> Result<AgentTask> {
+        let depends_json = serde_json::to_string(depends_on)
+            .context("Failed to serialize depends_on")?;
+        self.conn.execute(
+            "INSERT INTO agent_tasks (team_id, name, description, agent_role, wave, depends_on, isolation_type) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![team_id, name, description, agent_role, wave, depends_json, isolation_type],
+        ).context("Failed to insert agent task")?;
+        let id = self.conn.last_insert_rowid();
+        Ok(AgentTask {
+            id,
+            team_id,
+            name: name.to_string(),
+            description: description.to_string(),
+            agent_role: agent_role.to_string(),
+            wave,
+            depends_on: depends_on.to_vec(),
+            status: "pending".to_string(),
+            isolation_type: isolation_type.to_string(),
+            worktree_path: None,
+            container_id: None,
+            branch_name: None,
+            started_at: None,
+            completed_at: None,
+            error: None,
+        })
+    }
+
+    pub fn update_agent_task_status(
+        &self,
+        task_id: i64,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<()> {
+        match status {
+            "running" => {
+                self.conn.execute(
+                    "UPDATE agent_tasks SET status = ?1, started_at = datetime('now') WHERE id = ?2",
+                    params![status, task_id],
+                ).context("Failed to update agent task status to running")?;
+            }
+            "completed" | "failed" => {
+                self.conn.execute(
+                    "UPDATE agent_tasks SET status = ?1, error = ?2, completed_at = datetime('now') WHERE id = ?3",
+                    params![status, error, task_id],
+                ).context("Failed to update agent task status to completed/failed")?;
+            }
+            _ => {
+                self.conn.execute(
+                    "UPDATE agent_tasks SET status = ?1 WHERE id = ?2",
+                    params![status, task_id],
+                ).context("Failed to update agent task status")?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn update_agent_task_isolation(
+        &self,
+        task_id: i64,
+        worktree_path: Option<&str>,
+        container_id: Option<&str>,
+        branch_name: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE agent_tasks SET worktree_path = ?1, container_id = ?2, branch_name = ?3 WHERE id = ?4",
+            params![worktree_path, container_id, branch_name, task_id],
+        ).context("Failed to update agent task isolation")?;
+        Ok(())
+    }
+
+    pub fn get_agent_tasks(&self, team_id: i64) -> Result<Vec<AgentTask>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, team_id, name, description, agent_role, wave, depends_on, status, \
+             isolation_type, worktree_path, container_id, branch_name, started_at, completed_at, error \
+             FROM agent_tasks WHERE team_id = ?1 ORDER BY wave, id"
+        ).context("Failed to prepare get_agent_tasks")?;
+        let rows = stmt.query_map(params![team_id], |row| {
+            let depends_str: String = row.get(6)?;
+            let depends_on: Vec<i64> = match serde_json::from_str(&depends_str) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("[db] Warning: corrupt depends_on JSON '{}': {}", depends_str, e);
+                    vec![]
+                }
+            };
+            Ok(AgentTask {
+                id: row.get(0)?,
+                team_id: row.get(1)?,
+                name: row.get(2)?,
+                description: row.get(3)?,
+                agent_role: row.get(4)?,
+                wave: row.get(5)?,
+                depends_on,
+                status: row.get(7)?,
+                isolation_type: row.get(8)?,
+                worktree_path: row.get(9)?,
+                container_id: row.get(10)?,
+                branch_name: row.get(11)?,
+                started_at: row.get(12)?,
+                completed_at: row.get(13)?,
+                error: row.get(14)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().context("Failed to fetch agent tasks")
+    }
+
+    pub fn get_agent_task(&self, task_id: i64) -> Result<AgentTask> {
+        self.conn.query_row(
+            "SELECT id, team_id, name, description, agent_role, wave, depends_on, status, \
+             isolation_type, worktree_path, container_id, branch_name, started_at, completed_at, error \
+             FROM agent_tasks WHERE id = ?1",
+            params![task_id],
+            |row| {
+                let depends_str: String = row.get(6)?;
+                let depends_on: Vec<i64> = match serde_json::from_str(&depends_str) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("[db] Warning: corrupt depends_on JSON '{}': {}", depends_str, e);
+                        vec![]
+                    }
+                };
+                Ok(AgentTask {
+                    id: row.get(0)?,
+                    team_id: row.get(1)?,
+                    name: row.get(2)?,
+                    description: row.get(3)?,
+                    agent_role: row.get(4)?,
+                    wave: row.get(5)?,
+                    depends_on,
+                    status: row.get(7)?,
+                    isolation_type: row.get(8)?,
+                    worktree_path: row.get(9)?,
+                    container_id: row.get(10)?,
+                    branch_name: row.get(11)?,
+                    started_at: row.get(12)?,
+                    completed_at: row.get(13)?,
+                    error: row.get(14)?,
+                })
+            },
+        ).context("Agent task not found")
+    }
+
+    pub fn get_agent_team_detail(&self, run_id: i64) -> Result<Option<AgentTeamDetail>> {
+        let team = match self.get_agent_team_by_run(run_id)? {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+        let tasks = self.get_agent_tasks(team.id)?;
+        Ok(Some(AgentTeamDetail { team, tasks }))
+    }
+
+    // ── Agent Events ─────────────────────────────────────────────────
+
+    pub fn create_agent_event(
+        &self,
+        task_id: i64,
+        event_type: &str,
+        content: &str,
+        metadata: Option<&serde_json::Value>,
+    ) -> Result<AgentEvent> {
+        let metadata_str = metadata.map(|m| {
+            serde_json::to_string(m).unwrap_or_else(|e| {
+                eprintln!("[db] Warning: failed to serialize event metadata: {}", e);
+                "{}".to_string()
+            })
+        });
+        self.conn.execute(
+            "INSERT INTO agent_events (task_id, event_type, content, metadata) VALUES (?1, ?2, ?3, ?4)",
+            params![task_id, event_type, content, metadata_str],
+        ).context("Failed to insert agent event")?;
+        let id = self.conn.last_insert_rowid();
+        Ok(AgentEvent {
+            id,
+            task_id,
+            event_type: event_type.to_string(),
+            content: content.to_string(),
+            metadata: metadata.cloned(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        })
+    }
+
+    pub fn get_agent_events(
+        &self,
+        task_id: i64,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<AgentEvent>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, task_id, event_type, content, metadata, created_at \
+             FROM agent_events WHERE task_id = ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3"
+        ).context("Failed to prepare get_agent_events")?;
+        let rows = stmt.query_map(params![task_id, limit, offset], |row| {
+            let metadata_str: Option<String> = row.get(4)?;
+            let metadata = metadata_str.and_then(|s| {
+                serde_json::from_str(&s).map_err(|e| {
+                    eprintln!("[db] Warning: corrupt event metadata JSON: {}", e);
+                    e
+                }).ok()
+            });
+            Ok(AgentEvent {
+                id: row.get(0)?,
+                task_id: row.get(1)?,
+                event_type: row.get(2)?,
+                content: row.get(3)?,
+                metadata,
+                created_at: row.get(5)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().context("Failed to fetch agent events")
+    }
 }
 
 // ── Internal row helpers ──────────────────────────────────────────────
@@ -1020,6 +1356,71 @@ mod tests {
     }
 
     #[test]
+    fn test_create_agent_team() -> Result<()> {
+        let db = FactoryDb::new_in_memory()?;
+        let project = db.create_project("test", "/tmp/test")?;
+        let issue = db.create_issue(project.id, "Test issue", "", &IssueColumn::Backlog)?;
+        let run = db.create_pipeline_run(issue.id)?;
+
+        let team = db.create_agent_team(
+            run.id,
+            "wave_pipeline",
+            "hybrid",
+            "Two parallel tasks, one depends on both",
+        )?;
+
+        assert!(team.id > 0);
+        assert_eq!(team.run_id, run.id);
+        assert_eq!(team.strategy, "wave_pipeline");
+        assert_eq!(team.isolation, "hybrid");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_agent_tasks_and_events() -> Result<()> {
+        let db = FactoryDb::new_in_memory()?;
+        let project = db.create_project("test", "/tmp/test")?;
+        let issue = db.create_issue(project.id, "Test issue", "", &IssueColumn::Backlog)?;
+        let run = db.create_pipeline_run(issue.id)?;
+        let team = db.create_agent_team(run.id, "parallel", "worktree", "Two tasks")?;
+
+        // Create two tasks in wave 0, one in wave 1
+        let task1 = db.create_agent_task(team.id, "Fix API", "Fix the API bug", "coder", 0, &[], "worktree")?;
+        let task2 = db.create_agent_task(team.id, "Fix UI", "Fix the UI", "coder", 0, &[], "worktree")?;
+        let task3 = db.create_agent_task(team.id, "Run tests", "Integration tests", "tester", 1, &[task1.id, task2.id], "shared")?;
+
+        assert_eq!(task3.depends_on, vec![task1.id, task2.id]);
+        assert_eq!(task1.status, "pending");
+
+        // Update status
+        db.update_agent_task_status(task1.id, "running", None)?;
+        let updated = db.get_agent_task(task1.id)?;
+        assert_eq!(updated.status, "running");
+        assert!(updated.started_at.is_some());
+
+        db.update_agent_task_status(task1.id, "completed", None)?;
+        let updated = db.get_agent_task(task1.id)?;
+        assert_eq!(updated.status, "completed");
+        assert!(updated.completed_at.is_some());
+
+        // Create events
+        let event = db.create_agent_event(task1.id, "action", "Edited src/api.rs:42", Some(&serde_json::json!({"file": "src/api.rs", "line": 42})))?;
+        assert_eq!(event.event_type, "action");
+
+        let events = db.get_agent_events(task1.id, 10, 0)?;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].content, "Edited src/api.rs:42");
+
+        // Get team detail
+        let detail = db.get_agent_team_detail(run.id)?.unwrap();
+        assert_eq!(detail.tasks.len(), 3);
+        assert_eq!(detail.team.strategy, "parallel");
+
+        Ok(())
+    }
+
+    #[test]
     fn test_get_board_view() -> Result<()> {
         let db = FactoryDb::new_in_memory()?;
         let project = db.create_project("board-test", "/tmp/board")?;
@@ -1111,6 +1512,83 @@ mod tests {
         let issue2 = db.create_issue_from_github(project.id, "Another", "Desc", 43)?;
         assert!(issue2.is_some());
         assert_eq!(issue2.unwrap().position, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_update_agent_task_isolation() -> Result<()> {
+        let db = FactoryDb::new_in_memory()?;
+        let project = db.create_project("test", "/tmp/test")?;
+        let issue = db.create_issue(project.id, "Test", "", &IssueColumn::Backlog)?;
+        let run = db.create_pipeline_run(issue.id)?;
+        let team = db.create_agent_team(run.id, "parallel", "worktree", "Test")?;
+        let task = db.create_agent_task(team.id, "Task 1", "Do stuff", "coder", 0, &[], "worktree")?;
+
+        // Initially null
+        assert!(task.worktree_path.is_none());
+        assert!(task.branch_name.is_none());
+
+        // Update isolation details
+        db.update_agent_task_isolation(
+            task.id,
+            Some("/tmp/worktree-1"),
+            None,
+            Some("forge/run-1-task-1"),
+        )?;
+
+        // Verify round-trip
+        let updated = db.get_agent_task(task.id)?;
+        assert_eq!(updated.worktree_path.as_deref(), Some("/tmp/worktree-1"));
+        assert_eq!(updated.branch_name.as_deref(), Some("forge/run-1-task-1"));
+        assert!(updated.container_id.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_full_agent_team_pipeline_flow() -> Result<()> {
+        let db = FactoryDb::new_in_memory()?;
+        let project = db.create_project("test-project", "/tmp/test")?;
+        let issue = db.create_issue(project.id, "Fix bug", "The API returns 400", &IssueColumn::Backlog)?;
+
+        // Simulate pipeline trigger
+        let run = db.create_pipeline_run(issue.id)?;
+        assert_eq!(run.status, PipelineStatus::Queued);
+
+        // Simulate planner creating a team
+        let team = db.create_agent_team(run.id, "wave_pipeline", "worktree", "Two parallel fixes then test")?;
+        let task1 = db.create_agent_task(team.id, "Fix API", "Fix endpoint", "coder", 0, &[], "worktree")?;
+        let task2 = db.create_agent_task(team.id, "Fix validation", "Fix input validation", "coder", 0, &[], "worktree")?;
+        let task3 = db.create_agent_task(team.id, "Run tests", "Integration tests", "tester", 1, &[task1.id, task2.id], "shared")?;
+
+        // Verify team detail retrieval
+        let detail = db.get_agent_team_detail(run.id)?.unwrap();
+        assert_eq!(detail.tasks.len(), 3);
+
+        // Simulate wave 0 execution
+        db.update_agent_task_status(task1.id, "running", None)?;
+        db.update_agent_task_status(task2.id, "running", None)?;
+
+        // Simulate events
+        db.create_agent_event(task1.id, "action", "Read src/api.rs", None)?;
+        db.create_agent_event(task1.id, "action", "Edited src/api.rs:42", Some(&serde_json::json!({"file": "src/api.rs", "line": 42})))?;
+        db.create_agent_event(task1.id, "thinking", "The bug is in the response serialization", None)?;
+
+        // Complete wave 0
+        db.update_agent_task_status(task1.id, "completed", None)?;
+        db.update_agent_task_status(task2.id, "completed", None)?;
+
+        // Wave 1
+        db.update_agent_task_status(task3.id, "running", None)?;
+        db.update_agent_task_status(task3.id, "completed", None)?;
+
+        // Verify events
+        let events = db.get_agent_events(task1.id, 100, 0)?;
+        assert_eq!(events.len(), 3);
+
+        // Verify all tasks completed
+        let tasks = db.get_agent_tasks(team.id)?;
+        assert!(tasks.iter().all(|t| t.status == "completed"));
 
         Ok(())
     }

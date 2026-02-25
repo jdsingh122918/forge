@@ -76,7 +76,7 @@ function App() {
   const [syncing, setSyncing] = useState(false);
   const [showGithubConnect, setShowGithubConnect] = useState(false);
 
-  const { board, loading, error, wsStatus, moveIssue, createIssue, deleteIssue, triggerPipeline, refresh } =
+  const { board, loading, error, wsStatus, agentTeams, agentEvents, moveIssue, createIssue, deleteIssue, triggerPipeline, refresh } =
     useBoard(selectedProject?.id ?? null);
 
   // Load projects on mount
@@ -222,8 +222,11 @@ function App() {
         {selectedProject && board && (
           <Board
             board={board}
+            agentTeams={agentTeams}
+            agentEvents={agentEvents}
             onMoveIssue={handleMoveIssue}
             onIssueClick={setSelectedIssueId}
+            onTriggerPipeline={handleTriggerPipeline}
             backlogHeaderAction={
               !showNewIssue ? (
                 <button

@@ -6,13 +6,15 @@ use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::broadcast;
 
+use super::agent_executor::AgentExecutor;
 use super::db::FactoryDb;
 use super::models::*;
+use super::planner::Planner;
 use super::sandbox::{DockerSandbox, SandboxConfig};
 use super::ws::{WsMessage, broadcast_message};
 
 /// Convert a title to a URL-safe slug, limited to `max_len` characters.
-fn slugify(title: &str, max_len: usize) -> String {
+pub fn slugify(title: &str, max_len: usize) -> String {
     let slug: String = title
         .to_lowercase()
         .chars()
@@ -209,8 +211,252 @@ impl PipelineRunner {
         }
     }
 
-    /// Start a pipeline run for the given issue.
-    /// Creates a git branch, executes the pipeline, and creates a PR on success.
+    /// Execute a pipeline run using the agent team approach:
+    /// 1. Call planner to decompose the issue into tasks
+    /// 2. Create team + tasks in DB
+    /// 3. Broadcast TeamCreated to connected WebSocket clients
+    /// 4. Execute tasks wave by wave (with worktree isolation and merging between waves)
+    ///
+    /// Returns `Err` for single-task sequential plans to signal fallback to the forge pipeline.
+    async fn execute_agent_team(
+        project_path: &str,
+        run_id: i64,
+        issue_title: &str,
+        issue_description: &str,
+        issue_labels: &[String],
+        branch_name: &Option<String>,
+        db: &Arc<std::sync::Mutex<FactoryDb>>,
+        tx: &broadcast::Sender<String>,
+    ) -> Result<String> {
+        // Step 1: Plan
+        let planner = Planner::new(project_path);
+        let plan = planner
+            .plan(issue_title, issue_description, issue_labels)
+            .await?;
+
+        // If it's a single sequential task, return Err to signal fallback
+        if plan.tasks.len() <= 1 && plan.strategy == "sequential" {
+            anyhow::bail!("Single-task plan; falling back to forge pipeline");
+        }
+
+        // Step 2: Create team + tasks in DB
+        let (team, db_tasks) = {
+            let db_guard = db.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
+            let team = db_guard.create_agent_team(
+                run_id,
+                &plan.strategy,
+                &plan.isolation,
+                &plan.reasoning,
+            )?;
+
+            let mut db_tasks = Vec::new();
+            for plan_task in &plan.tasks {
+                let depends: Vec<i64> = plan_task
+                    .depends_on
+                    .iter()
+                    .filter_map(|&idx| db_tasks.get(idx as usize).map(|t: &AgentTask| t.id))
+                    .collect();
+                let task = db_guard.create_agent_task(
+                    team.id,
+                    &plan_task.name,
+                    &plan_task.description,
+                    &plan_task.role,
+                    plan_task.wave,
+                    &depends,
+                    &plan_task.isolation,
+                )?;
+                db_tasks.push(task);
+            }
+            (team, db_tasks)
+        };
+
+        // Step 3: Broadcast TeamCreated
+        broadcast_message(
+            tx,
+            &WsMessage::TeamCreated {
+                run_id,
+                team_id: team.id,
+                strategy: plan.strategy.clone(),
+                isolation: plan.isolation.clone(),
+                plan_summary: plan.reasoning.clone(),
+                tasks: db_tasks.clone(),
+            },
+        );
+
+        // Step 4: Execute wave by wave
+        let executor = AgentExecutor::new(project_path, Arc::clone(db), tx.clone());
+        let max_wave = plan.max_wave();
+        let base_branch = branch_name.as_deref().unwrap_or("main");
+
+        for wave in 0..=max_wave {
+            let wave_tasks: Vec<&AgentTask> =
+                db_tasks.iter().filter(|t| t.wave == wave).collect();
+
+            if wave_tasks.is_empty() {
+                continue;
+            }
+
+            let task_ids: Vec<i64> = wave_tasks.iter().map(|t| t.id).collect();
+            broadcast_message(
+                tx,
+                &WsMessage::WaveStarted {
+                    run_id,
+                    team_id: team.id,
+                    wave,
+                    task_ids: task_ids.clone(),
+                },
+            );
+
+            // Set up worktrees for tasks that need isolation
+            let mut task_working_dirs: Vec<(AgentTask, std::path::PathBuf, Option<String>)> =
+                Vec::new();
+            for task in &wave_tasks {
+                let (working_dir, task_branch) = if task.isolation_type == "worktree" {
+                    match executor.setup_worktree(run_id, task, base_branch).await {
+                        Ok((path, branch)) => (path, Some(branch)),
+                        Err(e) => {
+                            eprintln!(
+                                "[pipeline] run_id={}: worktree setup failed for task {} ({}): {:#}. \
+                                 Falling back to shared directory.",
+                                run_id, task.id, task.name, e
+                            );
+                            (std::path::PathBuf::from(project_path), None)
+                        }
+                    }
+                } else {
+                    (std::path::PathBuf::from(project_path), None)
+                };
+                task_working_dirs.push(((*task).clone(), working_dir, task_branch));
+            }
+
+            // Run tasks in parallel
+            let mut handles = Vec::new();
+            for (task, working_dir, _branch) in &task_working_dirs {
+                let executor_ref = AgentExecutor::new(
+                    project_path,
+                    Arc::clone(db),
+                    tx.clone(),
+                );
+                let task_clone = task.clone();
+                let dir_clone = working_dir.clone();
+                let run_id_clone = run_id;
+                let use_team = wave_tasks.len() > 1;
+                let worktree_path = if task.isolation_type == "worktree" {
+                    Some(working_dir.clone())
+                } else {
+                    None
+                };
+
+                let handle = tokio::spawn(async move {
+                    executor_ref
+                        .run_task(run_id_clone, &task_clone, use_team, &dir_clone, worktree_path)
+                        .await
+                });
+                handles.push(handle);
+            }
+
+            // Wait for all tasks in this wave
+            let mut success_count: u32 = 0;
+            let mut failed_count: u32 = 0;
+            for handle in handles {
+                match handle.await {
+                    Ok(Ok(true)) => success_count += 1,
+                    Ok(Ok(false)) => {
+                        // Task completed but reported failure (DB already updated by run_task)
+                        failed_count += 1;
+                    }
+                    Ok(Err(e)) => {
+                        eprintln!("[pipeline] run_id={}: task execution error: {:#}", run_id, e);
+                        failed_count += 1;
+                    }
+                    Err(join_err) => {
+                        eprintln!("[pipeline] run_id={}: task panicked: {}", run_id, join_err);
+                        failed_count += 1;
+                    }
+                }
+            }
+
+            // Clean up worktrees and merge branches
+            if wave_tasks.len() > 1
+                || task_working_dirs
+                    .iter()
+                    .any(|(_, _, b)| b.is_some())
+            {
+                broadcast_message(
+                    tx,
+                    &WsMessage::MergeStarted {
+                        run_id,
+                        wave,
+                    },
+                );
+
+                let mut merge_conflicts = false;
+                for (task, _working_dir, task_branch) in &task_working_dirs {
+                    if let Some(branch) = task_branch {
+                        let merged = executor.merge_branch(branch, base_branch).await;
+                        match merged {
+                            Ok(true) => { /* success */ }
+                            Ok(false) => {
+                                eprintln!("[pipeline] run_id={}: merge conflict for branch {}", run_id, branch);
+                                merge_conflicts = true;
+                                break;
+                            }
+                            Err(e) => {
+                                eprintln!("[pipeline] run_id={}: merge command failed for branch {}: {:#}", run_id, branch, e);
+                                merge_conflicts = true;
+                                break;
+                            }
+                        }
+                    }
+                    // Clean up worktree after merge
+                    if task.isolation_type == "worktree" {
+                        if let Some(ref path) = task.worktree_path {
+                            let _ = executor.cleanup_worktree(std::path::Path::new(path)).await;
+                        }
+                    }
+                }
+
+                broadcast_message(
+                    tx,
+                    &WsMessage::MergeCompleted {
+                        run_id,
+                        wave,
+                        conflicts: merge_conflicts,
+                    },
+                );
+            }
+
+            broadcast_message(
+                tx,
+                &WsMessage::WaveCompleted {
+                    run_id,
+                    team_id: team.id,
+                    wave,
+                    success_count,
+                    failed_count,
+                },
+            );
+
+            // If any task failed, abort
+            if failed_count > 0 {
+                anyhow::bail!(
+                    "Wave {} had {} failed tasks",
+                    wave,
+                    failed_count
+                );
+            }
+        }
+
+        Ok(format!(
+            "Agent team completed: {} tasks across {} waves",
+            db_tasks.len(),
+            max_wave + 1
+        ))
+    }
+
+    /// Start a pipeline run for the given issue. Creates a git branch, attempts agent team
+    /// execution (planner -> parallel tasks), falls back to forge pipeline on failure,
+    /// and creates a PR on success.
     pub async fn start_run(
         &self,
         run_id: i64,
@@ -282,40 +528,65 @@ impl PipelineRunner {
                 }
             };
 
-            // Step 2: Auto-generate phases if none exist
-            if !has_forge_phases(&project_path) && is_forge_initialized(&project_path) {
-                // Try to generate phases; if it fails, we'll fall back to simple Claude invocation
-                let _ = auto_generate_phases(&project_path, &issue_title, &issue_description).await;
-            }
+            // Step 2: Try agent team pipeline first, fall back to forge pipeline
+            let issue_labels: Vec<String> = Vec::new(); // TODO: pass labels from issue
+            let result = match Self::execute_agent_team(
+                &project_path,
+                run_id,
+                &issue_title,
+                &issue_description,
+                &issue_labels,
+                &branch_name,
+                &db,
+                &tx,
+            )
+            .await
+            {
+                Ok(summary) => Ok(summary),
+                Err(e) => {
+                    let err_msg = format!("{:#}", e);
+                    if err_msg.contains("Single-task plan") {
+                        eprintln!("[pipeline] run_id={}: {}, using forge pipeline", run_id, err_msg);
+                    } else {
+                        eprintln!("[pipeline] run_id={}: agent team failed unexpectedly: {:#}", run_id, e);
+                    }
+                    // Fall back to forge pipeline
 
-            // Step 3: Execute the pipeline (Docker or Local)
-            let result = if let Some(ref sandbox) = sandbox_clone {
-                let timeout = SandboxConfig::load(std::path::Path::new(&project_path))
-                    .map(|c| c.timeout)
-                    .unwrap_or(1800);
-                execute_pipeline_docker(
-                    run_id,
-                    &project_path,
-                    &issue_title,
-                    &issue_description,
-                    sandbox,
-                    &running_processes,
-                    &db,
-                    &tx,
-                    timeout,
-                )
-                .await
-            } else {
-                execute_pipeline_streaming(
-                    run_id,
-                    &project_path,
-                    &issue_title,
-                    &issue_description,
-                    &running_processes,
-                    &db,
-                    &tx,
-                )
-                .await
+                    // Auto-generate phases if none exist
+                    if !has_forge_phases(&project_path) && is_forge_initialized(&project_path) {
+                        let _ = auto_generate_phases(&project_path, &issue_title, &issue_description).await;
+                    }
+
+                    // Execute the pipeline (Docker or Local)
+                    if let Some(ref sandbox) = sandbox_clone {
+                        let timeout = SandboxConfig::load(std::path::Path::new(&project_path))
+                            .map(|c| c.timeout)
+                            .unwrap_or(1800);
+                        execute_pipeline_docker(
+                            run_id,
+                            &project_path,
+                            &issue_title,
+                            &issue_description,
+                            sandbox,
+                            &running_processes,
+                            &db,
+                            &tx,
+                            timeout,
+                        )
+                        .await
+                    } else {
+                        execute_pipeline_streaming(
+                            run_id,
+                            &project_path,
+                            &issue_title,
+                            &issue_description,
+                            &running_processes,
+                            &db,
+                            &tx,
+                        )
+                        .await
+                    }
+                }
             };
 
             // Clean up the process handle regardless of outcome
@@ -1182,8 +1453,8 @@ mod tests {
         let runner = PipelineRunner::new("/tmp", None);
         runner.start_run(run.id, &issue, db.clone(), tx).await.unwrap();
 
-        // Give the background task time to complete
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        // Give the background task time to complete (includes planner fallback attempt + forge execution)
+        tokio::time::sleep(tokio::time::Duration::from_millis(5000)).await;
 
         // Process should be cleaned up
         {

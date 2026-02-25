@@ -85,6 +85,102 @@ pub enum WsMessage {
         passed: bool,
         findings_count: usize,
     },
+
+    // Agent team lifecycle
+    TeamCreated {
+        run_id: i64,
+        team_id: i64,
+        strategy: String,
+        isolation: String,
+        plan_summary: String,
+        tasks: Vec<AgentTask>,
+    },
+
+    // Wave lifecycle
+    WaveStarted {
+        run_id: i64,
+        team_id: i64,
+        wave: i32,
+        task_ids: Vec<i64>,
+    },
+    WaveCompleted {
+        run_id: i64,
+        team_id: i64,
+        wave: i32,
+        success_count: u32,
+        failed_count: u32,
+    },
+
+    // Agent task lifecycle
+    AgentTaskStarted {
+        run_id: i64,
+        task_id: i64,
+        name: String,
+        role: String,
+        wave: i32,
+    },
+    AgentTaskCompleted {
+        run_id: i64,
+        task_id: i64,
+        success: bool,
+    },
+    AgentTaskFailed {
+        run_id: i64,
+        task_id: i64,
+        error: String,
+    },
+
+    // Agent streaming events
+    AgentThinking {
+        run_id: i64,
+        task_id: i64,
+        content: String,
+    },
+    AgentAction {
+        run_id: i64,
+        task_id: i64,
+        action_type: String,
+        summary: String,
+        metadata: serde_json::Value,
+    },
+    AgentOutput {
+        run_id: i64,
+        task_id: i64,
+        content: String,
+    },
+    AgentSignal {
+        run_id: i64,
+        task_id: i64,
+        signal_type: String,
+        content: String,
+    },
+
+    // Merge events
+    MergeStarted {
+        run_id: i64,
+        wave: i32,
+    },
+    MergeCompleted {
+        run_id: i64,
+        wave: i32,
+        conflicts: bool,
+    },
+    MergeConflict {
+        run_id: i64,
+        wave: i32,
+        files: Vec<String>,
+    },
+
+    // Verification results
+    VerificationResult {
+        run_id: i64,
+        task_id: i64,
+        verification_type: String,
+        passed: bool,
+        summary: String,
+        screenshots: Vec<String>,
+        details: serde_json::Value,
+    },
 }
 
 // ── WebSocket handler ────────────────────────────────────────────────
@@ -192,8 +288,13 @@ async fn run_socket_loop(
 /// Serialize and broadcast a WsMessage to all connected WebSocket clients.
 /// Returns silently even if no clients are connected.
 pub fn broadcast_message(tx: &broadcast::Sender<String>, msg: &WsMessage) {
-    if let Ok(json) = serde_json::to_string(msg) {
-        let _ = tx.send(json); // Ignore error if no receivers
+    match serde_json::to_string(msg) {
+        Ok(json) => {
+            let _ = tx.send(json); // Ignore error if no receivers
+        }
+        Err(e) => {
+            eprintln!("[ws] Failed to serialize WsMessage: {}", e);
+        }
     }
 }
 
@@ -378,6 +479,54 @@ mod tests {
         // Drop all receivers - broadcast_message should not panic
         let msg = WsMessage::IssueDeleted { issue_id: 1 };
         broadcast_message(&tx, &msg); // Should not panic
+    }
+
+    #[test]
+    fn test_team_created_serialization() {
+        let msg = WsMessage::TeamCreated {
+            run_id: 1,
+            team_id: 2,
+            strategy: "wave_pipeline".to_string(),
+            isolation: "hybrid".to_string(),
+            plan_summary: "Two parallel tasks".to_string(),
+            tasks: vec![],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"TeamCreated\""));
+        assert!(json.contains("\"run_id\":1"));
+    }
+
+    #[test]
+    fn test_agent_action_serialization() {
+        let msg = WsMessage::AgentAction {
+            run_id: 1,
+            task_id: 5,
+            action_type: "file_edit".to_string(),
+            summary: "Edited src/api.rs:42".to_string(),
+            metadata: serde_json::json!({"file": "src/api.rs"}),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "AgentAction");
+        assert_eq!(parsed["data"]["task_id"], 5);
+        assert_eq!(parsed["data"]["action_type"], "file_edit");
+    }
+
+    #[test]
+    fn test_verification_result_serialization() {
+        let msg = WsMessage::VerificationResult {
+            run_id: 1,
+            task_id: 10,
+            verification_type: "browser".to_string(),
+            passed: true,
+            summary: "No visual regressions".to_string(),
+            screenshots: vec!["base64data...".to_string()],
+            details: serde_json::json!({"pages_checked": 3}),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["data"]["passed"], true);
+        assert!(parsed["data"]["screenshots"].is_array());
     }
 
     #[test]

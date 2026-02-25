@@ -3,13 +3,15 @@ import { CSS } from '@dnd-kit/utilities';
 import type { IssueWithStatus } from '../types';
 import { PRIORITY_COLORS } from '../types';
 import { PipelineStatus } from './PipelineStatus';
+import { PlayButton } from './PlayButton';
 
 interface IssueCardProps {
   item: IssueWithStatus;
   onClick: (issueId: number) => void;
+  onTriggerPipeline?: (issueId: number) => void;
 }
 
-export function IssueCard({ item, onClick }: IssueCardProps) {
+export function IssueCard({ item, onClick, onTriggerPipeline }: IssueCardProps) {
   const { issue, active_run } = item;
 
   const {
@@ -41,10 +43,18 @@ export function IssueCard({ item, onClick }: IssueCardProps) {
       {...attributes}
       {...listeners}
       onClick={() => onClick(issue.id)}
-      className={`bg-white rounded-lg shadow-sm border border-gray-200 cursor-grab active:cursor-grabbing hover:border-blue-300 hover:shadow transition-all overflow-hidden ${
+      className={`relative bg-white rounded-lg shadow-sm border border-gray-200 cursor-grab active:cursor-grabbing hover:border-blue-300 hover:shadow transition-all overflow-hidden ${
         isDragging ? 'ring-2 ring-blue-400' : ''
       }`}
     >
+      {onTriggerPipeline && (
+        <PlayButton
+          issueId={issue.id}
+          disabled={active_run?.status === 'queued' || active_run?.status === 'running'}
+          loading={active_run?.status === 'queued'}
+          onTrigger={onTriggerPipeline}
+        />
+      )}
       <div className="p-3">
         <p className="text-sm font-medium text-gray-900 mb-2 line-clamp-2">{issue.title}</p>
         <div className="flex items-center justify-between gap-2">

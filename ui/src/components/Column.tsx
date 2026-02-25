@@ -1,12 +1,17 @@
 import type { ReactNode } from 'react';
 import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import type { ColumnView } from '../types';
+import type { ColumnView, AgentTeamDetail, AgentEvent } from '../types';
 import { IssueCard } from './IssueCard';
+import { AgentTeamPanel } from './AgentTeamPanel';
+import { VerificationPanel } from './VerificationPanel';
 
 interface ColumnProps {
   column: ColumnView;
   onIssueClick: (issueId: number) => void;
+  onTriggerPipeline?: (issueId: number) => void;
+  agentTeams?: Map<number, AgentTeamDetail>;
+  agentEvents?: Map<number, AgentEvent[]>;
   headerAction?: ReactNode;
   topSlot?: ReactNode;
 }
@@ -27,7 +32,16 @@ const COLUMN_COLORS: Record<string, string> = {
   done: 'border-t-green-400',
 };
 
-export function Column({ column, onIssueClick, headerAction, topSlot }: ColumnProps) {
+function formatElapsedFromStr(startedAt: string | null | undefined): string {
+  if (!startedAt) return '--';
+  const seconds = Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${minutes}m ${secs}s`;
+}
+
+export function Column({ column, onIssueClick, onTriggerPipeline, agentTeams, agentEvents, headerAction, topSlot }: ColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: column.name });
 
   const itemIds = column.issues.map((item) => item.issue.id.toString());
@@ -53,9 +67,48 @@ export function Column({ column, onIssueClick, headerAction, topSlot }: ColumnPr
       <SortableContext items={itemIds} strategy={verticalListSortingStrategy}>
         <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-2 min-h-[100px]">
           {topSlot}
-          {column.issues.map((item) => (
-            <IssueCard key={item.issue.id} item={item} onClick={onIssueClick} />
-          ))}
+          {column.issues.map((item) => {
+            const teamDetail = item.active_run && agentTeams
+              ? agentTeams.get(item.active_run.id)
+              : undefined;
+
+            // In Progress column: show AgentTeamPanel if team data exists
+            if (column.name === 'in_progress' && teamDetail && agentEvents) {
+              return (
+                <div key={item.issue.id}>
+                  <div className="text-sm font-medium text-gray-900 mb-2 px-1 cursor-pointer hover:text-blue-600" onClick={() => onIssueClick(item.issue.id)}>
+                    {item.issue.title}
+                  </div>
+                  <AgentTeamPanel
+                    teamDetail={teamDetail}
+                    agentEvents={agentEvents}
+                    elapsedTime={formatElapsedFromStr(item.active_run?.started_at)}
+                  />
+                </div>
+              );
+            }
+
+            // In Review column: show VerificationPanel below card if data exists
+            if (column.name === 'in_review' && item.active_run && agentEvents) {
+              const verificationEvents = [...agentEvents.values()].flat().filter(e =>
+                e.metadata?.verification_type
+              );
+              return (
+                <div key={item.issue.id}>
+                  <IssueCard item={item} onClick={onIssueClick} onTriggerPipeline={onTriggerPipeline} />
+                  {verificationEvents.length > 0 && (
+                    <VerificationPanel
+                      run={item.active_run}
+                      verificationEvents={verificationEvents}
+                    />
+                  )}
+                </div>
+              );
+            }
+
+            // Default: standard IssueCard
+            return <IssueCard key={item.issue.id} item={item} onClick={onIssueClick} onTriggerPipeline={onTriggerPipeline} />;
+          })}
         </div>
       </SortableContext>
     </div>
