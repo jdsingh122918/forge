@@ -2548,9 +2548,7 @@ mod factory_cli {
             .arg("--help")
             .assert()
             .success()
-            .stdout(
-                predicate::str::contains("factory").or(predicate::str::contains("Factory")),
-            );
+            .stdout(predicate::str::contains("factory").or(predicate::str::contains("Factory")));
     }
 
     #[test]

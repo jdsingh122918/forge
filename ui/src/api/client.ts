@@ -60,6 +60,12 @@ export const api = {
   cancelPipelineRun: (id: number) =>
     request<import('../types').PipelineRun>(`/runs/${id}/cancel`, { method: 'POST' }),
 
+  // Agent Team
+  getRunTeam: (runId: number) =>
+    request<import('../types').AgentTeamDetail>(`/runs/${runId}/team`),
+  getTaskEvents: (taskId: number, limit: number = 100) =>
+    request<import('../types').AgentEvent[]>(`/tasks/${taskId}/events?limit=${limit}`),
+
   // GitHub OAuth
   githubStatus: () => request<import('../types').GitHubAuthStatus>('/github/status'),
   githubDeviceCode: () => request<import('../types').GitHubDeviceCode>('/github/device-code', { method: 'POST' }),

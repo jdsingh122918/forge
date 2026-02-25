@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { Project, IssueColumn } from './types';
 import { useBoard } from './hooks/useBoard';
+import { useAgentTeam } from './hooks/useAgentTeam';
+import { WebSocketProvider, useWsStatus } from './contexts/WebSocketContext';
 import { api } from './api/client';
 import { Header } from './components/Header';
 import { Board } from './components/Board';
@@ -67,7 +69,7 @@ function GitHubConnectDialog({ onConnected, onClose }: { onConnected: () => void
   );
 }
 
-function App() {
+function AppContent() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [selectedIssueId, setSelectedIssueId] = useState<number | null>(null);
@@ -76,8 +78,22 @@ function App() {
   const [syncing, setSyncing] = useState(false);
   const [showGithubConnect, setShowGithubConnect] = useState(false);
 
-  const { board, loading, error, wsStatus, moveIssue, createIssue, deleteIssue, triggerPipeline, refresh } =
+  const { board, loading, error, moveIssue, createIssue, deleteIssue, triggerPipeline, refresh } =
     useBoard(selectedProject?.id ?? null);
+  const wsStatus = useWsStatus();
+
+  // Derive activeRunId from board's in-progress issues
+  const activeRunId = board?.columns
+    .flatMap(col => col.issues)
+    .find(item => item.active_run?.status === 'running' || item.active_run?.status === 'queued')
+    ?.active_run?.id ?? null;
+
+  const { agentTeam, agentEvents } = useAgentTeam(activeRunId);
+
+  // Build agentTeams map for Board component (keyed by run_id)
+  const agentTeams = agentTeam && activeRunId
+    ? new Map([[activeRunId, agentTeam]])
+    : undefined;
 
   // Load projects on mount
   useEffect(() => {
@@ -222,8 +238,11 @@ function App() {
         {selectedProject && board && (
           <Board
             board={board}
+            agentTeams={agentTeams}
+            agentEvents={agentEvents}
             onMoveIssue={handleMoveIssue}
             onIssueClick={setSelectedIssueId}
+            onTriggerPipeline={handleTriggerPipeline}
             backlogHeaderAction={
               !showNewIssue ? (
                 <button
@@ -265,6 +284,15 @@ function App() {
         />
       )}
     </div>
+  );
+}
+
+function App() {
+  const wsUrl = `ws://${window.location.host}/ws`;
+  return (
+    <WebSocketProvider url={wsUrl}>
+      <AppContent />
+    </WebSocketProvider>
   );
 }
 

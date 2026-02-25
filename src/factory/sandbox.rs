@@ -325,10 +325,14 @@ impl DockerSandbox {
 
         for container in &containers {
             let created = container.created.unwrap_or(0);
-            if now - created > max_age_secs {
-                if let Some(ref id) = container.id {
-                    let _ = self.stop(id).await;
-                    pruned += 1;
+            if now - created > max_age_secs
+                && let Some(ref id) = container.id
+            {
+                match self.stop(id).await {
+                    Ok(()) => pruned += 1,
+                    Err(e) => {
+                        eprintln!("[sandbox] Failed to prune stale container {}: {}", id, e);
+                    }
                 }
             }
         }

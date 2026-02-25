@@ -23,6 +23,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Build UI
+        run: cd ui && npm ci && npm run build
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -51,6 +61,19 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Build UI
+        run: cd ui && npm ci && npm run build
+
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -61,9 +84,6 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
 
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings

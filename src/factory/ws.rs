@@ -1,12 +1,13 @@
 use axum::{
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
     response::IntoResponse,
 };
-use futures_util::{stream::SplitSink, stream::SplitStream, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
 use serde::{Deserialize, Serialize};
+use super::models::{SignalType, VerificationType};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -32,6 +33,7 @@ pub enum WsMessage {
     IssueUpdated {
         issue: Issue,
     },
+    // TODO: from_column/to_column should be IssueColumn once callers in pipeline.rs are updated
     IssueMoved {
         issue_id: i64,
         from_column: String,
@@ -84,6 +86,107 @@ pub enum WsMessage {
         phase_number: String,
         passed: bool,
         findings_count: usize,
+    },
+
+    // Agent team lifecycle
+    TeamCreated {
+        run_id: i64,
+        team_id: i64,
+        strategy: ExecutionStrategy,
+        isolation: IsolationStrategy,
+        plan_summary: String,
+        tasks: Vec<AgentTask>,
+    },
+
+    // Wave lifecycle
+    WaveStarted {
+        run_id: i64,
+        team_id: i64,
+        wave: i32,
+        task_ids: Vec<i64>,
+    },
+    WaveCompleted {
+        run_id: i64,
+        team_id: i64,
+        wave: i32,
+        success_count: u32,
+        failed_count: u32,
+    },
+
+    // Agent task lifecycle
+    AgentTaskStarted {
+        run_id: i64,
+        task_id: i64,
+        name: String,
+        role: AgentRole,
+        wave: i32,
+    },
+    AgentTaskCompleted {
+        run_id: i64,
+        task_id: i64,
+        success: bool,
+    },
+    AgentTaskFailed {
+        run_id: i64,
+        task_id: i64,
+        error: String,
+    },
+
+    // Agent streaming events
+    AgentThinking {
+        run_id: i64,
+        task_id: i64,
+        content: String,
+    },
+    AgentAction {
+        run_id: i64,
+        task_id: i64,
+        action_type: String,
+        summary: String,
+        metadata: serde_json::Value,
+    },
+    AgentOutput {
+        run_id: i64,
+        task_id: i64,
+        content: String,
+    },
+    AgentSignal {
+        run_id: i64,
+        task_id: i64,
+        signal_type: SignalType,
+        content: String,
+    },
+
+    // Merge events
+    MergeStarted {
+        run_id: i64,
+        wave: i32,
+    },
+    MergeCompleted {
+        run_id: i64,
+        wave: i32,
+        conflicts: bool,
+    },
+    MergeConflict {
+        run_id: i64,
+        wave: i32,
+        files: Vec<String>,
+    },
+
+    // Verification results
+    VerificationResult {
+        run_id: i64,
+        task_id: i64,
+        verification_type: VerificationType,
+        passed: bool,
+        summary: String,
+        screenshots: Vec<String>,
+        details: serde_json::Value,
+    },
+
+    // Project lifecycle
+    ProjectCreated {
+        project: Project,
     },
 }
 
@@ -154,7 +257,7 @@ async fn run_socket_loop(
             result = rx.recv() => {
                 match result {
                     Ok(msg) => {
-                        if sender.send(Message::Text(msg.into())).await.is_err() {
+                        if sender.send(Message::Text(msg)).await.is_err() {
                             break;
                         }
                     }
@@ -192,8 +295,13 @@ async fn run_socket_loop(
 /// Serialize and broadcast a WsMessage to all connected WebSocket clients.
 /// Returns silently even if no clients are connected.
 pub fn broadcast_message(tx: &broadcast::Sender<String>, msg: &WsMessage) {
-    if let Ok(json) = serde_json::to_string(msg) {
-        let _ = tx.send(json); // Ignore error if no receivers
+    match serde_json::to_string(msg) {
+        Ok(json) => {
+            let _ = tx.send(json); // Ignore error if no receivers
+        }
+        Err(e) => {
+            eprintln!("[ws] Failed to serialize WsMessage: {}", e);
+        }
     }
 }
 
@@ -263,6 +371,8 @@ mod tests {
             pr_url: None,
             started_at: "2024-01-01".to_string(),
             completed_at: None,
+            team_id: None,
+            has_team: false,
         };
         let msg = WsMessage::PipelineStarted { run };
         let json = serde_json::to_string(&msg).unwrap();
@@ -299,6 +409,8 @@ mod tests {
             pr_url: Some("https://github.com/org/repo/pull/42".to_string()),
             started_at: "2024-01-01".to_string(),
             completed_at: Some("2024-01-02".to_string()),
+            team_id: None,
+            has_team: false,
         };
         let msg = WsMessage::PipelineCompleted { run };
         let json = serde_json::to_string(&msg).unwrap();
@@ -322,6 +434,8 @@ mod tests {
             pr_url: None,
             started_at: "2024-01-01".to_string(),
             completed_at: Some("2024-01-02".to_string()),
+            team_id: None,
+            has_team: false,
         };
         let msg = WsMessage::PipelineFailed { run };
         let json = serde_json::to_string(&msg).unwrap();
@@ -378,6 +492,239 @@ mod tests {
         // Drop all receivers - broadcast_message should not panic
         let msg = WsMessage::IssueDeleted { issue_id: 1 };
         broadcast_message(&tx, &msg); // Should not panic
+    }
+
+    #[test]
+    fn test_team_created_serialization() {
+        let msg = WsMessage::TeamCreated {
+            run_id: 1,
+            team_id: 2,
+            strategy: ExecutionStrategy::WavePipeline,
+            isolation: IsolationStrategy::Hybrid,
+            plan_summary: "Two parallel tasks".to_string(),
+            tasks: vec![],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"TeamCreated\""));
+        assert!(json.contains("\"run_id\":1"));
+        assert!(json.contains("\"strategy\":\"wave_pipeline\""));
+        assert!(json.contains("\"isolation\":\"hybrid\""));
+    }
+
+    #[test]
+    fn test_agent_action_serialization() {
+        let msg = WsMessage::AgentAction {
+            run_id: 1,
+            task_id: 5,
+            action_type: "file_edit".to_string(),
+            summary: "Edited src/api.rs:42".to_string(),
+            metadata: serde_json::json!({"file": "src/api.rs"}),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "AgentAction");
+        assert_eq!(parsed["data"]["task_id"], 5);
+        assert_eq!(parsed["data"]["action_type"], "file_edit");
+    }
+
+    #[test]
+    fn test_verification_result_serialization() {
+        let msg = WsMessage::VerificationResult {
+            run_id: 1,
+            task_id: 10,
+            verification_type: VerificationType::Browser,
+            passed: true,
+            summary: "No visual regressions".to_string(),
+            screenshots: vec!["base64data...".to_string()],
+            details: serde_json::json!({"pages_checked": 3}),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["data"]["passed"], true);
+        assert!(parsed["data"]["screenshots"].is_array());
+    }
+
+    #[test]
+    fn test_wave_started_serialization() {
+        let msg = WsMessage::WaveStarted {
+            run_id: 1,
+            team_id: 2,
+            wave: 0,
+            task_ids: vec![10, 11, 12],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"WaveStarted\""));
+        assert!(json.contains("\"wave\":0"));
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::WaveStarted { run_id, wave, task_ids, .. } => {
+                assert_eq!(run_id, 1);
+                assert_eq!(wave, 0);
+                assert_eq!(task_ids, vec![10, 11, 12]);
+            }
+            _ => panic!("Expected WaveStarted"),
+        }
+    }
+
+    #[test]
+    fn test_wave_completed_serialization() {
+        let msg = WsMessage::WaveCompleted {
+            run_id: 1,
+            team_id: 2,
+            wave: 0,
+            success_count: 2,
+            failed_count: 1,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"WaveCompleted\""));
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::WaveCompleted { success_count, failed_count, .. } => {
+                assert_eq!(success_count, 2);
+                assert_eq!(failed_count, 1);
+            }
+            _ => panic!("Expected WaveCompleted"),
+        }
+    }
+
+    #[test]
+    fn test_agent_task_started_serialization() {
+        let msg = WsMessage::AgentTaskStarted {
+            run_id: 1,
+            task_id: 5,
+            name: "Fix API".to_string(),
+            role: AgentRole::Coder,
+            wave: 0,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"AgentTaskStarted\""));
+        assert!(json.contains("\"role\":\"coder\""));
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::AgentTaskStarted { task_id, name, role, .. } => {
+                assert_eq!(task_id, 5);
+                assert_eq!(name, "Fix API");
+                assert_eq!(role, AgentRole::Coder);
+            }
+            _ => panic!("Expected AgentTaskStarted"),
+        }
+    }
+
+    #[test]
+    fn test_agent_task_completed_serialization() {
+        let msg = WsMessage::AgentTaskCompleted {
+            run_id: 1,
+            task_id: 5,
+            success: true,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"AgentTaskCompleted\""));
+        assert!(json.contains("\"success\":true"));
+    }
+
+    #[test]
+    fn test_agent_task_failed_serialization() {
+        let msg = WsMessage::AgentTaskFailed {
+            run_id: 1,
+            task_id: 5,
+            error: "OOM killed".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"AgentTaskFailed\""));
+        assert!(json.contains("\"OOM killed\""));
+    }
+
+    #[test]
+    fn test_agent_thinking_serialization() {
+        let msg = WsMessage::AgentThinking {
+            run_id: 1,
+            task_id: 5,
+            content: "Analyzing the API response format".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"AgentThinking\""));
+        assert!(json.contains("\"content\":\"Analyzing"));
+    }
+
+    #[test]
+    fn test_agent_output_serialization() {
+        let msg = WsMessage::AgentOutput {
+            run_id: 1,
+            task_id: 5,
+            content: "Fixed the serialization bug".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"AgentOutput\""));
+    }
+
+    #[test]
+    fn test_agent_signal_serialization() {
+        let msg = WsMessage::AgentSignal {
+            run_id: 1,
+            task_id: 5,
+            signal_type: SignalType::Progress,
+            content: "50% complete".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"AgentSignal\""));
+        assert!(json.contains("\"signal_type\":\"progress\""));
+    }
+
+    #[test]
+    fn test_merge_started_serialization() {
+        let msg = WsMessage::MergeStarted {
+            run_id: 1,
+            wave: 0,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"MergeStarted\""));
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::MergeStarted { run_id, wave } => {
+                assert_eq!(run_id, 1);
+                assert_eq!(wave, 0);
+            }
+            _ => panic!("Expected MergeStarted"),
+        }
+    }
+
+    #[test]
+    fn test_merge_completed_serialization() {
+        let msg = WsMessage::MergeCompleted {
+            run_id: 1,
+            wave: 0,
+            conflicts: false,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"MergeCompleted\""));
+        assert!(json.contains("\"conflicts\":false"));
+    }
+
+    #[test]
+    fn test_merge_conflict_serialization() {
+        let msg = WsMessage::MergeConflict {
+            run_id: 1,
+            wave: 0,
+            files: vec!["src/api.rs".to_string(), "src/handler.rs".to_string()],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"MergeConflict\""));
+        assert!(json.contains("\"src/api.rs\""));
+    }
+
+    #[test]
+    fn test_project_created_serialization() {
+        let project = Project {
+            id: 1,
+            name: "test".to_string(),
+            path: "/tmp/test".to_string(),
+            github_repo: None,
+            created_at: "2024-01-01".to_string(),
+        };
+        let msg = WsMessage::ProjectCreated { project };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"ProjectCreated\""));
+        assert!(json.contains("\"name\":\"test\""));
     }
 
     #[test]

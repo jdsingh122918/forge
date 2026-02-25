@@ -1,16 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { BoardView, IssueColumn, WsMessage, IssueWithStatus } from '../types';
 import { api } from '../api/client';
-import { useWebSocket } from './useWebSocket';
+import { useWsSubscribe } from '../contexts/WebSocketContext';
 
 export function useBoard(projectId: number | null) {
   const [board, setBoard] = useState<BoardView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const prevBoardRef = useRef<BoardView | null>(null);
-
-  const wsUrl = `ws://${window.location.host}/ws`;
-  const { lastMessage, connectionStatus: wsStatus } = useWebSocket(wsUrl);
 
   // Fetch initial board
   const fetchBoard = useCallback(async () => {
@@ -32,10 +29,7 @@ export function useBoard(projectId: number | null) {
   }, [fetchBoard]);
 
   // Apply WebSocket updates incrementally
-  useEffect(() => {
-    if (!lastMessage || !board) return;
-    const msg = lastMessage as WsMessage;
-
+  const handleWsMessage = useCallback((msg: WsMessage) => {
     setBoard(prev => {
       if (!prev) return prev;
 
@@ -68,7 +62,6 @@ export function useBoard(projectId: number | null) {
         }
         case 'IssueMoved': {
           const { issue_id, from_column, to_column, position } = msg.data;
-          // Find the issue in the source column
           let movedItem: IssueWithStatus | undefined;
           const withoutSource = prev.columns.map(col => {
             if (col.name === from_column) {
@@ -80,10 +73,8 @@ export function useBoard(projectId: number | null) {
             }
             return col;
           });
-          if (!movedItem) return prev; // Not found, re-fetch as fallback
-          // Update the issue's column
+          if (!movedItem) return prev;
           movedItem = { ...movedItem, issue: { ...movedItem.issue, column: to_column as IssueColumn } };
-          // Insert at position in target column
           return {
             ...prev,
             columns: withoutSource.map(col => {
@@ -177,13 +168,18 @@ export function useBoard(projectId: number | null) {
             })),
           };
         }
+        case 'ProjectCreated': {
+          // Board doesn't need to handle this
+          return prev;
+        }
         default:
-          // Unknown message type — fall back to full re-fetch
-          fetchBoard();
+          // Agent/merge/verification messages handled by useAgentTeam
           return prev;
       }
     });
-  }, [lastMessage, fetchBoard]);
+  }, []);
+
+  useWsSubscribe(handleWsMessage);
 
   // Optimistic move: update local state immediately, rollback on error
   const moveIssue = useCallback(async (issueId: number, column: IssueColumn, position: number) => {
@@ -251,5 +247,5 @@ export function useBoard(projectId: number | null) {
     }
   }, []);
 
-  return { board, loading, error, wsStatus, moveIssue, createIssue, deleteIssue, triggerPipeline, refresh: fetchBoard };
+  return { board, loading, error, moveIssue, createIssue, deleteIssue, triggerPipeline, refresh: fetchBoard };
 }

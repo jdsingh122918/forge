@@ -15,6 +15,8 @@ interface IssueDetailProps {
 export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: IssueDetailProps) {
   const [detail, setDetail] = useState<IssueDetailType | null>(null);
   const [loading, setLoading] = useState(true);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState('');
 
   useEffect(() => {
     setLoading(true);
@@ -41,7 +43,48 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
     <div className="fixed inset-y-0 right-0 w-96 bg-white shadow-2xl border-l border-gray-200 z-50 flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-        <h2 className="text-lg font-semibold text-gray-900 truncate">{issue.title}</h2>
+        {editingTitle ? (
+          <input
+            autoFocus
+            className="text-lg font-semibold text-gray-900 border border-blue-400 rounded px-1 py-0.5 flex-1 mr-2 outline-none focus:ring-2 focus:ring-blue-300"
+            value={titleDraft}
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onKeyDown={async (e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                const trimmed = titleDraft.trim();
+                if (trimmed && trimmed !== issue.title) {
+                  await api.updateIssue(issueId, { title: trimmed });
+                  const updated = await api.getIssue(issueId);
+                  setDetail(updated);
+                }
+                setEditingTitle(false);
+              } else if (e.key === 'Escape') {
+                setEditingTitle(false);
+              }
+            }}
+            onBlur={async () => {
+              const trimmed = titleDraft.trim();
+              if (trimmed && trimmed !== issue.title) {
+                await api.updateIssue(issueId, { title: trimmed });
+                const updated = await api.getIssue(issueId);
+                setDetail(updated);
+              }
+              setEditingTitle(false);
+            }}
+          />
+        ) : (
+          <h2
+            className="text-lg font-semibold text-gray-900 truncate cursor-pointer hover:text-blue-700"
+            onDoubleClick={() => {
+              setTitleDraft(issue.title);
+              setEditingTitle(true);
+            }}
+            title="Double-click to edit title"
+          >
+            {issue.title}
+          </h2>
+        )}
         <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
       </div>
 
@@ -89,7 +132,14 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
               {runs.slice().reverse().map((run) => (
                 <div key={run.id} className="bg-gray-50 rounded-md p-3 text-sm">
                   <div className="flex items-center justify-between mb-1">
-                    <PipelineStatus run={run} />
+                    <div className="flex items-center gap-1.5">
+                      <PipelineStatus run={run} />
+                      {run.has_team && (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-purple-50 text-purple-600 font-medium">
+                          Team
+                        </span>
+                      )}
+                    </div>
                     <span className="text-xs text-gray-400">#{run.id}</span>
                   </div>
                   {run.branch_name && (
@@ -142,6 +192,21 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
         >
           {hasActiveRun ? 'Pipeline Running...' : 'Run Pipeline'}
         </button>
+        {hasActiveRun && (
+          <button
+            onClick={async () => {
+              const activeRun = runs.find(r => r.status === 'queued' || r.status === 'running');
+              if (activeRun) {
+                await api.cancelPipelineRun(activeRun.id);
+                const updated = await api.getIssue(issueId);
+                setDetail(updated);
+              }
+            }}
+            className="px-3 py-2 text-sm font-medium text-orange-600 bg-orange-50 rounded-md hover:bg-orange-100 transition-colors"
+          >
+            Cancel
+          </button>
+        )}
         <button
           onClick={() => { if (confirm('Delete this issue?')) onDelete(issueId); }}
           className="px-3 py-2 text-sm font-medium text-red-600 bg-red-50 rounded-md hover:bg-red-100 transition-colors"

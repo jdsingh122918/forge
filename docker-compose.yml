@@ -12,11 +12,11 @@ services:
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
       - CLAUDE_CMD=${CLAUDE_CMD:-claude}
       - FORGE_CMD=${FORGE_CMD:-forge}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
       - FORGE_SANDBOX=${FORGE_SANDBOX:-false}
     volumes:
-      - ./.forge:/app/.forge
-      - .:/app/project:ro
+      - .:/app/project
       - /var/run/docker.sock:/var/run/docker.sock
     working_dir: /app/project
     command: ["factory", "--port", "3141"]
@@ -33,6 +33,7 @@ services:
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
       - CLAUDE_CMD=${CLAUDE_CMD:-claude}
       - FORGE_CMD=${FORGE_CMD:-forge}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
       - FORGE_SANDBOX=${FORGE_SANDBOX:-false}
       - RUST_LOG=debug

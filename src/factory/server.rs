@@ -13,7 +13,7 @@ use tower_http::cors::CorsLayer;
 use tokio::sync::broadcast;
 
 use super::api::{self, AppState};
-use super::db::FactoryDb;
+use super::db::{DbHandle, FactoryDb};
 use super::embedded::Assets;
 use super::pipeline::PipelineRunner;
 use super::sandbox::DockerSandbox;
@@ -56,14 +56,16 @@ async fn static_handler(req: Request<Body>) -> impl IntoResponse {
     let path = req.uri().path().trim_start_matches('/');
 
     // Try to serve the exact file
-    if !path.is_empty() {
-        if let Some(content) = Assets::get(path) {
-            let mime = mime_guess::from_path(path).first_or_octet_stream();
-            return Response::builder()
-                .header(header::CONTENT_TYPE, mime.as_ref())
-                .body(Body::from(content.data.to_vec()))
-                .unwrap()
-                .into_response();
+    if !path.is_empty()
+        && let Some(content) = Assets::get(path)
+    {
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        match Response::builder()
+            .header(header::CONTENT_TYPE, mime.as_ref())
+            .body(Body::from(content.data.to_vec()))
+        {
+            Ok(resp) => return resp.into_response(),
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         }
     }
 
@@ -95,10 +97,10 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
             Some(sandbox) => {
                 eprintln!("[factory] Docker sandbox enabled");
                 let s = Arc::new(sandbox);
-                if let Ok(pruned) = s.prune_stale_containers(7200).await {
-                    if pruned > 0 {
-                        eprintln!("[factory] Pruned {} stale pipeline containers", pruned);
-                    }
+                if let Ok(pruned) = s.prune_stale_containers(7200).await
+                    && pruned > 0
+                {
+                    eprintln!("[factory] Pruned {} stale pipeline containers", pruned);
                 }
                 Some(s)
             }
@@ -112,13 +114,18 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     };
 
     let pipeline_runner = PipelineRunner::new(&config.project_path, sandbox);
+    let db_handle = DbHandle::new(db);
+
+    let persisted_token = db_handle.lock_sync()
+        .context("Failed to acquire DB lock during startup")?
+        .get_setting("github_token").ok().flatten();
 
     let state = Arc::new(AppState {
-        db: Arc::new(std::sync::Mutex::new(db)),
+        db: db_handle,
         ws_tx,
         pipeline_runner,
         github_client_id,
-        github_token: std::sync::Mutex::new(None),
+        github_token: std::sync::Mutex::new(persisted_token),
     });
 
     let state_for_shutdown = Arc::clone(&state);
@@ -169,7 +176,7 @@ mod tests {
         let (ws_tx, _) = broadcast::channel(16);
         let pipeline_runner = PipelineRunner::new("/tmp/test", None);
         let state = Arc::new(AppState {
-            db: Arc::new(std::sync::Mutex::new(db)),
+            db: DbHandle::new(db),
             ws_tx,
             pipeline_runner,
             github_client_id: None,

@@ -783,7 +783,10 @@ impl ForgeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     // =========================================
     // PermissionMode tests
@@ -984,18 +987,28 @@ permission_mode = "strict"
 
     #[test]
     fn test_forge_toml_claude_cmd_priority() {
-        // Default
+        let _guard = ENV_MUTEX.lock().unwrap();
+
+        // Save and clear CLAUDE_CMD to isolate from other tests
+        let saved = std::env::var("CLAUDE_CMD").ok();
+        unsafe { std::env::remove_var("CLAUDE_CMD") };
+
+        // Default — without env var set, should return "claude"
         let toml = ForgeToml::default();
-        // Without env var set, should return "claude"
         assert_eq!(toml.claude_cmd(), "claude");
 
-        // From file
+        // From file — explicit claude_cmd takes precedence
         let content = r#"
 [project]
 claude_cmd = "file-claude"
 "#;
         let toml = ForgeToml::parse(content).unwrap();
         assert_eq!(toml.claude_cmd(), "file-claude");
+
+        // Restore
+        if let Some(val) = saved {
+            unsafe { std::env::set_var("CLAUDE_CMD", val) };
+        }
     }
 
     // =========================================
