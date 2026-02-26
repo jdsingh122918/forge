@@ -54,6 +54,21 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Permission modes for phase execution.
+///
+/// The mode controls two orthogonal dimensions: which Claude tools are
+/// available (the *allowed-tools list*) and how the orchestrator handles
+/// iteration approval (the *gate behaviour*).
+///
+/// | Mode       | When to use              | Gate behavior                           |
+/// |------------|--------------------------|-----------------------------------------|
+/// | `Readonly` | Auditing / inspection    | Auto-approves all; blocks file writes   |
+/// | `Standard` | Normal development       | Threshold-based auto-approve (≤N files) |
+/// | `Autonomous` | Well-tested, CI        | Auto-approves all; stale-check per iter |
+/// | `Strict`   | Sensitive / high-risk    | Requires manual approval every iteration|
+///
+/// `Standard` is the default. The `auto_approve_threshold` field in
+/// `[defaults]` (or a phase override) sets the file-count ceiling for
+/// Standard mode's automatic approval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionMode {

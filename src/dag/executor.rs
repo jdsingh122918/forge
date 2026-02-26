@@ -2,6 +2,40 @@
 //!
 //! The executor runs phases in parallel while respecting dependencies and
 //! integrating with the review system for quality gates.
+//!
+//! ## Wave-Based Parallelism
+//!
+//! Phases are grouped into *waves* by [`DagScheduler::compute_waves`]. All
+//! phases within a wave have no dependencies on one another, so they can run
+//! concurrently. The executor does **not** advance to wave N+1 until every
+//! phase in wave N has finished (succeeded or failed).
+//!
+//! ```text
+//! Phases (with deps)          Scheduler            Executor
+//! ──────────────────────      ─────────────         ────────────────────
+//!   A ──┐                     Wave 0: [A, B]  ───>  spawn A │ spawn B
+//!   B ──┤──> C ──> D          Wave 1: [C]     ───>  spawn C  (A & B done)
+//!        └─> E                Wave 2: [D, E]  ───>  spawn D │ spawn E
+//! ```
+//!
+//! ## Dependency Resolution
+//!
+//! [`DagScheduler`] builds a directed acyclic graph from phase dependency
+//! declarations. It uses topological sorting (via `petgraph`) to assign each
+//! phase to a wave number equal to its longest dependency chain length.
+//! [`get_ready_phases`] returns phases whose predecessors are all in the
+//! `completed` state, so the executor always has a safe set to spawn next.
+//!
+//! ## Cancellation Semantics
+//!
+//! When `fail_fast` is enabled in [`DagConfig`] and a phase fails, the
+//! executor aborts all remaining `JoinHandle`s for the current wave's
+//! in-flight sibling tasks and breaks out of the main loop immediately.
+//! Sibling phases that were already running are interrupted; phases in later
+//! waves are never started. When `fail_fast` is disabled (the default), a
+//! failing phase is recorded in the summary but sibling and subsequent phases
+//! continue running — this is useful for independent parallel workloads where
+//! a failure in one track should not block the others.
 
 use crate::config::Config;
 use crate::dag::scheduler::{DagConfig, DagScheduler};

@@ -15,6 +15,66 @@ pub struct SwarmStatus {
     pub failed_phases: Vec<String>,
 }
 
+/// Compute the completion percentage for a swarm run.
+///
+/// Returns a value in `[0.0, 100.0]`. Returns `0.0` when `total` is zero to
+/// avoid division-by-zero. This is pure logic that can be unit-tested without
+/// external processes.
+pub fn completion_pct(completed: usize, total: usize) -> f64 {
+    if total > 0 {
+        (completed as f64 / total as f64) * 100.0
+    } else {
+        0.0
+    }
+}
+
+/// Expand the `--review` argument into an ordered list of specialist names.
+///
+/// The special value `"all"` expands to the four built-in specialists in a
+/// fixed order. Any other value is split on commas and trimmed. This is pure
+/// logic that can be unit-tested without external processes.
+pub fn expand_review_specialists(review: &str) -> Vec<String> {
+    if review == "all" {
+        vec![
+            "security".to_string(),
+            "performance".to_string(),
+            "architecture".to_string(),
+            "simplicity".to_string(),
+        ]
+    } else {
+        review.split(',').map(|s| s.trim().to_string()).collect()
+    }
+}
+
+/// Validate the arbiter confidence value.
+///
+/// Returns `Ok(())` when the value is in `[0.0, 1.0]`, or an error otherwise.
+/// This is pure logic that can be unit-tested without external processes.
+pub fn validate_arbiter_confidence(value: f64) -> Result<()> {
+    if (0.0..=1.0).contains(&value) {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "--arbiter-confidence must be between 0.0 and 1.0, got {}",
+            value
+        )
+    }
+}
+
+/// Parse a backend string into a canonical lowercase key.
+///
+/// Returns one of `"in-process"`, `"tmux"`, `"iterm2"`, or `"auto"`.
+/// This mirrors the match logic in `cmd_swarm` and can be unit-tested without
+/// external processes.
+pub fn parse_backend_key(backend: &str) -> &'static str {
+    match backend.to_lowercase().as_str() {
+        "in-process" | "inprocess" => "in-process",
+        "tmux" => "tmux",
+        "iterm2" => "iterm2",
+        _ => "auto",
+    }
+}
+
 /// Show current swarm execution status
 pub fn cmd_swarm_status(project_dir: &std::path::Path) -> Result<()> {
     use forge::init::get_forge_dir;
@@ -49,12 +109,10 @@ pub fn cmd_swarm_status(project_dir: &std::path::Path) -> Result<()> {
             );
         }
         println!();
-        let completion_pct = if status.total_phases > 0 {
-            (status.completed_phases as f64 / status.total_phases as f64) * 100.0
-        } else {
-            0.0
-        };
-        println!("Completion: {:.1}%", completion_pct);
+        println!(
+            "Completion: {:.1}%",
+            completion_pct(status.completed_phases, status.total_phases)
+        );
     } else {
         println!("Swarm status: {}", content);
     }
@@ -131,12 +189,7 @@ pub async fn cmd_swarm(
     let _ = permission_mode; // Acknowledge unused parameter
 
     // Validate arbiter confidence
-    if !(0.0..=1.0).contains(&arbiter_confidence) {
-        anyhow::bail!(
-            "--arbiter-confidence must be between 0.0 and 1.0, got {}",
-            arbiter_confidence
-        );
-    }
+    validate_arbiter_confidence(arbiter_confidence)?;
 
     // Parse escalation types
     let escalation_types: Vec<String> = escalate_on
@@ -180,18 +233,7 @@ pub async fn cmd_swarm(
     // Build review config
     let review_enabled = review.is_some();
     let review_specialists: Vec<String> = review
-        .map(|r| {
-            if r == "all" {
-                vec![
-                    "security".to_string(),
-                    "performance".to_string(),
-                    "architecture".to_string(),
-                    "simplicity".to_string(),
-                ]
-            } else {
-                r.split(',').map(|s| s.trim().to_string()).collect()
-            }
-        })
+        .map(|r| expand_review_specialists(r))
         .unwrap_or_default();
 
     let dag_review_config = ReviewConfig {
@@ -348,4 +390,168 @@ pub async fn cmd_swarm(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── completion_pct ────────────────────────────────────────────────────────
+
+    #[test]
+    fn completion_pct_zero_total_returns_zero() {
+        assert_eq!(completion_pct(0, 0), 0.0);
+    }
+
+    #[test]
+    fn completion_pct_none_completed() {
+        assert_eq!(completion_pct(0, 10), 0.0);
+    }
+
+    #[test]
+    fn completion_pct_half_completed() {
+        assert!((completion_pct(5, 10) - 50.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn completion_pct_all_completed() {
+        assert!((completion_pct(7, 7) - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn completion_pct_partial_gives_correct_fraction() {
+        // 3 of 4 = 75%
+        assert!((completion_pct(3, 4) - 75.0).abs() < f64::EPSILON);
+    }
+
+    // ── validate_arbiter_confidence ───────────────────────────────────────────
+
+    #[test]
+    fn validate_arbiter_confidence_zero_is_valid() {
+        assert!(validate_arbiter_confidence(0.0).is_ok());
+    }
+
+    #[test]
+    fn validate_arbiter_confidence_one_is_valid() {
+        assert!(validate_arbiter_confidence(1.0).is_ok());
+    }
+
+    #[test]
+    fn validate_arbiter_confidence_midpoint_is_valid() {
+        assert!(validate_arbiter_confidence(0.7).is_ok());
+    }
+
+    #[test]
+    fn validate_arbiter_confidence_below_zero_is_invalid() {
+        let err = validate_arbiter_confidence(-0.1).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("0.0"), "expected 0.0 in error: {msg}");
+        assert!(msg.contains("1.0"), "expected 1.0 in error: {msg}");
+    }
+
+    #[test]
+    fn validate_arbiter_confidence_above_one_is_invalid() {
+        let err = validate_arbiter_confidence(1.01).unwrap_err();
+        assert!(err.to_string().contains("1.0"));
+    }
+
+    // ── expand_review_specialists ─────────────────────────────────────────────
+
+    #[test]
+    fn expand_review_specialists_all_gives_four_built_ins() {
+        let specialists = expand_review_specialists("all");
+        assert_eq!(specialists.len(), 4);
+        assert!(specialists.contains(&"security".to_string()));
+        assert!(specialists.contains(&"performance".to_string()));
+        assert!(specialists.contains(&"architecture".to_string()));
+        assert!(specialists.contains(&"simplicity".to_string()));
+    }
+
+    #[test]
+    fn expand_review_specialists_single_value() {
+        let specialists = expand_review_specialists("security");
+        assert_eq!(specialists, vec!["security"]);
+    }
+
+    #[test]
+    fn expand_review_specialists_comma_separated() {
+        let specialists = expand_review_specialists("security,performance");
+        assert_eq!(specialists, vec!["security", "performance"]);
+    }
+
+    #[test]
+    fn expand_review_specialists_trims_whitespace() {
+        let specialists = expand_review_specialists("security , performance");
+        assert_eq!(specialists, vec!["security", "performance"]);
+    }
+
+    // ── parse_backend_key ─────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_backend_key_in_process_variants() {
+        assert_eq!(parse_backend_key("in-process"), "in-process");
+        assert_eq!(parse_backend_key("inprocess"), "in-process");
+        assert_eq!(parse_backend_key("IN-PROCESS"), "in-process");
+        assert_eq!(parse_backend_key("InProcess"), "in-process");
+    }
+
+    #[test]
+    fn parse_backend_key_tmux() {
+        assert_eq!(parse_backend_key("tmux"), "tmux");
+        assert_eq!(parse_backend_key("TMUX"), "tmux");
+    }
+
+    #[test]
+    fn parse_backend_key_iterm2() {
+        assert_eq!(parse_backend_key("iterm2"), "iterm2");
+        assert_eq!(parse_backend_key("ITERM2"), "iterm2");
+    }
+
+    #[test]
+    fn parse_backend_key_unknown_falls_back_to_auto() {
+        assert_eq!(parse_backend_key("unknown"), "auto");
+        assert_eq!(parse_backend_key(""), "auto");
+        assert_eq!(parse_backend_key("docker"), "auto");
+    }
+
+    // ── SwarmStatus serialization ─────────────────────────────────────────────
+
+    #[test]
+    fn swarm_status_roundtrips_through_json() {
+        let status = SwarmStatus {
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            state: "running".to_string(),
+            total_phases: 8,
+            completed_phases: 3,
+            running_phases: vec!["04".to_string(), "05".to_string()],
+            failed_phases: vec![],
+        };
+
+        let json = serde_json::to_string(&status).expect("serialize");
+        let deserialized: SwarmStatus = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(deserialized.total_phases, 8);
+        assert_eq!(deserialized.completed_phases, 3);
+        assert_eq!(deserialized.running_phases, vec!["04", "05"]);
+        assert!(deserialized.failed_phases.is_empty());
+        assert_eq!(deserialized.state, "running");
+    }
+
+    #[test]
+    fn swarm_status_with_failed_phases_roundtrips() {
+        let status = SwarmStatus {
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            state: "failed".to_string(),
+            total_phases: 5,
+            completed_phases: 2,
+            running_phases: vec![],
+            failed_phases: vec!["03".to_string()],
+        };
+
+        let json = serde_json::to_string(&status).expect("serialize");
+        let deserialized: SwarmStatus = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(deserialized.failed_phases, vec!["03"]);
+        assert_eq!(deserialized.state, "failed");
+    }
 }

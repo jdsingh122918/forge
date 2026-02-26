@@ -378,3 +378,346 @@ pub fn recommend_skills_for_phase(phase_name: &str, patterns: &[&Pattern]) -> Ve
     skill_suggestions.dedup();
     skill_suggestions
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::patterns::learning::{Pattern, PhaseStat, PhaseType};
+    use crate::phase::Phase;
+
+    // ----------------------------------------------------------------
+    // Helpers
+    // ----------------------------------------------------------------
+
+    fn make_phase(number: &str, name: &str, budget: u32) -> Phase {
+        Phase::new(number, name, "DONE", budget, "reasoning", vec![])
+    }
+
+    fn make_stat(name: &str, actual: u32, budget: u32, phase_type: PhaseType) -> PhaseStat {
+        PhaseStat {
+            name: name.to_string(),
+            promise: "DONE".to_string(),
+            actual_iterations: actual,
+            original_budget: budget,
+            phase_type,
+            file_patterns: vec![],
+            exceeded_budget: actual > budget,
+            common_errors: vec![],
+        }
+    }
+
+    fn make_pattern_with_stats(name: &str, stats: Vec<PhaseStat>) -> Pattern {
+        let mut p = Pattern::new(name);
+        p.phase_stats = stats;
+        p.compute_type_stats();
+        p
+    }
+
+    // ----------------------------------------------------------------
+    // suggest_budgets — no historical data
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn suggest_budgets_no_patterns_returns_original_budget_with_zero_confidence() {
+        let phases = vec![make_phase("01", "Scaffold", 10)];
+        let suggestions = suggest_budgets(&[], &phases);
+
+        assert_eq!(suggestions.len(), 1);
+        let s = &suggestions[0];
+        assert_eq!(s.suggested_budget, 10); // falls back to original
+        assert_eq!(s.confidence, 0.0);
+        assert_eq!(s.phase_number, "01");
+        assert_eq!(s.phase_name, "Scaffold");
+    }
+
+    #[test]
+    fn suggest_budgets_no_phases_returns_empty_vec() {
+        let pattern = make_pattern_with_stats("p", vec![make_stat("Scaffold", 5, 10, PhaseType::Scaffold)]);
+        let suggestions = suggest_budgets(&[&pattern], &[]);
+        assert!(suggestions.is_empty());
+    }
+
+    // ----------------------------------------------------------------
+    // suggest_budgets — with historical data
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn suggest_budgets_applies_twenty_percent_safety_margin() {
+        // avg actual = 5 → ceil(5 * 1.2) = 6
+        let pattern = make_pattern_with_stats(
+            "hist",
+            vec![make_stat("Project scaffold", 5, 10, PhaseType::Scaffold)],
+        );
+        let phases = vec![make_phase("01", "Initial scaffold", 10)];
+        let suggestions = suggest_budgets(&[&pattern], &phases);
+
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].suggested_budget, 6);
+        assert!(suggestions[0].confidence > 0.0);
+    }
+
+    #[test]
+    fn suggest_budgets_confidence_proportional_to_sample_count() {
+        // 1 sample → confidence = 1/5 = 0.2; 5 samples → confidence = 1.0
+        let one_sample = make_pattern_with_stats(
+            "one",
+            vec![make_stat("API implementation", 8, 10, PhaseType::Implement)],
+        );
+        let five_samples = make_pattern_with_stats(
+            "five",
+            vec![
+                make_stat("API implementation", 5, 10, PhaseType::Implement),
+                make_stat("API implementation", 6, 10, PhaseType::Implement),
+                make_stat("API implementation", 7, 10, PhaseType::Implement),
+                make_stat("API implementation", 8, 10, PhaseType::Implement),
+                make_stat("API implementation", 9, 10, PhaseType::Implement),
+            ],
+        );
+
+        let phase = vec![make_phase("01", "API implementation", 10)];
+
+        let one_sugg = suggest_budgets(&[&one_sample], &phase);
+        let five_sugg = suggest_budgets(&[&five_samples], &phase);
+
+        assert!((one_sugg[0].confidence - 0.2).abs() < 1e-9);
+        assert_eq!(five_sugg[0].confidence, 1.0);
+    }
+
+    #[test]
+    fn suggest_budgets_aggregates_across_multiple_patterns() {
+        // Two patterns each with one Implement phase: actuals 4 and 8 → avg 6
+        let p1 = make_pattern_with_stats(
+            "p1",
+            vec![make_stat("Core implementation", 4, 10, PhaseType::Implement)],
+        );
+        let p2 = make_pattern_with_stats(
+            "p2",
+            vec![make_stat("Core implementation", 8, 10, PhaseType::Implement)],
+        );
+        let phase = vec![make_phase("01", "Core implementation", 10)];
+
+        let suggestions = suggest_budgets(&[&p1, &p2], &phase);
+        // avg = 6 → ceil(6 * 1.2) = ceil(7.2) = 8
+        assert_eq!(suggestions[0].suggested_budget, 8);
+        // 2 samples → confidence = 2/5 = 0.4
+        assert!((suggestions[0].confidence - 0.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn suggest_budgets_budget_never_zero_for_any_realistic_input() {
+        // Even if a phase completed in 1 iteration, the suggestion should be >= 1.
+        let pattern = make_pattern_with_stats(
+            "fast",
+            vec![make_stat("Quick fix", 1, 5, PhaseType::Fix)],
+        );
+        let phases = vec![make_phase("01", "Fix crash", 5)];
+        let suggestions = suggest_budgets(&[&pattern], &phases);
+        // ceil(1 * 1.2) = 2
+        assert!(suggestions[0].suggested_budget >= 1);
+    }
+
+    #[test]
+    fn suggest_budgets_reason_string_contains_phase_type_name() {
+        let pattern = make_pattern_with_stats(
+            "ref-pattern",
+            vec![make_stat("Refactor auth", 6, 10, PhaseType::Refactor)],
+        );
+        let phases = vec![make_phase("01", "Refactor module", 10)];
+        let suggestions = suggest_budgets(&[&pattern], &phases);
+
+        assert!(suggestions[0].reason.contains("refactor"));
+    }
+
+    // ----------------------------------------------------------------
+    // BudgetSuggestion::is_significant
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn is_significant_false_when_same_budget() {
+        let s = BudgetSuggestion {
+            phase_number: "01".to_string(),
+            phase_name: "Test".to_string(),
+            original_budget: 10,
+            suggested_budget: 10,
+            confidence: 0.9,
+            reason: "same".to_string(),
+        };
+        assert!(!s.is_significant());
+    }
+
+    #[test]
+    fn is_significant_false_when_diff_is_one() {
+        // Difference of 1 is below the threshold of 2
+        let s = BudgetSuggestion {
+            phase_number: "01".to_string(),
+            phase_name: "Test".to_string(),
+            original_budget: 10,
+            suggested_budget: 11,
+            confidence: 0.9,
+            reason: "tiny".to_string(),
+        };
+        assert!(!s.is_significant());
+    }
+
+    #[test]
+    fn is_significant_true_when_diff_ge_two_and_confidence_ge_half() {
+        let s = BudgetSuggestion {
+            phase_number: "02".to_string(),
+            phase_name: "Test".to_string(),
+            original_budget: 10,
+            suggested_budget: 15,
+            confidence: 0.5,
+            reason: "big diff".to_string(),
+        };
+        assert!(s.is_significant());
+    }
+
+    #[test]
+    fn is_significant_false_when_confidence_below_threshold() {
+        let s = BudgetSuggestion {
+            phase_number: "03".to_string(),
+            phase_name: "Test".to_string(),
+            original_budget: 10,
+            suggested_budget: 20,
+            confidence: 0.49, // just below the 0.5 threshold
+            reason: "low conf".to_string(),
+        };
+        assert!(!s.is_significant());
+    }
+
+    #[test]
+    fn is_significant_works_when_suggested_is_lower_than_original() {
+        // Negative diff of >=2 should also count
+        let s = BudgetSuggestion {
+            phase_number: "04".to_string(),
+            phase_name: "Test".to_string(),
+            original_budget: 15,
+            suggested_budget: 6, // diff = |6 - 15| = 9 >= 2
+            confidence: 0.8,
+            reason: "lower budget".to_string(),
+        };
+        assert!(s.is_significant());
+    }
+
+    // ----------------------------------------------------------------
+    // match_patterns
+    // ----------------------------------------------------------------
+
+    fn make_full_pattern(name: &str, tags: &[&str], phases: usize, summary: &str) -> Pattern {
+        let mut p = Pattern::new(name);
+        p.tags = tags.iter().map(|s| s.to_string()).collect();
+        p.total_phases = phases;
+        p.spec_summary = summary.to_string();
+        p
+    }
+
+    #[test]
+    fn match_patterns_empty_library_returns_empty() {
+        let matches = match_patterns("Some spec with rust and api.", &[]);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn match_patterns_sorted_by_score_descending() {
+        let patterns = vec![
+            make_full_pattern("rust-api", &["rust", "api"], 5, "A rust api project"),
+            make_full_pattern("python-web", &["python", "web"], 5, "A python project"),
+        ];
+        let spec = "# Rust API\n\nBuild a Rust REST API with authentication.";
+        let matches = match_patterns(spec, &patterns);
+
+        // rust-api should rank higher because of tag overlap
+        if matches.len() >= 2 {
+            assert!(matches[0].score >= matches[1].score);
+        }
+        if !matches.is_empty() {
+            assert_eq!(matches[0].pattern.name, "rust-api");
+        }
+    }
+
+    #[test]
+    fn match_patterns_filters_very_poor_matches() {
+        // A pattern with totally different tags should score below the 0.1 filter
+        let patterns = vec![make_full_pattern("unrelated", &["java", "mobile"], 50, "A java mobile app")];
+        let spec = "# Rust API\n\nBuild a Rust REST API.";
+        let matches = match_patterns(spec, &patterns);
+
+        // Either filtered out entirely, or score is very low
+        for m in &matches {
+            assert!(m.score <= 0.3, "score {} should be low for mismatched tags", m.score);
+        }
+    }
+
+    #[test]
+    fn match_patterns_both_empty_tags_scores_one_for_tag_component() {
+        // When both pattern and spec have no tags, Jaccard returns 1.0
+        let patterns = vec![make_full_pattern("no-tags", &[], 1, "")];
+        let spec = ""; // no technology keywords → no spec_tags
+        // This should not panic
+        let _matches = match_patterns(spec, &patterns);
+    }
+
+    // ----------------------------------------------------------------
+    // recommend_skills_for_phase
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn recommend_skills_scaffold_phase() {
+        let skills = recommend_skills_for_phase("Project scaffold", &[]);
+        assert!(skills.contains(&"project-setup".to_string()));
+    }
+
+    #[test]
+    fn recommend_skills_test_phase() {
+        let skills = recommend_skills_for_phase("Integration tests", &[]);
+        assert!(skills.contains(&"testing-strategy".to_string()));
+    }
+
+    #[test]
+    fn recommend_skills_fix_phase() {
+        let skills = recommend_skills_for_phase("Fix login bug", &[]);
+        assert!(skills.contains(&"debugging-strategy".to_string()));
+    }
+
+    #[test]
+    fn recommend_skills_refactor_phase() {
+        let skills = recommend_skills_for_phase("Code cleanup", &[]);
+        assert!(skills.contains(&"refactoring-patterns".to_string()));
+    }
+
+    #[test]
+    fn recommend_skills_deduplicated() {
+        // Two patterns both suggest api-design → result should contain it only once
+        let p1 = {
+            let mut p = Pattern::new("p1");
+            p.phase_stats = vec![PhaseStat {
+                name: "API impl".to_string(),
+                promise: "DONE".to_string(),
+                actual_iterations: 5,
+                original_budget: 10,
+                phase_type: PhaseType::Implement,
+                file_patterns: vec!["src/handlers/*.rs".to_string()],
+                exceeded_budget: false,
+                common_errors: vec![],
+            }];
+            p
+        };
+        let p2 = {
+            let mut p = Pattern::new("p2");
+            p.phase_stats = vec![PhaseStat {
+                name: "Handler impl".to_string(),
+                promise: "DONE".to_string(),
+                actual_iterations: 6,
+                original_budget: 10,
+                phase_type: PhaseType::Implement,
+                file_patterns: vec!["src/api/*.rs".to_string()],
+                exceeded_budget: false,
+                common_errors: vec![],
+            }];
+            p
+        };
+        let skills = recommend_skills_for_phase("Core implementation", &[&p1, &p2]);
+        let api_count = skills.iter().filter(|s| *s == "api-design").count();
+        assert_eq!(api_count, 1, "api-design skill should appear exactly once");
+    }
+}

@@ -45,12 +45,20 @@
 //!
 //! 1. `PATCH /api/issues/:id/move` → `api::move_issue_handler()`
 //! 2. Column becomes `InProgress` → `pipeline_runner.run_pipeline(issue_id)`
-//! 3. `PipelineRunner` acquires `GitLockMap` entry, calls `Planner::plan()`
-//! 4. For each `AgentTask`: `AgentExecutor::run_task()` spawns `forge` or a
-//!    Docker-sandboxed subprocess and streams stdout lines
+//! 3. `PipelineRunner` acquires a per-repo `GitLockMap` entry (prevents
+//!    concurrent branch checkouts on the same repo), then calls
+//!    `Planner::plan()` which returns a `Vec<AgentTask>`.
+//!    **Git branch creation** happens here: `pipeline.rs` calls
+//!    `git checkout -b feat/<issue-slug>` before handing tasks to the executor.
+//! 4. For each `AgentTask`: `AgentExecutor::run_task()` either spawns
+//!    the `forge` CLI directly (no sandbox) or wraps it in a
+//!    **Docker sandbox** (`sandbox.rs` / `DockerSandbox`) when
+//!    `SandboxConfig::enabled` is true. The Docker container mounts the repo
+//!    read-write and streams stdout lines back to the host process.
 //! 5. Each parsed `ParsedEvent` is persisted to `db` and broadcast via `ws`
-//! 6. On completion, `pipeline.rs` calls `create_pull_request()` then moves
-//!    the issue to `Done`
+//!    so the React UI receives live phase-progress events over WebSocket.
+//! 6. On completion, `pipeline.rs` calls `github::create_pull_request()` (via
+//!    the `gh` CLI) then transitions the issue column to `Done`.
 
 pub mod agent_executor;
 pub mod api;

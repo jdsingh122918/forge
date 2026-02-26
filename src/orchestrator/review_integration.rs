@@ -200,10 +200,7 @@ impl ReviewIntegration {
 
     /// Convert a PhaseSpecialistConfig to a ReviewSpecialist.
     fn phase_config_to_specialist(config: &PhaseSpecialistConfig) -> ReviewSpecialist {
-        let specialist_type = SpecialistType::from_str(&config.specialist_type)
-            .unwrap_or(SpecialistType::Custom(config.specialist_type.clone()));
-
-        let mut specialist = ReviewSpecialist::new(specialist_type, config.gate);
+        let mut specialist = ReviewSpecialist::new(config.specialist_type.clone(), config.gate);
 
         if !config.focus_areas.is_empty() {
             specialist = specialist.with_focus_areas(config.focus_areas.clone());
@@ -383,12 +380,12 @@ mod tests {
         phase.reviews = Some(crate::phase::PhaseReviewSettings {
             specialists: vec![
                 PhaseSpecialistConfig {
-                    specialist_type: "security".to_string(),
+                    specialist_type: SpecialistType::SecuritySentinel,
                     gate: true,
                     focus_areas: vec!["XSS".to_string()],
                 },
                 PhaseSpecialistConfig {
-                    specialist_type: "performance".to_string(),
+                    specialist_type: SpecialistType::PerformanceOracle,
                     gate: false,
                     focus_areas: vec![],
                 },

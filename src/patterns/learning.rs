@@ -841,3 +841,467 @@ pub(crate) fn truncate_str(s: &str, max_len: usize) -> String {
         format!("{}...", truncated)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================================
+    // PhaseType::classify
+    // ============================================================
+
+    #[test]
+    fn classify_scaffold_keywords() {
+        for name in &["Project scaffold", "Initial setup", "Bootstrap", "Init phase", "Boilerplate", "skeleton"] {
+            assert_eq!(
+                PhaseType::classify(name),
+                PhaseType::Scaffold,
+                "expected Scaffold for {:?}",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn classify_test_keywords() {
+        for name in &["Unit tests", "Add test coverage", "E2E spec", "Integration test"] {
+            assert_eq!(
+                PhaseType::classify(name),
+                PhaseType::Test,
+                "expected Test for {:?}",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn classify_refactor_keywords() {
+        for name in &["Refactor auth", "Code cleanup", "Optimize queries", "Simplify logic"] {
+            assert_eq!(
+                PhaseType::classify(name),
+                PhaseType::Refactor,
+                "expected Refactor for {:?}",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn classify_restructure_is_scaffold_due_to_substring_priority() {
+        // "restructure" contains "structure", so the Scaffold check fires first.
+        // This documents the current priority behaviour of classify().
+        assert_eq!(PhaseType::classify("Restructure modules"), PhaseType::Scaffold);
+    }
+
+    #[test]
+    fn classify_fix_keywords() {
+        for name in &["Fix login bug", "Bug fixes", "Hotfix deploy", "Patch CVE", "Repair crash", "Correct output"] {
+            assert_eq!(
+                PhaseType::classify(name),
+                PhaseType::Fix,
+                "expected Fix for {:?}",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn classify_defaults_to_implement() {
+        // None of the reserved keywords appear in these names.
+        for name in &["API implementation", "Auth module", "Database schema", "Core logic"] {
+            assert_eq!(
+                PhaseType::classify(name),
+                PhaseType::Implement,
+                "expected Implement for {:?}",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn classify_is_case_insensitive() {
+        assert_eq!(PhaseType::classify("PROJECT SCAFFOLD"), PhaseType::Scaffold);
+        assert_eq!(PhaseType::classify("UNIT TESTS"), PhaseType::Test);
+        assert_eq!(PhaseType::classify("FIX BUG"), PhaseType::Fix);
+    }
+
+    // ============================================================
+    // PhaseTypeStats::from_phases
+    // ============================================================
+
+    fn make_stat(actual: u32, budget: u32, phase_type: PhaseType) -> PhaseStat {
+        PhaseStat {
+            name: "phase".to_string(),
+            promise: "DONE".to_string(),
+            actual_iterations: actual,
+            original_budget: budget,
+            phase_type,
+            file_patterns: vec![],
+            exceeded_budget: actual > budget,
+            common_errors: vec![],
+        }
+    }
+
+    #[test]
+    fn phase_type_stats_empty_slice_returns_default() {
+        let stats = PhaseTypeStats::from_phases(&[]);
+        assert_eq!(stats.count, 0);
+        assert_eq!(stats.avg_iterations, 0.0);
+        assert_eq!(stats.min_iterations, 0);
+        assert_eq!(stats.max_iterations, 0);
+        assert_eq!(stats.avg_budget, 0.0);
+        assert_eq!(stats.success_rate, 0.0);
+    }
+
+    #[test]
+    fn phase_type_stats_single_phase_within_budget() {
+        let s = make_stat(4, 10, PhaseType::Scaffold);
+        let stats = PhaseTypeStats::from_phases(&[&s]);
+        assert_eq!(stats.count, 1);
+        assert_eq!(stats.avg_iterations, 4.0);
+        assert_eq!(stats.min_iterations, 4);
+        assert_eq!(stats.max_iterations, 4);
+        assert_eq!(stats.avg_budget, 10.0);
+        assert_eq!(stats.success_rate, 1.0);
+    }
+
+    #[test]
+    fn phase_type_stats_single_phase_exceeds_budget() {
+        let s = make_stat(15, 10, PhaseType::Implement);
+        let stats = PhaseTypeStats::from_phases(&[&s]);
+        assert_eq!(stats.success_rate, 0.0);
+    }
+
+    #[test]
+    fn phase_type_stats_multiple_phases_averages_correctly() {
+        // actual: 4, 6, 8 — budget: 10 for all; all within budget
+        let s1 = make_stat(4, 10, PhaseType::Implement);
+        let s2 = make_stat(6, 10, PhaseType::Implement);
+        let s3 = make_stat(8, 10, PhaseType::Implement);
+        let stats = PhaseTypeStats::from_phases(&[&s1, &s2, &s3]);
+
+        assert_eq!(stats.count, 3);
+        // (4 + 6 + 8) / 3 = 6.0
+        assert!((stats.avg_iterations - 6.0).abs() < 1e-9);
+        assert_eq!(stats.min_iterations, 4);
+        assert_eq!(stats.max_iterations, 8);
+        assert_eq!(stats.success_rate, 1.0);
+    }
+
+    #[test]
+    fn phase_type_stats_outlier_data_raises_max_but_not_min() {
+        // Normal phases complete in ~5 iterations; one outlier at 50.
+        let normal1 = make_stat(5, 10, PhaseType::Implement);
+        let normal2 = make_stat(4, 10, PhaseType::Implement);
+        let outlier = make_stat(50, 10, PhaseType::Implement);
+        let stats = PhaseTypeStats::from_phases(&[&normal1, &normal2, &outlier]);
+
+        assert_eq!(stats.max_iterations, 50);
+        assert_eq!(stats.min_iterations, 4);
+        // avg = (5 + 4 + 50) / 3 ≈ 19.67
+        assert!((stats.avg_iterations - 19.666_666_666_666_668).abs() < 1e-9);
+        // Only the two normal phases are within budget → success_rate = 2/3
+        assert!((stats.success_rate - 2.0 / 3.0).abs() < 1e-9);
+    }
+
+    // ============================================================
+    // Pattern::calculate_success_rate
+    // ============================================================
+
+    #[test]
+    fn success_rate_zero_when_no_phases() {
+        let p = Pattern::new("empty");
+        assert_eq!(p.calculate_success_rate(), 0.0);
+    }
+
+    #[test]
+    fn success_rate_all_within_budget() {
+        let mut p = Pattern::new("perfect");
+        p.total_phases = 3;
+        p.phase_stats = vec![
+            make_stat(5, 10, PhaseType::Scaffold),
+            make_stat(7, 10, PhaseType::Implement),
+            make_stat(9, 10, PhaseType::Test),
+        ];
+        assert_eq!(p.calculate_success_rate(), 1.0);
+    }
+
+    #[test]
+    fn success_rate_none_within_budget() {
+        let mut p = Pattern::new("over");
+        p.total_phases = 2;
+        p.phase_stats = vec![
+            make_stat(11, 10, PhaseType::Implement),
+            make_stat(15, 10, PhaseType::Implement),
+        ];
+        assert_eq!(p.calculate_success_rate(), 0.0);
+    }
+
+    #[test]
+    fn success_rate_partial() {
+        let mut p = Pattern::new("partial");
+        p.total_phases = 4;
+        p.phase_stats = vec![
+            make_stat(5, 10, PhaseType::Scaffold),    // within
+            make_stat(10, 10, PhaseType::Implement),  // exactly at budget → within
+            make_stat(11, 10, PhaseType::Implement),  // exceeded
+            make_stat(8, 10, PhaseType::Test),        // within
+        ];
+        // 3 out of 4 within budget
+        assert_eq!(p.calculate_success_rate(), 0.75);
+    }
+
+    // ============================================================
+    // Pattern::suggest_budget_for_type
+    // ============================================================
+
+    #[test]
+    fn suggest_budget_returns_none_for_unknown_type() {
+        let mut p = Pattern::new("no-test-data");
+        // Only scaffold data; no Test data at all.
+        p.phase_stats = vec![make_stat(5, 10, PhaseType::Scaffold)];
+        p.compute_type_stats();
+        assert!(p.suggest_budget_for_type(PhaseType::Test).is_none());
+    }
+
+    #[test]
+    fn suggest_budget_applies_twenty_percent_margin() {
+        // avg actual = 5 → suggested = ceil(5 * 1.2) = ceil(6.0) = 6
+        let mut p = Pattern::new("margin-test");
+        p.phase_stats = vec![make_stat(5, 10, PhaseType::Scaffold)];
+        p.compute_type_stats();
+
+        let (budget, _) = p.suggest_budget_for_type(PhaseType::Scaffold).unwrap();
+        assert_eq!(budget, 6);
+    }
+
+    #[test]
+    fn suggest_budget_ceiling_rounds_up() {
+        // avg actual = 7 → 7 * 1.2 = 8.4 → ceil = 9
+        let mut p = Pattern::new("ceil-test");
+        p.phase_stats = vec![make_stat(7, 10, PhaseType::Implement)];
+        p.compute_type_stats();
+
+        let (budget, _) = p.suggest_budget_for_type(PhaseType::Implement).unwrap();
+        assert_eq!(budget, 9);
+    }
+
+    #[test]
+    fn suggest_budget_confidence_grows_with_sample_size() {
+        // 1 sample → confidence = 1/5 = 0.2; 5+ samples → confidence = 1.0
+        let make_impl_stat = |a: u32| make_stat(a, 10, PhaseType::Implement);
+
+        let mut p1 = Pattern::new("one-sample");
+        p1.phase_stats = vec![make_impl_stat(5)];
+        p1.compute_type_stats();
+        let (_, conf1) = p1.suggest_budget_for_type(PhaseType::Implement).unwrap();
+
+        let mut p5 = Pattern::new("five-samples");
+        p5.phase_stats = vec![
+            make_impl_stat(5),
+            make_impl_stat(6),
+            make_impl_stat(7),
+            make_impl_stat(4),
+            make_impl_stat(8),
+        ];
+        p5.compute_type_stats();
+        let (_, conf5) = p5.suggest_budget_for_type(PhaseType::Implement).unwrap();
+
+        assert!((conf1 - 0.2).abs() < 1e-9);
+        assert_eq!(conf5, 1.0);
+        assert!(conf1 < conf5);
+    }
+
+    #[test]
+    fn suggest_budget_low_utilisation_gives_lower_suggestion_than_high() {
+        // Low: phase consistently completes in 3 out of 10 budget iterations
+        let mut low = Pattern::new("low-util");
+        low.phase_stats = vec![
+            make_stat(3, 10, PhaseType::Implement),
+            make_stat(3, 10, PhaseType::Implement),
+            make_stat(3, 10, PhaseType::Implement),
+        ];
+        low.compute_type_stats();
+        let (low_budget, _) = low.suggest_budget_for_type(PhaseType::Implement).unwrap();
+
+        // High: phase maxes out its budget every time (10/10)
+        let mut high = Pattern::new("high-util");
+        high.phase_stats = vec![
+            make_stat(10, 10, PhaseType::Implement),
+            make_stat(10, 10, PhaseType::Implement),
+            make_stat(10, 10, PhaseType::Implement),
+        ];
+        high.compute_type_stats();
+        let (high_budget, _) = high.suggest_budget_for_type(PhaseType::Implement).unwrap();
+
+        assert!(
+            low_budget < high_budget,
+            "low-utilisation pattern should suggest smaller budget: {} vs {}",
+            low_budget,
+            high_budget
+        );
+        // Exact values: low → ceil(3 * 1.2) = 4; high → ceil(10 * 1.2) = 12
+        assert_eq!(low_budget, 4);
+        assert_eq!(high_budget, 12);
+    }
+
+    // ============================================================
+    // Pattern::compute_type_stats
+    // ============================================================
+
+    #[test]
+    fn compute_type_stats_groups_by_phase_type() {
+        let mut p = Pattern::new("grouped");
+        p.phase_stats = vec![
+            make_stat(5, 10, PhaseType::Scaffold),
+            make_stat(8, 10, PhaseType::Implement),
+            make_stat(12, 10, PhaseType::Implement), // exceeded
+        ];
+        p.compute_type_stats();
+
+        let scaffold = p.type_stats.get("scaffold").unwrap();
+        assert_eq!(scaffold.count, 1);
+        assert_eq!(scaffold.avg_iterations, 5.0);
+
+        let implement = p.type_stats.get("implement").unwrap();
+        assert_eq!(implement.count, 2);
+        assert!((implement.avg_iterations - 10.0).abs() < 1e-9);
+        assert_eq!(implement.success_rate, 0.5);
+    }
+
+    #[test]
+    fn compute_type_stats_empty_phase_stats() {
+        let mut p = Pattern::new("empty-stats");
+        p.compute_type_stats();
+        assert!(p.type_stats.is_empty());
+    }
+
+    // ============================================================
+    // Pattern::compute_common_file_patterns
+    // ============================================================
+
+    #[test]
+    fn compute_common_file_patterns_deduplicates() {
+        let mut p = Pattern::new("dedup");
+        let mut s1 = make_stat(5, 10, PhaseType::Implement);
+        s1.file_patterns = vec!["src/*.rs".to_string(), "tests/*.rs".to_string()];
+        let mut s2 = make_stat(6, 10, PhaseType::Implement);
+        s2.file_patterns = vec!["src/*.rs".to_string()];
+        p.phase_stats = vec![s1, s2];
+        p.compute_common_file_patterns();
+
+        // src/*.rs appears twice but should be deduplicated in the output
+        let src_count = p.common_file_patterns.iter().filter(|f| *f == "src/*.rs").count();
+        assert_eq!(src_count, 1);
+    }
+
+    #[test]
+    fn compute_common_file_patterns_sorted() {
+        let mut p = Pattern::new("sorted");
+        let mut s = make_stat(5, 10, PhaseType::Implement);
+        s.file_patterns = vec!["z/*.rs".to_string(), "a/*.rs".to_string(), "m/*.rs".to_string()];
+        p.phase_stats = vec![s];
+        p.compute_common_file_patterns();
+
+        let sorted = p.common_file_patterns.clone();
+        let mut expected = sorted.clone();
+        expected.sort();
+        assert_eq!(sorted, expected);
+    }
+
+    // ============================================================
+    // generalize_file_pattern
+    // ============================================================
+
+    #[test]
+    fn generalize_file_pattern_converts_to_glob() {
+        assert_eq!(generalize_file_pattern("src/main.rs"), "src/*.rs");
+        assert_eq!(generalize_file_pattern("src/handlers/user.rs"), "src/handlers/*.rs");
+        assert_eq!(generalize_file_pattern("tests/api_test.py"), "tests/*.py");
+        assert_eq!(generalize_file_pattern("migrations/001_init.sql"), "migrations/*.sql");
+    }
+
+    #[test]
+    fn generalize_file_pattern_no_extension_returns_path_as_is() {
+        // A file with no extension falls through to the path.to_string() fallback
+        let result = generalize_file_pattern("Makefile");
+        assert_eq!(result, "Makefile");
+    }
+
+    // ============================================================
+    // extract_tags_from_spec
+    // ============================================================
+
+    #[test]
+    fn extract_tags_empty_input() {
+        assert!(extract_tags_from_spec("").is_empty());
+    }
+
+    #[test]
+    fn extract_tags_detects_rust_and_api() {
+        let spec = "A Rust REST API service.";
+        let tags = extract_tags_from_spec(spec);
+        assert!(tags.contains(&"rust".to_string()));
+        assert!(tags.contains(&"api".to_string()));
+    }
+
+    #[test]
+    fn extract_tags_deduplicates_synonyms() {
+        // "rest" and "api" both map to tag "api"; only one "api" should appear
+        let spec = "A REST API endpoint.";
+        let tags = extract_tags_from_spec(spec);
+        let api_count = tags.iter().filter(|t| *t == "api").count();
+        assert_eq!(api_count, 1);
+    }
+
+    #[test]
+    fn extract_tags_sorted_output() {
+        let spec = "Uses redis, react, rust, postgres and docker.";
+        let tags = extract_tags_from_spec(spec);
+        let mut sorted = tags.clone();
+        sorted.sort();
+        assert_eq!(tags, sorted, "tags should be returned in sorted order");
+    }
+
+    #[test]
+    fn extract_tags_case_insensitive() {
+        let tags = extract_tags_from_spec("RUST API with POSTGRESQL database.");
+        assert!(tags.contains(&"rust".to_string()));
+        assert!(tags.contains(&"postgres".to_string()));
+    }
+
+    // ============================================================
+    // extract_summary_from_spec
+    // ============================================================
+
+    #[test]
+    fn extract_summary_empty_input() {
+        assert_eq!(extract_summary_from_spec(""), "");
+    }
+
+    #[test]
+    fn extract_summary_only_headers_returns_empty() {
+        assert_eq!(extract_summary_from_spec("# Title\n## Sub\n### Sub-sub"), "");
+    }
+
+    #[test]
+    fn extract_summary_picks_first_paragraph() {
+        let spec = "# Title\n\nFirst paragraph text.\n\nSecond paragraph.";
+        assert_eq!(extract_summary_from_spec(spec), "First paragraph text.");
+    }
+
+    #[test]
+    fn extract_summary_joins_multiline_paragraph() {
+        let spec = "# Title\n\nLine one.\nLine two.\n\nNext paragraph.";
+        assert_eq!(extract_summary_from_spec(spec), "Line one. Line two.");
+    }
+
+    #[test]
+    fn extract_summary_truncates_at_200_chars() {
+        let long_text = "word ".repeat(60); // well over 200 chars
+        let spec = format!("# Title\n\n{}", long_text);
+        let summary = extract_summary_from_spec(&spec);
+        assert!(summary.len() <= 200);
+        assert!(summary.ends_with("..."));
+    }
+}
