@@ -41,7 +41,7 @@ impl OrchestratorUI {
 
         let phase_style = ProgressStyle::default_bar()
             .template("{prefix:.bold.dim} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-            .unwrap()
+            .expect("progress bar template is a valid static string")
             .progress_chars("█▓▒░");
 
         let phase_bar = multi.add(ProgressBar::new(total_phases));
@@ -50,7 +50,7 @@ impl OrchestratorUI {
 
         let iteration_style = ProgressStyle::default_spinner()
             .template("{prefix:.bold.dim} {spinner} {msg}")
-            .unwrap();
+            .expect("progress bar template is a valid static string");
 
         let iteration_bar = multi.add(ProgressBar::new_spinner());
         iteration_bar.set_style(iteration_style);
@@ -58,7 +58,7 @@ impl OrchestratorUI {
 
         let file_style = ProgressStyle::default_bar()
             .template("{prefix:.bold.dim} {msg}")
-            .unwrap();
+            .expect("progress bar template is a valid static string");
 
         let file_bar = multi.add(ProgressBar::new(0));
         file_bar.set_style(file_style);

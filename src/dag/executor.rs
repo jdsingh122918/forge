@@ -471,7 +471,13 @@ async fn execute_single_phase(
 
     // Load config for session continuity settings
     let forge_dir = get_forge_dir(&config.project_dir);
-    let forge_toml = ForgeToml::load_or_default(&forge_dir).unwrap_or_default();
+    let forge_toml = ForgeToml::load_or_default(&forge_dir)
+        .inspect_err(|e| {
+            if config.verbose {
+                eprintln!("Warning: Could not load forge.toml: {e}");
+            }
+        })
+        .unwrap_or_default();
     let session_continuity_enabled = forge_toml.claude.session_continuity;
     let iteration_feedback_enabled = forge_toml.claude.iteration_feedback;
 
@@ -621,6 +627,8 @@ async fn execute_single_phase(
                 }
 
                 // Build iteration feedback for next iteration
+                // unwrap_or_default is intentional: git diff failure should not abort
+                // phase execution; an empty diff is a valid state (e.g., no commits yet).
                 let changes = tracker.compute_changes(&snapshot_sha).unwrap_or_default();
                 previous_feedback = IterationFeedback::new()
                     .with_iteration_status(iter, phase.budget, output.promise_found)
@@ -641,6 +649,8 @@ async fn execute_single_phase(
     // A full implementation would execute sub-phases recursively here
     if decomposition_triggered {
         // Compute changes so far
+        // unwrap_or_default is intentional: git diff failure should not abort
+        // phase execution; an empty diff is a valid state (e.g., no commits yet).
         let files_changed = tracker.compute_changes(&snapshot_sha).unwrap_or_default();
 
         // Return a result indicating decomposition occurred
@@ -651,6 +661,8 @@ async fn execute_single_phase(
     }
 
     // Compute changes
+    // unwrap_or_default is intentional: git diff failure should not abort
+    // phase execution; an empty diff is a valid state (e.g., no commits yet).
     let files_changed = tracker.compute_changes(&snapshot_sha).unwrap_or_default();
 
     if !completed {

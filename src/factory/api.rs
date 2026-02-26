@@ -1,6 +1,8 @@
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
+use crate::errors::FactoryError;
+
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -104,6 +106,40 @@ impl IntoResponse for ApiError {
     }
 }
 
+impl From<FactoryError> for ApiError {
+    fn from(e: FactoryError) -> Self {
+        match e {
+            FactoryError::ProjectNotFound { id } => {
+                ApiError::NotFound(format!("Project {} not found", id))
+            }
+            FactoryError::IssueNotFound { id } => {
+                ApiError::NotFound(format!("Issue {} not found", id))
+            }
+            FactoryError::RunNotFound { id } => {
+                ApiError::NotFound(format!("Pipeline run {} not found", id))
+            }
+            FactoryError::LockPoisoned => {
+                ApiError::Internal("Internal lock poisoned".to_string())
+            }
+            FactoryError::BadRequest(msg) => ApiError::BadRequest(msg),
+            FactoryError::InvalidColumn { column, message } => {
+                ApiError::BadRequest(format!("Invalid column '{}': {}", column, message))
+            }
+            FactoryError::PipelineAlreadyRunning { issue_id } => {
+                ApiError::BadRequest(format!(
+                    "Pipeline already running for issue {}",
+                    issue_id
+                ))
+            }
+            FactoryError::GitHub(msg) => {
+                ApiError::Internal(format!("GitHub API error: {}", msg))
+            }
+            FactoryError::Database(e) => ApiError::Internal(e.to_string()),
+            FactoryError::Other(e) => ApiError::Internal(e.to_string()),
+        }
+    }
+}
+
 // ── Router ────────────────────────────────────────────────────────────
 
 /// Build and return the complete Axum router for the Factory API.
@@ -201,7 +237,7 @@ async fn do_sync_github_issues(state: &SharedState, project_id: i64) -> Result<S
         }).await.map_err(|e| {
             let msg = e.to_string();
             if msg.contains("not found") {
-                ApiError::NotFound(msg)
+                ApiError::from(FactoryError::ProjectNotFound { id: project_id })
             } else {
                 ApiError::Internal(msg)
             }
@@ -230,7 +266,7 @@ async fn do_sync_github_issues(state: &SharedState, project_id: i64) -> Result<S
     let token = state
         .github_token
         .lock()
-        .map_err(|_| ApiError::Internal("Lock poisoned".into()))?
+        .map_err(|_| ApiError::from(FactoryError::LockPoisoned))?
         .clone()
         .ok_or_else(|| ApiError::BadRequest("Not connected to GitHub".into()))?;
 
@@ -384,7 +420,7 @@ async fn clone_project(
     // If we have a GitHub token, use it for cloning (enables private repos)
     let (clone_url, token) = {
         let gh_token = state.github_token.lock()
-            .map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
+            .map_err(|_| ApiError::from(FactoryError::LockPoisoned))?;
         if let Some(ref t) = *gh_token {
             if clone_url.starts_with("https://github.com/") {
                 (clone_url.replacen("https://github.com/", &format!("https://x-access-token:{}@github.com/", t), 1), Some(t.clone()))
@@ -697,7 +733,7 @@ async fn trigger_pipeline(
     }).await.map_err(|e| {
         let msg = e.to_string();
         if msg.contains("not found") {
-            ApiError::NotFound(msg)
+            ApiError::from(FactoryError::IssueNotFound { id: issue_id })
         } else {
             ApiError::Internal(msg)
         }
@@ -864,7 +900,7 @@ async fn github_status(
     let connected = state
         .github_token
         .lock()
-        .map_err(|_| ApiError::Internal("Lock poisoned".into()))?
+        .map_err(|_| ApiError::from(FactoryError::LockPoisoned))?
         .is_some();
     let client_id_configured = state.github_client_id.is_some();
     Ok(Json(GitHubAuthStatus { connected, client_id_configured }))
@@ -917,7 +953,7 @@ async fn github_poll_token(
             let mut gh_token = state
                 .github_token
                 .lock()
-                .map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
+                .map_err(|_| ApiError::from(FactoryError::LockPoisoned))?;
             *gh_token = Some(token);
             Ok(Json(serde_json::json!({"status": "complete"})))
         }
@@ -939,7 +975,7 @@ async fn github_list_repos(
     let token = state
         .github_token
         .lock()
-        .map_err(|_| ApiError::Internal("Lock poisoned".into()))?
+        .map_err(|_| ApiError::from(FactoryError::LockPoisoned))?
         .clone()
         .ok_or_else(|| ApiError::BadRequest("Not connected to GitHub".into()))?;
     let repos = super::github::list_repos(&token, 1, 100)
@@ -978,7 +1014,7 @@ async fn github_connect_token(
         let mut gh_token = state
             .github_token
             .lock()
-            .map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
+            .map_err(|_| ApiError::from(FactoryError::LockPoisoned))?;
         *gh_token = Some(token);
     }
     // Persist token to DB settings
@@ -1000,7 +1036,7 @@ async fn github_disconnect(
         let mut token = state
             .github_token
             .lock()
-            .map_err(|_| ApiError::Internal("Lock poisoned".into()))?;
+            .map_err(|_| ApiError::from(FactoryError::LockPoisoned))?;
         *token = None;
     }
     state.db.call(move |db| {
