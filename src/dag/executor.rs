@@ -741,11 +741,14 @@ async fn execute_single_phase(
 
                 // Build iteration feedback for next iteration
                 let changes = tracker.compute_changes(&snapshot_sha).unwrap_or_default();
-                previous_feedback = IterationFeedback::new()
+                let mut feedback_builder = IterationFeedback::new()
                     .with_iteration_status(iter, phase.budget, output.promise_found)
                     .with_git_changes(&changes)
-                    .with_signals(&output.signals)
-                    .build();
+                    .with_signals(&output.signals);
+                if let Some(pivot) = output.signals.latest_pivot() {
+                    feedback_builder = feedback_builder.with_pivot(&pivot.new_approach);
+                }
+                previous_feedback = feedback_builder.build();
             }
             Err(e) => {
                 return PhaseResult::failure(&phase.number, &e.to_string(), iter, timer.elapsed());
