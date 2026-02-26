@@ -128,13 +128,20 @@ impl ApprovalGate {
             );
         }
 
-        // If --yes flag, auto-approve everything
+        // ── Shortcut: --yes flag bypasses all gate logic ─────────────────────
+        // When the operator passed --yes on the CLI, skip_all is true.
+        // Every phase is unconditionally approved; no prompts are shown.
         if self.skip_all {
             println!("  {} (--yes flag)", console::style("Auto-approved").dim());
             return Ok(GateDecision::Approved);
         }
 
-        // Handle based on permission mode
+        // ── Permission-mode dispatch ──────────────────────────────────────────
+        // Each permission mode has a different approval strategy:
+        //   Autonomous — always auto-approve; stale checks happen per-iteration.
+        //   Readonly   — auto-approve start; write-blocking happens after each iter.
+        //   Standard / Strict — threshold-based auto-approve when previous phase
+        //                changed few files; otherwise prompt the operator.
         match phase.permission_mode {
             PermissionMode::Autonomous => {
                 // Autonomous mode: auto-approve phase start
@@ -153,7 +160,11 @@ impl ApprovalGate {
                 Ok(GateDecision::Approved)
             }
             PermissionMode::Standard | PermissionMode::Strict => {
-                // Standard and Strict: use threshold-based auto-approval for phase start
+                // ── Threshold auto-approval ───────────────────────────────────────────
+                // If the previous phase touched ≤ auto_threshold files (default 5),
+                // and there were *some* changes (> 0), silently approve. This avoids
+                // prompting for trivial clean-up phases while gating large rewrites.
+                // Note: if previous_changes is None (first phase), fall through to prompt.
                 if let Some(changes) = previous_changes
                     && changes.total_files() <= self.auto_threshold
                     && changes.total_files() > 0
