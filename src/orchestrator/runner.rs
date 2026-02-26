@@ -119,7 +119,9 @@ impl IterationFeedback {
         self
     }
 
-    /// Add signals from the prior iteration (progress %, blockers, pivots).
+    /// Add signals from the prior iteration (progress %, blockers).
+    /// Pivots are intentionally excluded here — use `with_pivot()` instead,
+    /// which renders them as a prominent `## STRATEGY CHANGE` directive.
     pub fn with_signals(mut self, signals: &IterationSignals) -> Self {
         if !signals.has_signals() {
             return self;
@@ -133,12 +135,24 @@ impl IterationFeedback {
                 lines.push(format!("Blocker: {}", blocker.description));
             }
         }
-        for pivot in &signals.pivots {
-            lines.push(format!("Pivot: {}", pivot.new_approach));
-        }
         if !lines.is_empty() {
             self.parts.push(lines.join("\n"));
         }
+        self
+    }
+
+    /// Inject a pivot signal as a prominent strategy-change directive.
+    ///
+    /// When Claude emits `<pivot>`, the new approach must override the prior
+    /// strategy. Rendered as a `## STRATEGY CHANGE` block so it appears as an
+    /// instruction rather than an informational note.
+    pub fn with_pivot(mut self, pivot_text: &str) -> Self {
+        self.parts.push(format!(
+            "## STRATEGY CHANGE\nYou previously signalled a strategy change:\n\
+             \"{}\"\nYou MUST follow this new approach in this iteration. \
+             Do not repeat the prior approach.",
+            pivot_text
+        ));
         self
     }
 
@@ -908,5 +922,43 @@ mod tests {
         let changes = FileChangeSummary::default();
         let fb = IterationFeedback::new().with_git_changes(&changes).build();
         assert!(fb.is_none(), "Empty changes should not produce feedback");
+    }
+
+    #[test]
+    fn test_iteration_feedback_with_pivot_creates_strategy_section() {
+        let fb = IterationFeedback::new()
+            .with_pivot("Use SQLite instead of in-memory cache")
+            .build();
+        let text = fb.unwrap();
+        assert!(text.contains("## STRATEGY CHANGE"));
+        assert!(text.contains("Use SQLite instead of in-memory cache"));
+        assert!(text.contains("MUST follow this new approach"));
+    }
+
+    #[test]
+    fn test_with_signals_does_not_include_pivot() {
+        let mut signals = IterationSignals::new();
+        signals
+            .pivots
+            .push(crate::signals::PivotSignal::new("Use GraphQL instead of REST"));
+
+        // with_signals only: pivot should NOT appear as STRATEGY CHANGE
+        let fb_signals_only = IterationFeedback::new().with_signals(&signals).build();
+        if let Some(text) = fb_signals_only {
+            assert!(
+                !text.contains("## STRATEGY CHANGE"),
+                "with_signals should not produce STRATEGY CHANGE block"
+            );
+        }
+
+        // with_signals + with_pivot: STRATEGY CHANGE should appear
+        let pivot = signals.latest_pivot().unwrap();
+        let fb_with_pivot = IterationFeedback::new()
+            .with_signals(&signals)
+            .with_pivot(&pivot.new_approach)
+            .build();
+        let text = fb_with_pivot.unwrap();
+        assert!(text.contains("## STRATEGY CHANGE"));
+        assert!(text.contains("Use GraphQL instead of REST"));
     }
 }
