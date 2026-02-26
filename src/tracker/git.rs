@@ -179,3 +179,118 @@ impl GitTracker {
         self.get_head_commit().map(|c| c.id().to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use git2::Repository;
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn setup_repo() -> (GitTracker, tempfile::TempDir) {
+        let dir = tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "test").unwrap();
+        config.set_str("user.email", "test@test.com").unwrap();
+        drop(config);
+        let tracker = GitTracker::new(dir.path()).unwrap();
+        (tracker, dir)
+    }
+
+    fn commit_file(dir: &std::path::Path, name: &str, content: &str, msg: &str) {
+        let repo = Repository::open(dir).unwrap();
+        let file_path = dir.join(name);
+        fs::write(&file_path, content).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+        if let Ok(head) = repo.head() {
+            let parent = head.peel_to_commit().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &[&parent])
+                .unwrap();
+        } else {
+            repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &[])
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn test_head_sha_unborn_then_populated() {
+        let (tracker, dir) = setup_repo();
+        assert!(tracker.head_sha().is_none());
+        commit_file(dir.path(), "a.txt", "hello", "init");
+        let sha = tracker.head_sha();
+        assert!(sha.is_some());
+        assert_eq!(sha.unwrap().len(), 40);
+    }
+
+    #[test]
+    fn test_snapshot_before_returns_valid_sha() {
+        let (tracker, dir) = setup_repo();
+        commit_file(dir.path(), "readme.txt", "hello", "init");
+        let sha = tracker.snapshot_before("01").unwrap();
+        assert_eq!(sha.len(), 40);
+    }
+
+    #[test]
+    fn test_compute_changes_detects_added_file() {
+        let (tracker, dir) = setup_repo();
+        commit_file(dir.path(), "existing.txt", "original", "init");
+        let sha = tracker.snapshot_before("02").unwrap();
+        fs::write(dir.path().join("new_file.rs"), "fn main() {}").unwrap();
+        let summary = tracker.compute_changes(&sha).unwrap();
+        // Untracked files are detected in files_added (Delta::Untracked)
+        assert!(
+            summary
+                .files_added
+                .iter()
+                .any(|p| p.ends_with("new_file.rs"))
+        );
+        // Note: git2 does not produce line-level diffs for untracked files via diff_tree_to_workdir_with_index
+        // so total_lines_added may be 0 for purely untracked files; we only assert file detection here
+    }
+
+    #[test]
+    fn test_compute_changes_detects_modified_file() {
+        let (tracker, dir) = setup_repo();
+        commit_file(dir.path(), "existing.txt", "line one\n", "init");
+        let sha = tracker.snapshot_before("03").unwrap();
+        fs::write(dir.path().join("existing.txt"), "line one\nline two\n").unwrap();
+        let summary = tracker.compute_changes(&sha).unwrap();
+        assert!(
+            summary
+                .files_modified
+                .iter()
+                .any(|p| p.ends_with("existing.txt"))
+        );
+    }
+
+    #[test]
+    fn test_compute_changes_no_changes() {
+        let (tracker, dir) = setup_repo();
+        commit_file(dir.path(), "stable.txt", "unchanged\n", "init");
+        let sha = tracker.snapshot_before("07").unwrap();
+        let summary = tracker.compute_changes(&sha).unwrap();
+        assert!(summary.files_modified.is_empty());
+        assert_eq!(summary.total_lines_added, 0);
+        assert_eq!(summary.total_lines_removed, 0);
+    }
+
+    #[test]
+    fn test_get_full_diffs_content() {
+        let (tracker, dir) = setup_repo();
+        commit_file(dir.path(), "src.rs", "fn old() {}\n", "init");
+        let sha = tracker.snapshot_before("05").unwrap();
+        fs::write(dir.path().join("src.rs"), "fn new() {}\nfn extra() {}\n").unwrap();
+        let diffs = tracker.get_full_diffs(&sha).unwrap();
+        assert!(!diffs.is_empty());
+        let diff = diffs.iter().find(|d| d.path.ends_with("src.rs")).unwrap();
+        assert!(!diff.diff_content.is_empty());
+    }
+}
