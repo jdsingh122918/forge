@@ -305,15 +305,15 @@ impl Planner {
     async fn call_claude(&self, prompt: &str) -> Result<String> {
         let claude_cmd = std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".to_string());
 
+        let full_prompt = format!("{}\n\n{}", PLANNER_SYSTEM_PROMPT, prompt);
+
         let output = Command::new(&claude_cmd)
             .args([
                 "--print",
                 "--output-format",
                 "text",
                 "-p",
-                prompt,
-                "--system",
-                PLANNER_SYSTEM_PROMPT,
+                &full_prompt,
             ])
             .current_dir(&self.project_path)
             .stdout(Stdio::piped())

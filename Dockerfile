@@ -53,5 +53,6 @@ RUN cargo install cargo-watch
 RUN npm install -g @anthropic-ai/claude-code
 ENV CLAUDE_CMD=claude
 ENV FORGE_CMD=forge
+RUN mkdir -p /app/.forge
 EXPOSE 3141 5173
-CMD ["cargo", "watch", "-x", "run -- factory --dev"]
+CMD ["cargo", "watch", "-i", ".forge/", "-x", "run -- factory --dev"]
