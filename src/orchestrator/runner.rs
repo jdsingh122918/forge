@@ -1,5 +1,6 @@
 use crate::audit::{ClaudeSession, FileChangeSummary};
 use crate::config::Config;
+use crate::errors::OrchestratorError;
 use crate::forge_config::tools_for_permission_mode;
 use crate::phase::Phase;
 use crate::signals::{IterationSignals, extract_signals};
@@ -229,7 +230,10 @@ impl ClaudeRunner {
             ui.log_step("Writing prompt file...");
         }
 
-        std::fs::write(&prompt_file, &prompt).context("Failed to write prompt file")?;
+        std::fs::write(&prompt_file, &prompt).map_err(|e| OrchestratorError::PromptWriteFailed {
+            path: prompt_file.clone(),
+            source: e,
+        })?;
 
         let output_file = self.config.log_dir.join(format!(
             "phase-{}-iter-{}-output.log",
@@ -288,7 +292,7 @@ impl ClaudeRunner {
             .stderr(std::process::Stdio::piped())
             .current_dir(&self.config.project_dir)
             .spawn()
-            .context("Failed to spawn Claude process")?;
+            .map_err(OrchestratorError::SpawnFailed)?;
 
         let child_pid = child.id().unwrap_or(0);
         if let Some(ref ui) = ui {
@@ -432,7 +436,12 @@ impl ClaudeRunner {
         }
 
         // Write output to file
-        std::fs::write(&output_file, &combined_output).context("Failed to write output file")?;
+        std::fs::write(&output_file, &combined_output).map_err(|e| {
+            OrchestratorError::OutputWriteFailed {
+                path: output_file.clone(),
+                source: e,
+            }
+        })?;
 
         // Check for promise in output
         let promise_tag = format!("<promise>{}</promise>", phase.promise);
