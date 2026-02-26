@@ -412,6 +412,96 @@ impl DagExecutor {
     }
 }
 
+/// Tracks progress % history across iterations for stall detection and blocker escalation.
+struct IterationTracker {
+    /// Window size: how many consecutive identical % values = stall
+    window: usize,
+    history: Vec<Option<u8>>,
+    blocker_counts: std::collections::HashMap<String, usize>,
+    blocker_threshold: usize,
+}
+
+impl IterationTracker {
+    fn new(window: usize) -> Self {
+        Self {
+            window,
+            history: Vec::new(),
+            blocker_counts: std::collections::HashMap::new(),
+            blocker_threshold: 2,
+        }
+    }
+
+    /// Record the progress from one iteration. Returns true if a stall is detected.
+    fn record(&mut self, pct: Option<u8>) -> bool {
+        self.history.push(pct);
+        if self.history.len() < self.window {
+            return false;
+        }
+        let last_n = &self.history[self.history.len() - self.window..];
+        if let Some(first) = last_n[0] {
+            last_n.iter().all(|&v| v == Some(first))
+        } else {
+            false
+        }
+    }
+
+    fn stalled_at(&self) -> Option<u8> {
+        self.history.last().copied().flatten()
+    }
+
+    fn stall_length(&self) -> usize {
+        self.window
+    }
+
+    /// Record blockers from one iteration. Returns Some(description) if threshold hit.
+    fn record_blockers(&mut self, signals: &crate::signals::IterationSignals) -> Option<String> {
+        let current_descs: std::collections::HashSet<String> = signals
+            .unacknowledged_blockers()
+            .iter()
+            .map(|b| b.description.clone())
+            .collect();
+        for desc in &current_descs {
+            let count = self.blocker_counts.entry(desc.clone()).or_insert(0);
+            *count += 1;
+            if *count >= self.blocker_threshold {
+                return Some(desc.clone());
+            }
+        }
+        self.blocker_counts.retain(|k, _| current_descs.contains(k));
+        None
+    }
+
+    /// Produce a human-readable failure diagnosis string.
+    fn failure_diagnosis(&self, latest_pct: Option<u8>) -> String {
+        let mut parts = Vec::new();
+        match latest_pct {
+            Some(pct) if pct == 0 => parts.push("no progress signals emitted".to_string()),
+            Some(pct) => parts.push(format!("last reported progress: {}%", pct)),
+            None => parts.push("no progress signals emitted".to_string()),
+        }
+        let blocker_count: usize = self.blocker_counts.values().filter(|&&c| c > 0).count();
+        if blocker_count > 0 {
+            parts.push(format!(
+                "{} unresolved blocker{}",
+                blocker_count,
+                if blocker_count == 1 { "" } else { "s" }
+            ));
+        }
+        if let Some(pct) = self.stalled_at() {
+            parts.push(format!(
+                "stalled at {}% for {} consecutive iterations",
+                pct,
+                self.stall_length()
+            ));
+        }
+        if parts.is_empty() {
+            "budget exhausted with no signals (scope may be too large for this budget)".to_string()
+        } else {
+            format!("budget exhausted: {}", parts.join(", "))
+        }
+    }
+}
+
 /// Execute a single phase with review integration and decomposition support.
 async fn execute_single_phase(
     phase: &Phase,
@@ -471,7 +561,13 @@ async fn execute_single_phase(
 
     // Load config for session continuity settings
     let forge_dir = get_forge_dir(&config.project_dir);
-    let forge_toml = ForgeToml::load_or_default(&forge_dir).unwrap_or_default();
+    let forge_toml = ForgeToml::load_or_default(&forge_dir)
+        .inspect_err(|e| {
+            if config.verbose {
+                eprintln!("Warning: Could not load forge.toml: {e}");
+            }
+        })
+        .unwrap_or_default();
     let session_continuity_enabled = forge_toml.claude.session_continuity;
     let iteration_feedback_enabled = forge_toml.claude.iteration_feedback;
 
@@ -483,6 +579,7 @@ async fn execute_single_phase(
     let mut completed = false;
     let mut iteration = 0;
     let mut decomposition_triggered = false;
+    let mut iter_tracker = IterationTracker::new(3); // stall window = 3
 
     for iter in 1..=phase.budget {
         iteration = iter;
@@ -529,6 +626,34 @@ async fn execute_single_phase(
                 // Accumulate signals for decomposition detection
                 accumulated_signals.add_iteration(&output.signals);
                 let progress = accumulated_signals.latest_progress().unwrap_or(0) as u32;
+
+                // Stall detection: fail early if progress hasn't moved for `window` iterations
+                let pct = output.signals.latest_progress();
+                if iter_tracker.record(pct) {
+                    return PhaseResult::failure(
+                        &phase.number,
+                        &format!(
+                            "Stalled at {}%: no progress for {} consecutive iterations",
+                            iter_tracker.stalled_at().unwrap_or(0),
+                            iter_tracker.stall_length()
+                        ),
+                        iter,
+                        timer.elapsed(),
+                    );
+                }
+
+                // Blocker escalation: fail if the same blocker persists for threshold iterations
+                if let Some(blocker_desc) = iter_tracker.record_blockers(&output.signals) {
+                    return PhaseResult::failure(
+                        &phase.number,
+                        &format!(
+                            "Unresolved blocker after {} iterations: \"{}\"",
+                            iter_tracker.blocker_threshold, blocker_desc
+                        ),
+                        iter,
+                        timer.elapsed(),
+                    );
+                }
 
                 // Check for explicit decomposition request in output
                 if dag_config.decomposition_enabled && parse_decomposition_request(&output.output) {
@@ -621,12 +746,17 @@ async fn execute_single_phase(
                 }
 
                 // Build iteration feedback for next iteration
+                // unwrap_or_default is intentional: git diff failure should not abort
+                // phase execution; an empty diff is a valid state (e.g., no commits yet).
                 let changes = tracker.compute_changes(&snapshot_sha).unwrap_or_default();
-                previous_feedback = IterationFeedback::new()
+                let mut feedback_builder = IterationFeedback::new()
                     .with_iteration_status(iter, phase.budget, output.promise_found)
                     .with_git_changes(&changes)
-                    .with_signals(&output.signals)
-                    .build();
+                    .with_signals(&output.signals);
+                if let Some(pivot) = output.signals.latest_pivot() {
+                    feedback_builder = feedback_builder.with_pivot(&pivot.new_approach);
+                }
+                previous_feedback = feedback_builder.build();
             }
             Err(e) => {
                 return PhaseResult::failure(&phase.number, &e.to_string(), iter, timer.elapsed());
@@ -641,6 +771,8 @@ async fn execute_single_phase(
     // A full implementation would execute sub-phases recursively here
     if decomposition_triggered {
         // Compute changes so far
+        // unwrap_or_default is intentional: git diff failure should not abort
+        // phase execution; an empty diff is a valid state (e.g., no commits yet).
         let files_changed = tracker.compute_changes(&snapshot_sha).unwrap_or_default();
 
         // Return a result indicating decomposition occurred
@@ -651,12 +783,16 @@ async fn execute_single_phase(
     }
 
     // Compute changes
+    // unwrap_or_default is intentional: git diff failure should not abort
+    // phase execution; an empty diff is a valid state (e.g., no commits yet).
     let files_changed = tracker.compute_changes(&snapshot_sha).unwrap_or_default();
 
     if !completed {
+        let latest_pct = accumulated_signals.latest_progress();
+        let diagnosis = iter_tracker.failure_diagnosis(latest_pct);
         return PhaseResult::failure(
             &phase.number,
-            "Budget exhausted without finding promise",
+            &diagnosis,
             iteration,
             timer.elapsed(),
         );
@@ -727,6 +863,91 @@ async fn execute_single_phase(
 mod tests {
     use super::*;
     use crate::audit::FileChangeSummary;
+
+    // ── IterationTracker tests ────────────────────────────────────────
+
+    #[test]
+    fn test_iteration_tracker_no_stall_under_window() {
+        let mut t = IterationTracker::new(3);
+        assert!(!t.record(Some(10)));
+        assert!(!t.record(Some(10)));
+        assert!(!t.record(Some(20)));
+    }
+
+    #[test]
+    fn test_iteration_tracker_stall_detected() {
+        let mut t = IterationTracker::new(3);
+        t.record(Some(50));
+        t.record(Some(50));
+        assert!(t.record(Some(50)));
+        assert_eq!(t.stalled_at(), Some(50));
+    }
+
+    #[test]
+    fn test_iteration_tracker_no_stall_on_none() {
+        let mut t = IterationTracker::new(3);
+        t.record(None);
+        t.record(None);
+        assert!(!t.record(None));
+    }
+
+    #[test]
+    fn test_blocker_escalation_after_threshold() {
+        use crate::signals::{BlockerSignal, IterationSignals};
+
+        let mut t = IterationTracker::new(3);
+        // First occurrence: no escalation
+        let mut signals = IterationSignals::new();
+        signals.blockers.push(BlockerSignal::new("Need API key"));
+        let result = t.record_blockers(&signals);
+        assert!(result.is_none(), "First occurrence should not escalate");
+
+        // Second occurrence: escalation
+        let result2 = t.record_blockers(&signals);
+        assert!(result2.is_some(), "Second occurrence should escalate");
+        assert_eq!(result2.unwrap(), "Need API key");
+    }
+
+    #[test]
+    fn test_blocker_escalation_resets_on_resolve() {
+        use crate::signals::{BlockerSignal, IterationSignals};
+
+        let mut t = IterationTracker::new(3);
+
+        // First: add blocker
+        let mut signals_with_blocker = IterationSignals::new();
+        signals_with_blocker
+            .blockers
+            .push(BlockerSignal::new("Need API key"));
+        let _ = t.record_blockers(&signals_with_blocker);
+
+        // Second: empty signals (resolved) → None, counter resets
+        let empty_signals = IterationSignals::new();
+        let result = t.record_blockers(&empty_signals);
+        assert!(result.is_none(), "Should be none after blocker resolved");
+
+        // Third: re-add blocker → None (counter was reset to 0)
+        let result2 = t.record_blockers(&signals_with_blocker);
+        assert!(
+            result2.is_none(),
+            "Counter should have reset after blocker was resolved"
+        );
+    }
+
+    #[test]
+    fn test_failure_diagnosis_no_signals() {
+        let t = IterationTracker::new(3);
+        let diag = t.failure_diagnosis(None);
+        assert!(diag.contains("no progress signals"));
+        assert!(diag.contains("scope may be too large") || diag.contains("budget exhausted"));
+    }
+
+    #[test]
+    fn test_failure_diagnosis_with_progress() {
+        let t = IterationTracker::new(3);
+        let diag = t.failure_diagnosis(Some(60));
+        assert!(diag.contains("60%"));
+    }
 
     #[test]
     fn test_executor_config() {

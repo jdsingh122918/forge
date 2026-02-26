@@ -102,7 +102,7 @@ impl DagUI {
         // Create header bar for overall progress
         let header_style = ProgressStyle::default_bar()
             .template("{prefix:.bold} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-            .unwrap()
+            .expect("progress bar template is a valid static string")
             .progress_chars("█▓▒░");
 
         let header_bar = multi.add(ProgressBar::new(total_phases as u64));
@@ -241,7 +241,7 @@ impl DagUI {
     fn on_wave_started(&self, wave: usize, phases: &[String]) {
         // Update current wave
         {
-            let mut current = self.current_wave.lock().unwrap();
+            let mut current = self.current_wave.lock().unwrap_or_else(|p| p.into_inner());
             *current = wave;
         }
 
@@ -266,7 +266,7 @@ impl DagUI {
         // Create progress bar for this phase
         let bar_style = ProgressStyle::default_bar()
             .template("  {prefix:.bold} [{bar:30.green/white}] {pos}/{len} {msg}")
-            .unwrap()
+            .expect("progress bar template is a valid static string")
             .progress_chars("█▓░");
 
         let bar = self.multi.add(ProgressBar::new(100));
@@ -277,7 +277,7 @@ impl DagUI {
 
         // Store phase state
         {
-            let mut bars = self.phase_bars.lock().unwrap();
+            let mut bars = self.phase_bars.lock().unwrap_or_else(|p| p.into_inner());
             bars.insert(
                 phase.to_string(),
                 PhaseState {
@@ -304,7 +304,7 @@ impl DagUI {
 
     /// Handle phase progress event.
     fn on_phase_progress(&self, phase: &str, iteration: u32, budget: u32, percent: u32) {
-        let mut bars = self.phase_bars.lock().unwrap();
+        let mut bars = self.phase_bars.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(state) = bars.get_mut(phase) {
             state.iteration = iteration;
             state.budget = budget;
@@ -330,13 +330,13 @@ impl DagUI {
 
     /// Handle phase completion event.
     fn on_phase_completed(&self, phase: &str, result: &PhaseResult) {
-        let mut bars = self.phase_bars.lock().unwrap();
+        let mut bars = self.phase_bars.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(state) = bars.remove(phase) {
             if result.is_success() {
                 state.bar.set_style(
                     ProgressStyle::default_bar()
                         .template("  {prefix:.bold} [{bar:30.green/green}] {msg}")
-                        .unwrap()
+                        .expect("progress bar template is a valid static string")
                         .progress_chars("███"),
                 );
                 state.bar.set_position(100);
@@ -350,7 +350,7 @@ impl DagUI {
                 state.bar.set_style(
                     ProgressStyle::default_bar()
                         .template("  {prefix:.bold} [{bar:30.red/red}] {msg}")
-                        .unwrap()
+                        .expect("progress bar template is a valid static string")
                         .progress_chars("███"),
                 );
                 state.bar.finish_with_message(format!(
@@ -407,7 +407,7 @@ impl DagUI {
 
     /// Handle review started event.
     fn on_review_started(&self, phase: &str) {
-        let bars = self.phase_bars.lock().unwrap();
+        let bars = self.phase_bars.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(state) = bars.get(phase) {
             state
                 .bar

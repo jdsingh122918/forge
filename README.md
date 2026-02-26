@@ -218,6 +218,65 @@ type = "prompt"
 prompt = "Did Claude make meaningful progress? Return {continue: bool}"
 ```
 
+## Orchestrator Lifecycle
+
+Each `forge run` invocation moves through a well-defined lifecycle for every phase.
+Understanding this lifecycle is essential when writing hooks, debugging failures, or reading logs.
+
+### Phase Lifecycle
+
+```
+forge run
+  └─ For each phase (sequential) or wave of phases (DAG/swarm):
+       1. ApprovalGate.check_phase()          ← GateDecision: Approved | Rejected | Aborted
+       2. Hook: PrePhase                       ← runs before any iteration starts
+       3. For each iteration (1 → budget):
+            a. Hook: PreIteration
+            b. Claude invocation (streaming)
+            c. Parse output for:
+               - <promise>…</promise>          ← phase completion signal
+               - <progress>N%</progress>       ← updates UI progress bar
+               - <blocker>…</blocker>          ← displayed to operator
+               - <pivot>…</pivot>              ← injected into next iteration prompt
+               - <spawn_subphase>{…}           ← triggers sub-phase
+            d. Collect git diff (file changes)
+            e. Hook: PostIteration
+            f. If promise found → break (phase complete)
+            g. If budget exhausted → Hook: OnFailure → phase fails
+       4. Hook: PostPhase
+       5. (If swarm) Hook: OnApproval for review specialists
+```
+
+### Hook Invocation Order
+
+| Event | When | Typical use |
+|-------|------|-------------|
+| `PrePhase` | After gate approval, before iteration 1 | Set up databases, fetch secrets |
+| `PostPhase` | After all iterations complete | Run test suite, notify Slack |
+| `PreIteration` | Before each Claude invocation | Inject context, update prompts |
+| `PostIteration` | After each Claude response is parsed | Log token usage, trigger CI |
+| `OnFailure` | When budget is exhausted without a promise | Alert on-call, open incident |
+| `OnApproval` | When the approval gate presents a prompt | LLM-assisted decision making |
+
+### Permission Mode Lifecycle Differences
+
+| Mode | Phase approval | Iteration approval | File writes |
+|------|---------------|-------------------|-------------|
+| `strict` | Interactive prompt | Interactive prompt | Allowed |
+| `standard` | Auto if ≤ threshold file changes | Auto-continue | Allowed |
+| `autonomous` | Auto-approve | Auto-continue; prompt if 3+ stale iters | Allowed |
+| `readonly` | Auto-approve | Auto-continue | **Blocked** |
+
+### Promise Detection
+
+Claude signals phase completion by emitting:
+
+```xml
+<promise>DONE</promise>
+```
+
+The token inside the tags must match the phase's configured `promise` string (case-sensitive). Once detected, the orchestrator stops iterations and advances to the next phase.
+
 ## Skills System
 
 Skills are reusable prompt fragments in `.forge/skills/`:

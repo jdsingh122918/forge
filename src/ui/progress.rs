@@ -9,6 +9,14 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+/// Terminal UI for the Forge orchestrator, rendered via `indicatif` progress bars.
+///
+/// Three bars are stacked vertically:
+/// - Phase bar — tracks how many phases have completed
+/// - Iteration bar — spinner with the current iteration number and live status
+/// - File bar — running tally of added/modified/deleted files since the run began
+///
+/// All methods coordinate output via `indicatif`'s `MultiProgress` internally.
 pub struct OrchestratorUI {
     multi: MultiProgress,
     phase_bar: ProgressBar,
@@ -20,12 +28,20 @@ pub struct OrchestratorUI {
 }
 
 impl OrchestratorUI {
+    /// Create the UI and add all three progress bars to the multiplex renderer.
+    ///
+    /// # Arguments
+    /// * `total_phases` — total number of phases in the run, sizes the phase bar
+    /// * `verbose` — when `true`, per-step and thinking output is printed;
+    ///               when `false` only tool-use lines are shown
+    ///
+    /// Call this once at orchestrator startup, before `start_phase`.
     pub fn new(total_phases: u64, verbose: bool) -> Self {
         let multi = MultiProgress::new();
 
         let phase_style = ProgressStyle::default_bar()
             .template("{prefix:.bold.dim} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-            .unwrap()
+            .expect("progress bar template is a valid static string")
             .progress_chars("█▓▒░");
 
         let phase_bar = multi.add(ProgressBar::new(total_phases));
@@ -34,7 +50,7 @@ impl OrchestratorUI {
 
         let iteration_style = ProgressStyle::default_spinner()
             .template("{prefix:.bold.dim} {spinner} {msg}")
-            .unwrap();
+            .expect("progress bar template is a valid static string");
 
         let iteration_bar = multi.add(ProgressBar::new_spinner());
         iteration_bar.set_style(iteration_style);
@@ -42,7 +58,7 @@ impl OrchestratorUI {
 
         let file_style = ProgressStyle::default_bar()
             .template("{prefix:.bold.dim} {msg}")
-            .unwrap();
+            .expect("progress bar template is a valid static string");
 
         let file_bar = multi.add(ProgressBar::new(0));
         file_bar.set_style(file_style);
@@ -59,11 +75,26 @@ impl OrchestratorUI {
         }
     }
 
+    /// Update the phase bar message to reflect the phase about to execute.
+    ///
+    /// Does **not** increment the phase counter — call [`Self::phase_complete`] to advance it.
+    ///
+    /// # Arguments
+    /// * `phase` — phase identifier (e.g. `"01"`)
+    /// * `description` — human-readable phase name shown in the status line
     pub fn start_phase(&self, phase: &str, description: &str) {
         self.phase_bar
             .set_message(format!("{}: {}", style(phase).yellow(), description));
     }
 
+    /// Record iteration counters and start the spinner animation.
+    ///
+    /// Enables a 100 ms tick on the iteration spinner. Call [`Self::iteration_success`],
+    /// [`Self::iteration_continue`], or [`Self::iteration_error`] to stop the spinner.
+    ///
+    /// # Arguments
+    /// * `iter` — 1-based current iteration number
+    /// * `max` — total iteration budget for this phase
     pub fn start_iteration(&self, iter: u32, max: u32) {
         self.current_iter.store(iter, Ordering::SeqCst);
         self.max_iter.store(max, Ordering::SeqCst);
@@ -77,6 +108,12 @@ impl OrchestratorUI {
             .enable_steady_tick(Duration::from_millis(100));
     }
 
+    /// Update the iteration spinner message with a short status string.
+    ///
+    /// In verbose mode the message is also printed as a dim indented line.
+    ///
+    /// # Arguments
+    /// * `msg` — short lowercase status string, e.g. `"running claude"`
     pub fn log_step(&self, msg: &str) {
         let iter = self.current_iter.load(Ordering::SeqCst);
         let max = self.max_iter.load(Ordering::SeqCst);
@@ -93,6 +130,13 @@ impl OrchestratorUI {
         }
     }
 
+    /// Refresh the iteration spinner message with wall-clock elapsed time.
+    ///
+    /// Intended to be called from a periodic timer task (e.g. every second).
+    /// Formats as `Xs` or `Xm Ys` when >= 60 seconds.
+    ///
+    /// # Arguments
+    /// * `elapsed` — duration since the current iteration began
     pub fn update_elapsed(&self, elapsed: Duration) {
         let iter = self.current_iter.load(Ordering::SeqCst);
         let max = self.max_iter.load(Ordering::SeqCst);
@@ -149,6 +193,12 @@ impl OrchestratorUI {
         }
     }
 
+    /// Overwrite the file-change bar with aggregate diff statistics.
+    ///
+    /// Call after each iteration completes and the git diff has been collected.
+    ///
+    /// # Arguments
+    /// * `changes` — cumulative file-change summary for the current phase
     pub fn update_files(&self, changes: &FileChangeSummary) {
         let added = changes.files_added.len();
         let modified = changes.files_modified.len();
@@ -166,6 +216,13 @@ impl OrchestratorUI {
         ));
     }
 
+    /// Print a single file-change line (in verbose mode only).
+    ///
+    /// Coloured by change type: green for added, yellow for modified, red for deleted.
+    ///
+    /// # Arguments
+    /// * `path` — path of the changed file
+    /// * `change_type` — classification of the change
     pub fn show_file_change(&self, path: &Path, change_type: ChangeType) {
         if !self.verbose {
             return;
@@ -261,6 +318,12 @@ impl OrchestratorUI {
             .ok();
     }
 
+    /// Finish the iteration spinner with a "promise found" success message and stop ticking.
+    ///
+    /// Call when the iteration output contained the phase's promise signal.
+    ///
+    /// # Arguments
+    /// * `iter` — the iteration that produced the promise
     pub fn iteration_success(&self, iter: u32) {
         self.iteration_bar.finish_with_message(format!(
             "{} Iteration {} complete - promise found!",
@@ -278,6 +341,12 @@ impl OrchestratorUI {
         ));
     }
 
+    /// Finish the iteration spinner with a "continuing" message and stop ticking.
+    ///
+    /// Call when an iteration completes without the promise signal and the budget allows another attempt.
+    ///
+    /// # Arguments
+    /// * `iter` — the iteration that just finished without a promise
     pub fn iteration_continue(&self, iter: u32) {
         self.iteration_bar.finish_with_message(format!(
             "Iteration {} - no promise yet, continuing...",
@@ -285,11 +354,22 @@ impl OrchestratorUI {
         ));
     }
 
+    /// Finish the iteration spinner with an error message and stop ticking.
+    ///
+    /// # Arguments
+    /// * `iter` — the iteration that failed
+    /// * `msg` — short error description
     pub fn iteration_error(&self, iter: u32, msg: &str) {
         self.iteration_bar
             .finish_with_message(format!("{} Iteration {} failed: {}", CROSS, iter, msg));
     }
 
+    /// Increment the phase progress bar and print a celebration line.
+    ///
+    /// Call once per phase after all iterations finish successfully (promise found).
+    ///
+    /// # Arguments
+    /// * `phase` — phase identifier (e.g. `"01"`)
     pub fn phase_complete(&self, phase: &str) {
         self.phase_bar.inc(1);
         self.multi
@@ -301,6 +381,11 @@ impl OrchestratorUI {
             .ok();
     }
 
+    /// Print a phase-failure banner without advancing the phase progress bar.
+    ///
+    /// # Arguments
+    /// * `phase` — phase identifier
+    /// * `reason` — human-readable failure reason
     pub fn phase_failed(&self, phase: &str, reason: &str) {
         self.multi
             .println(format!(
@@ -312,12 +397,25 @@ impl OrchestratorUI {
             .ok();
     }
 
+    /// Print a full-width cyan separator line (70 `═` characters).
+    ///
+    /// Used to visually delimit phase headers. Called by [`Self::print_phase_header`] automatically.
     pub fn print_separator(&self) {
         self.multi
             .println(format!("{}", style("═".repeat(70)).cyan()))
             .ok();
     }
 
+    /// Print the full header block for a phase before execution begins.
+    ///
+    /// Outputs: blank line, separator, phase number + name, separator, blank line,
+    /// promise text, iteration budget.
+    ///
+    /// # Arguments
+    /// * `phase` — phase identifier (e.g. `"03"`)
+    /// * `description` — phase name
+    /// * `promise` — the completion signal Claude must emit
+    /// * `max_iter` — iteration budget for this phase
     pub fn print_phase_header(&self, phase: &str, description: &str, promise: &str, max_iter: u32) {
         self.multi.println("").ok();
         self.print_separator();
@@ -344,6 +442,13 @@ impl OrchestratorUI {
         self.multi.println("").ok();
     }
 
+    /// Print a summary of file changes from the immediately preceding phase, if any.
+    ///
+    /// Gives operators context about what the previous phase accomplished before
+    /// the new phase starts. No-ops if `changes.is_empty()`.
+    ///
+    /// # Arguments
+    /// * `changes` — file-change summary from the previous phase's final diff
     pub fn print_previous_changes(&self, changes: &FileChangeSummary) {
         if changes.is_empty() {
             return;

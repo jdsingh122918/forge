@@ -58,6 +58,10 @@ pub enum WsMessage {
     PipelineFailed {
         run: PipelineRun,
     },
+    PipelineError {
+        run_id: i64,
+        message: String,
+    },
     PipelineBranchCreated {
         run_id: i64,
         branch_name: String,
@@ -725,6 +729,26 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"ProjectCreated\""));
         assert!(json.contains("\"name\":\"test\""));
+    }
+
+    #[test]
+    fn test_ws_message_pipeline_error_serialization() {
+        let msg = WsMessage::PipelineError {
+            run_id: 42,
+            message: "Failed to update pipeline progress".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("PipelineError") || json.contains("pipeline_error"));
+        assert!(json.contains("42"));
+
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::PipelineError { run_id, message } => {
+                assert_eq!(run_id, 42);
+                assert!(message.contains("Failed"));
+            }
+            _ => panic!("Expected PipelineError"),
+        }
     }
 
     #[test]

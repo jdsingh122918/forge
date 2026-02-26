@@ -1,5 +1,6 @@
 use crate::audit::{ClaudeSession, FileChangeSummary};
 use crate::config::Config;
+use crate::errors::OrchestratorError;
 use crate::forge_config::tools_for_permission_mode;
 use crate::phase::Phase;
 use crate::signals::{IterationSignals, extract_signals};
@@ -119,7 +120,9 @@ impl IterationFeedback {
         self
     }
 
-    /// Add signals from the prior iteration (progress %, blockers, pivots).
+    /// Add signals from the prior iteration (progress %, blockers).
+    /// Pivots are intentionally excluded here — use `with_pivot()` instead,
+    /// which renders them as a prominent `## STRATEGY CHANGE` directive.
     pub fn with_signals(mut self, signals: &IterationSignals) -> Self {
         if !signals.has_signals() {
             return self;
@@ -133,12 +136,24 @@ impl IterationFeedback {
                 lines.push(format!("Blocker: {}", blocker.description));
             }
         }
-        for pivot in &signals.pivots {
-            lines.push(format!("Pivot: {}", pivot.new_approach));
-        }
         if !lines.is_empty() {
             self.parts.push(lines.join("\n"));
         }
+        self
+    }
+
+    /// Inject a pivot signal as a prominent strategy-change directive.
+    ///
+    /// When Claude emits `<pivot>`, the new approach must override the prior
+    /// strategy. Rendered as a `## STRATEGY CHANGE` block so it appears as an
+    /// instruction rather than an informational note.
+    pub fn with_pivot(mut self, pivot_text: &str) -> Self {
+        self.parts.push(format!(
+            "## STRATEGY CHANGE\nYou previously signalled a strategy change:\n\
+             \"{}\"\nYou MUST follow this new approach in this iteration. \
+             Do not repeat the prior approach.",
+            pivot_text
+        ));
         self
     }
 
@@ -215,7 +230,10 @@ impl ClaudeRunner {
             ui.log_step("Writing prompt file...");
         }
 
-        std::fs::write(&prompt_file, &prompt).context("Failed to write prompt file")?;
+        std::fs::write(&prompt_file, &prompt).map_err(|e| OrchestratorError::PromptWriteFailed {
+            path: prompt_file.clone(),
+            source: e,
+        })?;
 
         let output_file = self.config.log_dir.join(format!(
             "phase-{}-iter-{}-output.log",
@@ -274,7 +292,7 @@ impl ClaudeRunner {
             .stderr(std::process::Stdio::piped())
             .current_dir(&self.config.project_dir)
             .spawn()
-            .context("Failed to spawn Claude process")?;
+            .map_err(OrchestratorError::SpawnFailed)?;
 
         let child_pid = child.id().unwrap_or(0);
         if let Some(ref ui) = ui {
@@ -418,7 +436,12 @@ impl ClaudeRunner {
         }
 
         // Write output to file
-        std::fs::write(&output_file, &combined_output).context("Failed to write output file")?;
+        std::fs::write(&output_file, &combined_output).map_err(|e| {
+            OrchestratorError::OutputWriteFailed {
+                path: output_file.clone(),
+                source: e,
+            }
+        })?;
 
         // Check for promise in output
         let promise_tag = format!("<promise>{}</promise>", phase.promise);
@@ -908,5 +931,183 @@ mod tests {
         let changes = FileChangeSummary::default();
         let fb = IterationFeedback::new().with_git_changes(&changes).build();
         assert!(fb.is_none(), "Empty changes should not produce feedback");
+    }
+
+    #[test]
+    fn test_iteration_feedback_with_pivot_creates_strategy_section() {
+        let fb = IterationFeedback::new()
+            .with_pivot("Use SQLite instead of in-memory cache")
+            .build();
+        let text = fb.unwrap();
+        assert!(text.contains("## STRATEGY CHANGE"));
+        assert!(text.contains("Use SQLite instead of in-memory cache"));
+        assert!(text.contains("MUST follow this new approach"));
+    }
+
+    #[test]
+    fn test_with_signals_does_not_include_pivot() {
+        let mut signals = IterationSignals::new();
+        signals
+            .pivots
+            .push(crate::signals::PivotSignal::new("Use GraphQL instead of REST"));
+
+        // with_signals only: pivot should NOT appear as STRATEGY CHANGE
+        let fb_signals_only = IterationFeedback::new().with_signals(&signals).build();
+        if let Some(text) = fb_signals_only {
+            assert!(
+                !text.contains("## STRATEGY CHANGE"),
+                "with_signals should not produce STRATEGY CHANGE block"
+            );
+        }
+
+        // with_signals + with_pivot: STRATEGY CHANGE should appear
+        let pivot = signals.latest_pivot().unwrap();
+        let fb_with_pivot = IterationFeedback::new()
+            .with_signals(&signals)
+            .with_pivot(&pivot.new_approach)
+            .build();
+        let text = fb_with_pivot.unwrap();
+        assert!(text.contains("## STRATEGY CHANGE"));
+        assert!(text.contains("Use GraphQL instead of REST"));
+    }
+
+    // --- PromptContext pure-function tests ---
+
+    #[test]
+    fn test_prompt_context_new_has_no_content() {
+        let ctx = PromptContext::new();
+        assert!(!ctx.has_content(), "New PromptContext should have no content");
+        assert_eq!(ctx.generate_section(), "", "Empty context should produce empty section");
+    }
+
+    #[test]
+    fn test_prompt_context_with_compaction_has_content() {
+        let ctx = PromptContext::with_compaction("Prior session summary here.".to_string());
+        assert!(ctx.has_content());
+        let section = ctx.generate_section();
+        assert!(section.contains("Prior session summary here."));
+    }
+
+    #[test]
+    fn test_prompt_context_generate_section_ends_with_newline() {
+        let ctx = PromptContext::with_compaction("Summary.".to_string());
+        let section = ctx.generate_section();
+        assert!(section.ends_with('\n'), "Section should end with a newline");
+    }
+
+    #[test]
+    fn test_prompt_context_additional_context() {
+        let ctx = PromptContext {
+            compaction_summary: None,
+            additional_context: Some("Extra context info.".to_string()),
+        };
+        assert!(ctx.has_content());
+        assert!(ctx.generate_section().contains("Extra context info."));
+    }
+
+    #[test]
+    fn test_prompt_context_both_fields_combined() {
+        let ctx = PromptContext {
+            compaction_summary: Some("Compaction note.".to_string()),
+            additional_context: Some("Additional note.".to_string()),
+        };
+        let section = ctx.generate_section();
+        assert!(section.contains("Compaction note."));
+        assert!(section.contains("Additional note."));
+    }
+
+    // --- IterationFeedback additional coverage ---
+
+    #[test]
+    fn test_iteration_feedback_build_contains_header() {
+        // Any non-empty feedback must start with the ## ITERATION FEEDBACK header
+        let fb = IterationFeedback::new()
+            .with_iteration_status(1, 3, false)
+            .build()
+            .unwrap();
+        assert!(
+            fb.starts_with("## ITERATION FEEDBACK"),
+            "Feedback must start with the ITERATION FEEDBACK header"
+        );
+    }
+
+    #[test]
+    fn test_iteration_feedback_multiple_parts_separated() {
+        // Two parts should be joined with "\n\n"
+        let fb = IterationFeedback::new()
+            .with_iteration_status(2, 5, false)
+            .with_pivot("Switch to async processing")
+            .build()
+            .unwrap();
+        // Both parts must be present
+        assert!(fb.contains("2/5"));
+        assert!(fb.contains("STRATEGY CHANGE"));
+        // Verify the two parts are separated by a blank line
+        assert!(fb.contains("\n\n"), "Parts should be separated by double newline");
+    }
+
+    #[test]
+    fn test_iteration_feedback_with_signals_shows_blocker() {
+        use crate::signals::BlockerSignal;
+        let mut signals = IterationSignals::new();
+        signals.blockers.push(BlockerSignal::new("Cannot find API credentials"));
+
+        let fb = IterationFeedback::new().with_signals(&signals).build();
+        let text = fb.unwrap();
+        assert!(text.contains("Blocker:"));
+        assert!(text.contains("Cannot find API credentials"));
+    }
+
+    #[test]
+    fn test_iteration_feedback_acknowledged_blocker_skipped() {
+        use crate::signals::BlockerSignal;
+        let mut signals = IterationSignals::new();
+        let mut blocker = BlockerSignal::new("Already resolved");
+        blocker.acknowledge();
+        signals.blockers.push(blocker);
+
+        // An acknowledged blocker should not appear in the feedback
+        let fb = IterationFeedback::new().with_signals(&signals).build();
+        // signals.has_signals() is true (blocker exists), but the acknowledged
+        // blocker is filtered out in with_signals(), so no lines are added.
+        if let Some(text) = fb {
+            assert!(
+                !text.contains("Already resolved"),
+                "Acknowledged blockers should not appear in feedback"
+            );
+        }
+    }
+
+    #[test]
+    fn test_iteration_feedback_in_progress_format() {
+        // Verify the exact "X/Y" format for in-progress iterations
+        let fb = IterationFeedback::new()
+            .with_iteration_status(4, 10, false)
+            .build()
+            .unwrap();
+        assert!(fb.contains("4/10"), "In-progress status must show X/Y format");
+        assert!(!fb.contains("COMPLETED"), "In-progress status must not say COMPLETED");
+    }
+
+    // --- Path-helper tests ---
+
+    #[test]
+    fn test_get_prompt_file_path() {
+        let dir = tempdir().unwrap();
+        let config = setup_test_config(dir.path(), "# Spec");
+        let runner = ClaudeRunner::new(config);
+
+        let path = runner.get_prompt_file("01", 3);
+        assert!(path.to_str().unwrap().contains("phase-01-iter-3-prompt.md"));
+    }
+
+    #[test]
+    fn test_get_output_file_path() {
+        let dir = tempdir().unwrap();
+        let config = setup_test_config(dir.path(), "# Spec");
+        let runner = ClaudeRunner::new(config);
+
+        let path = runner.get_output_file("02", 7);
+        assert!(path.to_str().unwrap().contains("phase-02-iter-7-output.log"));
     }
 }

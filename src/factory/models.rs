@@ -2,22 +2,48 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+/// A project registered in the Factory, representing a local codebase that can
+/// have issues managed on the Kanban board and executed by the agent pipeline.
+///
+/// Projects are created via the Factory API and stored in SQLite. Each project
+/// has an associated filesystem path that the pipeline uses when checking out
+/// worktrees and running `forge` commands.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
+    /// Unique integer identifier assigned by the database.
     pub id: i64,
+    /// Human-readable name shown in the Factory UI.
     pub name: String,
+    /// Absolute filesystem path to the project root on the host machine.
     pub path: String,
+    /// Optional GitHub repository slug (`owner/repo`) used for auto-PR creation.
     pub github_repo: Option<String>,
+    /// ISO 8601 timestamp of when the project was registered.
     pub created_at: String,
 }
 
+/// The column an issue currently occupies in the Kanban board.
+///
+/// Columns define the workflow lifecycle of an issue. Moving an issue to
+/// `InProgress` triggers automatic pipeline execution via [`crate::factory::pipeline::PipelineRunner`].
+/// The typical progression is:
+///
+/// `Backlog` → `Ready` → `InProgress` → `InReview` → `Done`
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum IssueColumn {
+    /// Work that has been captured but is not yet scheduled for development.
     Backlog,
+    /// Scheduled and groomed work that is ready to be picked up by the pipeline.
     Ready,
+    /// Issue is currently being implemented by the agent pipeline.
+    ///
+    /// Moving into this column triggers a [`PipelineRun`] to be created and
+    /// execution to begin via [`crate::factory::pipeline::PipelineRunner`].
     InProgress,
+    /// Implementation is complete and awaiting human or automated review.
     InReview,
+    /// Work is accepted and complete. Terminal state.
     Done,
 }
 
@@ -48,12 +74,21 @@ impl FromStr for IssueColumn {
     }
 }
 
+/// Priority level of a Kanban issue.
+///
+/// Used to communicate urgency to the agent pipeline and to sort issues within
+/// a column. The pipeline does not alter its behavior based on priority today,
+/// but the value is surfaced in the UI and stored for future scheduling heuristics.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Priority {
+    /// Cosmetic or nice-to-have work with no time pressure.
     Low,
+    /// Default priority for standard feature work.
     Medium,
+    /// Important work that should be addressed soon.
     High,
+    /// Urgent issue requiring immediate attention, such as a production incident.
     Critical,
 }
 
@@ -82,28 +117,56 @@ impl FromStr for Priority {
     }
 }
 
+/// A Kanban issue representing a unit of work to be implemented by the agent pipeline.
+///
+/// Issues are the primary work items in the Factory. They are displayed on the
+/// Kanban board and move through columns as they progress. When an issue is moved
+/// to [`IssueColumn::InProgress`], the Factory API triggers a [`PipelineRun`] that
+/// invokes `forge` to implement the issue autonomously.
+///
+/// Issues can optionally be linked to a GitHub issue via `github_issue_number`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Issue {
+    /// Unique integer identifier assigned by the database.
     pub id: i64,
+    /// Foreign key to the [`Project`] this issue belongs to.
     pub project_id: i64,
+    /// Short summary of the work, shown as the card title on the board.
     pub title: String,
+    /// Full specification of the work, passed as the prompt to the pipeline.
     pub description: String,
+    /// Current Kanban column the issue occupies.
     pub column: IssueColumn,
+    /// Sort order within the column. Lower values appear higher on the board.
     pub position: i32,
+    /// Urgency level used for triage and display ordering.
     pub priority: Priority,
+    /// Arbitrary string tags for filtering and categorisation (e.g. `["bug", "ui"]`).
     pub labels: Vec<String>,
+    /// GitHub issue number if this card was synced from or linked to a GitHub issue.
     pub github_issue_number: Option<i64>,
+    /// ISO 8601 timestamp of when the issue was created.
     pub created_at: String,
+    /// ISO 8601 timestamp of the most recent update to this issue.
     pub updated_at: String,
 }
 
+/// State machine for a [`PipelineRun`].
+///
+/// Transitions follow the path: `Queued` → `Running` → `Completed` | `Failed` | `Cancelled`.
+/// Terminal states are identified by [`PipelineStatus::is_terminal`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum PipelineStatus {
+    /// The run has been created and is waiting for an executor slot.
     Queued,
+    /// The pipeline is actively executing phases via `forge`.
     Running,
+    /// All phases finished successfully. Terminal state.
     Completed,
+    /// The pipeline encountered an unrecoverable error. Terminal state.
     Failed,
+    /// The run was explicitly cancelled before completion. Terminal state.
     Cancelled,
 }
 
@@ -141,23 +204,46 @@ impl PipelineStatus {
     }
 }
 
+/// A single execution of the Forge pipeline triggered by an issue moving to `InProgress`.
+///
+/// Each `PipelineRun` corresponds to one invocation of `forge` against a specific
+/// [`Issue`]. The run tracks progress through phases, the current iteration within
+/// a phase, and the outcome (summary, error, PR URL). When agent-team execution is
+/// enabled, the run is associated with an [`AgentTeam`] via `team_id`.
+///
+/// Runs are persisted in SQLite and their state is broadcast to connected WebSocket
+/// clients so the UI can display live progress.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineRun {
+    /// Unique integer identifier assigned by the database.
     pub id: i64,
+    /// Foreign key to the [`Issue`] that triggered this run.
     pub issue_id: i64,
+    /// Current lifecycle state of the run.
     pub status: PipelineStatus,
+    /// Total number of phases in the spec being executed, once known.
     pub phase_count: Option<i32>,
+    /// Index of the phase currently being executed (1-based).
     pub current_phase: Option<i32>,
+    /// Current iteration number within the active phase.
     pub iteration: Option<i32>,
+    /// Human-readable summary produced at the end of a successful run.
     pub summary: Option<String>,
+    /// Error message captured when the run transitions to `Failed`.
     pub error: Option<String>,
+    /// Git branch created for this run (e.g. `forge/issue-42`).
     pub branch_name: Option<String>,
+    /// URL of the pull request opened after a successful run, if any.
     pub pr_url: Option<String>,
+    /// Foreign key to the [`AgentTeam`] coordinating this run, if agent-team mode is active.
     #[serde(default)]
     pub team_id: Option<i64>,
+    /// `true` when this run is being executed by an agent team rather than a single pipeline.
     #[serde(default)]
     pub has_team: bool,
+    /// ISO 8601 timestamp of when execution began.
     pub started_at: String,
+    /// ISO 8601 timestamp of when the run reached a terminal state, if applicable.
     pub completed_at: Option<String>,
 }
 
@@ -165,9 +251,13 @@ pub struct PipelineRun {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PhaseStatus {
+    /// Phase has not started yet.
     Pending,
+    /// Phase is currently executing iterations.
     Running,
+    /// Phase finished successfully (agent emitted `<promise>DONE</promise>`).
     Completed,
+    /// Phase exceeded its iteration budget or encountered an error.
     Failed,
 }
 
@@ -195,63 +285,117 @@ impl std::str::FromStr for PhaseStatus {
     }
 }
 
+/// A single named phase within a [`PipelineRun`], tracking iteration progress.
+///
+/// Phases map directly to the phases defined in the Forge spec file (`.forge/spec.md`).
+/// Each phase has an iteration budget; the pipeline retries the phase until the agent
+/// emits `<promise>DONE</promise>` or the budget is exhausted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelinePhase {
+    /// Unique integer identifier assigned by the database.
     pub id: i64,
+    /// Foreign key to the owning [`PipelineRun`].
     pub run_id: i64,
+    /// Hierarchical phase identifier from the spec (e.g. `"1"`, `"2.1"`).
     pub phase_number: String,
+    /// Human-readable name of the phase (e.g. `"Implement feature"`).
     pub phase_name: String,
+    /// Current execution state of this phase.
     pub status: PhaseStatus,
+    /// Current iteration count within this phase (incremented on each retry).
     pub iteration: Option<i32>,
+    /// Maximum number of iterations allowed for this phase before it is marked failed.
     pub budget: Option<i32>,
+    /// ISO 8601 timestamp of when this phase began executing.
     pub started_at: Option<String>,
+    /// ISO 8601 timestamp of when this phase reached a terminal state.
     pub completed_at: Option<String>,
+    /// Error message if the phase failed.
     pub error: Option<String>,
 }
 
 // API view types
+
+/// Full Kanban board view for a project, returned by the `GET /api/projects/:id/board` endpoint.
+///
+/// Aggregates a [`Project`] with all of its columns and their issues, providing
+/// a single payload for the board UI to render without additional requests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BoardView {
+    /// The project whose board is being displayed.
     pub project: Project,
+    /// Ordered list of columns, each containing the issues currently in that column.
     pub columns: Vec<ColumnView>,
 }
 
+/// A single column on the Kanban board, containing all issues in that column.
+///
+/// Used as a nested element within [`BoardView`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnView {
+    /// The column identifier (e.g. `backlog`, `in_progress`).
     pub name: IssueColumn,
+    /// Issues currently in this column, each paired with their active pipeline run status.
     pub issues: Vec<IssueWithStatus>,
 }
 
+/// An issue paired with its currently active pipeline run, for board display.
+///
+/// Used inside [`ColumnView`] so the UI can show a progress badge on cards that
+/// are currently being processed by the pipeline without a separate API call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueWithStatus {
+    /// The issue data.
     pub issue: Issue,
+    /// The most recent non-terminal pipeline run for this issue, if one exists.
     pub active_run: Option<PipelineRun>,
 }
 
+/// Detailed view of an issue including its full pipeline run history.
+///
+/// Returned by `GET /api/issues/:id` to power the issue detail drawer in the UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueDetail {
+    /// The issue data.
     pub issue: Issue,
+    /// All pipeline runs associated with this issue, ordered by start time descending.
     pub runs: Vec<PipelineRunDetail>,
 }
 
+/// A pipeline run together with its per-phase execution detail.
+///
+/// Used inside [`IssueDetail`] to provide a complete picture of a single run
+/// including the individual phases and their statuses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineRunDetail {
+    /// The pipeline run data (flattened into the JSON object).
     #[serde(flatten)]
     pub run: PipelineRun,
+    /// Ordered list of phases that were executed (or are pending) in this run.
     pub phases: Vec<PipelinePhase>,
 }
 
 // Agent team execution models
 
 /// Isolation strategy for agent task execution.
-/// Currently only Worktree and Shared are implemented.
-/// Container and Hybrid are reserved for future use.
+///
+/// Controls how each [`AgentTask`] within a team is isolated from others to
+/// prevent file-system conflicts when multiple agents work in parallel.
+///
+/// Currently only `Worktree` and `Shared` are fully implemented.
+/// `Container` and `Hybrid` are reserved for future use.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IsolationStrategy {
+    /// Each agent task operates in a dedicated `git worktree` branched from `main`.
+    /// Results are merged back after each wave completes.
     Worktree,
+    /// Each agent task runs in an isolated Docker container. Reserved for future use.
     Container,
+    /// Combines container and worktree isolation. Reserved for future use.
     Hybrid,
+    /// All agent tasks share the same working directory. Suitable for sequential strategies
+    /// or when tasks are guaranteed to touch non-overlapping files.
     Shared,
 }
 
@@ -286,18 +430,25 @@ impl FromStr for IsolationStrategy {
     }
 }
 
-/// Roles that agents can assume during execution.
-/// By convention, the LLM planner assigns Coder, Tester, and Reviewer.
-/// Planner, BrowserVerifier, and TestVerifier are intended for future
-/// system-assigned tasks but are not yet used.
+/// Roles that agents can assume during team execution of a pipeline run.
+///
+/// The planner assigns `Coder`, `Tester`, and `Reviewer` tasks when decomposing
+/// an issue. `Planner`, `BrowserVerifier`, and `TestVerifier` are intended for
+/// future system-assigned specialisation and are not yet fully utilised.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRole {
+    /// Orchestrates the team by producing the execution plan. System-assigned.
     Planner,
+    /// Writes and modifies source code to implement the issue requirements.
     Coder,
+    /// Writes and runs automated tests to verify the implementation.
     Tester,
+    /// Reviews code changes for correctness, style, and adherence to requirements.
     Reviewer,
+    /// Verifies the implementation via browser automation. Reserved for future use.
     BrowserVerifier,
+    /// Verifies the implementation by running the test suite. Reserved for future use.
     TestVerifier,
 }
 
@@ -336,14 +487,21 @@ impl FromStr for AgentRole {
     }
 }
 
-/// Status of an individual agent task in the execution lifecycle.
+/// Lifecycle state of an individual [`AgentTask`].
+///
+/// Transitions follow the path: `Pending` → `Running` → `Completed` | `Failed` | `Cancelled`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentTaskStatus {
+    /// Task has been created but its wave has not started executing yet.
     Pending,
+    /// Task is actively running its assigned agent process.
     Running,
+    /// Task finished successfully. Terminal state.
     Completed,
+    /// Task encountered an unrecoverable error. Terminal state.
     Failed,
+    /// Task was cancelled, typically because a sibling task in the same wave failed. Terminal state.
     Cancelled,
 }
 
@@ -380,14 +538,22 @@ impl FromStr for AgentTaskStatus {
     }
 }
 
-/// Types of events emitted by agents during execution.
+/// Types of events emitted by agents during task execution.
+///
+/// Events are persisted as [`AgentEvent`] records and streamed to the UI via
+/// WebSocket to provide live visibility into what each agent is doing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentEventType {
+    /// Internal reasoning or planning text from the agent (may be verbose).
     Thinking,
+    /// A concrete action the agent is taking (e.g. editing a file, running a command).
     Action,
+    /// Substantive output produced by the agent (e.g. code, test results).
     Output,
+    /// A structured signal emitted via `<progress>`, `<blocker>`, or `<pivot>` tags.
     Signal,
+    /// An error encountered by the agent during task execution.
     Error,
 }
 
@@ -424,13 +590,22 @@ impl FromStr for AgentEventType {
     }
 }
 
-/// Execution strategy for agent team coordination.
+/// How the tasks within an [`AgentTeam`] are scheduled relative to each other.
+///
+/// The strategy is chosen by the planner based on the nature of the issue and
+/// stored on the [`AgentTeam`]. It determines how the executor launches tasks
+/// and whether inter-task dependencies are enforced.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionStrategy {
+    /// All tasks are started simultaneously with no ordering constraints.
     Parallel,
+    /// Tasks are executed one at a time in dependency order.
     Sequential,
+    /// Tasks are executed in waves: all tasks in wave N complete before wave N+1 begins.
+    /// This is the primary strategy for Coder → Tester → Reviewer pipelines.
     WavePipeline,
+    /// The executor dynamically adjusts scheduling based on runtime signals. Reserved for future use.
     Adaptive,
 }
 
@@ -465,12 +640,19 @@ impl FromStr for ExecutionStrategy {
     }
 }
 
-/// Type of signal emitted by an agent during execution.
+/// Type of structured signal emitted by an agent inside `<signal>` XML tags.
+///
+/// Signals are parsed from agent output and stored as [`AgentEvent`] records
+/// with `event_type = Signal`. They correspond to the `<progress>`, `<blocker>`,
+/// and `<pivot>` tags described in the Forge spec.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SignalType {
+    /// Agent is making forward progress. Resets the stall detector.
     Progress,
+    /// Agent has hit an obstacle that prevents it from continuing without intervention.
     Blocker,
+    /// Agent is changing its approach due to new information or a dead end.
     Pivot,
 }
 
@@ -502,11 +684,16 @@ impl FromStr for SignalType {
     }
 }
 
-/// Type of verification performed after pipeline execution.
+/// The method used to verify that a pipeline run's output is correct.
+///
+/// Verification tasks are assigned to `BrowserVerifier` or `TestVerifier` agents
+/// and run after the primary implementation wave completes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerificationType {
+    /// Verification is performed by navigating the application in a headless browser.
     Browser,
+    /// Verification is performed by building the project and running its test suite.
     TestBuild,
 }
 
@@ -536,56 +723,102 @@ impl FromStr for VerificationType {
     }
 }
 
-/// A team of agents assigned to execute a pipeline run.
-/// Created by the planner after analyzing the issue.
+/// A team of agents assembled to execute a single [`PipelineRun`].
+///
+/// Created by the planner after it analyses the issue and decomposes it into
+/// discrete tasks. The team record captures the high-level plan and the chosen
+/// execution and isolation strategies. Individual work items are stored as
+/// [`AgentTask`] records linked to this team.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTeam {
+    /// Unique integer identifier assigned by the database.
     pub id: i64,
+    /// Foreign key to the [`PipelineRun`] this team is executing.
     pub run_id: i64,
+    /// How tasks within the team are scheduled relative to each other.
     pub strategy: ExecutionStrategy,
+    /// How each task is isolated from the others on the filesystem.
     pub isolation: IsolationStrategy,
+    /// Human-readable summary of the plan produced by the planner agent.
     pub plan_summary: String,
+    /// ISO 8601 timestamp of when the team was created.
     pub created_at: String,
 }
 
-/// An individual task within an agent team, assigned to a specific agent role.
-/// Tasks are organized into waves for dependency-ordered parallel execution.
+/// An individual task within an [`AgentTeam`], assigned to a specific agent role.
+///
+/// Tasks represent atomic units of work (e.g. "implement the login handler",
+/// "write tests for the login handler"). They are organized into numbered waves
+/// so that dependency ordering can be enforced: all tasks in wave N complete
+/// before wave N+1 starts.
+///
+/// Depending on the [`IsolationStrategy`], each task may run in its own `git worktree`
+/// (tracked by `worktree_path`) or a container (tracked by `container_id`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTask {
+    /// Unique integer identifier assigned by the database.
     pub id: i64,
+    /// Foreign key to the [`AgentTeam`] this task belongs to.
     pub team_id: i64,
+    /// Short name describing what this specific task does (e.g. `"Implement auth middleware"`).
     pub name: String,
+    /// Full instructions passed to the agent as its prompt for this task.
     pub description: String,
+    /// The role played by the agent executing this task.
     pub agent_role: AgentRole,
+    /// Wave number for dependency-ordered execution. Tasks in the same wave can run in parallel.
     pub wave: i32,
+    /// IDs of other [`AgentTask`]s that must complete before this task can start.
     pub depends_on: Vec<i64>,
+    /// Current lifecycle state of this task.
     pub status: AgentTaskStatus,
+    /// Isolation mode used for this task's filesystem environment.
     pub isolation_type: IsolationStrategy,
+    /// Filesystem path to the git worktree created for this task, if using worktree isolation.
     pub worktree_path: Option<String>,
+    /// Docker container ID for this task, if using container isolation.
     pub container_id: Option<String>,
+    /// Git branch name used by this task (typically `forge/issue-<id>-<role>`).
     pub branch_name: Option<String>,
+    /// ISO 8601 timestamp of when this task began executing.
     pub started_at: Option<String>,
+    /// ISO 8601 timestamp of when this task reached a terminal state.
     pub completed_at: Option<String>,
+    /// Error message captured when the task transitions to `Failed`.
     pub error: Option<String>,
 }
 
 /// A real-time event emitted by an agent during task execution.
-/// Streamed to the UI via WebSocket for live progress updates.
+///
+/// Events are written to the database as they occur and broadcast to connected
+/// WebSocket clients so the Factory UI can display a live log of what each agent
+/// is doing. The `metadata` field carries structured data for `Signal` events
+/// (e.g. the parsed `<progress>` or `<blocker>` payload).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentEvent {
+    /// Unique integer identifier assigned by the database.
     pub id: i64,
+    /// Foreign key to the [`AgentTask`] that emitted this event.
     pub task_id: i64,
+    /// Classifies the nature of the event for filtering and display.
     pub event_type: AgentEventType,
+    /// The raw textual content of the event.
     pub content: String,
+    /// Optional structured JSON payload, present for `Signal` events.
     pub metadata: Option<serde_json::Value>,
+    /// ISO 8601 timestamp of when the event was recorded.
     pub created_at: String,
 }
 
-/// Aggregated view of an agent team and all its tasks,
-/// used for API responses and the agent dashboard UI.
+/// Aggregated view of an [`AgentTeam`] together with all of its tasks.
+///
+/// Returned by the `GET /api/runs/:id/team` endpoint and used by the agent
+/// dashboard panel in the Factory UI to render the full team status at a glance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTeamDetail {
+    /// The agent team metadata and configuration.
     pub team: AgentTeam,
+    /// All tasks belonging to the team, ordered by wave then task ID.
     pub tasks: Vec<AgentTask>,
 }
 

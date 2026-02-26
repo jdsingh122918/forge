@@ -602,10 +602,10 @@ impl PipelineRunner {
             && is_forge_initialized(project_path)
             && let Err(e) = auto_generate_phases(project_path, issue_title, issue_description).await
         {
-            eprintln!(
-                "[pipeline] run_id={}: failed to auto-generate phases: {:#}",
-                run_id, e
-            );
+            broadcast_message(tx, &WsMessage::PipelineError {
+                run_id,
+                message: format!("Failed to auto-generate phases: {:#}", e),
+            });
         }
 
         // Execute the pipeline (Docker or Local)
@@ -1114,7 +1114,10 @@ async fn execute_pipeline_streaming(
                 if let Err(e) = db.call(move |db| {
                     db.update_pipeline_progress(run_id, phase_count, phase, iteration)
                 }).await {
-                    eprintln!("[pipeline] run_id={}: failed to update pipeline progress: {:#}", run_id, e);
+                    broadcast_message(tx, &WsMessage::PipelineError {
+                        run_id,
+                        message: format!("Failed to update pipeline progress: {:#}", e),
+                    });
                 }
             }
 
@@ -1264,7 +1267,10 @@ async fn execute_pipeline_docker(
                 if let Err(e) = db.call(move |db| {
                     db.update_pipeline_progress(run_id, phase_count, phase, iteration)
                 }).await {
-                    eprintln!("[pipeline] run_id={}: failed to update pipeline progress: {:#}", run_id, e);
+                    broadcast_message(tx, &WsMessage::PipelineError {
+                        run_id,
+                        message: format!("Failed to update pipeline progress: {:#}", e),
+                    });
                 }
 
                 let percent = compute_percent(&progress);
@@ -1437,7 +1443,10 @@ async fn process_phase_event(
             if let Err(e) = db.call(move |db| {
                 db.upsert_pipeline_phase(run_id, &phase_owned, &phase_owned, "running", None, None)
             }).await {
-                eprintln!("[pipeline] run_id={}: failed to upsert pipeline phase: {:#}", run_id, e);
+                broadcast_message(tx, &WsMessage::PipelineError {
+                    run_id,
+                    message: format!("Failed to upsert pipeline phase (started): {:#}", e),
+                });
             }
             broadcast_message(
                 tx,
@@ -1468,7 +1477,10 @@ async fn process_phase_event(
                     Some(budget_val),
                 )
             }).await {
-                eprintln!("[pipeline] run_id={}: failed to upsert pipeline phase: {:#}", run_id, e);
+                broadcast_message(tx, &WsMessage::PipelineError {
+                    run_id,
+                    message: format!("Failed to upsert pipeline phase (progress): {:#}", e),
+                });
             }
             broadcast_message(
                 tx,
@@ -1491,7 +1503,10 @@ async fn process_phase_event(
             if let Err(e) = db.call(move |db| {
                 db.upsert_pipeline_phase(run_id, &phase_owned, &phase_owned, &status_owned, None, None)
             }).await {
-                eprintln!("[pipeline] run_id={}: failed to upsert pipeline phase: {:#}", run_id, e);
+                broadcast_message(tx, &WsMessage::PipelineError {
+                    run_id,
+                    message: format!("Failed to upsert pipeline phase (completed): {:#}", e),
+                });
             }
             broadcast_message(
                 tx,
