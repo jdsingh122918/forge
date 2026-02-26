@@ -137,6 +137,10 @@ impl StateManager {
     }
 
     /// Get all state entries including sub-phase entries.
+    ///
+    /// Lines that cannot be fully parsed (e.g. corrupt or partial writes) are
+    /// silently skipped with a warning rather than being returned as bogus
+    /// entries with iteration == 0.
     pub fn get_entries(&self) -> Result<Vec<StateEntry>> {
         if !self.state_file.exists() {
             return Ok(Vec::new());
@@ -150,10 +154,19 @@ impl StateManager {
                 let parts: Vec<&str> = line.split('|').collect();
                 if parts.len() == 5 {
                     // New sub-phase format: phase|sub_phase|iteration|status|timestamp
+                    let iteration = match parts[2].parse::<u32>() {
+                        Ok(n) => n,
+                        Err(_) => {
+                            eprintln!(
+                                "state: skipping malformed sub-phase line (bad iteration): {line}"
+                            );
+                            return None;
+                        }
+                    };
                     Some(StateEntry {
                         phase: parts[0].to_string(),
                         sub_phase: Some(parts[1].to_string()),
-                        iteration: parts[2].parse().unwrap_or(0),
+                        iteration,
                         status: parts[3].to_string(),
                         timestamp: DateTime::parse_from_rfc3339(parts[4])
                             .ok()?
@@ -161,10 +174,19 @@ impl StateManager {
                     })
                 } else if parts.len() >= 4 {
                     // Old format: phase|iteration|status|timestamp
+                    let iteration = match parts[1].parse::<u32>() {
+                        Ok(n) => n,
+                        Err(_) => {
+                            eprintln!(
+                                "state: skipping malformed entry line (bad iteration): {line}"
+                            );
+                            return None;
+                        }
+                    };
                     Some(StateEntry {
                         phase: parts[0].to_string(),
                         sub_phase: None,
-                        iteration: parts[1].parse().unwrap_or(0),
+                        iteration,
                         status: parts[2].to_string(),
                         timestamp: DateTime::parse_from_rfc3339(parts[3])
                             .ok()?
@@ -367,6 +389,8 @@ mod tests {
         assert!(mgr.get_last_completed_phase().is_none());
     }
 
+    // Issue 1 fix: strengthened filter test with identity checks, status
+    // assertion, and non-existent phase coverage.
     #[test]
     fn test_get_phase_entries_filters_correctly() {
         let (mgr, _dir) = make_manager();
@@ -375,21 +399,60 @@ mod tests {
         mgr.save_sub_phase("01", "01.1", 1, "completed").unwrap();
 
         let phase_01_entries = mgr.get_phase_entries("01").unwrap();
-        assert_eq!(phase_01_entries.len(), 2); // top-level + sub-phase
+        assert_eq!(phase_01_entries.len(), 2, "phase 01 must have exactly 2 entries");
+        assert!(
+            phase_01_entries.iter().all(|e| e.phase == "01"),
+            "every returned entry must have phase == '01'"
+        );
+        assert_eq!(phase_01_entries.iter().filter(|e| e.is_sub_phase()).count(), 1);
+        assert_eq!(phase_01_entries.iter().filter(|e| !e.is_sub_phase()).count(), 1);
 
         let phase_02_entries = mgr.get_phase_entries("02").unwrap();
         assert_eq!(phase_02_entries.len(), 1);
+        assert_eq!(phase_02_entries[0].phase, "02");
+        assert_eq!(phase_02_entries[0].status, "in_progress");
+
+        let phase_99_entries = mgr.get_phase_entries("99").unwrap();
+        assert!(phase_99_entries.is_empty(), "non-existent phase must return empty vec");
     }
 
+    // Issue 2 fix: test both the None and Some branches of full_phase_id().
     #[test]
     fn test_state_entry_methods() {
         let (mgr, _dir) = make_manager();
         mgr.save("03", 1, "completed").unwrap();
+        mgr.save_sub_phase("03", "03.1", 1, "completed").unwrap();
 
         let entries = mgr.get_entries().unwrap();
-        let entry = &entries[0];
-        assert!(!entry.is_sub_phase());
-        assert_eq!(entry.full_phase_id(), "03");
-        assert_eq!(entry.parent_phase(), "03");
+        assert_eq!(entries.len(), 2);
+
+        let top_level = &entries[0];
+        assert!(!top_level.is_sub_phase());
+        assert_eq!(top_level.full_phase_id(), "03");
+        assert_eq!(top_level.parent_phase(), "03");
+
+        let sub = &entries[1];
+        assert!(sub.is_sub_phase(), "second entry must be a sub-phase");
+        assert_eq!(sub.full_phase_id(), "03.1", "sub-phase full_phase_id must return sub-phase number");
+        assert_eq!(sub.parent_phase(), "03", "sub-phase parent_phase must return parent number");
+    }
+
+    // Issue 3 regression: corrupt iteration field must be skipped, not silently
+    // coerced to zero.
+    #[test]
+    fn test_malformed_iteration_line_is_skipped() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.log");
+        // Write one good line and one line whose iteration field is non-numeric.
+        std::fs::write(
+            &path,
+            "01|1|completed|2024-01-01T00:00:00+00:00\n\
+             02|CORRUPT|in_progress|2024-01-01T00:00:00+00:00\n",
+        )
+        .unwrap();
+        let mgr = StateManager::new(path);
+        let entries = mgr.get_entries().unwrap();
+        assert_eq!(entries.len(), 1, "malformed line must be skipped");
+        assert_eq!(entries[0].phase, "01");
     }
 }

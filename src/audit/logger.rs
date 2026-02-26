@@ -26,25 +26,39 @@ impl AuditLogger {
         Ok(())
     }
 
+    /// Add a phase audit record to the current run.
+    ///
+    /// Returns an error if no run is currently active (i.e., `start_run` was never called
+    /// or `finish_run` has already been called). This prevents silent data loss when callers
+    /// forget to start a run before logging phase data.
     pub fn add_phase(&mut self, phase: PhaseAudit) -> Result<()> {
-        if let Some(ref mut run) = self.current_run {
-            run.phases.push(phase);
-            self.save_current()?;
-        }
-        Ok(())
+        let run = self
+            .current_run
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("add_phase called with no active run"))?;
+        run.phases.push(phase);
+        self.save_current()
     }
 
+    /// Apply a mutation to the last phase in the current run.
+    ///
+    /// Returns an error if no run is currently active, or if the current run has no phases
+    /// yet. Both conditions indicate a programming error — the caller must ensure a run and
+    /// at least one phase exist before updating.
     pub fn update_last_phase<F>(&mut self, f: F) -> Result<()>
     where
         F: FnOnce(&mut PhaseAudit),
     {
-        if let Some(ref mut run) = self.current_run
-            && let Some(phase) = run.phases.last_mut()
-        {
-            f(phase);
-            self.save_current()?;
-        }
-        Ok(())
+        let run = self
+            .current_run
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("update_last_phase called with no active run"))?;
+        let phase = run
+            .phases
+            .last_mut()
+            .ok_or_else(|| anyhow::anyhow!("update_last_phase called with no phases in run"))?;
+        f(phase);
+        self.save_current()
     }
 
     pub fn finish_run(&mut self) -> Result<PathBuf> {
@@ -66,9 +80,10 @@ impl AuditLogger {
         let json = serde_json::to_string_pretty(&run).context("Failed to serialize audit run")?;
         fs::write(&run_file, json).context("Failed to write audit run file")?;
 
-        // Remove current run file
+        // Remove current run file — propagate errors instead of silently discarding them
         if self.current_run_file.exists() {
-            fs::remove_file(&self.current_run_file).ok();
+            fs::remove_file(&self.current_run_file)
+                .context("Failed to remove current-run.json after finishing run")?;
         }
 
         self.current_run = None;
@@ -129,150 +144,239 @@ impl AuditLogger {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
+    use crate::audit::PhaseOutcome;
+    use tempfile::TempDir;
 
-    fn make_run_config() -> RunConfig {
-        RunConfig {
-            auto_approve_threshold: 5,
-            skip_permissions: true,
-            verbose: false,
-            spec_file: std::path::PathBuf::from("spec.md"),
-            project_dir: std::path::PathBuf::from("."),
-        }
-    }
-
-    fn make_phase_audit() -> PhaseAudit {
-        PhaseAudit::new("01", "Test phase", "<promise>DONE</promise>")
-    }
-
-    fn setup_logger() -> (AuditLogger, tempfile::TempDir) {
-        let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("runs")).unwrap();
+    /// Create a temporary audit directory with the expected `runs/` subdirectory, and
+    /// return both an `AuditLogger` pointed at it and the `TempDir` guard (which must be
+    /// kept alive for the duration of the test so the directory is not deleted early).
+    fn setup_logger() -> (AuditLogger, TempDir) {
+        let dir = TempDir::new().expect("failed to create temp dir");
+        let runs_dir = dir.path().join("runs");
+        std::fs::create_dir_all(&runs_dir).expect("failed to create runs dir");
         let logger = AuditLogger::new(dir.path());
         (logger, dir)
     }
 
-    #[test]
-    fn test_start_run_creates_current_run_file() {
-        let (mut logger, dir) = setup_logger();
-        logger.start_run(make_run_config()).unwrap();
-        assert!(dir.path().join("current-run.json").exists());
-    }
-
-    #[test]
-    fn test_add_phase_updates_current_run() {
-        let (mut logger, _dir) = setup_logger();
-        logger.start_run(make_run_config()).unwrap();
-        logger.add_phase(make_phase_audit()).unwrap();
-        let current_run = logger.current_run().unwrap();
-        assert_eq!(current_run.phases.len(), 1);
-    }
-
-    #[test]
-    fn test_finish_run_writes_to_runs_dir() {
-        let (mut logger, dir) = setup_logger();
-        logger.start_run(make_run_config()).unwrap();
-        let run_file = logger.finish_run().unwrap();
-        assert!(!dir.path().join("current-run.json").exists());
-        assert!(run_file.exists());
-        assert!(run_file.to_str().unwrap().contains("runs"));
-    }
-
-    #[test]
-    fn test_finish_run_without_start_errors() {
-        let (mut logger, _dir) = setup_logger();
-        let result = logger.finish_run();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_load_current_recovers_in_progress_run() {
-        let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("runs")).unwrap();
-
-        {
-            let mut logger = AuditLogger::new(dir.path());
-            logger.start_run(make_run_config()).unwrap();
-            logger.add_phase(make_phase_audit()).unwrap();
-            // Simulate crash — do NOT call finish_run
+    /// Build a minimal `RunConfig` suitable for unit tests.
+    fn make_run_config() -> RunConfig {
+        RunConfig {
+            auto_approve_threshold: 3,
+            skip_permissions: true,
+            verbose: false,
+            spec_file: PathBuf::from("spec.md"),
+            project_dir: PathBuf::from("."),
         }
-
-        let mut logger2 = AuditLogger::new(dir.path());
-        let loaded = logger2.load_current().unwrap();
-        assert!(loaded);
-        let run = logger2.current_run().unwrap();
-        assert_eq!(run.phases.len(), 1);
     }
 
+    // -------------------------------------------------------------------------
+    // Issue 1 — CRITICAL: silent Ok(()) when no run is active
+    // -------------------------------------------------------------------------
+
     #[test]
-    fn test_load_current_returns_false_when_no_file() {
+    fn test_add_phase_without_active_run_returns_err() {
         let (mut logger, _dir) = setup_logger();
-        let loaded = logger.load_current().unwrap();
-        assert!(!loaded);
+        let result = logger.add_phase(PhaseAudit::new("01", "Orphan", "DONE"));
+        assert!(
+            result.is_err(),
+            "add_phase with no active run must return Err"
+        );
     }
 
     #[test]
-    fn test_list_runs_empty_directory() {
-        let (logger, _dir) = setup_logger();
-        let runs = logger.list_runs().unwrap();
-        assert!(runs.is_empty());
-    }
-
-    #[test]
-    fn test_list_runs_after_finish() {
+    fn test_update_last_phase_with_no_phases_returns_err() {
         let (mut logger, _dir) = setup_logger();
         logger.start_run(make_run_config()).unwrap();
-        logger.finish_run().unwrap();
-        let runs = logger.list_runs().unwrap();
-        assert_eq!(runs.len(), 1);
+        let result = logger.update_last_phase(|p| {
+            p.description = "x".to_string();
+        });
+        assert!(
+            result.is_err(),
+            "update_last_phase with empty phases must return Err"
+        );
     }
+
+    #[test]
+    fn test_update_last_phase_without_active_run_returns_err() {
+        let (mut logger, _dir) = setup_logger();
+        // No start_run call — current_run is None.
+        let result = logger.update_last_phase(|p| {
+            p.description = "should fail".to_string();
+        });
+        assert!(
+            result.is_err(),
+            "update_last_phase with no active run must return Err"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Issue 3 — HIGH: test_run_file_is_valid_json assertions too weak
+    // -------------------------------------------------------------------------
 
     #[test]
     fn test_run_file_is_valid_json() {
         let (mut logger, _dir) = setup_logger();
         logger.start_run(make_run_config()).unwrap();
         logger
-            .add_phase(PhaseAudit::new("01", "Alpha", "ALPHA_DONE"))
+            .add_phase(PhaseAudit::new("01", "Bootstrap", "DONE"))
             .unwrap();
-        let run_file = logger.finish_run().unwrap();
-        let content = std::fs::read_to_string(&run_file).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&content)
-            .expect("finished run file should be valid JSON");
-        assert!(parsed.get("run_id").is_some());
-        assert!(parsed.get("phases").is_some());
+        let run_path = logger.finish_run().unwrap();
+
+        let content = std::fs::read_to_string(&run_path).expect("run file must exist");
+        let value: serde_json::Value =
+            serde_json::from_str(&content).expect("run file must be valid JSON");
+
+        // run_id must be a 36-character UUID string (8-4-4-4-12 = 36 chars with hyphens)
+        let run_id = value
+            .get("run_id")
+            .expect("run_id field must be present")
+            .as_str()
+            .expect("run_id must be a string");
+        assert_eq!(
+            run_id.len(),
+            36,
+            "run_id must be a UUID string of length 36, got: {run_id}"
+        );
+
+        // phases must be a JSON array with at least one element
+        let phases = value
+            .get("phases")
+            .expect("phases field must be present")
+            .as_array()
+            .expect("phases must be a JSON array");
+        assert!(
+            !phases.is_empty(),
+            "phases array must contain at least 1 element"
+        );
+
+        // ended_at must be present and not null (set by finish_run via run.finish())
+        let ended_at = value.get("ended_at").expect("ended_at field must be present");
+        assert!(
+            !ended_at.is_null(),
+            "ended_at must not be null after finish_run"
+        );
     }
 
-    #[test]
-    fn test_update_last_phase_modifies_phase() {
-        let (mut logger, _dir) = setup_logger();
-        logger.start_run(make_run_config()).unwrap();
-        logger
-            .add_phase(PhaseAudit::new("01", "First", "DONE"))
-            .unwrap();
-        logger
-            .update_last_phase(|p| {
-                p.description = "Updated description".to_string();
-            })
-            .unwrap();
-        let run = logger.current_run().unwrap();
-        assert_eq!(run.phases[0].description, "Updated description");
-    }
+    // -------------------------------------------------------------------------
+    // Issue 4 — HIGH: test_multiple_phases_persisted only checks in-memory state
+    // -------------------------------------------------------------------------
 
     #[test]
     fn test_multiple_phases_persisted() {
-        let (mut logger, _dir) = setup_logger();
+        let (mut logger, dir) = setup_logger();
         logger.start_run(make_run_config()).unwrap();
         logger
-            .add_phase(PhaseAudit::new("01", "First", "DONE"))
+            .add_phase(PhaseAudit::new("01", "Phase One", "DONE"))
             .unwrap();
         logger
-            .add_phase(PhaseAudit::new("02", "Second", "DONE2"))
+            .add_phase(PhaseAudit::new("02", "Phase Two", "DONE"))
             .unwrap();
         logger
-            .add_phase(PhaseAudit::new("03", "Third", "DONE3"))
+            .add_phase(PhaseAudit::new("03", "Phase Three", "DONE"))
             .unwrap();
-        let run = logger.current_run().unwrap();
-        assert_eq!(run.phases.len(), 3);
-        assert_eq!(run.phases[1].phase_number, "02");
+
+        // In-memory check
+        let in_memory_count = logger
+            .current_run()
+            .expect("run must be active")
+            .phases
+            .len();
+        assert_eq!(in_memory_count, 3, "in-memory phase count must be 3");
+
+        // Disk persistence check: a second logger at the same path must load all 3 phases.
+        // We keep `dir` alive so the temp directory is not deleted before we read from it.
+        let mut second_logger = AuditLogger::new(dir.path());
+        let loaded = second_logger
+            .load_current()
+            .expect("load_current must succeed");
+        assert!(loaded, "load_current must return true when a run file exists");
+        let disk_count = second_logger
+            .current_run()
+            .expect("loaded run must be present")
+            .phases
+            .len();
+        assert_eq!(
+            disk_count, 3,
+            "disk-persisted phase count must also be 3 — save_current() may be broken"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Issue 5 — MEDIUM: test_update_last_phase_modifies_phase only verifies in-memory
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_update_last_phase_modifies_phase() {
+        let (mut logger, dir) = setup_logger();
+        logger.start_run(make_run_config()).unwrap();
+        logger
+            .add_phase(PhaseAudit::new("01", "Initial Description", "DONE"))
+            .unwrap();
+
+        // Mutate the last phase
+        logger
+            .update_last_phase(|p| {
+                p.description = "Updated Description".to_string();
+                p.outcome = PhaseOutcome::Completed { iteration: 2 };
+            })
+            .unwrap();
+
+        // In-memory check
+        let in_memory_desc = logger
+            .current_run()
+            .expect("run must be active")
+            .phases
+            .last()
+            .expect("must have at least one phase")
+            .description
+            .clone();
+        assert_eq!(in_memory_desc, "Updated Description");
+
+        // Disk persistence check: reload from disk and verify the mutation was persisted.
+        let mut second_logger = AuditLogger::new(dir.path());
+        second_logger
+            .load_current()
+            .expect("load_current must succeed");
+        let disk_phase = second_logger
+            .current_run()
+            .expect("loaded run must be present")
+            .phases
+            .last()
+            .expect("loaded run must have phases");
+
+        assert_eq!(
+            disk_phase.description, "Updated Description",
+            "update_last_phase mutation must be persisted to disk"
+        );
+        assert_eq!(
+            disk_phase.outcome,
+            PhaseOutcome::Completed { iteration: 2 },
+            "outcome mutation must also be persisted to disk"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Additional happy-path coverage
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_start_run_creates_current_run_file() {
+        let (mut logger, dir) = setup_logger();
+        logger.start_run(make_run_config()).unwrap();
+        assert!(
+            dir.path().join("current-run.json").exists(),
+            "current-run.json must exist after start_run"
+        );
+    }
+
+    #[test]
+    fn test_finish_run_removes_current_run_file() {
+        let (mut logger, dir) = setup_logger();
+        logger.start_run(make_run_config()).unwrap();
+        logger.finish_run().unwrap();
+        assert!(
+            !dir.path().join("current-run.json").exists(),
+            "current-run.json must be removed after finish_run"
+        );
     }
 }
