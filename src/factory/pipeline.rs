@@ -13,6 +13,15 @@ use super::planner::{Planner, PlanProvider};
 use super::sandbox::{DockerSandbox, SandboxConfig};
 use super::ws::{WsMessage, broadcast_message};
 
+fn translate_host_path_to_container(path: &str) -> String {
+    if path.contains("/.forge/repos/") && !path.starts_with("/app/") {
+        if let Some(pos) = path.find("/.forge/repos/") {
+            return format!("/app{}", &path[pos..]);
+        }
+    }
+    path.to_string()
+}
+
 /// Per-project mutex map that serializes git-mutating operations.
 /// Long-running agent execution remains parallel — only short git
 /// mutations (checkout, merge, push) are serialized.
@@ -23,7 +32,8 @@ pub struct GitLockMap {
 
 impl GitLockMap {
     pub async fn get(&self, project_path: &str) -> Arc<tokio::sync::Mutex<()>> {
-        let canonical = match tokio::fs::canonicalize(project_path).await {
+        let project_path = translate_host_path_to_container(project_path);
+        let canonical = match tokio::fs::canonicalize(&project_path).await {
             Ok(p) => p.to_string_lossy().to_string(),
             Err(e) => {
                 eprintln!(
@@ -659,6 +669,7 @@ impl PipelineRunner {
                 }
             }
         }).await?;
+        let project_path = translate_host_path_to_container(&project_path);
         let issue_id = issue.id;
         let issue_title = issue.title.clone();
         let issue_description = issue.description.clone();
@@ -990,14 +1001,17 @@ async fn auto_generate_phases(
 
     // Run forge generate to create phases.json
     let forge_cmd = std::env::var("FORGE_CMD").unwrap_or_else(|_| "forge".to_string());
-    let status = tokio::process::Command::new(&forge_cmd)
+    let status = match tokio::process::Command::new(&forge_cmd)
         .arg("generate")
         .current_dir(project_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .status()
         .await
-        .context("Failed to run forge generate")?;
+    {
+        Ok(s) => s,
+        Err(_) => return Ok(false),
+    };
 
     if status.success() && has_forge_phases(project_path) {
         Ok(true)
@@ -1035,7 +1049,6 @@ fn build_execution_command(
         );
         let mut cmd = tokio::process::Command::new(&claude_cmd);
         cmd.arg("--print")
-            .arg("--dangerously-skip-permissions")
             .arg(&prompt)
             .env_remove("CLAUDECODE")
             .current_dir(project_path)
