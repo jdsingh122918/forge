@@ -125,3 +125,105 @@ impl AuditLogger {
         Ok(run)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn make_run_config() -> RunConfig {
+        RunConfig {
+            auto_approve_threshold: 5,
+            skip_permissions: true,
+            verbose: false,
+            spec_file: std::path::PathBuf::from("spec.md"),
+            project_dir: std::path::PathBuf::from("."),
+        }
+    }
+
+    fn make_phase_audit() -> PhaseAudit {
+        PhaseAudit::new("01", "Test phase", "<promise>DONE</promise>")
+    }
+
+    fn setup_logger() -> (AuditLogger, tempfile::TempDir) {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("runs")).unwrap();
+        let logger = AuditLogger::new(dir.path());
+        (logger, dir)
+    }
+
+    #[test]
+    fn test_start_run_creates_current_run_file() {
+        let (mut logger, dir) = setup_logger();
+        logger.start_run(make_run_config()).unwrap();
+        assert!(dir.path().join("current-run.json").exists());
+    }
+
+    #[test]
+    fn test_add_phase_updates_current_run() {
+        let (mut logger, _dir) = setup_logger();
+        logger.start_run(make_run_config()).unwrap();
+        logger.add_phase(make_phase_audit()).unwrap();
+        let current_run = logger.current_run().unwrap();
+        assert_eq!(current_run.phases.len(), 1);
+    }
+
+    #[test]
+    fn test_finish_run_writes_to_runs_dir() {
+        let (mut logger, dir) = setup_logger();
+        logger.start_run(make_run_config()).unwrap();
+        let run_file = logger.finish_run().unwrap();
+        assert!(!dir.path().join("current-run.json").exists());
+        assert!(run_file.exists());
+        assert!(run_file.to_str().unwrap().contains("runs"));
+    }
+
+    #[test]
+    fn test_finish_run_without_start_errors() {
+        let (mut logger, _dir) = setup_logger();
+        let result = logger.finish_run();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_current_recovers_in_progress_run() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("runs")).unwrap();
+
+        {
+            let mut logger = AuditLogger::new(dir.path());
+            logger.start_run(make_run_config()).unwrap();
+            logger.add_phase(make_phase_audit()).unwrap();
+            // Simulate crash — do NOT call finish_run
+        }
+
+        let mut logger2 = AuditLogger::new(dir.path());
+        let loaded = logger2.load_current().unwrap();
+        assert!(loaded);
+        let run = logger2.current_run().unwrap();
+        assert_eq!(run.phases.len(), 1);
+    }
+
+    #[test]
+    fn test_load_current_returns_false_when_no_file() {
+        let (mut logger, _dir) = setup_logger();
+        let loaded = logger.load_current().unwrap();
+        assert!(!loaded);
+    }
+
+    #[test]
+    fn test_list_runs_empty_directory() {
+        let (logger, _dir) = setup_logger();
+        let runs = logger.list_runs().unwrap();
+        assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn test_list_runs_after_finish() {
+        let (mut logger, _dir) = setup_logger();
+        logger.start_run(make_run_config()).unwrap();
+        logger.finish_run().unwrap();
+        let runs = logger.list_runs().unwrap();
+        assert_eq!(runs.len(), 1);
+    }
+}
