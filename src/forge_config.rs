@@ -59,12 +59,11 @@ use std::path::{Path, PathBuf};
 /// available (the *allowed-tools list*) and how the orchestrator handles
 /// iteration approval (the *gate behaviour*).
 ///
-/// | Mode       | When to use              | Gate behavior                           |
-/// |------------|--------------------------|-----------------------------------------|
-/// | `Readonly` | Auditing / inspection    | Restricts toolset to read-only tools; flags any file modifications after the fact |
-/// | `Standard` | Normal development       | Threshold-based auto-approve (≤N files) |
-/// | `Autonomous` | Well-tested, CI        | Auto-approves all; stale-check per iter |
-/// | `Strict`   | Sensitive / high-risk    | Requires manual approval every iteration|
+/// | Mode         | When to use              | Gate behavior                           |
+/// |--------------|-------------------------|-----------------------------------------|
+/// | `Readonly`   | Auditing / inspection   | Restricts toolset to read-only tools; flags any file modifications after the fact |
+/// | `Standard`   | Normal development      | Threshold-based auto-approve (≤N files) |
+/// | `Autonomous` | Well-tested, CI         | Auto-approves all; stale-check per iter |
 ///
 /// `Standard` is the default. The `auto_approve_threshold` field in
 /// `[defaults]` (or a phase override) sets the file-count ceiling for
@@ -72,8 +71,6 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionMode {
-    /// Require approval for every iteration (sensitive phases)
-    Strict,
     /// Approve phase start, auto-continue iterations (default)
     #[default]
     Standard,
@@ -83,10 +80,33 @@ pub enum PermissionMode {
     Readonly,
 }
 
+impl<'de> serde::Deserialize<'de> for PermissionMode {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.to_lowercase().as_str() {
+            "strict" => {
+                eprintln!(
+                    "  Warning: 'strict' permission mode is deprecated and maps to 'standard'"
+                );
+                Ok(PermissionMode::Standard)
+            }
+            "standard" => Ok(PermissionMode::Standard),
+            "autonomous" => Ok(PermissionMode::Autonomous),
+            "readonly" => Ok(PermissionMode::Readonly),
+            _ => Err(serde::de::Error::custom(format!(
+                "Invalid permission mode '{}'. Valid values: standard, autonomous, readonly",
+                s
+            ))),
+        }
+    }
+}
+
 impl std::fmt::Display for PermissionMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PermissionMode::Strict => write!(f, "strict"),
             PermissionMode::Standard => write!(f, "standard"),
             PermissionMode::Autonomous => write!(f, "autonomous"),
             PermissionMode::Readonly => write!(f, "readonly"),
@@ -99,12 +119,17 @@ impl std::str::FromStr for PermissionMode {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "strict" => Ok(PermissionMode::Strict),
+            "strict" => {
+                eprintln!(
+                    "  Warning: 'strict' permission mode is deprecated and maps to 'standard'"
+                );
+                Ok(PermissionMode::Standard)
+            }
             "standard" => Ok(PermissionMode::Standard),
             "autonomous" => Ok(PermissionMode::Autonomous),
             "readonly" => Ok(PermissionMode::Readonly),
             _ => anyhow::bail!(
-                "Invalid permission mode '{}'. Valid values: strict, standard, autonomous, readonly",
+                "Invalid permission mode '{}'. Valid values: standard, autonomous, readonly",
                 s
             ),
         }
@@ -261,17 +286,19 @@ impl Default for ReviewsSection {
     }
 }
 
-/// Resolution mode for review failures.
-/// This mirrors ResolutionMode from the review module for configuration purposes.
+/// Resolution mode for review failures (config-side).
+///
+/// All modes map to Auto now. "manual" and "arbiter" are accepted for backward
+/// compatibility but mapped to Auto with appropriate settings.
 #[derive(Debug, Clone, Default, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReviewMode {
-    /// Always pause for user input.
+    /// Auto-fix mode (deprecated "manual" also maps here).
     #[default]
-    Manual,
-    /// Attempt auto-fix, retry up to N times.
     Auto,
-    /// LLM arbiter decides based on severity and context.
+    /// Backward compat: accepted but treated as Auto.
+    Manual,
+    /// Backward compat: accepted but treated as Auto with LLM.
     Arbiter,
 }
 
@@ -279,9 +306,16 @@ impl ReviewMode {
     /// Convert to ResolutionMode for use with the arbiter.
     pub fn to_resolution_mode(self) -> crate::review::ResolutionMode {
         match self {
-            ReviewMode::Manual => crate::review::ResolutionMode::manual(),
-            ReviewMode::Auto => crate::review::ResolutionMode::auto(2), // default max attempts
-            ReviewMode::Arbiter => crate::review::ResolutionMode::arbiter(),
+            ReviewMode::Manual => {
+                eprintln!("  Warning: 'manual' review mode is deprecated, using auto");
+                crate::review::ResolutionMode::default()
+            }
+            ReviewMode::Auto => crate::review::ResolutionMode::auto(2),
+            ReviewMode::Arbiter => crate::review::ResolutionMode::auto_with_llm(
+                2,
+                "claude-3-sonnet",
+                crate::review::arbiter::DEFAULT_CONFIDENCE_THRESHOLD,
+            ),
         }
     }
 }
@@ -430,6 +464,116 @@ impl Default for ClaudeSection {
     }
 }
 
+/// Configuration for autonomous operation mode.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AutonomyConfig {
+    /// Master switch for autonomous mode.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Iterations with no progress before injecting pivot prompt.
+    #[serde(default = "default_stale_iterations")]
+    pub stale_iterations_before_pivot: u32,
+    /// Optional custom pivot prompt override.
+    #[serde(default)]
+    pub pivot_prompt: Option<String>,
+    /// Sensitive phase pattern configuration.
+    #[serde(default)]
+    pub sensitive_patterns: SensitivePatternsConfig,
+    /// Auto-promote configuration for factory pipeline.
+    #[serde(default)]
+    pub auto_promote: AutoPromoteConfig,
+}
+
+fn default_stale_iterations() -> u32 {
+    3
+}
+
+impl Default for AutonomyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            stale_iterations_before_pivot: default_stale_iterations(),
+            pivot_prompt: None,
+            sensitive_patterns: SensitivePatternsConfig::default(),
+            auto_promote: AutoPromoteConfig::default(),
+        }
+    }
+}
+
+/// Configuration for sensitive phase detection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SensitivePatternsConfig {
+    /// Glob patterns that match sensitive phase names.
+    #[serde(default)]
+    pub patterns: Vec<String>,
+    /// Additional fix attempts for sensitive phases (added to base).
+    #[serde(default = "default_extra_fix_attempts")]
+    pub extra_fix_attempts: u32,
+}
+
+fn default_extra_fix_attempts() -> u32 {
+    2
+}
+
+impl Default for SensitivePatternsConfig {
+    fn default() -> Self {
+        Self {
+            patterns: Vec::new(),
+            extra_fix_attempts: default_extra_fix_attempts(),
+        }
+    }
+}
+
+/// Configuration for factory auto-promote behavior.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AutoPromoteConfig {
+    /// Enable conditional auto-promote in factory.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Auto-promote to Done when all reviews pass.
+    #[serde(default = "default_true")]
+    pub promote_on_clean: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for AutoPromoteConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            promote_on_clean: true,
+        }
+    }
+}
+
+/// Detects whether a phase name matches sensitive patterns.
+pub struct SensitivePhaseDetector {
+    patterns: Vec<glob::Pattern>,
+}
+
+impl SensitivePhaseDetector {
+    /// Create a new detector from a list of glob pattern strings.
+    pub fn new(patterns: &[String]) -> Self {
+        let compiled = patterns
+            .iter()
+            .filter_map(|p| glob::Pattern::new(p).ok())
+            .collect();
+        Self { patterns: compiled }
+    }
+
+    /// Create a detector from the sensitive patterns config.
+    pub fn from_config(config: &SensitivePatternsConfig) -> Self {
+        Self::new(&config.patterns)
+    }
+
+    /// Check if a phase name matches any sensitive pattern.
+    pub fn is_sensitive(&self, phase_name: &str) -> bool {
+        self.patterns.iter().any(|p| p.matches(phase_name))
+    }
+}
+
 /// Returns the set of allowed tools for a given permission mode.
 /// Returns `None` for modes that don't restrict tools.
 pub fn tools_for_permission_mode(mode: PermissionMode) -> Option<Vec<String>> {
@@ -472,6 +616,9 @@ pub struct ForgeToml {
     /// Claude CLI integration settings
     #[serde(default)]
     pub claude: ClaudeSection,
+    /// Autonomous operation settings
+    #[serde(default)]
+    pub autonomy: AutonomyConfig,
 }
 
 impl ForgeToml {
@@ -809,17 +956,24 @@ mod tests {
 
     #[test]
     fn test_permission_mode_display() {
-        assert_eq!(PermissionMode::Strict.to_string(), "strict");
         assert_eq!(PermissionMode::Standard.to_string(), "standard");
         assert_eq!(PermissionMode::Autonomous.to_string(), "autonomous");
         assert_eq!(PermissionMode::Readonly.to_string(), "readonly");
     }
 
     #[test]
+    fn test_strict_mode_deserializes_as_standard_with_warning() {
+        // "strict" in config should map to Standard (deprecated)
+        let mode: PermissionMode = serde_json::from_str("\"strict\"").unwrap();
+        assert_eq!(mode, PermissionMode::Standard);
+    }
+
+    #[test]
     fn test_permission_mode_from_str() {
+        // "strict" should map to Standard (deprecated)
         assert_eq!(
             "strict".parse::<PermissionMode>().unwrap(),
-            PermissionMode::Strict
+            PermissionMode::Standard
         );
         assert_eq!(
             "STANDARD".parse::<PermissionMode>().unwrap(),
@@ -941,7 +1095,7 @@ skip_permissions = false
         let toml = ForgeToml::parse(content).unwrap();
         assert_eq!(toml.defaults.budget, 15);
         assert_eq!(toml.defaults.auto_approve_threshold, 10);
-        assert_eq!(toml.defaults.permission_mode, PermissionMode::Strict);
+        assert_eq!(toml.defaults.permission_mode, PermissionMode::Standard); // "strict" maps to Standard
         assert_eq!(toml.defaults.context_limit, "90%");
         assert!(!toml.defaults.skip_permissions);
     }
@@ -960,7 +1114,7 @@ permission_mode = "autonomous"
         assert_eq!(toml.phases.overrides.len(), 2);
 
         let db_override = toml.phases.overrides.get("database-*").unwrap();
-        assert_eq!(db_override.permission_mode, Some(PermissionMode::Strict));
+        assert_eq!(db_override.permission_mode, Some(PermissionMode::Standard)); // "strict" maps to Standard
         assert_eq!(db_override.budget, Some(12));
 
         let test_override = toml.phases.overrides.get("test-*").unwrap();
@@ -997,7 +1151,7 @@ permission_mode = "strict"
 
         let database = toml.phase_settings("database-setup");
         assert_eq!(database.budget, 20);
-        assert_eq!(database.permission_mode, PermissionMode::Strict);
+        assert_eq!(database.permission_mode, PermissionMode::Standard); // "strict" maps to Standard
     }
 
     #[test]
@@ -1178,7 +1332,7 @@ auto_approve_threshold = 10
         assert!(!reviews.enabled);
         assert!(reviews.specialists.is_empty());
         assert!(reviews.parallel);
-        assert_eq!(reviews.mode, ReviewMode::Manual);
+        assert_eq!(reviews.mode, ReviewMode::Auto);
         assert!((reviews.confidence_threshold - 0.7).abs() < f64::EPSILON);
     }
 
@@ -1436,12 +1590,88 @@ session_continuity = false
     }
 
     #[test]
-    fn test_tools_for_strict_mode() {
-        assert!(tools_for_permission_mode(PermissionMode::Strict).is_none());
+    fn test_tools_for_autonomous_mode() {
+        assert!(tools_for_permission_mode(PermissionMode::Autonomous).is_none());
+    }
+
+    // =========================================
+    // AutonomyConfig tests
+    // =========================================
+
+    // =========================================
+    // SensitivePhaseDetector tests
+    // =========================================
+
+    #[test]
+    fn test_sensitive_phase_detector_empty() {
+        let detector = SensitivePhaseDetector::new(&[]);
+        assert!(!detector.is_sensitive("database-migration"));
+        assert!(!detector.is_sensitive("anything"));
     }
 
     #[test]
-    fn test_tools_for_autonomous_mode() {
-        assert!(tools_for_permission_mode(PermissionMode::Autonomous).is_none());
+    fn test_sensitive_phase_detector_matches() {
+        let detector = SensitivePhaseDetector::new(&[
+            "database-*".to_string(),
+            "security-*".to_string(),
+            "auth-*".to_string(),
+        ]);
+        assert!(detector.is_sensitive("database-migration"));
+        assert!(detector.is_sensitive("security-audit"));
+        assert!(detector.is_sensitive("auth-setup"));
+        assert!(!detector.is_sensitive("frontend-ui"));
+        assert!(!detector.is_sensitive("api-integration"));
+    }
+
+    #[test]
+    fn test_sensitive_phase_detector_from_config() {
+        let config = SensitivePatternsConfig {
+            patterns: vec!["database-*".to_string()],
+            extra_fix_attempts: 4,
+        };
+        let detector = SensitivePhaseDetector::from_config(&config);
+        assert!(detector.is_sensitive("database-migration"));
+    }
+
+    // =========================================
+    // AutonomyConfig tests
+    // =========================================
+
+    #[test]
+    fn test_autonomy_config_default() {
+        let config = AutonomyConfig::default();
+        assert!(!config.enabled);
+        assert_eq!(config.stale_iterations_before_pivot, 3);
+        assert!(config.pivot_prompt.is_none());
+        assert!(config.sensitive_patterns.patterns.is_empty());
+        assert_eq!(config.sensitive_patterns.extra_fix_attempts, 2);
+        assert!(config.auto_promote.enabled);
+        assert!(config.auto_promote.promote_on_clean);
+    }
+
+    #[test]
+    fn test_autonomy_config_deserialization() {
+        let toml_str = r#"
+        [autonomy]
+        enabled = true
+        stale_iterations_before_pivot = 5
+
+        [autonomy.sensitive_patterns]
+        patterns = ["database-*", "security-*"]
+        extra_fix_attempts = 4
+
+        [autonomy.auto_promote]
+        enabled = true
+        promote_on_clean = false
+        "#;
+        let parsed: toml::Value = toml::from_str(toml_str).unwrap();
+        let autonomy: AutonomyConfig = parsed.get("autonomy").unwrap().clone().try_into().unwrap();
+        assert!(autonomy.enabled);
+        assert_eq!(autonomy.stale_iterations_before_pivot, 5);
+        assert_eq!(
+            autonomy.sensitive_patterns.patterns,
+            vec!["database-*", "security-*"]
+        );
+        assert!(!autonomy.auto_promote.promote_on_clean);
     }
 }

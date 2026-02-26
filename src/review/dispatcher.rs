@@ -201,6 +201,11 @@ impl PhaseReviewConfig {
     pub fn gating_specialists(&self) -> Vec<&ReviewSpecialist> {
         self.specialists.iter().filter(|s| s.is_gating()).collect()
     }
+
+    /// Override specialists for sensitive phase: all builtins, all gating.
+    pub fn apply_sensitive_overrides(&mut self) {
+        self.specialists = ReviewSpecialist::all_builtin_as_gating();
+    }
 }
 
 /// Result of a review dispatch operation.
@@ -264,13 +269,13 @@ impl DispatchResult {
             .is_some_and(|r| r.decision.decision.requires_fix())
     }
 
-    /// Check if we need human intervention.
-    pub fn needs_escalation(&self) -> bool {
+    /// Check if the phase has terminally failed.
+    pub fn is_phase_failed(&self) -> bool {
         self.has_gating_failures
             && self
                 .arbiter_result
                 .as_ref()
-                .is_none_or(|r| r.decision.decision.requires_human())
+                .is_none_or(|r| r.decision.decision.fails_phase())
     }
 
     /// Get the fix instructions if the verdict is Fix.
@@ -280,11 +285,11 @@ impl DispatchResult {
             .and_then(|r| r.decision.fix_instructions.as_deref())
     }
 
-    /// Get the escalation summary if the verdict is Escalate.
-    pub fn escalation_summary(&self) -> Option<&str> {
+    /// Get the failure summary if the verdict is FailPhase.
+    pub fn failure_summary(&self) -> Option<&str> {
         self.arbiter_result
             .as_ref()
-            .and_then(|r| r.decision.escalation_summary.as_deref())
+            .and_then(|r| r.decision.failure_summary.as_deref())
     }
 }
 
@@ -897,6 +902,21 @@ mod tests {
         assert_eq!(gating[0].specialist_type, SpecialistType::SecuritySentinel);
     }
 
+
+    #[test]
+    fn test_phase_review_config_apply_sensitive_overrides() {
+        let mut config = PhaseReviewConfig::new("05", "database-migration")
+            .add_specialist(ReviewSpecialist::advisory(SpecialistType::SecuritySentinel));
+
+        config.apply_sensitive_overrides();
+
+        // All 4 builtins should be present and gating
+        assert_eq!(config.specialists.len(), 4);
+        for specialist in &config.specialists {
+            assert!(specialist.is_gating());
+        }
+    }
+
     // =========================================
     // DispatchResult tests
     // =========================================
@@ -915,7 +935,7 @@ mod tests {
         assert!(!result.requires_action());
         assert!(result.can_proceed());
         assert!(!result.needs_fix());
-        assert!(!result.needs_escalation());
+        assert!(!result.is_phase_failed());
     }
 
     #[test]
@@ -931,7 +951,7 @@ mod tests {
         assert!(result.has_gating_failures);
         assert!(result.requires_action());
         assert!(!result.can_proceed());
-        assert!(result.needs_escalation()); // No arbiter result, so escalate
+        assert!(result.is_phase_failed()); // No arbiter result — unresolved
     }
 
     #[test]
@@ -951,7 +971,7 @@ mod tests {
         assert!(result.has_gating_failures);
         assert!(result.can_proceed()); // Arbiter said proceed
         assert!(!result.needs_fix());
-        assert!(!result.needs_escalation());
+        assert!(!result.is_phase_failed());
     }
 
     #[test]
@@ -974,22 +994,22 @@ mod tests {
         assert!(result.has_gating_failures);
         assert!(!result.can_proceed());
         assert!(result.needs_fix());
-        assert!(!result.needs_escalation());
+        assert!(!result.is_phase_failed());
         assert_eq!(result.fix_instructions(), Some("Fix the SQL injection"));
     }
 
     #[test]
-    fn test_dispatch_result_with_arbiter_escalate() {
+    fn test_dispatch_result_with_arbiter_fail_phase() {
         let aggregation = ReviewAggregation::new("05").add_report(ReviewReport::new(
             "05",
             "security",
             ReviewVerdict::Fail,
         ));
 
-        let arbiter_result = ArbiterResult::rule_based(ArbiterDecision::escalate(
+        let arbiter_result = ArbiterResult::rule_based(ArbiterDecision::fail_phase(
             "Architectural concern",
             0.9,
-            "Need human decision",
+            "Critical security issue",
         ));
 
         let result =
@@ -998,8 +1018,8 @@ mod tests {
         assert!(result.has_gating_failures);
         assert!(!result.can_proceed());
         assert!(!result.needs_fix());
-        assert!(result.needs_escalation());
-        assert_eq!(result.escalation_summary(), Some("Need human decision"));
+        assert!(result.is_phase_failed());
+        assert_eq!(result.failure_summary(), Some("Critical security issue"));
     }
 
     // =========================================

@@ -95,7 +95,6 @@ pub struct Phase {
     #[serde(default)]
     pub skills: Vec<String>,
     /// Permission mode for this phase (defaults to Standard)
-    /// - Strict: Require approval for every iteration
     /// - Standard: Approve phase start, auto-continue iterations
     /// - Autonomous: Auto-approve if within budget and making progress
     /// - Readonly: Planning/research phases, no file modifications
@@ -873,10 +872,10 @@ mod tests {
             10,
             "Run database migrations",
             vec![],
-            PermissionMode::Strict,
+            PermissionMode::Standard,
         );
 
-        assert_eq!(phase.permission_mode, PermissionMode::Strict);
+        assert_eq!(phase.permission_mode, PermissionMode::Standard);
         assert!(phase.skills.is_empty());
     }
 
@@ -912,7 +911,7 @@ mod tests {
         }"#;
 
         let phase: Phase = serde_json::from_str(json).unwrap();
-        assert_eq!(phase.permission_mode, PermissionMode::Strict);
+        assert_eq!(phase.permission_mode, PermissionMode::Standard); // "strict" maps to Standard
 
         // Test autonomous mode
         let json_autonomous = r#"{

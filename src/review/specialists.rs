@@ -426,6 +426,16 @@ impl ReviewSpecialist {
     pub fn is_builtin(&self) -> bool {
         self.specialist_type.is_builtin()
     }
+
+    /// Create all built-in specialists configured as gating.
+    ///
+    /// Used by sensitive phase detection to enable full review coverage.
+    pub fn all_builtin_as_gating() -> Vec<Self> {
+        SpecialistType::all_builtins()
+            .into_iter()
+            .map(Self::gating)
+            .collect()
+    }
 }
 
 impl Default for ReviewSpecialist {
@@ -792,5 +802,15 @@ mod tests {
         );
         assert!(!specialist.gate); // defaults to false
         assert!(specialist.custom_focus_areas.is_empty());
+    }
+
+    #[test]
+    fn test_all_builtin_as_gating() {
+        let specialists = ReviewSpecialist::all_builtin_as_gating();
+        assert_eq!(specialists.len(), 4);
+        for specialist in &specialists {
+            assert!(specialist.is_gating());
+            assert!(specialist.is_builtin());
+        }
     }
 }

@@ -221,7 +221,7 @@ permission_mode = "strict"
             .success()
             .stdout(predicate::str::contains("my-test-project"))
             .stdout(predicate::str::contains("budget = 12"))
-            .stdout(predicate::str::contains("strict"));
+            .stdout(predicate::str::contains("standard")); // "strict" maps to "standard" now
     }
 }
 
@@ -1083,7 +1083,7 @@ permission_mode = "readonly"
             .assert()
             .success()
             .stdout(predicate::str::contains("database-*"))
-            .stdout(predicate::str::contains("strict"));
+            .stdout(predicate::str::contains("standard")); // "strict" maps to "standard" now
     }
 
     #[test]
@@ -2183,29 +2183,19 @@ mod arbiter_library_tests {
     };
 
     #[test]
-    fn test_resolution_mode_manual() {
-        let mode = ResolutionMode::manual();
-        assert!(mode.is_manual());
-        assert!(!mode.is_auto());
-        assert!(!mode.is_arbiter());
-    }
-
-    #[test]
     fn test_resolution_mode_auto() {
         let mode = ResolutionMode::auto(3);
-        assert!(!mode.is_manual());
         assert!(mode.is_auto());
-        assert!(!mode.is_arbiter());
         assert_eq!(mode.max_attempts(), Some(3));
     }
 
     #[test]
-    fn test_resolution_mode_arbiter() {
-        let mode = ResolutionMode::arbiter();
-        assert!(!mode.is_manual());
-        assert!(!mode.is_auto());
-        assert!(mode.is_arbiter());
-        assert!(mode.confidence_threshold().is_some());
+    fn test_resolution_mode_auto_with_llm() {
+        let mode = ResolutionMode::auto_with_llm(2, "claude-3-sonnet", 0.8);
+        assert!(mode.is_auto());
+        assert!(mode.has_llm());
+        assert_eq!(mode.confidence_threshold(), Some(0.8));
+        assert_eq!(mode.model(), Some("claude-3-sonnet"));
     }
 
     #[test]
@@ -2214,10 +2204,7 @@ mod arbiter_library_tests {
             .with_verbose(true)
             .with_skip_permissions(true);
 
-        assert!(matches!(
-            config.mode,
-            ResolutionMode::Auto { max_attempts: 3 }
-        ));
+        assert_eq!(config.mode.max_attempts, 3);
         assert!(config.verbose);
         assert!(config.skip_permissions);
     }
@@ -2225,10 +2212,9 @@ mod arbiter_library_tests {
     #[test]
     fn test_arbiter_config_arbiter_mode() {
         let config = ArbiterConfig::arbiter_mode()
-            .with_confidence_threshold(0.9)
-            .with_escalate_on(vec!["security".to_string()]);
+            .with_confidence_threshold(0.9);
 
-        assert!(config.mode.is_arbiter());
+        assert!(config.mode.has_llm());
         assert_eq!(config.mode.confidence_threshold(), Some(0.9));
     }
 
@@ -2257,9 +2243,10 @@ mod arbiter_library_tests {
         assert!(ArbiterVerdict::Fix.requires_fix());
         assert!(!ArbiterVerdict::Fix.requires_human());
 
-        assert!(!ArbiterVerdict::Escalate.allows_progression());
-        assert!(!ArbiterVerdict::Escalate.requires_fix());
-        assert!(ArbiterVerdict::Escalate.requires_human());
+        assert!(!ArbiterVerdict::FailPhase.allows_progression());
+        assert!(!ArbiterVerdict::FailPhase.requires_fix());
+        assert!(!ArbiterVerdict::FailPhase.requires_human());
+        assert!(ArbiterVerdict::FailPhase.fails_phase());
     }
 
     #[test]
@@ -2274,9 +2261,9 @@ mod arbiter_library_tests {
         assert!(fix_decision.decision.requires_fix());
         assert!(fix_decision.fix_instructions.is_some());
 
-        let escalate = ArbiterDecision::escalate("Architectural concern", 0.7, "Needs team review");
-        assert!(escalate.decision.requires_human());
-        assert!(escalate.escalation_summary.is_some());
+        let fail = ArbiterDecision::fail_phase("Architectural concern", 0.7, "Unresolvable issue");
+        assert!(fail.decision.fails_phase());
+        assert!(fail.failure_summary.is_some());
     }
 
     #[test]
@@ -2305,18 +2292,14 @@ mod arbiter_library_tests {
 
     #[test]
     fn test_resolution_mode_serialization() {
-        let manual = ResolutionMode::manual();
-        let json = serde_json::to_string(&manual).unwrap();
-        assert!(json.contains("\"mode\":\"manual\""));
-
         let auto = ResolutionMode::auto(5);
         let json = serde_json::to_string(&auto).unwrap();
-        assert!(json.contains("\"mode\":\"auto\""));
         assert!(json.contains("\"max_attempts\":5"));
 
-        let arbiter = ResolutionMode::arbiter();
-        let json = serde_json::to_string(&arbiter).unwrap();
-        assert!(json.contains("\"mode\":\"arbiter\""));
+        let auto_llm = ResolutionMode::auto_with_llm(3, "claude-3-sonnet", 0.8);
+        let json = serde_json::to_string(&auto_llm).unwrap();
+        assert!(json.contains("\"max_attempts\":3"));
+        assert!(json.contains("claude-3-sonnet"));
     }
 }
 

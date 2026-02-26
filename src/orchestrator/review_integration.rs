@@ -277,11 +277,11 @@ impl PhaseWithReviewResult {
         self.review_result.as_ref().is_some_and(|r| r.needs_fix())
     }
 
-    /// Check if reviews need human escalation.
-    pub fn needs_escalation(&self) -> bool {
+    /// Check if the phase has terminally failed reviews.
+    pub fn is_phase_failed(&self) -> bool {
         self.review_result
             .as_ref()
-            .is_some_and(|r| r.needs_escalation())
+            .is_some_and(|r| r.is_phase_failed())
     }
 
     /// Get fix instructions if available.
@@ -442,7 +442,7 @@ mod tests {
         assert!(result.reviews_passed);
         assert!(result.can_proceed());
         assert!(!result.needs_review_fix());
-        assert!(!result.needs_escalation());
+        assert!(!result.is_phase_failed());
     }
 
     #[test]
