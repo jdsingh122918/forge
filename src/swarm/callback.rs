@@ -104,7 +104,30 @@ pub struct GenericEvent {
     pub payload: serde_json::Value,
 }
 
-/// Events received from swarm agents.
+/// Events that swarm agents send to the callback server via HTTP POST.
+///
+/// ## HTTP Endpoint Mapping
+///
+/// | Variant            | HTTP endpoint       | Content-Type       |
+/// |--------------------|---------------------|--------------------|
+/// | `Progress(...)`    | `POST /progress`    | `application/json` |
+/// | `Complete(...)`    | `POST /complete`    | `application/json` |
+/// | `Event(...)`       | `POST /event`       | `application/json` |
+///
+/// ## Client Contract
+///
+/// Agents receive `callback_url` as an environment variable when spawned. They must:
+/// 1. Send `POST {callback_url}/progress` at least once per iteration so the
+///    orchestrator knows the task is alive.
+/// 2. Send `POST {callback_url}/complete` exactly once when the task finishes
+///    (success, failure, or cancellation).
+/// 3. Optionally send `POST {callback_url}/event` for structured custom payloads.
+///
+/// The server responds `200 OK` for all accepted events. Any other status indicates
+/// a server error and the agent should retry with exponential backoff.
+///
+/// Events are stored in a bounded ring buffer (default [`DEFAULT_MAX_EVENTS`]).
+/// When the buffer is full the oldest event is dropped to make room.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SwarmEvent {
