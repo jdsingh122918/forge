@@ -106,6 +106,35 @@ impl IntoResponse for ApiError {
 
 // ── Router ────────────────────────────────────────────────────────────
 
+/// Build and return the complete Axum router for the Factory API.
+///
+/// All routes are prefixed with `/api/` except `/health`.
+///
+/// | Method | Route                           | Handler description       |
+/// |--------|---------------------------------|---------------------------|
+/// | GET    | `/api/projects`                 | List all projects         |
+/// | POST   | `/api/projects`                 | Create a project          |
+/// | POST   | `/api/projects/clone`           | Clone a GitHub repo       |
+/// | GET    | `/api/projects/:id`             | Get project details       |
+/// | GET    | `/api/projects/:id/board`       | Get Kanban board state    |
+/// | POST   | `/api/projects/:id/sync-github` | Sync issues from GitHub   |
+/// | POST   | `/api/projects/:id/issues`      | Create an issue           |
+/// | GET    | `/api/issues/:id`               | Get issue detail          |
+/// | PATCH  | `/api/issues/:id`               | Update issue title/body   |
+/// | DELETE | `/api/issues/:id`               | Delete an issue           |
+/// | PATCH  | `/api/issues/:id/move`          | Move to column/position   |
+/// | POST   | `/api/issues/:id/run`           | Trigger pipeline          |
+/// | GET    | `/api/runs/:id`                 | Get pipeline run status   |
+/// | POST   | `/api/runs/:id/cancel`          | Cancel a running pipeline |
+/// | GET    | `/api/runs/:id/team`            | Get agent team for run    |
+/// | GET    | `/api/tasks/:id/events`         | Get agent task events     |
+/// | GET    | `/api/github/status`            | GitHub OAuth status       |
+/// | POST   | `/api/github/device-code`       | Initiate device flow      |
+/// | POST   | `/api/github/poll`              | Poll device code status   |
+/// | POST   | `/api/github/connect`           | Connect with PAT token    |
+/// | GET    | `/api/github/repos`             | List user's GitHub repos  |
+/// | POST   | `/api/github/disconnect`        | Remove GitHub token       |
+/// | GET    | `/health`                       | Liveness probe            |
 pub fn api_router() -> Router<SharedState> {
     Router::new()
         .route("/api/projects", get(list_projects).post(create_project))
@@ -270,10 +299,16 @@ async fn detect_github_repo_from_path(path: &str) -> Option<String> {
 
 // ── Handlers ──────────────────────────────────────────────────────────
 
+/// `GET /health` — liveness probe.
+///
+/// Returns `200 OK` with body `"ok"`. No database access.
 async fn health_check() -> &'static str {
     "ok"
 }
 
+/// `GET /api/projects` — list all registered projects.
+///
+/// **Response:** `200 OK` with a JSON array of `Project` objects.
 async fn list_projects(State(state): State<SharedState>) -> Result<impl IntoResponse, ApiError> {
     let projects = state.db.call(move |db| {
         db.list_projects()
@@ -281,6 +316,17 @@ async fn list_projects(State(state): State<SharedState>) -> Result<impl IntoResp
     Ok(Json(projects))
 }
 
+/// `POST /api/projects` — register a local directory as a project.
+///
+/// **Request body:**
+/// ```json
+/// { "name": "my-project", "path": "/absolute/path/to/project" }
+/// ```
+///
+/// **Response:** `201 Created` with the created `Project` as JSON.
+///
+/// **Errors:**
+/// - `500 Internal Server Error` on DB errors
 async fn create_project(
     State(state): State<SharedState>,
     Json(req): Json<CreateProjectRequest>,
@@ -294,6 +340,21 @@ async fn create_project(
     Ok((StatusCode::CREATED, Json(project)))
 }
 
+/// `POST /api/projects/clone` — clone a GitHub repository and register it.
+///
+/// Accepts a GitHub URL, shorthand (`owner/repo`), HTTPS URL, or SSH URL.
+/// If a GitHub token is connected, it is injected for authentication.
+///
+/// **Request body:**
+/// ```json
+/// { "repo_url": "https://github.com/owner/repo" }
+/// ```
+///
+/// **Response:** `201 Created` with the created `Project` as JSON.
+///
+/// **Errors:**
+/// - `400 Bad Request` if the URL is unparseable or `git clone` fails
+/// - `500 Internal Server Error` on filesystem or DB errors
 async fn clone_project(
     State(state): State<SharedState>,
     Json(req): Json<CloneProjectRequest>,
@@ -427,6 +488,15 @@ async fn clone_project(
     Ok((StatusCode::CREATED, Json(project)))
 }
 
+/// `POST /api/projects/:id/sync-github` — import open issues from the project's GitHub repo.
+///
+/// Requires a connected GitHub token. Skips issues that already exist in the DB.
+///
+/// **Response:** `200 OK` with `{ "imported": N, "skipped": N, "total_github": N }`.
+///
+/// **Errors:**
+/// - `400 Bad Request` if not connected to GitHub or no repo configured
+/// - `404 Not Found` if the project does not exist
 async fn sync_github_issues(
     State(state): State<SharedState>,
     Path(project_id): Path<i64>,
@@ -435,6 +505,12 @@ async fn sync_github_issues(
     Ok(Json(result))
 }
 
+/// `GET /api/projects/:id` — retrieve a single project by ID.
+///
+/// **Response:** `200 OK` with the `Project` as JSON.
+///
+/// **Errors:**
+/// - `404 Not Found` if no project with that ID exists
 async fn get_project(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
@@ -448,6 +524,11 @@ async fn get_project(
     }
 }
 
+/// `GET /api/projects/:id/board` — get the Kanban board state for a project.
+///
+/// Returns all issues grouped by column (backlog, ready, in_progress, in_review, done).
+///
+/// **Response:** `200 OK` with a `BoardView` object as JSON.
 async fn get_board(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
@@ -458,6 +539,17 @@ async fn get_board(
     Ok(Json(board))
 }
 
+/// `POST /api/projects/:id/issues` — create a new issue in a project.
+///
+/// **Request body:**
+/// ```json
+/// { "title": "Fix bug", "description": "Details...", "column": "backlog" }
+/// ```
+///
+/// `column` defaults to `"backlog"` if omitted.
+///
+/// **Response:** `201 Created` with the created `Issue` as JSON.
+/// Broadcasts an `IssueCreated` WebSocket message.
 async fn create_issue(
     State(state): State<SharedState>,
     Path(project_id): Path<i64>,
@@ -476,6 +568,12 @@ async fn create_issue(
     Ok((StatusCode::CREATED, Json(issue)))
 }
 
+/// `GET /api/issues/:id` — get full detail for an issue, including pipeline runs.
+///
+/// **Response:** `200 OK` with an `IssueDetail` object as JSON.
+///
+/// **Errors:**
+/// - `404 Not Found` if no issue with that ID exists
 async fn get_issue(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
@@ -489,6 +587,17 @@ async fn get_issue(
     }
 }
 
+/// `PATCH /api/issues/:id` — update an issue's title and/or description.
+///
+/// **Request body:**
+/// ```json
+/// { "title": "New title", "description": "Updated body" }
+/// ```
+///
+/// All fields are optional; only provided fields are updated.
+///
+/// **Response:** `200 OK` with the updated `Issue` as JSON.
+/// Broadcasts an `IssueUpdated` WebSocket message.
 async fn update_issue(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
@@ -503,6 +612,17 @@ async fn update_issue(
     Ok(Json(issue))
 }
 
+/// `PATCH /api/issues/:id/move` — move an issue to a different column and position.
+///
+/// **Request body:**
+/// ```json
+/// { "column": "in_progress", "position": 0 }
+/// ```
+///
+/// Broadcasts an `IssueMoved` WebSocket message with `from_column`, `to_column`, `position`.
+///
+/// **Errors:**
+/// - `400 Bad Request` if the column name is invalid
 async fn move_issue(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
@@ -531,6 +651,13 @@ async fn move_issue(
     Ok(Json(issue))
 }
 
+/// `DELETE /api/issues/:id` — permanently delete an issue.
+///
+/// **Response:** `204 No Content` on success.
+/// Broadcasts an `IssueDeleted` WebSocket message.
+///
+/// **Errors:**
+/// - `404 Not Found` if the issue does not exist
 async fn delete_issue(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
@@ -547,6 +674,16 @@ async fn delete_issue(
     }
 }
 
+/// `POST /api/issues/:id/run` — start a Forge pipeline run for an issue.
+///
+/// Creates a new `PipelineRun` record then spawns pipeline execution in a background
+/// Tokio task. Emits real-time status updates via WebSocket.
+///
+/// **Response:** `201 Created` with the new `PipelineRun` as JSON.
+///
+/// **Errors:**
+/// - `404 Not Found` if the issue does not exist
+/// - `500 Internal Server Error` if the runner fails to start
 async fn trigger_pipeline(
     State(state): State<SharedState>,
     Path(issue_id): Path<i64>,
@@ -576,6 +713,12 @@ async fn trigger_pipeline(
     Ok((StatusCode::CREATED, Json(run)))
 }
 
+/// `GET /api/runs/:id` — get the status and details of a pipeline run.
+///
+/// **Response:** `200 OK` with a `PipelineRun` object as JSON.
+///
+/// **Errors:**
+/// - `404 Not Found` if the run does not exist
 async fn get_pipeline_run(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
@@ -589,6 +732,14 @@ async fn get_pipeline_run(
     }
 }
 
+/// `POST /api/runs/:id/cancel` — cancel a running pipeline.
+///
+/// Sends a cancellation signal to the pipeline process and updates the run status in the DB.
+///
+/// **Response:** `200 OK` with the updated `PipelineRun` as JSON.
+///
+/// **Errors:**
+/// - `500 Internal Server Error` if cancellation fails
 async fn cancel_pipeline_run(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
@@ -609,6 +760,14 @@ pub struct EventsQuery {
     pub limit: Option<i64>,
 }
 
+/// `GET /api/runs/:id/team` — get the agent team associated with a pipeline run.
+///
+/// Returns agent task assignments and their current status for this run.
+///
+/// **Response:** `200 OK` with an `AgentTeamDetail` object as JSON.
+///
+/// **Errors:**
+/// - `404 Not Found` if no agent team exists for this run
 async fn get_run_team(
     State(state): State<SharedState>,
     Path(run_id): Path<i64>,
@@ -623,6 +782,11 @@ async fn get_run_team(
     }
 }
 
+/// `GET /api/tasks/:id/events` — list events emitted by an agent task.
+///
+/// Supports optional `?limit=N` query parameter (max 500, default 100).
+///
+/// **Response:** `200 OK` with a JSON array of `AgentEvent` objects.
 async fn get_task_events(
     State(state): State<SharedState>,
     Path(task_id): Path<i64>,
@@ -637,6 +801,16 @@ async fn get_task_events(
 
 // ── Screenshot handler ────────────────────────────────────────────────
 
+/// `GET /api/screenshots/*path` — serve a screenshot file from the project's `.forge/screenshots/` directory.
+///
+/// Path traversal is prevented by canonicalizing both the screenshots directory and the
+/// resolved file path and verifying the file is within the directory.
+///
+/// **Response:** `200 OK` with the image bytes and appropriate `Content-Type` header.
+///
+/// **Errors:**
+/// - `400 Bad Request` if the path escapes the screenshots directory
+/// - `404 Not Found` if the file or directory does not exist
 async fn serve_screenshot(
     State(state): State<SharedState>,
     Path(file_path): Path<String>,
@@ -681,6 +855,9 @@ async fn serve_screenshot(
 
 // ── GitHub OAuth handlers ─────────────────────────────────────────────
 
+/// `GET /api/github/status` — report GitHub OAuth connection status.
+///
+/// **Response:** `200 OK` with `{ "connected": bool, "client_id_configured": bool }`.
 async fn github_status(
     State(state): State<SharedState>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -693,6 +870,13 @@ async fn github_status(
     Ok(Json(GitHubAuthStatus { connected, client_id_configured }))
 }
 
+/// `POST /api/github/device-code` — initiate the GitHub Device Authorization Flow.
+///
+/// Requires `GITHUB_CLIENT_ID` env var to be set at server startup.
+/// The client should display `verification_uri` + `user_code` to the user,
+/// then poll `POST /api/github/poll` every `interval` seconds.
+///
+/// **Errors:** `400 Bad Request` if `GITHUB_CLIENT_ID` is not configured.
 async fn github_device_code(
     State(state): State<SharedState>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -706,6 +890,17 @@ async fn github_device_code(
     Ok(Json(resp))
 }
 
+/// `POST /api/github/poll` — poll for a GitHub device flow access token.
+///
+/// **Request body:**
+/// ```json
+/// { "device_code": "<code from device-code response>" }
+/// ```
+///
+/// **Response:** `200 OK` with `{ "status": "complete" }` when the token is available,
+/// or `{ "status": "pending" }` while the user has not yet authorized.
+///
+/// **Errors:** `400 Bad Request` if `GITHUB_CLIENT_ID` is not configured.
 async fn github_poll_token(
     State(state): State<SharedState>,
     Json(req): Json<PollTokenRequest>,
@@ -730,6 +925,14 @@ async fn github_poll_token(
     }
 }
 
+/// `GET /api/github/repos` — list the authenticated user's GitHub repositories.
+///
+/// Requires a connected GitHub token.
+///
+/// **Response:** `200 OK` with a JSON array of repository objects.
+///
+/// **Errors:**
+/// - `400 Bad Request` if not connected to GitHub
 async fn github_list_repos(
     State(state): State<SharedState>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -745,6 +948,19 @@ async fn github_list_repos(
     Ok(Json(repos))
 }
 
+/// `POST /api/github/connect` — connect to GitHub using a Personal Access Token (PAT).
+///
+/// Validates the token by calling the GitHub API before storing it.
+///
+/// **Request body:**
+/// ```json
+/// { "token": "ghp_..." }
+/// ```
+///
+/// **Response:** `200 OK` with `{ "status": "connected" }`.
+///
+/// **Errors:**
+/// - `400 Bad Request` if the token is empty or fails GitHub validation
 async fn github_connect_token(
     State(state): State<SharedState>,
     Json(req): Json<ConnectTokenRequest>,
@@ -772,6 +988,11 @@ async fn github_connect_token(
     Ok(Json(serde_json::json!({"status": "connected"})))
 }
 
+/// `POST /api/github/disconnect` — remove the stored GitHub token.
+///
+/// Clears the token from in-memory state and deletes it from the DB settings table.
+///
+/// **Response:** `200 OK` with `{ "status": "disconnected" }`.
 async fn github_disconnect(
     State(state): State<SharedState>,
 ) -> Result<impl IntoResponse, ApiError> {
