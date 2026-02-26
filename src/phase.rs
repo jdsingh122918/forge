@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::forge_config::PermissionMode;
+use crate::review::SpecialistType;
 
 /// Phase type for TDD workflow.
 /// Used by `forge implement` to distinguish test phases from implementation phases.
@@ -63,8 +64,8 @@ impl PhaseReviewSettings {
 /// Configuration for a single review specialist.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PhaseSpecialistConfig {
-    /// Type of specialist (security, performance, architecture, simplicity, or custom name).
-    pub specialist_type: String,
+    /// Type of specialist.
+    pub specialist_type: SpecialistType,
     /// Whether this review gates phase completion.
     #[serde(default)]
     pub gate: bool,

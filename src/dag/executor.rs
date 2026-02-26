@@ -2,6 +2,22 @@
 //!
 //! The executor runs phases in parallel while respecting dependencies and
 //! integrating with the review system for quality gates.
+//!
+//! ## Scheduling Model
+//!
+//! Phases become ready as soon as **all of their specific predecessors** have
+//! completed — the scheduler does not wait for all peers at the same dependency
+//! level to finish before starting later phases.  Wave numbers are used only
+//! for progress reporting; they do not impose a barrier.  The real concurrency
+//! gate is the `max_parallel` semaphore, which limits how many phases may
+//! execute simultaneously regardless of their position in the dependency graph.
+//!
+//! ## Cancellation Semantics
+//!
+//! When `fail_fast` is enabled and a phase fails, `active_tasks.drain()` aborts
+//! **all currently in-flight tasks across any wave** — not just sibling tasks in
+//! the current wave.  Every spawned `JoinHandle` that has not yet completed is
+//! cancelled before the executor returns.
 
 use crate::config::Config;
 use crate::dag::scheduler::{DagConfig, DagScheduler};
@@ -316,7 +332,8 @@ impl DagExecutor {
 
                         // Check for fail-fast
                         if self.dag_config.fail_fast && summary.failed > 0 {
-                            // Cancel remaining tasks
+                            // Abort all currently in-flight tasks across any wave,
+                            // not just siblings of the failed phase.
                             for (_, handle) in active_tasks.drain() {
                                 handle.abort();
                             }
@@ -563,9 +580,12 @@ async fn execute_single_phase(
     let forge_dir = get_forge_dir(&config.project_dir);
     let forge_toml = ForgeToml::load_or_default(&forge_dir)
         .inspect_err(|e| {
-            if config.verbose {
-                eprintln!("Warning: Could not load forge.toml: {e}");
-            }
+            eprintln!(
+                "Warning: Could not load forge.toml: {}. \
+                 Proceeding with defaults (session continuity, iteration feedback, \
+                 and hooks may be inactive).",
+                e
+            );
         })
         .unwrap_or_default();
     let session_continuity_enabled = forge_toml.claude.session_continuity;

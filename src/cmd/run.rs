@@ -74,12 +74,10 @@ pub async fn run_orchestrator(
     let mut gate = ApprovalGate::new(cli.auto_approve_threshold, cli.yes);
 
     // Determine starting phase
-    let start = start_phase.unwrap_or_else(|| {
-        state
-            .get_last_completed_phase()
-            .map(|p| format!("{:02}", p.parse::<u32>().unwrap_or(0) + 1))
-            .unwrap_or_else(|| "01".to_string())
-    });
+    let start = resolve_start_phase(
+        start_phase.as_deref(),
+        state.get_last_completed_phase().as_deref(),
+    );
 
     // Load phases from phases.json if it exists, otherwise use defaults
     let all_phases = load_phases_or_default(Some(&config.phases_file))?;
@@ -97,8 +95,7 @@ pub async fn run_orchestrator(
             if p.permission_mode == PermissionMode::Standard {
                 p.permission_mode = settings.permission_mode;
             }
-            // Also apply budget from config if it differs and wasn't explicitly set in phases.json
-            // (We don't override budget here since phases.json is the primary source)
+            // Budget is not overridden from config — phases.json is the primary source.
             p
         })
         .collect();
@@ -223,6 +220,10 @@ pub async fn run_orchestrator(
 
         let mut completed = false;
         let mut phase_aborted = false;
+        // Accumulators for budget-exhaustion diagnostics
+        let mut total_blockers_raised: usize = 0;
+        let mut any_progress_signaled = false;
+        let mut total_pivots: usize = 0;
         for iter in 1..=phase.budget {
             // === STRICT MODE: Per-iteration approval ===
             if phase.permission_mode == PermissionMode::Strict {
@@ -357,6 +358,13 @@ pub async fn run_orchestrator(
                 ui.show_file_change(path, forge::audit::ChangeType::Modified);
             }
 
+            // Accumulate cross-iteration signal diagnostics for budget-exhaustion reporting
+            total_blockers_raised += result.signals.blockers.len();
+            if result.signals.latest_progress().is_some() {
+                any_progress_signaled = true;
+            }
+            total_pivots += result.signals.pivots.len();
+
             // Update progress tracker for autonomous mode
             let progress_pct = result.signals.latest_progress();
             progress_tracker.update(&changes, progress_pct);
@@ -419,14 +427,24 @@ pub async fn run_orchestrator(
                 } else {
                     // Prompt user about blockers
                     use dialoguer::Confirm;
-                    Confirm::new()
+                    match Confirm::new()
                         .with_prompt(format!(
                             "{} blocker(s) detected. Continue anyway?",
                             blockers.len()
                         ))
-                        .default(true)
+                        .default(false)
                         .interact()
-                        .unwrap_or(true)
+                    {
+                        Ok(answer) => answer,
+                        Err(e) => {
+                            eprintln!(
+                                "Warning: Could not display blocker confirmation dialog: {}. \
+                                 Stopping. Re-run with --yes to auto-continue past blockers.",
+                                e
+                            );
+                            false
+                        }
+                    }
                 };
 
                 if !continue_anyway {
@@ -486,6 +504,35 @@ pub async fn run_orchestrator(
             phase_audit.finish(PhaseOutcome::MaxIterationsReached, changes);
             state.save(&phase.number, phase.budget, "max_iterations")?;
             ui.phase_failed(&phase.number, "max iterations reached");
+
+            // Actionable budget-exhaustion summary
+            println!();
+            println!(
+                "  {} Phase '{}' exhausted its budget of {} iteration(s) without emitting the promise tag '{}'.",
+                console::style("Budget exhausted:").red().bold(),
+                phase.name,
+                phase.budget,
+                phase.promise,
+            );
+            // Summarize what signals were observed across the whole phase
+            let progress_note = if any_progress_signaled {
+                "progress was signaled at least once".to_string()
+            } else {
+                "no <progress> signals were ever emitted".to_string()
+            };
+            let blockers_note = blocker_note(total_blockers_raised);
+            let pivots_note = pivot_note(total_pivots);
+            println!(
+                "  Summary: {progress_note}; {blockers_note}; {pivots_note}."
+            );
+            println!(
+                "  Tip: Verify the promise tag in your phases config matches exactly \
+                (case-sensitive). Run 'forge audit --last' to inspect Claude's raw output."
+            );
+            println!(
+                "  Tip: Use <progress>N%</progress> and <blocker>reason</blocker> tags \
+                in your phase prompt to help diagnose stuck phases."
+            );
         } else {
             // Run PostPhase hooks
             let post_phase_result = hook_manager
@@ -519,6 +566,59 @@ pub async fn run_orchestrator(
     Ok(())
 }
 
+/// Build a human-readable note for the number of blockers raised during a phase.
+///
+/// Returns a string like "3 blockers raised" or "no blockers raised".
+/// This is pure logic that can be unit-tested without external processes.
+pub fn blocker_note(total_blockers_raised: usize) -> String {
+    if total_blockers_raised > 0 {
+        format!(
+            "{} blocker{} raised",
+            total_blockers_raised,
+            if total_blockers_raised == 1 { "" } else { "s" }
+        )
+    } else {
+        "no blockers raised".to_string()
+    }
+}
+
+/// Build a human-readable note for the number of pivots signaled during a phase.
+///
+/// Returns a string like "2 pivots signaled" or "no pivots signaled".
+/// This is pure logic that can be unit-tested without external processes.
+pub fn pivot_note(total_pivots: usize) -> String {
+    if total_pivots > 0 {
+        format!(
+            "{} pivot{} signaled",
+            total_pivots,
+            if total_pivots == 1 { "" } else { "s" }
+        )
+    } else {
+        "no pivots signaled".to_string()
+    }
+}
+
+/// Resolve the phase start string from an optional user-supplied value and
+/// last-completed state.
+///
+/// - If `start_phase` is `Some(s)`, that string is returned directly.
+/// - Otherwise the next phase after `last_completed` is returned (zero-padded
+///   to two digits), falling back to `"01"` when nothing has been completed.
+///
+/// This is pure logic that can be unit-tested without external processes.
+pub fn resolve_start_phase(
+    start_phase: Option<&str>,
+    last_completed: Option<&str>,
+) -> String {
+    start_phase
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            last_completed
+                .map(|p| format!("{:02}", p.parse::<u32>().unwrap_or(0) + 1))
+                .unwrap_or_else(|| "01".to_string())
+        })
+}
+
 pub async fn run_single_phase(cli: &Cli, project_dir: PathBuf, phase_num: &str) -> Result<()> {
     use forge::init::get_forge_dir;
     use forge::phase::PhasesFile;
@@ -537,4 +637,107 @@ pub async fn run_single_phase(cli: &Cli, project_dir: PathBuf, phase_num: &str) 
         .ok_or_else(|| anyhow::anyhow!("Unknown phase: {}", phase_num))?;
 
     run_orchestrator(cli, project_dir, Some(phase.number)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── blocker_note ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn blocker_note_zero_returns_no_blockers() {
+        assert_eq!(blocker_note(0), "no blockers raised");
+    }
+
+    #[test]
+    fn blocker_note_one_is_singular() {
+        let note = blocker_note(1);
+        assert_eq!(note, "1 blocker raised");
+        assert!(note.contains('1'), "expected count in note: {note}");
+        assert!(note.contains("blocker"), "expected 'blocker' in note: {note}");
+        // Must NOT contain the plural suffix "s" (right after "blocker")
+        assert!(!note.contains("blockers"), "note should be singular: {note}");
+    }
+
+    #[test]
+    fn blocker_note_many_is_plural() {
+        let note = blocker_note(3);
+        assert_eq!(note, "3 blockers raised");
+        assert!(note.contains('3'), "expected count in note: {note}");
+        assert!(note.contains("blockers"), "expected plural in note: {note}");
+    }
+
+    // ── pivot_note ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn pivot_note_zero_returns_no_pivots() {
+        assert_eq!(pivot_note(0), "no pivots signaled");
+    }
+
+    #[test]
+    fn pivot_note_one_is_singular() {
+        let note = pivot_note(1);
+        assert_eq!(note, "1 pivot signaled");
+        assert!(note.contains('1'), "expected count in note: {note}");
+        assert!(note.contains("pivot"), "expected 'pivot' in note: {note}");
+        assert!(!note.contains("pivots"), "note should be singular: {note}");
+    }
+
+    #[test]
+    fn pivot_note_many_is_plural() {
+        let note = pivot_note(5);
+        assert_eq!(note, "5 pivots signaled");
+        assert!(note.contains('5'), "expected count in note: {note}");
+        assert!(note.contains("pivots"), "expected plural in note: {note}");
+    }
+
+    // ── resolve_start_phase ───────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_start_phase_explicit_overrides_state() {
+        // User explicitly requested phase "03"; last completed was "02"
+        let result = resolve_start_phase(Some("03"), Some("02"));
+        assert_eq!(result, "03");
+    }
+
+    #[test]
+    fn resolve_start_phase_derives_next_from_last_completed() {
+        // No explicit start; last completed is "04" → next is "05"
+        let result = resolve_start_phase(None, Some("04"));
+        assert_eq!(result, "05");
+    }
+
+    #[test]
+    fn resolve_start_phase_zero_pads_single_digit() {
+        // Last completed "1" → next is "02"
+        let result = resolve_start_phase(None, Some("1"));
+        assert_eq!(result, "02");
+    }
+
+    #[test]
+    fn resolve_start_phase_falls_back_to_01_when_nothing_completed() {
+        let result = resolve_start_phase(None, None);
+        assert_eq!(result, "01");
+    }
+
+    #[test]
+    fn resolve_start_phase_handles_non_numeric_last_completed_gracefully() {
+        // parse::<u32>() fails → treated as 0 → next is "01"
+        let result = resolve_start_phase(None, Some("abc"));
+        assert_eq!(result, "01");
+    }
+
+    // ── check_run_prerequisites ───────────────────────────────────────────────
+
+    #[test]
+    fn check_run_prerequisites_fails_on_uninitialized_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let err = check_run_prerequisites(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("forge init"),
+            "expected 'forge init' hint in error: {msg}"
+        );
+    }
 }

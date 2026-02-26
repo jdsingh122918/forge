@@ -158,7 +158,31 @@ impl IterationFeedback {
     }
 
     /// Build the feedback string. Returns None if no content was added.
-    /// Truncates to 4000 chars max to avoid bloating the system prompt.
+    ///
+    /// ## Why feedback is injected as system prompt context
+    ///
+    /// Claude is invoked as a subprocess; the only ergonomic channel for
+    /// structured per-iteration context is `--append-system-prompt`. Injecting
+    /// here means the feedback arrives before the user-turn prompt, giving
+    /// Claude a reliable "briefing" section it can reference without modifying
+    /// the task prompt itself.
+    ///
+    /// ## Why the 4 000-character limit exists
+    ///
+    /// The feedback block is appended to the system prompt on *every* iteration.
+    /// Without a cap, a phase with many file changes or a verbose blocker
+    /// description could double the size of the system prompt, consuming
+    /// context window tokens that Claude needs for actual work. 4 000 chars
+    /// is roughly 1 000 tokens — large enough for meaningful signal, small
+    /// enough not to crowd out the spec and task sections.
+    ///
+    /// ## What is prioritised when truncating
+    ///
+    /// Parts are joined in the order they were added: iteration status first,
+    /// then git changes, then signals (progress %, blockers), and finally any
+    /// pivot directive. Truncation cuts the trailing characters of the
+    /// concatenated string, so higher-priority parts (status, git summary)
+    /// survive intact while verbose tails (e.g., long file lists) are trimmed.
     pub fn build(self) -> Option<String> {
         if self.parts.is_empty() {
             return None;
@@ -166,7 +190,8 @@ impl IterationFeedback {
         let mut result = String::from("## ITERATION FEEDBACK\n");
         result.push_str(&self.parts.join("\n\n"));
 
-        // Truncate to 4000 chars max
+        // Truncate to 4000 chars max to prevent doubling the system prompt
+        // size. The trailing "..." signals to Claude that output was clipped.
         if result.len() > 4000 {
             result.truncate(3997);
             result.push_str("...");

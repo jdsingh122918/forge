@@ -15,6 +15,58 @@ pub struct SwarmStatus {
     pub failed_phases: Vec<String>,
 }
 
+/// Compute the completion percentage for a swarm run.
+///
+/// Returns a value in `[0.0, 100.0]`. Returns `0.0` when `total` is zero to
+/// avoid division-by-zero. This is pure logic that can be unit-tested without
+/// external processes.
+pub fn completion_pct(completed: usize, total: usize) -> f64 {
+    if total > 0 {
+        (completed as f64 / total as f64) * 100.0
+    } else {
+        0.0
+    }
+}
+
+/// Expand the `--review` argument into an ordered list of specialist names.
+///
+/// The special value `"all"` expands to the four built-in specialists in a
+/// fixed order. Any other value is split on commas and trimmed. An empty
+/// string returns an empty `Vec`. This is pure logic that can be unit-tested
+/// without external processes.
+pub fn expand_review_specialists(review: &str) -> Vec<String> {
+    if review == "all" {
+        vec![
+            "security".to_string(),
+            "performance".to_string(),
+            "architecture".to_string(),
+            "simplicity".to_string(),
+        ]
+    } else {
+        review
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+}
+
+/// Validate the arbiter confidence value.
+///
+/// Returns `Ok(())` when the value is in `[0.0, 1.0]`, or an error otherwise.
+/// This is pure logic that can be unit-tested without external processes.
+pub fn validate_arbiter_confidence(value: f64) -> Result<()> {
+    if (0.0..=1.0).contains(&value) {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "--arbiter-confidence must be between 0.0 and 1.0, got {}",
+            value
+        )
+    }
+}
+
+
 /// Show current swarm execution status
 pub fn cmd_swarm_status(project_dir: &std::path::Path) -> Result<()> {
     use forge::init::get_forge_dir;
@@ -31,35 +83,55 @@ pub fn cmd_swarm_status(project_dir: &std::path::Path) -> Result<()> {
         std::fs::read_to_string(&status_file).context("Failed to read swarm status file")?;
 
     // Parse and display the status
-    if let Ok(status) = serde_json::from_str::<SwarmStatus>(&content) {
-        println!();
-        println!("{}", console::style("Swarm Execution Status").bold().cyan());
-        println!("─────────────────────────");
-        println!("Started: {}", status.started_at);
-        println!("State: {}", status.state);
-        println!();
-        println!("Progress:");
-        println!("  Total phases: {}", status.total_phases);
-        println!("  Completed: {}", status.completed_phases);
-        println!("  Running: {}", status.running_phases.join(", "));
-        if !status.failed_phases.is_empty() {
-            println!(
-                "  Failed: {}",
-                console::style(status.failed_phases.join(", ")).red()
-            );
+    match serde_json::from_str::<SwarmStatus>(&content) {
+        Ok(status) => {
+            println!();
+            println!("{}", console::style("Swarm Execution Status").bold().cyan());
+            println!("─────────────────────────");
+            println!("Started: {}", status.started_at);
+            println!("State: {}", status.state);
+            println!();
+            println!("Progress:");
+            println!("  Total phases: {}", status.total_phases);
+            println!("  Completed: {}", status.completed_phases);
+            println!("  Running: {}", status.running_phases.join(", "));
+            if !status.failed_phases.is_empty() {
+                println!(
+                    "  Failed: {}",
+                    console::style(status.failed_phases.join(", ")).red()
+                );
+            }
+            println!();
+            let completion_pct = if status.total_phases > 0 {
+                (status.completed_phases as f64 / status.total_phases as f64) * 100.0
+            } else {
+                0.0
+            };
+            println!("Completion: {:.1}%", completion_pct);
         }
-        println!();
-        let completion_pct = if status.total_phases > 0 {
-            (status.completed_phases as f64 / status.total_phases as f64) * 100.0
-        } else {
-            0.0
-        };
-        println!("Completion: {:.1}%", completion_pct);
-    } else {
-        println!("Swarm status: {}", content);
+        Err(e) => {
+            eprintln!(
+                "Warning: Could not parse swarm status file (may be partially written): {}",
+                e
+            );
+            println!("Raw swarm status: {}", content);
+        }
     }
 
     Ok(())
+}
+
+/// Parse a backend key string into a `SwarmBackend`.
+///
+/// Centralises the mapping so both production code and tests use the same logic.
+fn parse_backend_key(backend: &str) -> forge::dag::SwarmBackend {
+    use forge::dag::SwarmBackend;
+    match backend.to_lowercase().as_str() {
+        "in-process" | "inprocess" => SwarmBackend::InProcess,
+        "tmux" => SwarmBackend::Tmux,
+        "iterm2" => SwarmBackend::Iterm2,
+        _ => SwarmBackend::Auto,
+    }
 }
 
 /// Gracefully abort a running swarm execution
@@ -106,7 +178,6 @@ pub async fn cmd_swarm(
     fail_fast: bool,
 ) -> Result<()> {
     use forge::config::Config;
-    use forge::dag::SwarmBackend;
     use forge::dag::{
         DagConfig, DagExecutor, DagScheduler, ExecutorConfig, PhaseEvent, ReviewConfig, ReviewMode,
     };
@@ -119,24 +190,14 @@ pub async fn cmd_swarm(
     super::run::check_run_prerequisites(project_dir)?;
 
     // Parse backend
-    let swarm_backend = match backend.to_lowercase().as_str() {
-        "in-process" | "inprocess" => SwarmBackend::InProcess,
-        "tmux" => SwarmBackend::Tmux,
-        "iterm2" => SwarmBackend::Iterm2,
-        _ => SwarmBackend::Auto,
-    };
+    let swarm_backend = parse_backend_key(backend);
 
     // Note: permission_mode is parsed but not currently used in swarm execution.
     // It's validated here for future integration with per-phase permission modes.
     let _ = permission_mode; // Acknowledge unused parameter
 
     // Validate arbiter confidence
-    if !(0.0..=1.0).contains(&arbiter_confidence) {
-        anyhow::bail!(
-            "--arbiter-confidence must be between 0.0 and 1.0, got {}",
-            arbiter_confidence
-        );
-    }
+    validate_arbiter_confidence(arbiter_confidence)?;
 
     // Parse escalation types
     let escalation_types: Vec<String> = escalate_on
@@ -180,18 +241,7 @@ pub async fn cmd_swarm(
     // Build review config
     let review_enabled = review.is_some();
     let review_specialists: Vec<String> = review
-        .map(|r| {
-            if r == "all" {
-                vec![
-                    "security".to_string(),
-                    "performance".to_string(),
-                    "architecture".to_string(),
-                    "simplicity".to_string(),
-                ]
-            } else {
-                r.split(',').map(|s| s.trim().to_string()).collect()
-            }
-        })
+        .map(expand_review_specialists)
         .unwrap_or_default();
 
     let dag_review_config = ReviewConfig {
@@ -296,7 +346,11 @@ pub async fn cmd_swarm(
             "backend": backend,
             "review_enabled": review_enabled,
         });
-        println!("{}", serde_json::to_string(&init_state).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string(&init_state)
+                .expect("serde_json::Value is always serializable")
+        );
     }
 
     // Write initial status file
@@ -309,8 +363,20 @@ pub async fn cmd_swarm(
         running_phases: Vec::new(),
         failed_phases: Vec::new(),
     };
-    if let Ok(status_json) = serde_json::to_string_pretty(&initial_status) {
-        let _ = std::fs::write(&status_file, status_json);
+    match serde_json::to_string_pretty(&initial_status) {
+        Ok(status_json) => {
+            if let Err(e) = std::fs::write(&status_file, &status_json) {
+                eprintln!(
+                    "Warning: Could not write swarm status file at {}: {}. \
+                     'forge swarm status' will not show real-time progress.",
+                    status_file.display(),
+                    e
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("Warning: Could not serialize swarm status: {}", e);
+        }
     }
 
     // Execute
@@ -339,7 +405,8 @@ pub async fn cmd_swarm(
         });
         println!(
             "{}",
-            serde_json::to_string(&final_state).unwrap_or_default()
+            serde_json::to_string(&final_state)
+                .expect("serde_json::Value is always serializable")
         );
     }
 
@@ -348,4 +415,181 @@ pub async fn cmd_swarm(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── completion_pct ────────────────────────────────────────────────────────
+
+    #[test]
+    fn completion_pct_zero_total_returns_zero() {
+        assert_eq!(completion_pct(0, 0), 0.0);
+    }
+
+    #[test]
+    fn completion_pct_none_completed() {
+        assert_eq!(completion_pct(0, 10), 0.0);
+    }
+
+    #[test]
+    fn completion_pct_half_completed() {
+        assert!((completion_pct(5, 10) - 50.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn completion_pct_all_completed() {
+        assert!((completion_pct(7, 7) - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn completion_pct_partial_gives_correct_fraction() {
+        // 3 of 4 = 75%
+        assert!((completion_pct(3, 4) - 75.0).abs() < f64::EPSILON);
+    }
+
+    // ── validate_arbiter_confidence ───────────────────────────────────────────
+
+    #[test]
+    fn validate_arbiter_confidence_zero_is_valid() {
+        assert!(validate_arbiter_confidence(0.0).is_ok());
+    }
+
+    #[test]
+    fn validate_arbiter_confidence_one_is_valid() {
+        assert!(validate_arbiter_confidence(1.0).is_ok());
+    }
+
+    #[test]
+    fn validate_arbiter_confidence_midpoint_is_valid() {
+        assert!(validate_arbiter_confidence(0.7).is_ok());
+    }
+
+    #[test]
+    fn validate_arbiter_confidence_below_zero_is_invalid() {
+        let err = validate_arbiter_confidence(-0.1).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("0.0"), "expected 0.0 in error: {msg}");
+        assert!(msg.contains("1.0"), "expected 1.0 in error: {msg}");
+    }
+
+    #[test]
+    fn validate_arbiter_confidence_above_one_is_invalid() {
+        let err = validate_arbiter_confidence(1.01).unwrap_err();
+        assert!(err.to_string().contains("1.0"));
+    }
+
+    // ── expand_review_specialists ─────────────────────────────────────────────
+
+    #[test]
+    fn expand_review_specialists_all_gives_four_built_ins() {
+        let specialists = expand_review_specialists("all");
+        assert_eq!(specialists.len(), 4);
+        assert!(specialists.contains(&"security".to_string()));
+        assert!(specialists.contains(&"performance".to_string()));
+        assert!(specialists.contains(&"architecture".to_string()));
+        assert!(specialists.contains(&"simplicity".to_string()));
+    }
+
+    #[test]
+    fn expand_review_specialists_single_value() {
+        let specialists = expand_review_specialists("security");
+        assert_eq!(specialists, vec!["security"]);
+    }
+
+    #[test]
+    fn expand_review_specialists_comma_separated() {
+        let specialists = expand_review_specialists("security,performance");
+        assert_eq!(specialists, vec!["security", "performance"]);
+    }
+
+    #[test]
+    fn expand_review_specialists_trims_whitespace() {
+        let specialists = expand_review_specialists("security , performance");
+        assert_eq!(specialists, vec!["security", "performance"]);
+    }
+
+    #[test]
+    fn expand_review_specialists_empty_string_returns_empty_vec() {
+        let specialists = expand_review_specialists("");
+        assert!(
+            specialists.is_empty() || specialists.iter().all(|s| !s.is_empty()),
+            "empty input must not produce blank specialist names: {:?}",
+            specialists
+        );
+    }
+
+    // ── parse_backend_key ─────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_backend_key_known_values() {
+        use forge::dag::SwarmBackend;
+        assert!(matches!(
+            parse_backend_key("in-process"),
+            SwarmBackend::InProcess
+        ));
+        assert!(matches!(
+            parse_backend_key("inprocess"),
+            SwarmBackend::InProcess
+        ));
+        assert!(matches!(parse_backend_key("tmux"), SwarmBackend::Tmux));
+        assert!(matches!(parse_backend_key("iterm2"), SwarmBackend::Iterm2));
+        assert!(matches!(parse_backend_key("auto"), SwarmBackend::Auto));
+        assert!(matches!(
+            parse_backend_key("unknown"),
+            SwarmBackend::Auto
+        ));
+    }
+
+    #[test]
+    fn parse_backend_key_case_insensitive() {
+        use forge::dag::SwarmBackend;
+        assert!(matches!(
+            parse_backend_key("IN-PROCESS"),
+            SwarmBackend::InProcess
+        ));
+        assert!(matches!(parse_backend_key("TMUX"), SwarmBackend::Tmux));
+    }
+
+    // ── SwarmStatus serialization ─────────────────────────────────────────────
+
+    #[test]
+    fn swarm_status_roundtrips_through_json() {
+        let status = SwarmStatus {
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            state: "running".to_string(),
+            total_phases: 8,
+            completed_phases: 3,
+            running_phases: vec!["04".to_string(), "05".to_string()],
+            failed_phases: vec![],
+        };
+
+        let json = serde_json::to_string(&status).expect("serialize");
+        let deserialized: SwarmStatus = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(deserialized.total_phases, 8);
+        assert_eq!(deserialized.completed_phases, 3);
+        assert_eq!(deserialized.running_phases, vec!["04", "05"]);
+        assert!(deserialized.failed_phases.is_empty());
+        assert_eq!(deserialized.state, "running");
+    }
+
+    #[test]
+    fn swarm_status_with_failed_phases_roundtrips() {
+        let status = SwarmStatus {
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            state: "failed".to_string(),
+            total_phases: 5,
+            completed_phases: 2,
+            running_phases: vec![],
+            failed_phases: vec!["03".to_string()],
+        };
+
+        let json = serde_json::to_string(&status).expect("serialize");
+        let deserialized: SwarmStatus = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(deserialized.failed_phases, vec!["03"]);
+        assert_eq!(deserialized.state, "failed");
+    }
 }

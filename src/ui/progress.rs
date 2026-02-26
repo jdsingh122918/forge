@@ -75,6 +75,16 @@ impl OrchestratorUI {
         }
     }
 
+    /// Print a line via `MultiProgress`, falling back to `eprintln!` if the rich UI fails.
+    ///
+    /// This prevents silent loss of critical user-facing messages (blockers, progress,
+    /// pivots) when the terminal or stdout is unavailable.
+    fn print_line(&self, msg: impl AsRef<str>) {
+        if self.multi.println(msg.as_ref()).is_err() {
+            eprintln!("{}", msg.as_ref());
+        }
+    }
+
     /// Update the phase bar message to reflect the phase about to execute.
     ///
     /// Does **not** increment the phase counter — call [`Self::phase_complete`] to advance it.
@@ -124,9 +134,7 @@ impl OrchestratorUI {
             style(format!("({})", msg)).dim()
         ));
         if self.verbose {
-            self.multi
-                .println(format!("    {} {}", style("→").dim(), style(msg).dim()))
-                .ok();
+            self.print_line(format!("    {} {}", style("→").dim(), style(msg).dim()));
         }
     }
 
@@ -166,9 +174,7 @@ impl OrchestratorUI {
             style(description).yellow()
         ));
         // Always print tool use to give visibility
-        self.multi
-            .println(format!("    {} {}", emoji, style(description).yellow()))
-            .ok();
+        self.print_line(format!("    {} {}", emoji, style(description).yellow()));
     }
 
     /// Show Claude's thinking/reasoning (brief snippet)
@@ -183,13 +189,11 @@ impl OrchestratorUI {
         ));
         // Only print thinking in verbose mode
         if self.verbose {
-            self.multi
-                .println(format!(
-                    "    {} {}",
-                    style("💭").dim(),
-                    style(snippet).dim()
-                ))
-                .ok();
+            self.print_line(format!(
+                "    {} {}",
+                style("💭").dim(),
+                style(snippet).dim()
+            ));
         }
     }
 
@@ -233,9 +237,7 @@ impl OrchestratorUI {
             ChangeType::Deleted => (FILE_DEL, style(path.display()).red()),
             ChangeType::Renamed => (FILE_MOD, style(path.display()).blue()),
         };
-        self.multi
-            .println(format!("    {} {}", emoji, colored_path))
-            .ok();
+        self.print_line(format!("    {} {}", emoji, colored_path));
     }
 
     /// Show progress signals from Claude's output.
@@ -244,35 +246,29 @@ impl OrchestratorUI {
     pub fn show_signals(&self, signals: &IterationSignals) {
         // Show latest progress percentage
         if let Some(pct) = signals.latest_progress() {
-            self.multi
-                .println(format!(
-                    "    {} Progress: {}",
-                    PROGRESS,
-                    style(format!("{}%", pct)).cyan().bold()
-                ))
-                .ok();
+            self.print_line(format!(
+                "    {} Progress: {}",
+                PROGRESS,
+                style(format!("{}%", pct)).cyan().bold()
+            ));
         }
 
         // Show all blockers (important - always show)
         for blocker in &signals.blockers {
-            self.multi
-                .println(format!(
-                    "    {} Blocker: {}",
-                    BLOCKER,
-                    style(&blocker.description).red().bold()
-                ))
-                .ok();
+            self.print_line(format!(
+                "    {} Blocker: {}",
+                BLOCKER,
+                style(&blocker.description).red().bold()
+            ));
         }
 
         // Show pivots
         for pivot in &signals.pivots {
-            self.multi
-                .println(format!(
-                    "    {} Pivot: {}",
-                    PIVOT,
-                    style(&pivot.new_approach).yellow()
-                ))
-                .ok();
+            self.print_line(format!(
+                "    {} Pivot: {}",
+                PIVOT,
+                style(&pivot.new_approach).yellow()
+            ));
         }
     }
 
@@ -287,35 +283,29 @@ impl OrchestratorUI {
             PROGRESS,
             style(format!("{}%", percentage)).cyan().bold()
         ));
-        self.multi
-            .println(format!(
-                "    {} Progress: {}",
-                PROGRESS,
-                style(format!("{}%", percentage)).cyan().bold()
-            ))
-            .ok();
+        self.print_line(format!(
+            "    {} Progress: {}",
+            PROGRESS,
+            style(format!("{}%", percentage)).cyan().bold()
+        ));
     }
 
     /// Show a blocker that Claude has identified.
     pub fn show_blocker(&self, description: &str) {
-        self.multi
-            .println(format!(
-                "    {} {}",
-                BLOCKER,
-                style(format!("BLOCKER: {}", description)).red().bold()
-            ))
-            .ok();
+        self.print_line(format!(
+            "    {} {}",
+            BLOCKER,
+            style(format!("BLOCKER: {}", description)).red().bold()
+        ));
     }
 
     /// Show a pivot (change in approach) from Claude.
     pub fn show_pivot(&self, new_approach: &str) {
-        self.multi
-            .println(format!(
-                "    {} {}",
-                PIVOT,
-                style(format!("Pivot: {}", new_approach)).yellow()
-            ))
-            .ok();
+        self.print_line(format!(
+            "    {} {}",
+            PIVOT,
+            style(format!("Pivot: {}", new_approach)).yellow()
+        ));
     }
 
     /// Finish the iteration spinner with a "promise found" success message and stop ticking.
@@ -372,13 +362,11 @@ impl OrchestratorUI {
     /// * `phase` — phase identifier (e.g. `"01"`)
     pub fn phase_complete(&self, phase: &str) {
         self.phase_bar.inc(1);
-        self.multi
-            .println(format!(
-                "\n{} Phase {} complete!\n",
-                SPARKLE,
-                style(phase).green().bold()
-            ))
-            .ok();
+        self.print_line(format!(
+            "\n{} Phase {} complete!\n",
+            SPARKLE,
+            style(phase).green().bold()
+        ));
     }
 
     /// Print a phase-failure banner without advancing the phase progress bar.
@@ -387,23 +375,19 @@ impl OrchestratorUI {
     /// * `phase` — phase identifier
     /// * `reason` — human-readable failure reason
     pub fn phase_failed(&self, phase: &str, reason: &str) {
-        self.multi
-            .println(format!(
-                "\n{} Phase {} failed: {}\n",
-                CROSS,
-                style(phase).red().bold(),
-                reason
-            ))
-            .ok();
+        self.print_line(format!(
+            "\n{} Phase {} failed: {}\n",
+            CROSS,
+            style(phase).red().bold(),
+            reason
+        ));
     }
 
     /// Print a full-width cyan separator line (70 `═` characters).
     ///
     /// Used to visually delimit phase headers. Called by [`Self::print_phase_header`] automatically.
     pub fn print_separator(&self) {
-        self.multi
-            .println(format!("{}", style("═".repeat(70)).cyan()))
-            .ok();
+        self.print_line(format!("{}", style("═".repeat(70)).cyan()));
     }
 
     /// Print the full header block for a phase before execution begins.
@@ -417,29 +401,23 @@ impl OrchestratorUI {
     /// * `promise` — the completion signal Claude must emit
     /// * `max_iter` — iteration budget for this phase
     pub fn print_phase_header(&self, phase: &str, description: &str, promise: &str, max_iter: u32) {
-        self.multi.println("").ok();
+        self.print_line("");
         self.print_separator();
-        self.multi
-            .println(format!(
-                "{} Phase {}: {}",
-                style("▶").green().bold(),
-                style(phase).yellow().bold(),
-                description
-            ))
-            .ok();
+        self.print_line(format!(
+            "{} Phase {}: {}",
+            style("▶").green().bold(),
+            style(phase).yellow().bold(),
+            description
+        ));
         self.print_separator();
-        self.multi.println("").ok();
-        self.multi
-            .println(format!("{}  {}", style("Promise:").dim(), promise))
-            .ok();
-        self.multi
-            .println(format!(
-                "{}  {} iterations max",
-                style("Budget:").dim(),
-                max_iter
-            ))
-            .ok();
-        self.multi.println("").ok();
+        self.print_line("");
+        self.print_line(format!("{}  {}", style("Promise:").dim(), promise));
+        self.print_line(format!(
+            "{}  {} iterations max",
+            style("Budget:").dim(),
+            max_iter
+        ));
+        self.print_line("");
     }
 
     /// Print a summary of file changes from the immediately preceding phase, if any.
@@ -453,35 +431,25 @@ impl OrchestratorUI {
         if changes.is_empty() {
             return;
         }
-        self.multi
-            .println(format!("{}", style("Previous phase changes:").underlined()))
-            .ok();
-        self.multi
-            .println(format!(
-                "  {} files added",
-                style(changes.files_added.len()).green()
-            ))
-            .ok();
-        self.multi
-            .println(format!(
-                "  {} files modified",
-                style(changes.files_modified.len()).yellow()
-            ))
-            .ok();
-        self.multi
-            .println(format!(
-                "  {} files deleted",
-                style(changes.files_deleted.len()).red()
-            ))
-            .ok();
-        self.multi
-            .println(format!(
-                "  +{} -{} lines",
-                style(changes.total_lines_added).green(),
-                style(changes.total_lines_removed).red()
-            ))
-            .ok();
-        self.multi.println("").ok();
+        self.print_line(format!("{}", style("Previous phase changes:").underlined()));
+        self.print_line(format!(
+            "  {} files added",
+            style(changes.files_added.len()).green()
+        ));
+        self.print_line(format!(
+            "  {} files modified",
+            style(changes.files_modified.len()).yellow()
+        ));
+        self.print_line(format!(
+            "  {} files deleted",
+            style(changes.files_deleted.len()).red()
+        ));
+        self.print_line(format!(
+            "  +{} -{} lines",
+            style(changes.total_lines_added).green(),
+            style(changes.total_lines_removed).red()
+        ));
+        self.print_line("");
     }
 
     /// Print a sub-phase header for sub-phase execution.
@@ -493,26 +461,22 @@ impl OrchestratorUI {
         budget: u32,
         parent_phase: &str,
     ) {
-        self.multi.println("").ok();
-        self.multi
-            .println(format!(
-                "  {} Sub-phase {} (of phase {}): {}",
-                style("└▶").cyan(),
-                style(sub_phase).yellow().bold(),
-                style(parent_phase).dim(),
-                description
-            ))
-            .ok();
-        self.multi
-            .println(format!(
-                "     {} {}  {} {} iterations",
-                style("Promise:").dim(),
-                promise,
-                style("Budget:").dim(),
-                budget
-            ))
-            .ok();
-        self.multi.println("").ok();
+        self.print_line("");
+        self.print_line(format!(
+            "  {} Sub-phase {} (of phase {}): {}",
+            style("└▶").cyan(),
+            style(sub_phase).yellow().bold(),
+            style(parent_phase).dim(),
+            description
+        ));
+        self.print_line(format!(
+            "     {} {}  {} {} iterations",
+            style("Promise:").dim(),
+            promise,
+            style("Budget:").dim(),
+            budget
+        ));
+        self.print_line("");
     }
 
     /// Start a sub-phase (similar to start_phase but with different styling).
@@ -527,40 +491,34 @@ impl OrchestratorUI {
 
     /// Complete a sub-phase successfully.
     pub fn sub_phase_complete(&self, sub_phase: &str, parent_phase: &str) {
-        self.multi
-            .println(format!(
-                "  {} Sub-phase {} of {} complete!",
-                CHECK,
-                style(sub_phase).green().bold(),
-                style(parent_phase).dim()
-            ))
-            .ok();
+        self.print_line(format!(
+            "  {} Sub-phase {} of {} complete!",
+            CHECK,
+            style(sub_phase).green().bold(),
+            style(parent_phase).dim()
+        ));
     }
 
     /// Mark a sub-phase as failed.
     pub fn sub_phase_failed(&self, sub_phase: &str, parent_phase: &str, reason: &str) {
-        self.multi
-            .println(format!(
-                "  {} Sub-phase {} of {} failed: {}",
-                CROSS,
-                style(sub_phase).red().bold(),
-                style(parent_phase).dim(),
-                reason
-            ))
-            .ok();
+        self.print_line(format!(
+            "  {} Sub-phase {} of {} failed: {}",
+            CROSS,
+            style(sub_phase).red().bold(),
+            style(parent_phase).dim(),
+            reason
+        ));
     }
 
     /// Show a sub-phase spawn request.
     pub fn show_sub_phase_spawn(&self, name: &str, promise: &str, budget: u32) {
-        self.multi
-            .println(format!(
-                "    {} Spawning sub-phase: {} (promise: {}, budget: {})",
-                style("🔀").cyan(),
-                style(name).yellow(),
-                style(promise).dim(),
-                style(budget).cyan()
-            ))
-            .ok();
+        self.print_line(format!(
+            "    {} Spawning sub-phase: {} (promise: {}, budget: {})",
+            style("🔀").cyan(),
+            style(name).yellow(),
+            style(promise).dim(),
+            style(budget).cyan()
+        ));
     }
 
     /// Show sub-phase progress summary.
@@ -575,8 +533,6 @@ impl OrchestratorUI {
         } else {
             format!("{}/{} sub-phases complete", style(completed).green(), total)
         };
-        self.multi
-            .println(format!("  {} {}", style("📊").dim(), status))
-            .ok();
+        self.print_line(format!("  {} {}", style("📊").dim(), status));
     }
 }
