@@ -126,7 +126,7 @@ pub struct GenericEvent {
 /// The server responds `200 OK` for all accepted events. Any other status indicates
 /// a server error and the agent should retry with exponential backoff.
 ///
-/// Events are stored in a bounded ring buffer (default [`DEFAULT_MAX_EVENTS`]).
+/// Events are stored in a bounded ring buffer (default `DEFAULT_MAX_EVENTS` = 10 000).
 /// When the buffer is full the oldest event is dropped to make room.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

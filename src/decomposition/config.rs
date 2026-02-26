@@ -13,7 +13,7 @@ pub const DEFAULT_COMPLEXITY_KEYWORDS: &[&str] = &[
     "parallel",
 ];
 
-/// Get the default complexity keywords as a Vec<String>.
+/// Get the default complexity keywords as a `Vec<String>`.
 pub fn default_complexity_keywords() -> Vec<String> {
     DEFAULT_COMPLEXITY_KEYWORDS
         .iter()

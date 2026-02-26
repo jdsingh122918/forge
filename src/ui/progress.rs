@@ -77,7 +77,7 @@ impl OrchestratorUI {
 
     /// Update the phase bar message to reflect the phase about to execute.
     ///
-    /// Does **not** increment the phase counter — call [`phase_complete`] to advance it.
+    /// Does **not** increment the phase counter — call [`Self::phase_complete`] to advance it.
     ///
     /// # Arguments
     /// * `phase` — phase identifier (e.g. `"01"`)
@@ -89,8 +89,8 @@ impl OrchestratorUI {
 
     /// Record iteration counters and start the spinner animation.
     ///
-    /// Enables a 100 ms tick on the iteration spinner. Call [`iteration_success`],
-    /// [`iteration_continue`], or [`iteration_error`] to stop the spinner.
+    /// Enables a 100 ms tick on the iteration spinner. Call [`Self::iteration_success`],
+    /// [`Self::iteration_continue`], or [`Self::iteration_error`] to stop the spinner.
     ///
     /// # Arguments
     /// * `iter` — 1-based current iteration number
@@ -399,7 +399,7 @@ impl OrchestratorUI {
 
     /// Print a full-width cyan separator line (70 `═` characters).
     ///
-    /// Used to visually delimit phase headers. Called by [`print_phase_header`] automatically.
+    /// Used to visually delimit phase headers. Called by [`Self::print_phase_header`] automatically.
     pub fn print_separator(&self) {
         self.multi
             .println(format!("{}", style("═".repeat(70)).cyan()))

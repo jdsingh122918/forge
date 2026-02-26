@@ -67,7 +67,7 @@ impl HookManager {
 
     /// Merge additional hooks into the configuration.
     ///
-    /// This is useful for adding hooks from forge.toml's [hooks] section.
+    /// This is useful for adding hooks from forge.toml's `[hooks]` section.
     pub fn merge_config(&mut self, additional: HooksConfig) {
         self.config.merge(additional);
     }
