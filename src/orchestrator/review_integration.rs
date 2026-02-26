@@ -92,32 +92,40 @@ impl ReviewIntegrationConfig {
 /// Default specialist configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefaultSpecialist {
-    pub specialist_type: String,
+    pub specialist_type: SpecialistType,
     pub gate: bool,
 }
 
 impl DefaultSpecialist {
     /// Create a gating specialist.
-    pub fn gating(specialist_type: &str) -> Self {
+    ///
+    /// The `name` is parsed via [`SpecialistType::from_str`], which recognises all
+    /// short-form aliases (`"security"`, `"performance"`, etc.) and falls back to
+    /// `Custom(name)` for unrecognised values.
+    pub fn gating(name: &str) -> Self {
         Self {
-            specialist_type: specialist_type.to_string(),
+            specialist_type: SpecialistType::from_str(name)
+                .unwrap_or_else(|_| SpecialistType::Custom(name.to_string())),
             gate: true,
         }
     }
 
     /// Create an advisory specialist.
-    pub fn advisory(specialist_type: &str) -> Self {
+    ///
+    /// The `name` is parsed via [`SpecialistType::from_str`], which recognises all
+    /// short-form aliases (`"security"`, `"performance"`, etc.) and falls back to
+    /// `Custom(name)` for unrecognised values.
+    pub fn advisory(name: &str) -> Self {
         Self {
-            specialist_type: specialist_type.to_string(),
+            specialist_type: SpecialistType::from_str(name)
+                .unwrap_or_else(|_| SpecialistType::Custom(name.to_string())),
             gate: false,
         }
     }
 
     /// Convert to a ReviewSpecialist.
     fn to_review_specialist(&self) -> ReviewSpecialist {
-        let specialist_type = SpecialistType::from_str(&self.specialist_type)
-            .unwrap_or(SpecialistType::Custom(self.specialist_type.clone()));
-        ReviewSpecialist::new(specialist_type, self.gate)
+        ReviewSpecialist::new(self.specialist_type.clone(), self.gate)
     }
 }
 
@@ -324,14 +332,14 @@ mod tests {
     #[test]
     fn test_default_specialist_gating() {
         let specialist = DefaultSpecialist::gating("security");
-        assert_eq!(specialist.specialist_type, "security");
+        assert_eq!(specialist.specialist_type, SpecialistType::SecuritySentinel);
         assert!(specialist.gate);
     }
 
     #[test]
     fn test_default_specialist_advisory() {
         let specialist = DefaultSpecialist::advisory("performance");
-        assert_eq!(specialist.specialist_type, "performance");
+        assert_eq!(specialist.specialist_type, SpecialistType::PerformanceOracle);
         assert!(!specialist.gate);
     }
 

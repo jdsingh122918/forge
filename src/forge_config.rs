@@ -61,7 +61,7 @@ use std::path::{Path, PathBuf};
 ///
 /// | Mode       | When to use              | Gate behavior                           |
 /// |------------|--------------------------|-----------------------------------------|
-/// | `Readonly` | Auditing / inspection    | Auto-approves all; blocks file writes   |
+/// | `Readonly` | Auditing / inspection    | Restricts toolset to read-only tools; flags any file modifications after the fact |
 /// | `Standard` | Normal development       | Threshold-based auto-approve (≤N files) |
 /// | `Autonomous` | Well-tested, CI        | Auto-approves all; stale-check per iter |
 /// | `Strict`   | Sensitive / high-risk    | Requires manual approval every iteration|

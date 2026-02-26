@@ -17,9 +17,10 @@
 //! | `compaction/tracker.rs`  | Context-window management: session IDs, compaction summaries  |
 //!
 //! `StateManager` (in `state.rs`) is the canonical source of truth for
-//! *checkpoint recovery* — when `forge run --resume` is used, it reads the
-//! state log to skip already-completed phases.  The audit logger and factory
-//! DB are append-only observation layers; they do not drive control flow.
+//! *checkpoint recovery* — checkpoint recovery happens automatically: `forge run`
+//! reads the state log at startup and skips phases already recorded as completed.
+//! The audit logger and factory DB are append-only observation layers; they do
+//! not drive control flow.
 
 pub mod review_integration;
 pub mod runner;

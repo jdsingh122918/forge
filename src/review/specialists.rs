@@ -35,7 +35,15 @@ use std::str::FromStr;
 /// Type of review specialist.
 ///
 /// Each type represents a domain of expertise with default focus areas.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+///
+/// ## Deserialization
+///
+/// This type supports multiple deserialization formats:
+/// - Short-form strings: `"security"`, `"performance"`, `"architecture"`, `"simplicity"`
+/// - Long-form strings: `"security_sentinel"`, `"performance_oracle"`, etc.
+/// - Hyphenated strings: `"security-sentinel"`, `"performance-oracle"`, etc.
+/// - Tagged object for custom: `{"custom": "my-review"}`
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum SpecialistType {
     /// Security-focused review examining vulnerabilities and security best practices.
@@ -191,6 +199,71 @@ impl SpecialistType {
 impl std::fmt::Display for SpecialistType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.display_name())
+    }
+}
+
+/// Custom `Deserialize` for `SpecialistType`.
+///
+/// Supports three formats:
+/// 1. Short-form string alias: `"security"`, `"perf"`, `"architecture"`, `"simplicity"`, etc.
+/// 2. Long-form snake_case string: `"security_sentinel"`, `"performance_oracle"`, etc.
+/// 3. Tagged object for custom variants: `{"custom": "my-review"}`
+///
+/// All string forms are routed through `FromStr`, which handles all known aliases and falls
+/// back to `Custom(...)` for unrecognized values. The tagged object form is handled by an
+/// internal visitor that mirrors the `#[serde(rename_all = "snake_case")]` enum layout.
+impl<'de> serde::Deserialize<'de> for SpecialistType {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{self, Visitor};
+
+        struct SpecialistTypeVisitor;
+
+        impl<'de> Visitor<'de> for SpecialistTypeVisitor {
+            type Value = SpecialistType;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str(
+                    r#"a specialist type string (e.g. "security", "security_sentinel") or a tagged object (e.g. {"custom": "my-review"})"#,
+                )
+            }
+
+            /// Handle plain string values via `FromStr` — supports all aliases.
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<SpecialistType, E> {
+                SpecialistType::from_str(value).map_err(de::Error::custom)
+            }
+
+            /// Handle map values — only `{"custom": "<name>"}` is valid.
+            fn visit_map<A: de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<SpecialistType, A::Error> {
+                let key: String = map
+                    .next_key()?
+                    .ok_or_else(|| de::Error::custom("expected a key in specialist type object"))?;
+
+                if key == "custom" {
+                    let value: String = map.next_value()?;
+                    // Drain any remaining keys (there should be none).
+                    while map.next_key::<serde::de::IgnoredAny>()?.is_some() {
+                        map.next_value::<serde::de::IgnoredAny>()?;
+                    }
+                    Ok(SpecialistType::Custom(value))
+                } else {
+                    Err(de::Error::unknown_variant(
+                        &key,
+                        &[
+                            "security_sentinel",
+                            "performance_oracle",
+                            "architecture_strategist",
+                            "simplicity_reviewer",
+                            "custom",
+                        ],
+                    ))
+                }
+            }
+        }
+
+        deserializer.deserialize_any(SpecialistTypeVisitor)
     }
 }
 
@@ -543,11 +616,53 @@ mod tests {
 
     #[test]
     fn test_specialist_type_deserialization() {
+        // Long-form snake_case strings (original format)
         let security: SpecialistType = serde_json::from_str("\"security_sentinel\"").unwrap();
         assert_eq!(security, SpecialistType::SecuritySentinel);
 
         let custom: SpecialistType = serde_json::from_str("{\"custom\":\"Test\"}").unwrap();
         assert_eq!(custom, SpecialistType::Custom("Test".to_string()));
+
+        // Short-form alias strings (used in phases.json configs)
+        let security_short: SpecialistType = serde_json::from_str("\"security\"").unwrap();
+        assert_eq!(security_short, SpecialistType::SecuritySentinel);
+
+        let perf_short: SpecialistType = serde_json::from_str("\"performance\"").unwrap();
+        assert_eq!(perf_short, SpecialistType::PerformanceOracle);
+
+        let arch_short: SpecialistType = serde_json::from_str("\"architecture\"").unwrap();
+        assert_eq!(arch_short, SpecialistType::ArchitectureStrategist);
+
+        let simplicity_short: SpecialistType = serde_json::from_str("\"simplicity\"").unwrap();
+        assert_eq!(simplicity_short, SpecialistType::SimplicityReviewer);
+
+        // Hyphenated strings
+        let security_hyphen: SpecialistType =
+            serde_json::from_str("\"security-sentinel\"").unwrap();
+        assert_eq!(security_hyphen, SpecialistType::SecuritySentinel);
+
+        // Unknown strings fall back to Custom
+        let unknown: SpecialistType = serde_json::from_str("\"my-custom-review\"").unwrap();
+        assert_eq!(
+            unknown,
+            SpecialistType::Custom("my-custom-review".to_string())
+        );
+    }
+
+    #[test]
+    fn test_specialist_type_deserialization_all_formats() {
+        // Verify the three formats described in the requirements:
+        // 1. Short-form string: "security" -> SecuritySentinel
+        let s1: SpecialistType = serde_json::from_str("\"security\"").unwrap();
+        assert_eq!(s1, SpecialistType::SecuritySentinel);
+
+        // 2. Long-form string: "security_sentinel" -> SecuritySentinel
+        let s2: SpecialistType = serde_json::from_str("\"security_sentinel\"").unwrap();
+        assert_eq!(s2, SpecialistType::SecuritySentinel);
+
+        // 3. Tagged object: {"custom": "my-review"} -> Custom("my-review")
+        let s3: SpecialistType = serde_json::from_str("{\"custom\":\"my-review\"}").unwrap();
+        assert_eq!(s3, SpecialistType::Custom("my-review".to_string()));
     }
 
     #[test]

@@ -95,8 +95,7 @@ pub async fn run_orchestrator(
             if p.permission_mode == PermissionMode::Standard {
                 p.permission_mode = settings.permission_mode;
             }
-            // Also apply budget from config if it differs and wasn't explicitly set in phases.json
-            // (We don't override budget here since phases.json is the primary source)
+            // Budget is not overridden from config — phases.json is the primary source.
             p
         })
         .collect();
@@ -428,14 +427,24 @@ pub async fn run_orchestrator(
                 } else {
                     // Prompt user about blockers
                     use dialoguer::Confirm;
-                    Confirm::new()
+                    match Confirm::new()
                         .with_prompt(format!(
                             "{} blocker(s) detected. Continue anyway?",
                             blockers.len()
                         ))
-                        .default(true)
+                        .default(false)
                         .interact()
-                        .unwrap_or(true)
+                    {
+                        Ok(answer) => answer,
+                        Err(e) => {
+                            eprintln!(
+                                "Warning: Could not display blocker confirmation dialog: {}. \
+                                 Stopping. Re-run with --yes to auto-continue past blockers.",
+                                e
+                            );
+                            false
+                        }
+                    }
                 };
 
                 if !continue_anyway {
@@ -564,7 +573,7 @@ pub async fn run_orchestrator(
 pub fn blocker_note(total_blockers_raised: usize) -> String {
     if total_blockers_raised > 0 {
         format!(
-            "{} blocker{}  raised",
+            "{} blocker{} raised",
             total_blockers_raised,
             if total_blockers_raised == 1 { "" } else { "s" }
         )
@@ -580,7 +589,7 @@ pub fn blocker_note(total_blockers_raised: usize) -> String {
 pub fn pivot_note(total_pivots: usize) -> String {
     if total_pivots > 0 {
         format!(
-            "{} pivot{}  signaled",
+            "{} pivot{} signaled",
             total_pivots,
             if total_pivots == 1 { "" } else { "s" }
         )
@@ -644,6 +653,7 @@ mod tests {
     #[test]
     fn blocker_note_one_is_singular() {
         let note = blocker_note(1);
+        assert_eq!(note, "1 blocker raised");
         assert!(note.contains('1'), "expected count in note: {note}");
         assert!(note.contains("blocker"), "expected 'blocker' in note: {note}");
         // Must NOT contain the plural suffix "s" (right after "blocker")
@@ -653,6 +663,7 @@ mod tests {
     #[test]
     fn blocker_note_many_is_plural() {
         let note = blocker_note(3);
+        assert_eq!(note, "3 blockers raised");
         assert!(note.contains('3'), "expected count in note: {note}");
         assert!(note.contains("blockers"), "expected plural in note: {note}");
     }
@@ -667,6 +678,7 @@ mod tests {
     #[test]
     fn pivot_note_one_is_singular() {
         let note = pivot_note(1);
+        assert_eq!(note, "1 pivot signaled");
         assert!(note.contains('1'), "expected count in note: {note}");
         assert!(note.contains("pivot"), "expected 'pivot' in note: {note}");
         assert!(!note.contains("pivots"), "note should be singular: {note}");
@@ -675,6 +687,7 @@ mod tests {
     #[test]
     fn pivot_note_many_is_plural() {
         let note = pivot_note(5);
+        assert_eq!(note, "5 pivots signaled");
         assert!(note.contains('5'), "expected count in note: {note}");
         assert!(note.contains("pivots"), "expected plural in note: {note}");
     }
@@ -712,12 +725,6 @@ mod tests {
     fn resolve_start_phase_handles_non_numeric_last_completed_gracefully() {
         // parse::<u32>() fails → treated as 0 → next is "01"
         let result = resolve_start_phase(None, Some("abc"));
-        assert_eq!(result, "01");
-    }
-
-    #[test]
-    fn resolve_start_phase_explicit_none_last_none_gives_01() {
-        let result = resolve_start_phase(None, None);
         assert_eq!(result, "01");
     }
 

@@ -3,39 +3,21 @@
 //! The executor runs phases in parallel while respecting dependencies and
 //! integrating with the review system for quality gates.
 //!
-//! ## Wave-Based Parallelism
+//! ## Scheduling Model
 //!
-//! Phases are grouped into *waves* by [`DagScheduler::compute_waves`]. All
-//! phases within a wave have no dependencies on one another, so they can run
-//! concurrently. The executor does **not** advance to wave N+1 until every
-//! phase in wave N has finished (succeeded or failed).
-//!
-//! ```text
-//! Phases (with deps)          Scheduler            Executor
-//! ──────────────────────      ─────────────         ────────────────────
-//!   A ──┐                     Wave 0: [A, B]  ───>  spawn A │ spawn B
-//!   B ──┤──> C ──> D          Wave 1: [C]     ───>  spawn C  (A & B done)
-//!        └─> E                Wave 2: [D, E]  ───>  spawn D │ spawn E
-//! ```
-//!
-//! ## Dependency Resolution
-//!
-//! [`DagScheduler`] builds a directed acyclic graph from phase dependency
-//! declarations. It uses topological sorting (via `petgraph`) to assign each
-//! phase to a wave number equal to its longest dependency chain length.
-//! [`get_ready_phases`] returns phases whose predecessors are all in the
-//! `completed` state, so the executor always has a safe set to spawn next.
+//! Phases become ready as soon as **all of their specific predecessors** have
+//! completed — the scheduler does not wait for all peers at the same dependency
+//! level to finish before starting later phases.  Wave numbers are used only
+//! for progress reporting; they do not impose a barrier.  The real concurrency
+//! gate is the `max_parallel` semaphore, which limits how many phases may
+//! execute simultaneously regardless of their position in the dependency graph.
 //!
 //! ## Cancellation Semantics
 //!
-//! When `fail_fast` is enabled in [`DagConfig`] and a phase fails, the
-//! executor aborts all remaining `JoinHandle`s for the current wave's
-//! in-flight sibling tasks and breaks out of the main loop immediately.
-//! Sibling phases that were already running are interrupted; phases in later
-//! waves are never started. When `fail_fast` is disabled (the default), a
-//! failing phase is recorded in the summary but sibling and subsequent phases
-//! continue running — this is useful for independent parallel workloads where
-//! a failure in one track should not block the others.
+//! When `fail_fast` is enabled and a phase fails, `active_tasks.drain()` aborts
+//! **all currently in-flight tasks across any wave** — not just sibling tasks in
+//! the current wave.  Every spawned `JoinHandle` that has not yet completed is
+//! cancelled before the executor returns.
 
 use crate::config::Config;
 use crate::dag::scheduler::{DagConfig, DagScheduler};
@@ -350,7 +332,8 @@ impl DagExecutor {
 
                         // Check for fail-fast
                         if self.dag_config.fail_fast && summary.failed > 0 {
-                            // Cancel remaining tasks
+                            // Abort all currently in-flight tasks across any wave,
+                            // not just siblings of the failed phase.
                             for (_, handle) in active_tasks.drain() {
                                 handle.abort();
                             }
@@ -597,9 +580,12 @@ async fn execute_single_phase(
     let forge_dir = get_forge_dir(&config.project_dir);
     let forge_toml = ForgeToml::load_or_default(&forge_dir)
         .inspect_err(|e| {
-            if config.verbose {
-                eprintln!("Warning: Could not load forge.toml: {e}");
-            }
+            eprintln!(
+                "Warning: Could not load forge.toml: {}. \
+                 Proceeding with defaults (session continuity, iteration feedback, \
+                 and hooks may be inactive).",
+                e
+            );
         })
         .unwrap_or_default();
     let session_continuity_enabled = forge_toml.claude.session_continuity;

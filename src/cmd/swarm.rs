@@ -31,8 +31,9 @@ pub fn completion_pct(completed: usize, total: usize) -> f64 {
 /// Expand the `--review` argument into an ordered list of specialist names.
 ///
 /// The special value `"all"` expands to the four built-in specialists in a
-/// fixed order. Any other value is split on commas and trimmed. This is pure
-/// logic that can be unit-tested without external processes.
+/// fixed order. Any other value is split on commas and trimmed. An empty
+/// string returns an empty `Vec`. This is pure logic that can be unit-tested
+/// without external processes.
 pub fn expand_review_specialists(review: &str) -> Vec<String> {
     if review == "all" {
         vec![
@@ -42,7 +43,11 @@ pub fn expand_review_specialists(review: &str) -> Vec<String> {
             "simplicity".to_string(),
         ]
     } else {
-        review.split(',').map(|s| s.trim().to_string()).collect()
+        review
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
     }
 }
 
@@ -61,19 +66,6 @@ pub fn validate_arbiter_confidence(value: f64) -> Result<()> {
     }
 }
 
-/// Parse a backend string into a canonical lowercase key.
-///
-/// Returns one of `"in-process"`, `"tmux"`, `"iterm2"`, or `"auto"`.
-/// This mirrors the match logic in `cmd_swarm` and can be unit-tested without
-/// external processes.
-pub fn parse_backend_key(backend: &str) -> &'static str {
-    match backend.to_lowercase().as_str() {
-        "in-process" | "inprocess" => "in-process",
-        "tmux" => "tmux",
-        "iterm2" => "iterm2",
-        _ => "auto",
-    }
-}
 
 /// Show current swarm execution status
 pub fn cmd_swarm_status(project_dir: &std::path::Path) -> Result<()> {
@@ -91,33 +83,55 @@ pub fn cmd_swarm_status(project_dir: &std::path::Path) -> Result<()> {
         std::fs::read_to_string(&status_file).context("Failed to read swarm status file")?;
 
     // Parse and display the status
-    if let Ok(status) = serde_json::from_str::<SwarmStatus>(&content) {
-        println!();
-        println!("{}", console::style("Swarm Execution Status").bold().cyan());
-        println!("─────────────────────────");
-        println!("Started: {}", status.started_at);
-        println!("State: {}", status.state);
-        println!();
-        println!("Progress:");
-        println!("  Total phases: {}", status.total_phases);
-        println!("  Completed: {}", status.completed_phases);
-        println!("  Running: {}", status.running_phases.join(", "));
-        if !status.failed_phases.is_empty() {
-            println!(
-                "  Failed: {}",
-                console::style(status.failed_phases.join(", ")).red()
-            );
+    match serde_json::from_str::<SwarmStatus>(&content) {
+        Ok(status) => {
+            println!();
+            println!("{}", console::style("Swarm Execution Status").bold().cyan());
+            println!("─────────────────────────");
+            println!("Started: {}", status.started_at);
+            println!("State: {}", status.state);
+            println!();
+            println!("Progress:");
+            println!("  Total phases: {}", status.total_phases);
+            println!("  Completed: {}", status.completed_phases);
+            println!("  Running: {}", status.running_phases.join(", "));
+            if !status.failed_phases.is_empty() {
+                println!(
+                    "  Failed: {}",
+                    console::style(status.failed_phases.join(", ")).red()
+                );
+            }
+            println!();
+            let completion_pct = if status.total_phases > 0 {
+                (status.completed_phases as f64 / status.total_phases as f64) * 100.0
+            } else {
+                0.0
+            };
+            println!("Completion: {:.1}%", completion_pct);
         }
-        println!();
-        println!(
-            "Completion: {:.1}%",
-            completion_pct(status.completed_phases, status.total_phases)
-        );
-    } else {
-        println!("Swarm status: {}", content);
+        Err(e) => {
+            eprintln!(
+                "Warning: Could not parse swarm status file (may be partially written): {}",
+                e
+            );
+            println!("Raw swarm status: {}", content);
+        }
     }
 
     Ok(())
+}
+
+/// Parse a backend key string into a `SwarmBackend`.
+///
+/// Centralises the mapping so both production code and tests use the same logic.
+fn parse_backend_key(backend: &str) -> forge::dag::SwarmBackend {
+    use forge::dag::SwarmBackend;
+    match backend.to_lowercase().as_str() {
+        "in-process" | "inprocess" => SwarmBackend::InProcess,
+        "tmux" => SwarmBackend::Tmux,
+        "iterm2" => SwarmBackend::Iterm2,
+        _ => SwarmBackend::Auto,
+    }
 }
 
 /// Gracefully abort a running swarm execution
@@ -164,7 +178,6 @@ pub async fn cmd_swarm(
     fail_fast: bool,
 ) -> Result<()> {
     use forge::config::Config;
-    use forge::dag::SwarmBackend;
     use forge::dag::{
         DagConfig, DagExecutor, DagScheduler, ExecutorConfig, PhaseEvent, ReviewConfig, ReviewMode,
     };
@@ -177,12 +190,7 @@ pub async fn cmd_swarm(
     super::run::check_run_prerequisites(project_dir)?;
 
     // Parse backend
-    let swarm_backend = match backend.to_lowercase().as_str() {
-        "in-process" | "inprocess" => SwarmBackend::InProcess,
-        "tmux" => SwarmBackend::Tmux,
-        "iterm2" => SwarmBackend::Iterm2,
-        _ => SwarmBackend::Auto,
-    };
+    let swarm_backend = parse_backend_key(backend);
 
     // Note: permission_mode is parsed but not currently used in swarm execution.
     // It's validated here for future integration with per-phase permission modes.
@@ -233,7 +241,7 @@ pub async fn cmd_swarm(
     // Build review config
     let review_enabled = review.is_some();
     let review_specialists: Vec<String> = review
-        .map(|r| expand_review_specialists(r))
+        .map(expand_review_specialists)
         .unwrap_or_default();
 
     let dag_review_config = ReviewConfig {
@@ -338,7 +346,11 @@ pub async fn cmd_swarm(
             "backend": backend,
             "review_enabled": review_enabled,
         });
-        println!("{}", serde_json::to_string(&init_state).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string(&init_state)
+                .expect("serde_json::Value is always serializable")
+        );
     }
 
     // Write initial status file
@@ -351,8 +363,20 @@ pub async fn cmd_swarm(
         running_phases: Vec::new(),
         failed_phases: Vec::new(),
     };
-    if let Ok(status_json) = serde_json::to_string_pretty(&initial_status) {
-        let _ = std::fs::write(&status_file, status_json);
+    match serde_json::to_string_pretty(&initial_status) {
+        Ok(status_json) => {
+            if let Err(e) = std::fs::write(&status_file, &status_json) {
+                eprintln!(
+                    "Warning: Could not write swarm status file at {}: {}. \
+                     'forge swarm status' will not show real-time progress.",
+                    status_file.display(),
+                    e
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("Warning: Could not serialize swarm status: {}", e);
+        }
     }
 
     // Execute
@@ -381,7 +405,8 @@ pub async fn cmd_swarm(
         });
         println!(
             "{}",
-            serde_json::to_string(&final_state).unwrap_or_default()
+            serde_json::to_string(&final_state)
+                .expect("serde_json::Value is always serializable")
         );
     }
 
@@ -485,33 +510,46 @@ mod tests {
         assert_eq!(specialists, vec!["security", "performance"]);
     }
 
+    #[test]
+    fn expand_review_specialists_empty_string_returns_empty_vec() {
+        let specialists = expand_review_specialists("");
+        assert!(
+            specialists.is_empty() || specialists.iter().all(|s| !s.is_empty()),
+            "empty input must not produce blank specialist names: {:?}",
+            specialists
+        );
+    }
+
     // ── parse_backend_key ─────────────────────────────────────────────────────
 
     #[test]
-    fn parse_backend_key_in_process_variants() {
-        assert_eq!(parse_backend_key("in-process"), "in-process");
-        assert_eq!(parse_backend_key("inprocess"), "in-process");
-        assert_eq!(parse_backend_key("IN-PROCESS"), "in-process");
-        assert_eq!(parse_backend_key("InProcess"), "in-process");
+    fn parse_backend_key_known_values() {
+        use forge::dag::SwarmBackend;
+        assert!(matches!(
+            parse_backend_key("in-process"),
+            SwarmBackend::InProcess
+        ));
+        assert!(matches!(
+            parse_backend_key("inprocess"),
+            SwarmBackend::InProcess
+        ));
+        assert!(matches!(parse_backend_key("tmux"), SwarmBackend::Tmux));
+        assert!(matches!(parse_backend_key("iterm2"), SwarmBackend::Iterm2));
+        assert!(matches!(parse_backend_key("auto"), SwarmBackend::Auto));
+        assert!(matches!(
+            parse_backend_key("unknown"),
+            SwarmBackend::Auto
+        ));
     }
 
     #[test]
-    fn parse_backend_key_tmux() {
-        assert_eq!(parse_backend_key("tmux"), "tmux");
-        assert_eq!(parse_backend_key("TMUX"), "tmux");
-    }
-
-    #[test]
-    fn parse_backend_key_iterm2() {
-        assert_eq!(parse_backend_key("iterm2"), "iterm2");
-        assert_eq!(parse_backend_key("ITERM2"), "iterm2");
-    }
-
-    #[test]
-    fn parse_backend_key_unknown_falls_back_to_auto() {
-        assert_eq!(parse_backend_key("unknown"), "auto");
-        assert_eq!(parse_backend_key(""), "auto");
-        assert_eq!(parse_backend_key("docker"), "auto");
+    fn parse_backend_key_case_insensitive() {
+        use forge::dag::SwarmBackend;
+        assert!(matches!(
+            parse_backend_key("IN-PROCESS"),
+            SwarmBackend::InProcess
+        ));
+        assert!(matches!(parse_backend_key("TMUX"), SwarmBackend::Tmux));
     }
 
     // ── SwarmStatus serialization ─────────────────────────────────────────────

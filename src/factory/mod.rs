@@ -49,7 +49,7 @@
 //!    concurrent branch checkouts on the same repo), then calls
 //!    `Planner::plan()` which returns a `Vec<AgentTask>`.
 //!    **Git branch creation** happens here: `pipeline.rs` calls
-//!    `git checkout -b feat/<issue-slug>` before handing tasks to the executor.
+//!    `git checkout -b forge/issue-<id>-<slug>` before handing tasks to the executor.
 //! 4. For each `AgentTask`: `AgentExecutor::run_task()` either spawns
 //!    the `forge` CLI directly (no sandbox) or wraps it in a
 //!    **Docker sandbox** (`sandbox.rs` / `DockerSandbox`) when

@@ -9,6 +9,20 @@ use std::collections::HashMap;
 
 use super::learning::{Pattern, PhaseStat, PhaseType, PhaseTypeStats, truncate_str};
 
+/// Safety margin multiplier applied to average iterations when suggesting a budget.
+const BUDGET_SAFETY_MARGIN: f64 = 1.2;
+
+/// Number of samples at which budget confidence reaches its maximum (1.0).
+const MAX_CONFIDENCE_SAMPLES: f64 = 5.0;
+
+/// Minimum absolute difference (in iterations) for a budget suggestion to be
+/// considered significant.
+const SIGNIFICANCE_MIN_DIFF: u32 = 2;
+
+/// Minimum confidence level required for a budget suggestion to be considered
+/// significant.
+const SIGNIFICANCE_MIN_CONFIDENCE: f64 = 0.5;
+
 /// Result of pattern matching with similarity score and breakdown.
 #[derive(Debug, Clone)]
 pub struct PatternMatch<'a> {
@@ -185,7 +199,7 @@ impl BudgetSuggestion {
     /// Check if this suggestion differs significantly from the original.
     pub fn is_significant(&self) -> bool {
         let diff = (self.suggested_budget as i32 - self.original_budget as i32).abs();
-        diff >= 2 && self.confidence >= 0.5
+        diff >= SIGNIFICANCE_MIN_DIFF as i32 && self.confidence >= SIGNIFICANCE_MIN_CONFIDENCE
     }
 }
 
@@ -224,8 +238,8 @@ pub fn suggest_budgets(
 
         let suggestion = if let Some(stats) = type_stats.get(&phase_type) {
             // Have historical data for this phase type
-            let suggested = (stats.avg_iterations * 1.2).ceil() as u32;
-            let confidence = (stats.count as f64 / 5.0).min(1.0);
+            let suggested = (stats.avg_iterations * BUDGET_SAFETY_MARGIN).ceil() as u32;
+            let confidence = (stats.count as f64 / MAX_CONFIDENCE_SAMPLES).min(1.0);
 
             let reason = format!(
                 "Based on {} similar {} phases (avg: {:.1} iterations, success: {:.0}%)",
@@ -401,7 +415,6 @@ mod tests {
             original_budget: budget,
             phase_type,
             file_patterns: vec![],
-            exceeded_budget: actual > budget,
             common_errors: vec![],
         }
     }
@@ -697,7 +710,6 @@ mod tests {
                 original_budget: 10,
                 phase_type: PhaseType::Implement,
                 file_patterns: vec!["src/handlers/*.rs".to_string()],
-                exceeded_budget: false,
                 common_errors: vec![],
             }];
             p
@@ -711,7 +723,6 @@ mod tests {
                 original_budget: 10,
                 phase_type: PhaseType::Implement,
                 file_patterns: vec!["src/api/*.rs".to_string()],
-                exceeded_budget: false,
                 common_errors: vec![],
             }];
             p

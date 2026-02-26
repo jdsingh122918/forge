@@ -22,6 +22,12 @@ use crate::phase::PhasesFile;
 /// The name of the global forge directory in the user's home.
 pub const GLOBAL_FORGE_DIR: &str = ".forge";
 
+/// Safety margin multiplier applied to average iterations when suggesting a budget.
+const BUDGET_SAFETY_MARGIN: f64 = 1.2;
+
+/// Number of samples at which budget confidence reaches its maximum (1.0).
+const MAX_CONFIDENCE_SAMPLES: f64 = 5.0;
+
 /// Phase type classification for pattern learning.
 ///
 /// Classifies phases into categories to enable better budget prediction
@@ -132,12 +138,19 @@ pub struct PhaseStat {
     /// Files modified during this phase (glob-like patterns)
     #[serde(default)]
     pub file_patterns: Vec<String>,
-    /// Whether this phase exceeded its budget
-    #[serde(default)]
-    pub exceeded_budget: bool,
     /// Common errors encountered during this phase (if any)
     #[serde(default)]
     pub common_errors: Vec<String>,
+}
+
+impl PhaseStat {
+    /// Returns `true` when this phase used more iterations than its original budget.
+    ///
+    /// This is computed on-the-fly from `actual_iterations` and `original_budget`
+    /// so it is always consistent with the underlying data.
+    pub fn exceeded_budget(&self) -> bool {
+        self.actual_iterations > self.original_budget
+    }
 }
 
 /// Aggregate statistics for a phase type across a pattern.
@@ -279,9 +292,9 @@ impl Pattern {
                 return None;
             }
             // Use average iterations plus a safety margin (20%)
-            let suggested = (stats.avg_iterations * 1.2).ceil() as u32;
-            // Confidence based on sample size (max at 5 samples)
-            let confidence = (stats.count as f64 / 5.0).min(1.0);
+            let suggested = (stats.avg_iterations * BUDGET_SAFETY_MARGIN).ceil() as u32;
+            // Confidence based on sample size (max at MAX_CONFIDENCE_SAMPLES samples)
+            let confidence = (stats.count as f64 / MAX_CONFIDENCE_SAMPLES).min(1.0);
             Some((suggested, confidence))
         } else {
             None
@@ -684,9 +697,6 @@ pub fn learn_pattern(project_dir: &Path, pattern_name: Option<&str>) -> Result<P
         // Extract file patterns from audit trail
         let file_patterns = extract_file_patterns_for_phase(&audit_dir, &phase.number);
 
-        // Determine if budget was exceeded
-        let exceeded_budget = actual_iterations > phase.budget;
-
         phase_stats.push(PhaseStat {
             name: phase.name.clone(),
             promise: phase.promise.clone(),
@@ -694,7 +704,6 @@ pub fn learn_pattern(project_dir: &Path, pattern_name: Option<&str>) -> Result<P
             original_budget: phase.budget,
             phase_type,
             file_patterns,
-            exceeded_budget,
             common_errors: Vec::new(), // TODO: Extract from logs
         });
     }
@@ -937,7 +946,6 @@ mod tests {
             original_budget: budget,
             phase_type,
             file_patterns: vec![],
-            exceeded_budget: actual > budget,
             common_errors: vec![],
         }
     }
@@ -1303,5 +1311,35 @@ mod tests {
         let summary = extract_summary_from_spec(&spec);
         assert!(summary.len() <= 200);
         assert!(summary.ends_with("..."));
+    }
+
+    // ── truncate_str ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_str_short_string_returned_unchanged() {
+        use super::truncate_str;
+        assert_eq!(truncate_str("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_str_exactly_max_len_not_truncated() {
+        use super::truncate_str;
+        assert_eq!(truncate_str("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_str_over_limit_appends_ellipsis() {
+        use super::truncate_str;
+        let result = truncate_str("hello world", 5);
+        assert!(result.ends_with("..."), "truncated string must end with '...'");
+    }
+
+    #[test]
+    fn truncate_str_unicode_does_not_panic() {
+        use super::truncate_str;
+        // Ensure char boundary is respected
+        let emoji = "🦀🦀🦀🦀🦀";
+        let result = truncate_str(emoji, 3);
+        assert!(result.ends_with("..."));
     }
 }

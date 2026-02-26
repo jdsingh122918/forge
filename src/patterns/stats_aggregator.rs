@@ -77,7 +77,6 @@ mod tests {
             original_budget: budget,
             phase_type,
             file_patterns: vec![],
-            exceeded_budget: actual > budget,
             common_errors: vec![],
         }
     }
