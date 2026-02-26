@@ -226,4 +226,53 @@ mod tests {
         let runs = logger.list_runs().unwrap();
         assert_eq!(runs.len(), 1);
     }
+
+    #[test]
+    fn test_run_file_is_valid_json() {
+        let (mut logger, _dir) = setup_logger();
+        logger.start_run(make_run_config()).unwrap();
+        logger
+            .add_phase(PhaseAudit::new("01", "Alpha", "ALPHA_DONE"))
+            .unwrap();
+        let run_file = logger.finish_run().unwrap();
+        let content = std::fs::read_to_string(&run_file).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content)
+            .expect("finished run file should be valid JSON");
+        assert!(parsed.get("run_id").is_some());
+        assert!(parsed.get("phases").is_some());
+    }
+
+    #[test]
+    fn test_update_last_phase_modifies_phase() {
+        let (mut logger, _dir) = setup_logger();
+        logger.start_run(make_run_config()).unwrap();
+        logger
+            .add_phase(PhaseAudit::new("01", "First", "DONE"))
+            .unwrap();
+        logger
+            .update_last_phase(|p| {
+                p.description = "Updated description".to_string();
+            })
+            .unwrap();
+        let run = logger.current_run().unwrap();
+        assert_eq!(run.phases[0].description, "Updated description");
+    }
+
+    #[test]
+    fn test_multiple_phases_persisted() {
+        let (mut logger, _dir) = setup_logger();
+        logger.start_run(make_run_config()).unwrap();
+        logger
+            .add_phase(PhaseAudit::new("01", "First", "DONE"))
+            .unwrap();
+        logger
+            .add_phase(PhaseAudit::new("02", "Second", "DONE2"))
+            .unwrap();
+        logger
+            .add_phase(PhaseAudit::new("03", "Third", "DONE3"))
+            .unwrap();
+        let run = logger.current_run().unwrap();
+        assert_eq!(run.phases.len(), 3);
+        assert_eq!(run.phases[1].phase_number, "02");
+    }
 }

@@ -366,4 +366,30 @@ mod tests {
         assert!(mgr.get_entries().unwrap().is_empty());
         assert!(mgr.get_last_completed_phase().is_none());
     }
+
+    #[test]
+    fn test_get_phase_entries_filters_correctly() {
+        let (mgr, _dir) = make_manager();
+        mgr.save("01", 1, "completed").unwrap();
+        mgr.save("02", 1, "in_progress").unwrap();
+        mgr.save_sub_phase("01", "01.1", 1, "completed").unwrap();
+
+        let phase_01_entries = mgr.get_phase_entries("01").unwrap();
+        assert_eq!(phase_01_entries.len(), 2); // top-level + sub-phase
+
+        let phase_02_entries = mgr.get_phase_entries("02").unwrap();
+        assert_eq!(phase_02_entries.len(), 1);
+    }
+
+    #[test]
+    fn test_state_entry_methods() {
+        let (mgr, _dir) = make_manager();
+        mgr.save("03", 1, "completed").unwrap();
+
+        let entries = mgr.get_entries().unwrap();
+        let entry = &entries[0];
+        assert!(!entry.is_sub_phase());
+        assert_eq!(entry.full_phase_id(), "03");
+        assert_eq!(entry.parent_phase(), "03");
+    }
 }

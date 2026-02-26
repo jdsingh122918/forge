@@ -293,4 +293,28 @@ mod tests {
         let diff = diffs.iter().find(|d| d.path.ends_with("src.rs")).unwrap();
         assert!(!diff.diff_content.is_empty());
     }
+
+    #[test]
+    fn test_snapshot_before_on_empty_repo() {
+        let (tracker, _dir) = setup_repo();
+        // snapshot_before should work even on an unborn branch (no prior commits)
+        let sha = tracker.snapshot_before("00").unwrap();
+        assert_eq!(sha.len(), 40);
+        // After snapshotting, head_sha should now be Some
+        assert!(tracker.head_sha().is_some());
+    }
+
+    #[test]
+    fn test_file_change_summary_total_lines() {
+        let (tracker, dir) = setup_repo();
+        commit_file(dir.path(), "data.txt", "line1\nline2\nline3\n", "init");
+        let sha = tracker.snapshot_before("08").unwrap();
+        // Replace with fewer lines — lines_removed should be > 0
+        fs::write(dir.path().join("data.txt"), "only_line\n").unwrap();
+        let summary = tracker.compute_changes(&sha).unwrap();
+        assert!(
+            summary.total_lines_removed > 0,
+            "expected removed lines for modified file"
+        );
+    }
 }
