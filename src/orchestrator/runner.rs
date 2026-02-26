@@ -970,4 +970,144 @@ mod tests {
         assert!(text.contains("## STRATEGY CHANGE"));
         assert!(text.contains("Use GraphQL instead of REST"));
     }
+
+    // --- PromptContext pure-function tests ---
+
+    #[test]
+    fn test_prompt_context_new_has_no_content() {
+        let ctx = PromptContext::new();
+        assert!(!ctx.has_content(), "New PromptContext should have no content");
+        assert_eq!(ctx.generate_section(), "", "Empty context should produce empty section");
+    }
+
+    #[test]
+    fn test_prompt_context_with_compaction_has_content() {
+        let ctx = PromptContext::with_compaction("Prior session summary here.".to_string());
+        assert!(ctx.has_content());
+        let section = ctx.generate_section();
+        assert!(section.contains("Prior session summary here."));
+    }
+
+    #[test]
+    fn test_prompt_context_generate_section_ends_with_newline() {
+        let ctx = PromptContext::with_compaction("Summary.".to_string());
+        let section = ctx.generate_section();
+        assert!(section.ends_with('\n'), "Section should end with a newline");
+    }
+
+    #[test]
+    fn test_prompt_context_additional_context() {
+        let ctx = PromptContext {
+            compaction_summary: None,
+            additional_context: Some("Extra context info.".to_string()),
+        };
+        assert!(ctx.has_content());
+        assert!(ctx.generate_section().contains("Extra context info."));
+    }
+
+    #[test]
+    fn test_prompt_context_both_fields_combined() {
+        let ctx = PromptContext {
+            compaction_summary: Some("Compaction note.".to_string()),
+            additional_context: Some("Additional note.".to_string()),
+        };
+        let section = ctx.generate_section();
+        assert!(section.contains("Compaction note."));
+        assert!(section.contains("Additional note."));
+    }
+
+    // --- IterationFeedback additional coverage ---
+
+    #[test]
+    fn test_iteration_feedback_build_contains_header() {
+        // Any non-empty feedback must start with the ## ITERATION FEEDBACK header
+        let fb = IterationFeedback::new()
+            .with_iteration_status(1, 3, false)
+            .build()
+            .unwrap();
+        assert!(
+            fb.starts_with("## ITERATION FEEDBACK"),
+            "Feedback must start with the ITERATION FEEDBACK header"
+        );
+    }
+
+    #[test]
+    fn test_iteration_feedback_multiple_parts_separated() {
+        // Two parts should be joined with "\n\n"
+        let fb = IterationFeedback::new()
+            .with_iteration_status(2, 5, false)
+            .with_pivot("Switch to async processing")
+            .build()
+            .unwrap();
+        // Both parts must be present
+        assert!(fb.contains("2/5"));
+        assert!(fb.contains("STRATEGY CHANGE"));
+        // Verify the two parts are separated by a blank line
+        assert!(fb.contains("\n\n"), "Parts should be separated by double newline");
+    }
+
+    #[test]
+    fn test_iteration_feedback_with_signals_shows_blocker() {
+        use crate::signals::BlockerSignal;
+        let mut signals = IterationSignals::new();
+        signals.blockers.push(BlockerSignal::new("Cannot find API credentials"));
+
+        let fb = IterationFeedback::new().with_signals(&signals).build();
+        let text = fb.unwrap();
+        assert!(text.contains("Blocker:"));
+        assert!(text.contains("Cannot find API credentials"));
+    }
+
+    #[test]
+    fn test_iteration_feedback_acknowledged_blocker_skipped() {
+        use crate::signals::BlockerSignal;
+        let mut signals = IterationSignals::new();
+        let mut blocker = BlockerSignal::new("Already resolved");
+        blocker.acknowledge();
+        signals.blockers.push(blocker);
+
+        // An acknowledged blocker should not appear in the feedback
+        let fb = IterationFeedback::new().with_signals(&signals).build();
+        // signals.has_signals() is true (blocker exists), but the acknowledged
+        // blocker is filtered out in with_signals(), so no lines are added.
+        if let Some(text) = fb {
+            assert!(
+                !text.contains("Already resolved"),
+                "Acknowledged blockers should not appear in feedback"
+            );
+        }
+    }
+
+    #[test]
+    fn test_iteration_feedback_in_progress_format() {
+        // Verify the exact "X/Y" format for in-progress iterations
+        let fb = IterationFeedback::new()
+            .with_iteration_status(4, 10, false)
+            .build()
+            .unwrap();
+        assert!(fb.contains("4/10"), "In-progress status must show X/Y format");
+        assert!(!fb.contains("COMPLETED"), "In-progress status must not say COMPLETED");
+    }
+
+    // --- Path-helper tests ---
+
+    #[test]
+    fn test_get_prompt_file_path() {
+        let dir = tempdir().unwrap();
+        let config = setup_test_config(dir.path(), "# Spec");
+        let runner = ClaudeRunner::new(config);
+
+        let path = runner.get_prompt_file("01", 3);
+        assert!(path.to_str().unwrap().contains("phase-01-iter-3-prompt.md"));
+    }
+
+    #[test]
+    fn test_get_output_file_path() {
+        let dir = tempdir().unwrap();
+        let config = setup_test_config(dir.path(), "# Spec");
+        let runner = ClaudeRunner::new(config);
+
+        let path = runner.get_output_file("02", 7);
+        assert!(path.to_str().unwrap().contains("phase-02-iter-7-output.log"));
+    }
 }
