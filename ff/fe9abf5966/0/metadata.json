@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.4.7",
+  "checkpoint_id": "fffe9abf5966",
+  "session_id": "11ec54f4-bdbb-4883-b0d5-0ef2104f6b6f",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-27T06:07:24.012574Z",
+  "branch": "fix/backend-frontend-gap-bridging",
+  "checkpoints_count": 10,
+  "files_touched": [
+    "src/forge_config.rs",
+    "ui/src/App.tsx",
+    "ui/src/components/Board.tsx",
+    "ui/src/hooks/useBoard.ts",
+    "ui/src/test/IssueDetail.test.tsx",
+    "ui/src/test/types.test.ts"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "9f7c47ba8293",
+  "token_usage": {
+    "input_tokens": 96,
+    "cache_creation_tokens": 188376,
+    "cache_read_tokens": 5666610,
+    "output_tokens": 22041,
+    "api_call_count": 68
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-27T06:07:23.849952Z",
+    "agent_lines": 102,
+    "human_added": 297,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 399,
+    "agent_percentage": 25.563909774436087
+  }
+}

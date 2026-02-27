@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.4.7",
+  "checkpoint_id": "fffe9abf5966",
+  "strategy": "manual-commit",
+  "branch": "fix/backend-frontend-gap-bridging",
+  "checkpoints_count": 10,
+  "files_touched": [
+    "src/forge_config.rs",
+    "ui/src/App.tsx",
+    "ui/src/components/Board.tsx",
+    "ui/src/hooks/useBoard.ts",
+    "ui/src/test/IssueDetail.test.tsx",
+    "ui/src/test/types.test.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ff/fe9abf5966/0/metadata.json",
+      "transcript": "/ff/fe9abf5966/0/full.jsonl",
+      "context": "/ff/fe9abf5966/0/context.md",
+      "content_hash": "/ff/fe9abf5966/0/content_hash.txt",
+      "prompt": "/ff/fe9abf5966/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 96,
+    "cache_creation_tokens": 188376,
+    "cache_read_tokens": 5666610,
+    "output_tokens": 22041,
+    "api_call_count": 68
+  }
+}
