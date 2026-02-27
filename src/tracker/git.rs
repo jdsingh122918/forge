@@ -191,13 +191,10 @@ mod tests {
     /// alive for the lifetime of the tracker so the directory is not removed.
     fn setup_repo() -> (GitTracker, tempfile::TempDir) {
         let dir = tempdir().expect("failed to create tempdir for git test");
-        let repo = Repository::init(dir.path())
-            .expect("failed to init git repo in tempdir");
+        let repo = Repository::init(dir.path()).expect("failed to init git repo in tempdir");
 
         // Configure identity so commits can be created without a system config.
-        let mut config = repo
-            .config()
-            .expect("failed to get repo config");
+        let mut config = repo.config().expect("failed to get repo config");
         config
             .set_str("user.name", "Test User")
             .expect("failed to set user.name in repo config");
@@ -213,23 +210,25 @@ mod tests {
     /// a commit with `message`.
     fn commit_file(repo_path: &std::path::Path, filename: &str, content: &str, message: &str) {
         let file_path = repo_path.join(filename);
-        fs::write(&file_path, content)
-            .expect("failed to write file for test commit");
+        fs::write(&file_path, content).expect("failed to write file for test commit");
 
-        let repo = Repository::open(repo_path)
-            .expect("failed to open repo to create test commit");
+        let repo = Repository::open(repo_path).expect("failed to open repo to create test commit");
 
-        let mut index = repo.index()
+        let mut index = repo
+            .index()
             .expect("failed to get repo index for test commit");
         index
             .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
             .expect("failed to stage files for test commit");
-        index.write()
+        index
+            .write()
             .expect("failed to write index for test commit");
 
-        let tree_id = index.write_tree()
+        let tree_id = index
+            .write_tree()
             .expect("failed to write tree for test commit");
-        let tree = repo.find_tree(tree_id)
+        let tree = repo
+            .find_tree(tree_id)
             .expect("failed to find tree for test commit");
 
         let sig = Signature::now("Test User", "test@example.com")
@@ -247,15 +246,8 @@ mod tests {
         };
 
         let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
-        repo.commit(
-            Some("HEAD"),
-            &sig,
-            &sig,
-            message,
-            &tree,
-            &parent_refs,
-        )
-        .expect("failed to create test commit");
+        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parent_refs)
+            .expect("failed to create test commit");
     }
 
     // -------------------------------------------------------------------------
@@ -329,10 +321,7 @@ mod tests {
             summary.total_lines_removed, 3,
             "all 3 original lines must be recorded as removed"
         );
-        assert_eq!(
-            summary.total_lines_added, 1,
-            "exactly 1 line was added"
-        );
+        assert_eq!(summary.total_lines_added, 1, "exactly 1 line was added");
 
         // data.txt must appear in files_modified.
         assert!(

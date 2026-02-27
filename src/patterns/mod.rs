@@ -15,16 +15,16 @@ pub use budget_suggester::{
     match_patterns, recommend_skills_for_phase, suggest_budgets,
 };
 pub use learning::{
-    Pattern, PhaseType, PhaseTypeStats, PhaseStat, display_pattern, display_patterns_list,
-    ensure_global_dir, get_global_forge_dir, get_pattern, get_patterns_dir, learn_pattern,
-    list_patterns, save_pattern, GLOBAL_FORGE_DIR,
+    GLOBAL_FORGE_DIR, Pattern, PhaseStat, PhaseType, PhaseTypeStats, display_pattern,
+    display_patterns_list, ensure_global_dir, get_global_forge_dir, get_pattern, get_patterns_dir,
+    learn_pattern, list_patterns, save_pattern,
 };
 pub use stats_aggregator::display_type_statistics;
 
 #[cfg(test)]
 mod tests {
-    use super::learning::*;
     use super::budget_suggester::*;
+    use super::learning::*;
     use chrono::Utc;
     use std::collections::HashMap;
     use std::path::Path;

@@ -74,6 +74,8 @@ export interface PipelinePhase {
   started_at: string | null;
   completed_at: string | null;
   error: string | null;
+  review_status?: 'pending' | 'reviewing' | 'passed' | 'failed';
+  review_findings?: number;
 }
 
 export interface PipelineRunDetail extends PipelineRun {
@@ -155,6 +157,7 @@ export type WsMessage =
   | { type: 'MergeCompleted'; data: { run_id: number; wave: number; conflicts: boolean } }
   | { type: 'MergeConflict'; data: { run_id: number; wave: number; files: string[] } }
   | { type: 'VerificationResult'; data: { run_id: number; task_id: number; verification_type: VerificationType; passed: boolean; summary: string; screenshots: string[]; details: any } }
+  | { type: 'PipelineError'; data: { run_id: number; message: string } }
   | { type: 'ProjectCreated'; data: { project: Project } };
 
 // GitHub OAuth types

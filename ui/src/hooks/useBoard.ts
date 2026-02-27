@@ -168,6 +168,65 @@ export function useBoard(projectId: number | null) {
             })),
           };
         }
+        case 'PipelineError': {
+          const { run_id, message } = msg.data;
+          return {
+            ...prev,
+            columns: prev.columns.map(col => ({
+              ...col,
+              issues: col.issues.map(item =>
+                item.active_run?.id === run_id
+                  ? { ...item, active_run: { ...item.active_run, error: message } }
+                  : item
+              ),
+            })),
+          };
+        }
+        case 'PipelinePhaseStarted': {
+          const { run_id } = msg.data;
+          return {
+            ...prev,
+            columns: prev.columns.map(col => ({
+              ...col,
+              issues: col.issues.map(item =>
+                item.active_run?.id === run_id
+                  ? { ...item, active_run: { ...item.active_run, review_status: undefined, review_findings: undefined } }
+                  : item
+              ),
+            })),
+          };
+        }
+        case 'PipelinePhaseCompleted': {
+          return prev;
+        }
+        case 'PipelineReviewStarted': {
+          const { run_id } = msg.data;
+          return {
+            ...prev,
+            columns: prev.columns.map(col => ({
+              ...col,
+              issues: col.issues.map(item =>
+                item.active_run?.id === run_id
+                  ? { ...item, active_run: { ...item.active_run, review_status: 'reviewing' as const } }
+                  : item
+              ),
+            })),
+          };
+        }
+        case 'PipelineReviewCompleted': {
+          const { run_id, passed, findings_count } = msg.data;
+          return {
+            ...prev,
+            columns: prev.columns.map(col => ({
+              ...col,
+              issues: col.issues.map(item =>
+                item.active_run?.id === run_id
+                  ? { ...item, active_run: { ...item.active_run, review_status: passed ? 'passed' as const : 'failed' as const, review_findings: findings_count } }
+                  : item
+              ),
+            })),
+          };
+        }
         case 'ProjectCreated': {
           // Board doesn't need to handle this
           return prev;

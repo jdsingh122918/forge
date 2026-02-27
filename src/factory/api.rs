@@ -56,6 +56,8 @@ pub struct CreateIssueRequest {
 pub struct UpdateIssueRequest {
     pub title: Option<String>,
     pub description: Option<String>,
+    pub priority: Option<String>,
+    pub labels: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -118,22 +120,15 @@ impl From<FactoryError> for ApiError {
             FactoryError::RunNotFound { id } => {
                 ApiError::NotFound(format!("Pipeline run {} not found", id))
             }
-            FactoryError::LockPoisoned => {
-                ApiError::Internal("Internal lock poisoned".to_string())
-            }
+            FactoryError::LockPoisoned => ApiError::Internal("Internal lock poisoned".to_string()),
             FactoryError::BadRequest(msg) => ApiError::BadRequest(msg),
             FactoryError::InvalidColumn { column, message } => {
                 ApiError::BadRequest(format!("Invalid column '{}': {}", column, message))
             }
             FactoryError::PipelineAlreadyRunning { issue_id } => {
-                ApiError::BadRequest(format!(
-                    "Pipeline already running for issue {}",
-                    issue_id
-                ))
+                ApiError::BadRequest(format!("Pipeline already running for issue {}", issue_id))
             }
-            FactoryError::GitHub(msg) => {
-                ApiError::Internal(format!("GitHub API error: {}", msg))
-            }
+            FactoryError::GitHub(msg) => ApiError::Internal(format!("GitHub API error: {}", msg)),
             FactoryError::Database(e) => ApiError::Internal(e.to_string()),
             FactoryError::Other(e) => ApiError::Internal(e.to_string()),
         }
@@ -227,21 +222,28 @@ fn parse_github_owner_repo(url: &str) -> Option<String> {
 }
 
 /// Shared sync logic used by both the endpoint handler and auto-sync after clone.
-async fn do_sync_github_issues(state: &SharedState, project_id: i64) -> Result<SyncResult, ApiError> {
+async fn do_sync_github_issues(
+    state: &SharedState,
+    project_id: i64,
+) -> Result<SyncResult, ApiError> {
     let github_repo = {
-        let (existing_repo, project_path) = state.db.call(move |db| {
-            let project = db
-                .get_project(project_id)?
-                .ok_or_else(|| anyhow::anyhow!("Project {} not found", project_id))?;
-            Ok((project.github_repo.clone(), project.path.clone()))
-        }).await.map_err(|e| {
-            let msg = e.to_string();
-            if msg.contains("not found") {
-                ApiError::from(FactoryError::ProjectNotFound { id: project_id })
-            } else {
-                ApiError::Internal(msg)
-            }
-        })?;
+        let (existing_repo, project_path) = state
+            .db
+            .call(move |db| {
+                let project = db
+                    .get_project(project_id)?
+                    .ok_or_else(|| anyhow::anyhow!("Project {} not found", project_id))?;
+                Ok((project.github_repo.clone(), project.path.clone()))
+            })
+            .await
+            .map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("not found") {
+                    ApiError::from(FactoryError::ProjectNotFound { id: project_id })
+                } else {
+                    ApiError::Internal(msg)
+                }
+            })?;
 
         match existing_repo {
             Some(repo) => repo,
@@ -250,9 +252,10 @@ async fn do_sync_github_issues(state: &SharedState, project_id: i64) -> Result<S
                 let detected = detect_github_repo_from_path(&project_path).await;
                 if let Some(ref owner_repo) = detected {
                     let owner_repo = owner_repo.clone();
-                    let _ = state.db.call(move |db| {
-                        db.update_project_github_repo(project_id, &owner_repo)
-                    }).await;
+                    let _ = state
+                        .db
+                        .call(move |db| db.update_project_github_repo(project_id, &owner_repo))
+                        .await;
                 }
                 detected.ok_or_else(|| {
                     ApiError::BadRequest(
@@ -291,22 +294,23 @@ async fn do_sync_github_issues(state: &SharedState, project_id: i64) -> Result<S
             })
             .collect();
 
-        let results = state.db.call(move |db| {
-            let mut created = Vec::new();
-            for (title, body, number) in &gh_data {
-                let result = db.create_issue_from_github(project_id, title, body, *number)?;
-                created.push(result);
-            }
-            Ok(created)
-        }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+        let results = state
+            .db
+            .call(move |db| {
+                let mut created = Vec::new();
+                for (title, body, number) in &gh_data {
+                    let result = db.create_issue_from_github(project_id, title, body, *number)?;
+                    created.push(result);
+                }
+                Ok(created)
+            })
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
 
         for result in results {
             match result {
                 Some(issue) => {
-                    broadcast_message(
-                        &state.ws_tx,
-                        &WsMessage::IssueCreated { issue },
-                    );
+                    broadcast_message(&state.ws_tx, &WsMessage::IssueCreated { issue });
                     imported += 1;
                 }
                 None => {
@@ -316,7 +320,11 @@ async fn do_sync_github_issues(state: &SharedState, project_id: i64) -> Result<S
         }
     }
 
-    Ok(SyncResult { imported, skipped, total_github })
+    Ok(SyncResult {
+        imported,
+        skipped,
+        total_github,
+    })
 }
 
 /// Try to detect "owner/repo" from git remote URLs in a local repo path.
@@ -346,9 +354,11 @@ async fn health_check() -> &'static str {
 ///
 /// **Response:** `200 OK` with a JSON array of `Project` objects.
 async fn list_projects(State(state): State<SharedState>) -> Result<impl IntoResponse, ApiError> {
-    let projects = state.db.call(move |db| {
-        db.list_projects()
-    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    let projects = state
+        .db
+        .call(move |db| db.list_projects())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(projects))
 }
 
@@ -369,10 +379,17 @@ async fn create_project(
 ) -> Result<impl IntoResponse, ApiError> {
     let name = req.name;
     let path = req.path;
-    let project = state.db.call(move |db| {
-        db.create_project(&name, &path)
-    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
-    broadcast_message(&state.ws_tx, &WsMessage::ProjectCreated { project: project.clone() });
+    let project = state
+        .db
+        .call(move |db| db.create_project(&name, &path))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    broadcast_message(
+        &state.ws_tx,
+        &WsMessage::ProjectCreated {
+            project: project.clone(),
+        },
+    );
     Ok((StatusCode::CREATED, Json(project)))
 }
 
@@ -407,11 +424,16 @@ async fn clone_project(
         .to_string();
 
     if repo_name.is_empty() {
-        return Err(ApiError::BadRequest("Could not parse repository name from URL".to_string()));
+        return Err(ApiError::BadRequest(
+            "Could not parse repository name from URL".to_string(),
+        ));
     }
 
     // Normalize: if it looks like "user/repo", prepend GitHub URL
-    let clone_url = if repo_url.starts_with("http://") || repo_url.starts_with("https://") || repo_url.starts_with("git@") {
+    let clone_url = if repo_url.starts_with("http://")
+        || repo_url.starts_with("https://")
+        || repo_url.starts_with("git@")
+    {
         repo_url.clone()
     } else {
         format!("https://github.com/{}", repo_url)
@@ -419,11 +441,20 @@ async fn clone_project(
 
     // If we have a GitHub token, use it for cloning (enables private repos)
     let (clone_url, token) = {
-        let gh_token = state.github_token.lock()
+        let gh_token = state
+            .github_token
+            .lock()
             .map_err(|_| ApiError::from(FactoryError::LockPoisoned))?;
         if let Some(ref t) = *gh_token {
             if clone_url.starts_with("https://github.com/") {
-                (clone_url.replacen("https://github.com/", &format!("https://x-access-token:{}@github.com/", t), 1), Some(t.clone()))
+                (
+                    clone_url.replacen(
+                        "https://github.com/",
+                        &format!("https://x-access-token:{}@github.com/", t),
+                        1,
+                    ),
+                    Some(t.clone()),
+                )
             } else {
                 (clone_url, Some(t.clone()))
             }
@@ -434,7 +465,8 @@ async fn clone_project(
 
     // Clone into .forge/repos/<repo_name>
     let repos_dir = std::path::PathBuf::from(".forge/repos");
-    tokio::fs::create_dir_all(&repos_dir).await
+    tokio::fs::create_dir_all(&repos_dir)
+        .await
         .map_err(|e| ApiError::Internal(format!("Failed to create repos directory: {}", e)))?;
 
     let clone_path = repos_dir.join(&repo_name);
@@ -457,7 +489,10 @@ async fn clone_project(
             } else {
                 stderr.trim().to_string()
             };
-            return Err(ApiError::BadRequest(format!("git clone failed: {}", sanitized_stderr)));
+            return Err(ApiError::BadRequest(format!(
+                "git clone failed: {}",
+                sanitized_stderr
+            )));
         }
 
         // After successful clone, strip token from remote URL to prevent leaking
@@ -471,7 +506,8 @@ async fn clone_project(
     }
 
     // Resolve to absolute path for the project record
-    let abs_path = tokio::fs::canonicalize(&clone_path).await
+    let abs_path = tokio::fs::canonicalize(&clone_path)
+        .await
         .map_err(|e| ApiError::Internal(format!("Failed to resolve path: {}", e)))?;
     let abs_path_str = abs_path.to_string_lossy().to_string();
 
@@ -481,28 +517,38 @@ async fn clone_project(
     let repo_name_clone = repo_name.clone();
     let abs_path_clone = abs_path_str.clone();
     let github_repo_clone = github_repo.clone();
-    let project = state.db.call(move |db| {
-        // Check if a project already exists for this path
-        let existing = db.list_projects()?
-            .into_iter()
-            .find(|p| p.path == abs_path_clone);
+    let project = state
+        .db
+        .call(move |db| {
+            // Check if a project already exists for this path
+            let existing = db
+                .list_projects()?
+                .into_iter()
+                .find(|p| p.path == abs_path_clone);
 
-        let project = if let Some(project) = existing {
-            project
-        } else {
-            db.create_project(&repo_name_clone, &abs_path_clone)?
-        };
+            let project = if let Some(project) = existing {
+                project
+            } else {
+                db.create_project(&repo_name_clone, &abs_path_clone)?
+            };
 
-        // Store the GitHub owner/repo
-        let project = if let Some(ref owner_repo) = github_repo_clone {
-            db.update_project_github_repo(project.id, owner_repo)?
-        } else {
-            project
-        };
-        Ok(project)
-    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+            // Store the GitHub owner/repo
+            let project = if let Some(ref owner_repo) = github_repo_clone {
+                db.update_project_github_repo(project.id, owner_repo)?
+            } else {
+                project
+            };
+            Ok(project)
+        })
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    broadcast_message(&state.ws_tx, &WsMessage::ProjectCreated { project: project.clone() });
+    broadcast_message(
+        &state.ws_tx,
+        &WsMessage::ProjectCreated {
+            project: project.clone(),
+        },
+    );
 
     // Auto-sync GitHub issues in the background
     if github_repo.is_some() {
@@ -512,7 +558,10 @@ async fn clone_project(
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             match do_sync_github_issues(&state_clone, pid).await {
                 Ok(result) => {
-                    eprintln!("Auto-synced {} GitHub issues for project {}", result.imported, pid);
+                    eprintln!(
+                        "Auto-synced {} GitHub issues for project {}",
+                        result.imported, pid
+                    );
                 }
                 Err(_) => {
                     eprintln!("Auto-sync GitHub issues failed for project {}", pid);
@@ -551,9 +600,11 @@ async fn get_project(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let project = state.db.call(move |db| {
-        db.get_project(id)
-    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    let project = state
+        .db
+        .call(move |db| db.get_project(id))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     match project {
         Some(project) => Ok(Json(project)),
         None => Err(ApiError::NotFound(format!("Project {} not found", id))),
@@ -569,9 +620,11 @@ async fn get_board(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let board = state.db.call(move |db| {
-        db.get_board(id)
-    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    let board = state
+        .db
+        .call(move |db| db.get_board(id))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(board))
 }
 
@@ -597,10 +650,17 @@ async fn create_issue(
     };
     let title = req.title;
     let description = req.description.unwrap_or_default();
-    let issue = state.db.call(move |db| {
-        db.create_issue(project_id, &title, &description, &column)
-    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
-    broadcast_message(&state.ws_tx, &WsMessage::IssueCreated { issue: issue.clone() });
+    let issue = state
+        .db
+        .call(move |db| db.create_issue(project_id, &title, &description, &column))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    broadcast_message(
+        &state.ws_tx,
+        &WsMessage::IssueCreated {
+            issue: issue.clone(),
+        },
+    );
     Ok((StatusCode::CREATED, Json(issue)))
 }
 
@@ -614,9 +674,11 @@ async fn get_issue(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let detail = state.db.call(move |db| {
-        db.get_issue_detail(id)
-    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    let detail = state
+        .db
+        .call(move |db| db.get_issue_detail(id))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     match detail {
         Some(detail) => Ok(Json(detail)),
         None => Err(ApiError::NotFound(format!("Issue {} not found", id))),
@@ -641,10 +703,27 @@ async fn update_issue(
 ) -> Result<impl IntoResponse, ApiError> {
     let title = req.title;
     let description = req.description;
-    let issue = state.db.call(move |db| {
-        db.update_issue(id, title.as_deref(), description.as_deref())
-    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
-    broadcast_message(&state.ws_tx, &WsMessage::IssueUpdated { issue: issue.clone() });
+    let priority = req.priority;
+    let labels = req.labels;
+    let issue = state
+        .db
+        .call(move |db| {
+            db.update_issue(
+                id,
+                title.as_deref(),
+                description.as_deref(),
+                priority.as_deref(),
+                labels.as_deref(),
+            )
+        })
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    broadcast_message(
+        &state.ws_tx,
+        &WsMessage::IssueUpdated {
+            issue: issue.clone(),
+        },
+    );
     Ok(Json(issue))
 }
 
@@ -666,15 +745,19 @@ async fn move_issue(
 ) -> Result<impl IntoResponse, ApiError> {
     let column = IssueColumn::from_str(&req.column).map_err(ApiError::BadRequest)?;
     let position = req.position;
-    let (from_column, issue) = state.db.call(move |db| {
-        // Capture the original column before the move for the WsMessage
-        let from_column = db
-            .get_issue(id)?
-            .map(|i| i.column.as_str().to_string())
-            .unwrap_or_default();
-        let issue = db.move_issue(id, &column, position)?;
-        Ok((from_column, issue))
-    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    let (from_column, issue) = state
+        .db
+        .call(move |db| {
+            // Capture the original column before the move for the WsMessage
+            let from_column = db
+                .get_issue(id)?
+                .map(|i| i.column.as_str().to_string())
+                .unwrap_or_default();
+            let issue = db.move_issue(id, &column, position)?;
+            Ok((from_column, issue))
+        })
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     broadcast_message(
         &state.ws_tx,
         &WsMessage::IssueMoved {
@@ -698,9 +781,11 @@ async fn delete_issue(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let deleted = state.db.call(move |db| {
-        db.delete_issue(id)
-    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    let deleted = state
+        .db
+        .call(move |db| db.delete_issue(id))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     match deleted {
         true => {
             broadcast_message(&state.ws_tx, &WsMessage::IssueDeleted { issue_id: id });
@@ -724,20 +809,24 @@ async fn trigger_pipeline(
     State(state): State<SharedState>,
     Path(issue_id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let (run, issue) = state.db.call(move |db| {
-        let issue = db
-            .get_issue(issue_id)?
-            .ok_or_else(|| anyhow::anyhow!("Issue {} not found", issue_id))?;
-        let run = db.create_pipeline_run(issue_id)?;
-        Ok((run, issue))
-    }).await.map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("not found") {
-            ApiError::from(FactoryError::IssueNotFound { id: issue_id })
-        } else {
-            ApiError::Internal(msg)
-        }
-    })?;
+    let (run, issue) = state
+        .db
+        .call(move |db| {
+            let issue = db
+                .get_issue(issue_id)?
+                .ok_or_else(|| anyhow::anyhow!("Issue {} not found", issue_id))?;
+            let run = db.create_pipeline_run(issue_id)?;
+            Ok((run, issue))
+        })
+        .await
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("not found") {
+                ApiError::from(FactoryError::IssueNotFound { id: issue_id })
+            } else {
+                ApiError::Internal(msg)
+            }
+        })?;
 
     // Start pipeline execution in a background task
     state
@@ -759,9 +848,11 @@ async fn get_pipeline_run(
     State(state): State<SharedState>,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let run = state.db.call(move |db| {
-        db.get_pipeline_run(id)
-    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    let run = state
+        .db
+        .call(move |db| db.get_pipeline_run(id))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     match run {
         Some(run) => Ok(Json(run)),
         None => Err(ApiError::NotFound(format!("Pipeline run {} not found", id))),
@@ -808,13 +899,18 @@ async fn get_run_team(
     State(state): State<SharedState>,
     Path(run_id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let detail = state.db.call(move |db| {
-        db.get_agent_team_for_run(run_id)
-    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    let detail = state
+        .db
+        .call(move |db| db.get_agent_team_for_run(run_id))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     match detail {
         Some(d) => Ok(Json(d).into_response()),
-        None => Err(ApiError::NotFound(format!("No agent team for run {}", run_id))),
+        None => Err(ApiError::NotFound(format!(
+            "No agent team for run {}",
+            run_id
+        ))),
     }
 }
 
@@ -829,9 +925,11 @@ async fn get_task_events(
     axum::extract::Query(query): axum::extract::Query<EventsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let limit = query.limit.unwrap_or(100).min(500);
-    let events = state.db.call(move |db| {
-        db.get_agent_events_for_task(task_id, limit)
-    }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    let events = state
+        .db
+        .call(move |db| db.get_agent_events_for_task(task_id, limit))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(events))
 }
 
@@ -851,20 +949,27 @@ async fn serve_screenshot(
     State(state): State<SharedState>,
     Path(file_path): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let project_path = state.db.call(|db| {
-        let projects = db.list_projects()?;
-        projects.first()
-            .map(|p| p.path.clone())
-            .ok_or_else(|| anyhow::anyhow!("No projects"))
-    }).await.map_err(|e| ApiError::NotFound(e.to_string()))?;
+    let project_path = state
+        .db
+        .call(|db| {
+            let projects = db.list_projects()?;
+            projects
+                .first()
+                .map(|p| p.path.clone())
+                .ok_or_else(|| anyhow::anyhow!("No projects"))
+        })
+        .await
+        .map_err(|e| ApiError::NotFound(e.to_string()))?;
 
     let screenshots_dir = std::path::PathBuf::from(&project_path).join(".forge/screenshots");
     let full_path = screenshots_dir.join(&file_path);
 
     // Verify resolved path is within screenshots directory (prevents path traversal)
-    let canonical_dir = tokio::fs::canonicalize(&screenshots_dir).await
+    let canonical_dir = tokio::fs::canonicalize(&screenshots_dir)
+        .await
         .map_err(|_| ApiError::NotFound("Screenshots directory not found".into()))?;
-    let canonical_file = tokio::fs::canonicalize(&full_path).await
+    let canonical_file = tokio::fs::canonicalize(&full_path)
+        .await
         .map_err(|_| ApiError::NotFound(format!("Screenshot not found: {}", file_path)))?;
     if !canonical_file.starts_with(&canonical_dir) {
         return Err(ApiError::BadRequest("Invalid path".into()));
@@ -894,16 +999,17 @@ async fn serve_screenshot(
 /// `GET /api/github/status` — report GitHub OAuth connection status.
 ///
 /// **Response:** `200 OK` with `{ "connected": bool, "client_id_configured": bool }`.
-async fn github_status(
-    State(state): State<SharedState>,
-) -> Result<impl IntoResponse, ApiError> {
+async fn github_status(State(state): State<SharedState>) -> Result<impl IntoResponse, ApiError> {
     let connected = state
         .github_token
         .lock()
         .map_err(|_| ApiError::from(FactoryError::LockPoisoned))?
         .is_some();
     let client_id_configured = state.github_client_id.is_some();
-    Ok(Json(GitHubAuthStatus { connected, client_id_configured }))
+    Ok(Json(GitHubAuthStatus {
+        connected,
+        client_id_configured,
+    }))
 }
 
 /// `POST /api/github/device-code` — initiate the GitHub Device Authorization Flow.
@@ -1006,9 +1112,9 @@ async fn github_connect_token(
         return Err(ApiError::BadRequest("Token is required".into()));
     }
     // Validate the token by attempting to list repos
-    super::github::list_repos(&token, 1, 1)
-        .await
-        .map_err(|_| ApiError::BadRequest("Invalid token — could not authenticate with GitHub".into()))?;
+    super::github::list_repos(&token, 1, 1).await.map_err(|_| {
+        ApiError::BadRequest("Invalid token — could not authenticate with GitHub".into())
+    })?;
     let token_for_db = token.clone();
     {
         let mut gh_token = state
@@ -1018,9 +1124,11 @@ async fn github_connect_token(
         *gh_token = Some(token);
     }
     // Persist token to DB settings
-    state.db.call(move |db| {
-        db.set_setting("github_token", &token_for_db)
-    }).await.map_err(|e| ApiError::Internal(format!("Failed to persist token: {}", e)))?;
+    state
+        .db
+        .call(move |db| db.set_setting("github_token", &token_for_db))
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to persist token: {}", e)))?;
     Ok(Json(serde_json::json!({"status": "connected"})))
 }
 
@@ -1039,9 +1147,11 @@ async fn github_disconnect(
             .map_err(|_| ApiError::from(FactoryError::LockPoisoned))?;
         *token = None;
     }
-    state.db.call(move |db| {
-        db.delete_setting("github_token")
-    }).await.map_err(|e| ApiError::Internal(format!("Failed to delete token: {}", e)))?;
+    state
+        .db
+        .call(move |db| db.delete_setting("github_token"))
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to delete token: {}", e)))?;
     Ok(Json(serde_json::json!({"status": "disconnected"})))
 }
 
@@ -1311,7 +1421,8 @@ mod tests {
         let status = runs[0]["status"].as_str().unwrap();
         assert!(
             status == "running" || status == "failed" || status == "queued",
-            "Expected running/failed/queued, got: {}", status
+            "Expected running/failed/queued, got: {}",
+            status
         );
     }
 
@@ -1501,7 +1612,8 @@ mod tests {
         let status = run["status"].as_str().unwrap();
         assert!(
             status == "queued" || status == "running",
-            "Expected queued or running, got: {}", status
+            "Expected queued or running, got: {}",
+            status
         );
     }
 
@@ -1555,7 +1667,8 @@ mod tests {
         let status = run["status"].as_str().unwrap();
         assert!(
             status == "running" || status == "failed" || status == "queued",
-            "Expected running/failed/queued, got: {}", status
+            "Expected running/failed/queued, got: {}",
+            status
         );
     }
 
@@ -1697,30 +1810,74 @@ mod tests {
         let app = test_app();
         // Create project + issue + run
         let body = r#"{"name":"test","path":"/tmp"}"#;
-        let res = app.clone().oneshot(Request::builder().method("POST").uri("/api/projects").header("Content-Type", "application/json").body(Body::from(body)).unwrap()).await.unwrap();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/projects")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let project: serde_json::Value = body_json(res.into_body()).await;
         let pid = project["id"].as_i64().unwrap();
         let body = r#"{"title":"Test issue","description":"desc"}"#;
-        let res = app.clone().oneshot(Request::builder().method("POST").uri(&format!("/api/projects/{}/issues", pid)).header("Content-Type", "application/json").body(Body::from(body)).unwrap()).await.unwrap();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/projects/{}/issues", pid))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let issue: serde_json::Value = body_json(res.into_body()).await;
         let iid = issue["id"].as_i64().unwrap();
-        let res = app.clone().oneshot(Request::builder().method("POST").uri(&format!("/api/issues/{}/run", iid)).header("Content-Type", "application/json").body(Body::empty()).unwrap()).await.unwrap();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/issues/{}/run", iid))
+                    .header("Content-Type", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let run: serde_json::Value = body_json(res.into_body()).await;
         let rid = run["id"].as_i64().unwrap();
 
-        let res = app.oneshot(Request::builder().uri(&format!("/api/runs/{}/team", rid)).body(Body::empty()).unwrap()).await.unwrap();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/runs/{}/team", rid))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
     async fn test_screenshot_route_rejects_path_traversal() {
         let app = test_app();
-        let res = app.oneshot(
-            Request::builder()
-                .uri("/api/screenshots/../../../etc/passwd")
-                .body(Body::empty())
-                .unwrap(),
-        ).await.unwrap();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/screenshots/../../../etc/passwd")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         // Returns 404 (directory not found) or 400 (traversal detected) depending on
         // whether the screenshots directory exists. Both correctly reject the request.
         assert!(

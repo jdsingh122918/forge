@@ -1,3 +1,4 @@
+use super::models::{SignalType, VerificationType};
 use axum::{
     extract::{
         State,
@@ -7,7 +8,6 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
 use serde::{Deserialize, Serialize};
-use super::models::{SignalType, VerificationType};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -561,7 +561,12 @@ mod tests {
         assert!(json.contains("\"wave\":0"));
         let deser: WsMessage = serde_json::from_str(&json).unwrap();
         match deser {
-            WsMessage::WaveStarted { run_id, wave, task_ids, .. } => {
+            WsMessage::WaveStarted {
+                run_id,
+                wave,
+                task_ids,
+                ..
+            } => {
                 assert_eq!(run_id, 1);
                 assert_eq!(wave, 0);
                 assert_eq!(task_ids, vec![10, 11, 12]);
@@ -583,7 +588,11 @@ mod tests {
         assert!(json.contains("\"type\":\"WaveCompleted\""));
         let deser: WsMessage = serde_json::from_str(&json).unwrap();
         match deser {
-            WsMessage::WaveCompleted { success_count, failed_count, .. } => {
+            WsMessage::WaveCompleted {
+                success_count,
+                failed_count,
+                ..
+            } => {
                 assert_eq!(success_count, 2);
                 assert_eq!(failed_count, 1);
             }
@@ -605,7 +614,12 @@ mod tests {
         assert!(json.contains("\"role\":\"coder\""));
         let deser: WsMessage = serde_json::from_str(&json).unwrap();
         match deser {
-            WsMessage::AgentTaskStarted { task_id, name, role, .. } => {
+            WsMessage::AgentTaskStarted {
+                task_id,
+                name,
+                role,
+                ..
+            } => {
                 assert_eq!(task_id, 5);
                 assert_eq!(name, "Fix API");
                 assert_eq!(role, AgentRole::Coder);
@@ -676,10 +690,7 @@ mod tests {
 
     #[test]
     fn test_merge_started_serialization() {
-        let msg = WsMessage::MergeStarted {
-            run_id: 1,
-            wave: 0,
-        };
+        let msg = WsMessage::MergeStarted { run_id: 1, wave: 0 };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"MergeStarted\""));
         let deser: WsMessage = serde_json::from_str(&json).unwrap();

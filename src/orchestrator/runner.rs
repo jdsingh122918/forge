@@ -255,9 +255,11 @@ impl ClaudeRunner {
             ui.log_step("Writing prompt file...");
         }
 
-        std::fs::write(&prompt_file, &prompt).map_err(|e| OrchestratorError::PromptWriteFailed {
-            path: prompt_file.clone(),
-            source: e,
+        std::fs::write(&prompt_file, &prompt).map_err(|e| {
+            OrchestratorError::PromptWriteFailed {
+                path: prompt_file.clone(),
+                source: e,
+            }
         })?;
 
         let output_file = self.config.log_dir.join(format!(
@@ -972,9 +974,9 @@ mod tests {
     #[test]
     fn test_with_signals_does_not_include_pivot() {
         let mut signals = IterationSignals::new();
-        signals
-            .pivots
-            .push(crate::signals::PivotSignal::new("Use GraphQL instead of REST"));
+        signals.pivots.push(crate::signals::PivotSignal::new(
+            "Use GraphQL instead of REST",
+        ));
 
         // with_signals only: pivot should NOT appear as STRATEGY CHANGE
         let fb_signals_only = IterationFeedback::new().with_signals(&signals).build();
@@ -1001,8 +1003,15 @@ mod tests {
     #[test]
     fn test_prompt_context_new_has_no_content() {
         let ctx = PromptContext::new();
-        assert!(!ctx.has_content(), "New PromptContext should have no content");
-        assert_eq!(ctx.generate_section(), "", "Empty context should produce empty section");
+        assert!(
+            !ctx.has_content(),
+            "New PromptContext should have no content"
+        );
+        assert_eq!(
+            ctx.generate_section(),
+            "",
+            "Empty context should produce empty section"
+        );
     }
 
     #[test]
@@ -1068,14 +1077,19 @@ mod tests {
         assert!(fb.contains("2/5"));
         assert!(fb.contains("STRATEGY CHANGE"));
         // Verify the two parts are separated by a blank line
-        assert!(fb.contains("\n\n"), "Parts should be separated by double newline");
+        assert!(
+            fb.contains("\n\n"),
+            "Parts should be separated by double newline"
+        );
     }
 
     #[test]
     fn test_iteration_feedback_with_signals_shows_blocker() {
         use crate::signals::BlockerSignal;
         let mut signals = IterationSignals::new();
-        signals.blockers.push(BlockerSignal::new("Cannot find API credentials"));
+        signals
+            .blockers
+            .push(BlockerSignal::new("Cannot find API credentials"));
 
         let fb = IterationFeedback::new().with_signals(&signals).build();
         let text = fb.unwrap();
@@ -1110,8 +1124,14 @@ mod tests {
             .with_iteration_status(4, 10, false)
             .build()
             .unwrap();
-        assert!(fb.contains("4/10"), "In-progress status must show X/Y format");
-        assert!(!fb.contains("COMPLETED"), "In-progress status must not say COMPLETED");
+        assert!(
+            fb.contains("4/10"),
+            "In-progress status must show X/Y format"
+        );
+        assert!(
+            !fb.contains("COMPLETED"),
+            "In-progress status must not say COMPLETED"
+        );
     }
 
     // --- Path-helper tests ---
@@ -1133,6 +1153,10 @@ mod tests {
         let runner = ClaudeRunner::new(config);
 
         let path = runner.get_output_file("02", 7);
-        assert!(path.to_str().unwrap().contains("phase-02-iter-7-output.log"));
+        assert!(
+            path.to_str()
+                .unwrap()
+                .contains("phase-02-iter-7-output.log")
+        );
     }
 }

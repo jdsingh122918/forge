@@ -283,6 +283,7 @@ impl ApprovalGate {
     }
 
     /// Prompt for iteration approval (strict mode).
+    #[allow(dead_code)]
     fn prompt_iteration(&mut self, iteration: u32, budget: u32) -> Result<IterationDecision> {
         let options = &[
             "Continue with this iteration",
@@ -546,11 +547,7 @@ impl AutonomousGateStrategy {
     }
 
     /// Check sub-phase execution — always approves.
-    pub fn check_sub_phase(
-        &self,
-        _sub_phase: &SubPhase,
-        _parent: &Phase,
-    ) -> GateDecision {
+    pub fn check_sub_phase(&self, _sub_phase: &SubPhase, _parent: &Phase) -> GateDecision {
         GateDecision::Approved
     }
 }

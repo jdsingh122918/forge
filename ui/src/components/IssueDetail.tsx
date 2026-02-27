@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import type { IssueDetail as IssueDetailType } from '../types';
 import { PRIORITY_COLORS } from '../types';
 import { PipelineStatus } from './PipelineStatus';
@@ -17,6 +17,23 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
   const [loading, setLoading] = useState(true);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
+  const [editingDescription, setEditingDescription] = useState(false);
+  const [descriptionDraft, setDescriptionDraft] = useState('');
+  const [newLabel, setNewLabel] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const titleSavedByKeyRef = useRef(false);
+  const descSavedByKeyRef = useRef(false);
+
+  const saveAndRefresh = useCallback(async (updateFn: () => Promise<unknown>) => {
+    setError(null);
+    try {
+      await updateFn();
+      const updated = await api.getIssue(issueId);
+      setDetail(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An unexpected error occurred');
+    }
+  }, [issueId]);
 
   useEffect(() => {
     setLoading(true);
@@ -52,23 +69,25 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
             onKeyDown={async (e) => {
               if (e.key === 'Enter') {
                 e.preventDefault();
+                titleSavedByKeyRef.current = true;
                 const trimmed = titleDraft.trim();
                 if (trimmed && trimmed !== issue.title) {
-                  await api.updateIssue(issueId, { title: trimmed });
-                  const updated = await api.getIssue(issueId);
-                  setDetail(updated);
+                  await saveAndRefresh(() => api.updateIssue(issueId, { title: trimmed }));
                 }
                 setEditingTitle(false);
               } else if (e.key === 'Escape') {
+                titleSavedByKeyRef.current = true;
                 setEditingTitle(false);
               }
             }}
             onBlur={async () => {
+              if (titleSavedByKeyRef.current) {
+                titleSavedByKeyRef.current = false;
+                return;
+              }
               const trimmed = titleDraft.trim();
               if (trimmed && trimmed !== issue.title) {
-                await api.updateIssue(issueId, { title: trimmed });
-                const updated = await api.getIssue(issueId);
-                setDetail(updated);
+                await saveAndRefresh(() => api.updateIssue(issueId, { title: trimmed }));
               }
               setEditingTitle(false);
             }}
@@ -88,39 +107,119 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
         <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
       </div>
 
+      {/* Error Banner */}
+      {error && (
+        <div className="mx-6 mt-4 px-3 py-2 bg-red-50 border border-red-200 rounded-md flex items-center justify-between">
+          <p className="text-sm text-red-700">{error}</p>
+          <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 text-lg leading-none">&times;</button>
+        </div>
+      )}
+
       {/* Body */}
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
         {/* Priority & Column */}
-        <div className="flex gap-3">
-          <span className={`text-xs px-2 py-1 rounded font-medium ${PRIORITY_COLORS[issue.priority]}`}>
-            {issue.priority}
-          </span>
+        <div className="flex gap-3 items-center">
+          <select
+            className={`text-xs px-2 py-1 rounded font-medium border-none cursor-pointer ${PRIORITY_COLORS[issue.priority]}`}
+            value={issue.priority}
+            onChange={async (e) => {
+              const newPriority = e.target.value;
+              await saveAndRefresh(() => api.updateIssue(issueId, { priority: newPriority }));
+            }}
+          >
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="critical">critical</option>
+          </select>
           <span className="text-xs px-2 py-1 rounded font-medium bg-gray-100 text-gray-700 capitalize">
             {issue.column.replace('_', ' ')}
           </span>
         </div>
 
         {/* Description */}
-        {issue.description && (
-          <div>
-            <h3 className="text-sm font-medium text-gray-700 mb-1">Description</h3>
-            <p className="text-sm text-gray-600 whitespace-pre-wrap">{issue.description}</p>
-          </div>
-        )}
+        <div>
+          <h3 className="text-sm font-medium text-gray-700 mb-1">Description</h3>
+          {editingDescription ? (
+            <textarea
+              autoFocus
+              className="w-full text-sm text-gray-600 border border-blue-400 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-blue-300 min-h-[80px] resize-y"
+              value={descriptionDraft}
+              onChange={(e) => setDescriptionDraft(e.target.value)}
+              onKeyDown={async (e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                  e.preventDefault();
+                  descSavedByKeyRef.current = true;
+                  const trimmed = descriptionDraft.trim();
+                  if (trimmed !== (issue.description || '')) {
+                    await saveAndRefresh(() => api.updateIssue(issueId, { description: trimmed }));
+                  }
+                  setEditingDescription(false);
+                } else if (e.key === 'Escape') {
+                  descSavedByKeyRef.current = true;
+                  setEditingDescription(false);
+                }
+              }}
+              onBlur={async () => {
+                if (descSavedByKeyRef.current) {
+                  descSavedByKeyRef.current = false;
+                  return;
+                }
+                const trimmed = descriptionDraft.trim();
+                if (trimmed !== (issue.description || '')) {
+                  await saveAndRefresh(() => api.updateIssue(issueId, { description: trimmed }));
+                }
+                setEditingDescription(false);
+              }}
+            />
+          ) : (
+            <p
+              className="text-sm text-gray-600 whitespace-pre-wrap cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5 min-h-[24px]"
+              onClick={() => {
+                setDescriptionDraft(issue.description || '');
+                setEditingDescription(true);
+              }}
+            >
+              {issue.description || <span className="text-gray-400 italic">Click to edit</span>}
+            </p>
+          )}
+        </div>
 
         {/* Labels */}
-        {issue.labels.length > 0 && (
-          <div>
-            <h3 className="text-sm font-medium text-gray-700 mb-1">Labels</h3>
-            <div className="flex flex-wrap gap-1">
-              {issue.labels.map((label) => (
-                <span key={label} className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">
-                  {label}
-                </span>
-              ))}
-            </div>
+        <div>
+          <h3 className="text-sm font-medium text-gray-700 mb-1">Labels</h3>
+          <div className="flex flex-wrap gap-1 items-center">
+            {issue.labels.map((label) => (
+              <span key={label} className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded inline-flex items-center gap-1">
+                {label}
+                <button
+                  className="text-gray-400 hover:text-red-500 leading-none"
+                  onClick={async () => {
+                    const updated_labels = issue.labels.filter(l => l !== label);
+                    await saveAndRefresh(() => api.updateIssue(issueId, { labels: updated_labels }));
+                  }}
+                >&times;</button>
+              </span>
+            ))}
+            <input
+              className="text-xs border border-gray-200 rounded px-1.5 py-0.5 w-20 outline-none focus:border-blue-400"
+              placeholder="Add label"
+              value={newLabel}
+              onChange={(e) => setNewLabel(e.target.value)}
+              onKeyDown={async (e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  const trimmed = newLabel.trim();
+                  if (trimmed && !issue.labels.includes(trimmed)) {
+                    const updated_labels = [...issue.labels, trimmed];
+                    await saveAndRefresh(() => api.updateIssue(issueId, { labels: updated_labels }));
+                    setNewLabel('');
+                  }
+                }
+              }}
+            />
           </div>
-        )}
+        </div>
 
         {/* Pipeline Runs */}
         <div>
@@ -195,11 +294,11 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
         {hasActiveRun && (
           <button
             onClick={async () => {
-              const activeRun = runs.find(r => r.status === 'queued' || r.status === 'running');
-              if (activeRun) {
-                await api.cancelPipelineRun(activeRun.id);
-                const updated = await api.getIssue(issueId);
-                setDetail(updated);
+              if (window.confirm('Cancel this pipeline run? Running agents will be killed and in-progress work will be lost.')) {
+                const activeRun = runs.find(r => r.status === 'queued' || r.status === 'running');
+                if (activeRun) {
+                  await saveAndRefresh(() => api.cancelPipelineRun(activeRun.id));
+                }
               }
             }}
             className="px-3 py-2 text-sm font-medium text-orange-600 bg-orange-50 rounded-md hover:bg-orange-100 transition-colors"

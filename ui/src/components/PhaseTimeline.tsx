@@ -58,6 +58,15 @@ export function PhaseTimeline({ phases }: PhaseTimelineProps) {
             }`}>
               {phase.phase_name}
             </span>
+            {phase.review_status === 'reviewing' && (
+              <span className="text-yellow-600 shrink-0">Reviewing...</span>
+            )}
+            {phase.review_status === 'passed' && (
+              <span className="text-green-600 shrink-0">Review passed</span>
+            )}
+            {phase.review_status === 'failed' && (
+              <span className="text-amber-600 shrink-0">{phase.review_findings} finding{phase.review_findings !== 1 ? 's' : ''}</span>
+            )}
             <span className="text-gray-400 shrink-0">
               {phase.status === 'running' && iterInfo}
               {duration && ` ${duration}`}

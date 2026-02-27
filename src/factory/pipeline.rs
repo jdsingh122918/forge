@@ -9,7 +9,7 @@ use tokio::sync::broadcast;
 use super::agent_executor::{AgentExecutor, TaskRunner};
 use super::db::DbHandle;
 use super::models::*;
-use super::planner::{Planner, PlanProvider};
+use super::planner::{PlanProvider, Planner};
 use super::sandbox::{DockerSandbox, SandboxConfig};
 use super::ws::{WsMessage, broadcast_message};
 
@@ -51,10 +51,11 @@ impl AutoPromotePolicy {
 }
 
 fn translate_host_path_to_container(path: &str) -> String {
-    if path.contains("/.forge/repos/") && !path.starts_with("/app/") {
-        if let Some(pos) = path.find("/.forge/repos/") {
-            return format!("/app{}", &path[pos..]);
-        }
+    if path.contains("/.forge/repos/")
+        && !path.starts_with("/app/")
+        && let Some(pos) = path.find("/.forge/repos/")
+    {
+        return format!("/app{}", &path[pos..]);
     }
     path.to_string()
 }
@@ -94,7 +95,6 @@ enum PlanOutcome {
     /// Planner returned a single-task sequential plan; caller should fall back to the forge pipeline.
     FallbackToForge,
 }
-
 
 /// Convert a title to a URL-safe slug, limited to `max_len` characters.
 pub fn slugify(title: &str, max_len: usize) -> String {
@@ -246,14 +246,20 @@ impl PipelineRunner {
                 match handle {
                     RunHandle::Process(mut child) => {
                         if let Err(e) = child.kill().await {
-                            eprintln!("[factory] WARNING: failed to kill process for run {}: {}", run_id, e);
+                            eprintln!(
+                                "[factory] WARNING: failed to kill process for run {}: {}",
+                                run_id, e
+                            );
                         }
                     }
                     RunHandle::Container(container_id) => {
                         if let Some(ref sandbox) = self.sandbox
                             && let Err(e) = sandbox.stop(&container_id).await
                         {
-                            eprintln!("[factory] WARNING: failed to stop container {} for run {}: {}", container_id, run_id, e);
+                            eprintln!(
+                                "[factory] WARNING: failed to stop container {} for run {}: {}",
+                                container_id, run_id, e
+                            );
                         }
                     }
                 }
@@ -266,12 +272,22 @@ impl PipelineRunner {
 
         // Auto-move issue back to Ready
         let issue_id = run.issue_id;
-        let should_move = db.call(move |db| {
-            Ok(db.get_issue(issue_id)?.map_or(false, |issue| issue.column == IssueColumn::InProgress))
-        }).await?;
+        let should_move = db
+            .call(move |db| {
+                Ok(db
+                    .get_issue(issue_id)?
+                    .is_some_and(|issue| issue.column == IssueColumn::InProgress))
+            })
+            .await?;
         if should_move {
-            if let Err(e) = db.call(move |db| db.move_issue(issue_id, &IssueColumn::Ready, 0)).await {
-                eprintln!("[pipeline] run_id={}: failed to move issue to Ready: {:#}", run_id, e);
+            if let Err(e) = db
+                .call(move |db| db.move_issue(issue_id, &IssueColumn::Ready, 0))
+                .await
+            {
+                eprintln!(
+                    "[pipeline] run_id={}: failed to move issue to Ready: {:#}",
+                    run_id, e
+                );
             }
             broadcast_message(
                 tx,
@@ -300,14 +316,20 @@ impl PipelineRunner {
             match handle {
                 RunHandle::Process(mut child) => {
                     if let Err(e) = child.kill().await {
-                        eprintln!("[factory] WARNING: failed to kill process for run {}: {}", run_id, e);
+                        eprintln!(
+                            "[factory] WARNING: failed to kill process for run {}: {}",
+                            run_id, e
+                        );
                     }
                 }
                 RunHandle::Container(container_id) => {
                     if let Some(ref sandbox) = self.sandbox
                         && let Err(e) = sandbox.stop(&container_id).await
                     {
-                        eprintln!("[factory] WARNING: failed to stop container {} for run {}: {}", container_id, run_id, e);
+                        eprintln!(
+                            "[factory] WARNING: failed to stop container {} for run {}: {}",
+                            container_id, run_id, e
+                        );
                     }
                 }
             }
@@ -342,17 +364,26 @@ impl PipelineRunner {
         task_runner: &Arc<dyn TaskRunner>,
     ) -> Result<PlanOutcome> {
         // Step 1: Plan
-        let plan = match planner.plan(issue_title, issue_description, issue_labels).await {
+        let plan = match planner
+            .plan(issue_title, issue_description, issue_labels)
+            .await
+        {
             Ok(plan) => plan,
             Err(e) => {
-                eprintln!("[pipeline] run_id={}: Planning failed, falling back to single task: {:#}", run_id, e);
+                eprintln!(
+                    "[pipeline] run_id={}: Planning failed, falling back to single task: {:#}",
+                    run_id, e
+                );
                 // Broadcast a warning to the UI
-                broadcast_message(tx, &WsMessage::AgentSignal {
-                    run_id,
-                    task_id: 0,
-                    signal_type: SignalType::Blocker,
-                    content: format!("Planning failed, using single-task fallback: {}", e),
-                });
+                broadcast_message(
+                    tx,
+                    &WsMessage::AgentSignal {
+                        run_id,
+                        task_id: 0,
+                        signal_type: SignalType::Blocker,
+                        content: format!("Planning failed, using single-task fallback: {}", e),
+                    },
+                );
                 super::planner::PlanResponse::fallback(issue_title, issue_description)
             }
         };
@@ -369,16 +400,24 @@ impl PipelineRunner {
 
         // Step 2: Create team + tasks in DB
         // Parse strategy/isolation/roles outside the closure (they use &str references from plan)
-        let strategy: ExecutionStrategy = plan.strategy.parse()
+        let strategy: ExecutionStrategy = plan
+            .strategy
+            .parse()
             .map_err(|_| anyhow::anyhow!("Invalid strategy from planner: '{}'", plan.strategy))?;
-        let isolation: IsolationStrategy = plan.isolation.parse()
+        let isolation: IsolationStrategy = plan
+            .isolation
+            .parse()
             .map_err(|_| anyhow::anyhow!("Invalid isolation from planner: '{}'", plan.isolation))?;
-        let mut parsed_tasks: Vec<(String, String, AgentRole, i32, Vec<i32>, IsolationStrategy)> = Vec::new();
+        let mut parsed_tasks: Vec<(String, String, AgentRole, i32, Vec<i32>, IsolationStrategy)> =
+            Vec::new();
         for plan_task in &plan.tasks {
-            let role: AgentRole = plan_task.role.parse()
+            let role: AgentRole = plan_task
+                .role
+                .parse()
                 .map_err(|_| anyhow::anyhow!("Invalid role from planner: '{}'", plan_task.role))?;
-            let task_isolation: IsolationStrategy = plan_task.isolation.parse()
-                .map_err(|_| anyhow::anyhow!("Invalid isolation from planner: '{}'", plan_task.isolation))?;
+            let task_isolation: IsolationStrategy = plan_task.isolation.parse().map_err(|_| {
+                anyhow::anyhow!("Invalid isolation from planner: '{}'", plan_task.isolation)
+            })?;
             parsed_tasks.push((
                 plan_task.name.clone(),
                 plan_task.description.clone(),
@@ -389,33 +428,30 @@ impl PipelineRunner {
             ));
         }
         let reasoning = plan.reasoning.clone();
-        let (team, db_tasks) = db.call(move |db| {
-            let team = db.create_agent_team(
-                run_id,
-                &strategy,
-                &isolation,
-                &reasoning,
-            )?;
+        let (team, db_tasks) = db
+            .call(move |db| {
+                let team = db.create_agent_team(run_id, &strategy, &isolation, &reasoning)?;
 
-            let mut db_tasks = Vec::new();
-            for (name, description, role, wave, depends_on, task_isolation) in &parsed_tasks {
-                let depends: Vec<i64> = depends_on
-                    .iter()
-                    .filter_map(|&idx| db_tasks.get(idx as usize).map(|t: &AgentTask| t.id))
-                    .collect();
-                let task = db.create_agent_task(
-                    team.id,
-                    name,
-                    description,
-                    role,
-                    *wave,
-                    &depends,
-                    task_isolation,
-                )?;
-                db_tasks.push(task);
-            }
-            Ok((team, db_tasks))
-        }).await?;
+                let mut db_tasks = Vec::new();
+                for (name, description, role, wave, depends_on, task_isolation) in &parsed_tasks {
+                    let depends: Vec<i64> = depends_on
+                        .iter()
+                        .filter_map(|&idx| db_tasks.get(idx as usize).map(|t: &AgentTask| t.id))
+                        .collect();
+                    let task = db.create_agent_task(
+                        team.id,
+                        name,
+                        description,
+                        role,
+                        *wave,
+                        &depends,
+                        task_isolation,
+                    )?;
+                    db_tasks.push(task);
+                }
+                Ok((team, db_tasks))
+            })
+            .await?;
 
         // Step 3: Broadcast TeamCreated
         broadcast_message(
@@ -457,7 +493,9 @@ impl PipelineRunner {
             let mut task_working_dirs: Vec<(AgentTask, std::path::PathBuf, Option<String>)> =
                 Vec::new();
             for task in &wave_tasks {
-                let (working_dir, task_branch) = if task.isolation_type == IsolationStrategy::Worktree {
+                let (working_dir, task_branch) = if task.isolation_type
+                    == IsolationStrategy::Worktree
+                {
                     match executor.setup_worktree(run_id, task, base_branch).await {
                         Ok((path, branch)) => (path, Some(branch)),
                         Err(e) => {
@@ -467,7 +505,10 @@ impl PipelineRunner {
                                 anyhow::bail!(
                                     "Worktree setup failed for task {} ({}) in parallel wave \
                                      (wave has {} tasks, shared directory fallback is unsafe): {:#}",
-                                    task.id, task.name, wave_tasks.len(), e
+                                    task.id,
+                                    task.name,
+                                    wave_tasks.len(),
+                                    e
                                 );
                             }
                             eprintln!(
@@ -475,12 +516,18 @@ impl PipelineRunner {
                                  Falling back to shared directory (single-task wave).",
                                 run_id, task.id, task.name, e
                             );
-                            broadcast_message(tx, &WsMessage::AgentSignal {
-                                run_id,
-                                task_id: task.id,
-                                signal_type: SignalType::Blocker,
-                                content: format!("Worktree isolation failed, running in shared directory: {}", e),
-                            });
+                            broadcast_message(
+                                tx,
+                                &WsMessage::AgentSignal {
+                                    run_id,
+                                    task_id: task.id,
+                                    signal_type: SignalType::Blocker,
+                                    content: format!(
+                                        "Worktree isolation failed, running in shared directory: {}",
+                                        e
+                                    ),
+                                },
+                            );
                             (std::path::PathBuf::from(project_path), None)
                         }
                     }
@@ -543,7 +590,8 @@ impl PipelineRunner {
             }
 
             // Collect worktree paths for cleanup (before merge loop, so we clean all even on conflict)
-            let worktree_paths: Vec<_> = task_working_dirs.iter()
+            let worktree_paths: Vec<_> = task_working_dirs
+                .iter()
                 .filter(|(task, _, _)| task.isolation_type == IsolationStrategy::Worktree)
                 .map(|(_, dir, _)| dir.clone())
                 .collect();
@@ -595,7 +643,11 @@ impl PipelineRunner {
             // Always clean up ALL worktrees, even after merge conflict
             for dir in &worktree_paths {
                 if let Err(e) = executor.cleanup_worktree(dir).await {
-                    eprintln!("[pipeline] Failed to clean up worktree {}: {:#}", dir.display(), e);
+                    eprintln!(
+                        "[pipeline] Failed to clean up worktree {}: {:#}",
+                        dir.display(),
+                        e
+                    );
                 }
             }
 
@@ -640,10 +692,13 @@ impl PipelineRunner {
             && is_forge_initialized(project_path)
             && let Err(e) = auto_generate_phases(project_path, issue_title, issue_description).await
         {
-            broadcast_message(tx, &WsMessage::PipelineError {
-                run_id,
-                message: format!("Failed to auto-generate phases: {:#}", e),
-            });
+            broadcast_message(
+                tx,
+                &WsMessage::PipelineError {
+                    run_id,
+                    message: format!("Failed to auto-generate phases: {:#}", e),
+                },
+            );
         }
 
         // Execute the pipeline (Docker or Local)
@@ -696,17 +751,15 @@ impl PipelineRunner {
     ) -> Result<()> {
         // Look up the project path from the DB (per-project, not the global default)
         let project_id = issue.project_id;
-        let project_path = db.call(move |db| {
-            match db.get_project(project_id) {
+        let project_path = db
+            .call(move |db| match db.get_project(project_id) {
                 Ok(Some(project)) => Ok(project.path),
                 Ok(None) => {
                     anyhow::bail!("Project {} not found in DB", project_id);
                 }
-                Err(e) => {
-                    Err(e.context(format!("Failed to look up project {}", project_id)))
-                }
-            }
-        }).await?;
+                Err(e) => Err(e.context(format!("Failed to look up project {}", project_id))),
+            })
+            .await?;
         let project_path = translate_host_path_to_container(&project_path);
         let issue_id = issue.id;
         let issue_title = issue.title.clone();
@@ -721,15 +774,21 @@ impl PipelineRunner {
         // Update status to Running and move issue to InProgress
         {
             let need_move = issue.column != IssueColumn::InProgress;
-            let run = db.call(move |db| {
-                let run = db.update_pipeline_run(run_id, &PipelineStatus::Running, None, None)?;
-                if need_move {
-                    if let Err(e) = db.move_issue(issue_id, &IssueColumn::InProgress, 0) {
-                        eprintln!("[pipeline] run_id={}: failed to move issue to InProgress: {:#}", run_id, e);
+            let run = db
+                .call(move |db| {
+                    let run =
+                        db.update_pipeline_run(run_id, &PipelineStatus::Running, None, None)?;
+                    if need_move
+                        && let Err(e) = db.move_issue(issue_id, &IssueColumn::InProgress, 0)
+                    {
+                        eprintln!(
+                            "[pipeline] run_id={}: failed to move issue to InProgress: {:#}",
+                            run_id, e
+                        );
                     }
-                }
-                Ok(run)
-            }).await?;
+                    Ok(run)
+                })
+                .await?;
             broadcast_message(&tx, &WsMessage::PipelineStarted { run });
             if issue.column != IssueColumn::InProgress {
                 broadcast_message(
@@ -759,8 +818,14 @@ impl PipelineRunner {
                         // Store branch name in DB and broadcast
                         {
                             let name_clone = name.clone();
-                            if let Err(e) = db.call(move |db| db.update_pipeline_branch(run_id, &name_clone)).await {
-                                eprintln!("[pipeline] run_id={}: failed to update pipeline branch: {:#}", run_id, e);
+                            if let Err(e) = db
+                                .call(move |db| db.update_pipeline_branch(run_id, &name_clone))
+                                .await
+                            {
+                                eprintln!(
+                                    "[pipeline] run_id={}: failed to update pipeline branch: {:#}",
+                                    run_id, e
+                                );
                             }
                         }
                         broadcast_message(
@@ -777,12 +842,18 @@ impl PipelineRunner {
                             "[pipeline] run_id={}: failed to create git branch: {:#}. Continuing without branch isolation.",
                             run_id, e
                         );
-                        broadcast_message(&tx, &WsMessage::AgentSignal {
-                            run_id,
-                            task_id: 0,
-                            signal_type: SignalType::Blocker,
-                            content: format!("[pipeline] Git branch creation failed, continuing without branch isolation: {}", e),
-                        });
+                        broadcast_message(
+                            &tx,
+                            &WsMessage::AgentSignal {
+                                run_id,
+                                task_id: 0,
+                                signal_type: SignalType::Blocker,
+                                content: format!(
+                                    "[pipeline] Git branch creation failed, continuing without branch isolation: {}",
+                                    e
+                                ),
+                            },
+                        );
                         None
                     }
                 }
@@ -790,9 +861,8 @@ impl PipelineRunner {
 
             // Construct real planner and task runner for the agent team
             let planner = Planner::new(&project_path);
-            let task_runner: Arc<dyn TaskRunner> = Arc::new(
-                AgentExecutor::new(&project_path, db.clone(), tx.clone())
-            );
+            let task_runner: Arc<dyn TaskRunner> =
+                Arc::new(AgentExecutor::new(&project_path, db.clone(), tx.clone()));
 
             // Step 2: Try agent team pipeline first, fall back to forge pipeline
             let team_result = Self::execute_agent_team(
@@ -838,15 +908,18 @@ impl PipelineRunner {
                         "[pipeline] run_id={}: agent team failed unexpectedly: {:#}",
                         run_id, e
                     );
-                    broadcast_message(&tx, &WsMessage::AgentSignal {
-                        run_id,
-                        task_id: 0,
-                        signal_type: SignalType::Blocker,
-                        content: format!(
-                            "[pipeline] Agent team execution failed, falling back to sequential pipeline: {}",
-                            e
-                        ),
-                    });
+                    broadcast_message(
+                        &tx,
+                        &WsMessage::AgentSignal {
+                            run_id,
+                            task_id: 0,
+                            signal_type: SignalType::Blocker,
+                            content: format!(
+                                "[pipeline] Agent team execution failed, falling back to sequential pipeline: {}",
+                                e
+                            ),
+                        },
+                    );
                     // Fall back to forge pipeline
                     Self::run_forge_fallback(
                         run_id,
@@ -870,12 +943,20 @@ impl PipelineRunner {
 
             // Check if already cancelled (e.g., by cancel() call)
             {
-                let is_cancelled = match db.call(move |db| {
-                    Ok(db.get_pipeline_run(run_id)?.map_or(false, |r| r.status == PipelineStatus::Cancelled))
-                }).await {
+                let is_cancelled = match db
+                    .call(move |db| {
+                        Ok(db
+                            .get_pipeline_run(run_id)?
+                            .is_some_and(|r| r.status == PipelineStatus::Cancelled))
+                    })
+                    .await
+                {
                     Ok(cancelled) => cancelled,
                     Err(e) => {
-                        eprintln!("[pipeline] run_id={}: DB error checking cancellation: {:#}", run_id, e);
+                        eprintln!(
+                            "[pipeline] run_id={}: DB error checking cancellation: {:#}",
+                            run_id, e
+                        );
                         return;
                     }
                 };
@@ -903,8 +984,16 @@ impl PipelineRunner {
                         match pr_result {
                             Ok(pr_url) => {
                                 let pr_url_clone = pr_url.clone();
-                                if let Err(e) = db.call(move |db| db.update_pipeline_pr_url(run_id, &pr_url_clone)).await {
-                                    eprintln!("[pipeline] run_id={}: failed to update pipeline PR URL: {:#}", run_id, e);
+                                if let Err(e) = db
+                                    .call(move |db| {
+                                        db.update_pipeline_pr_url(run_id, &pr_url_clone)
+                                    })
+                                    .await
+                                {
+                                    eprintln!(
+                                        "[pipeline] run_id={}: failed to update pipeline PR URL: {:#}",
+                                        run_id, e
+                                    );
                                 }
                                 broadcast_message(
                                     &tx,
@@ -912,7 +1001,10 @@ impl PipelineRunner {
                                 );
                             }
                             Err(e) => {
-                                eprintln!("[pipeline] run_id={}: PR creation failed (pipeline still completed): {:#}", run_id, e);
+                                eprintln!(
+                                    "[pipeline] run_id={}: PR creation failed (pipeline still completed): {:#}",
+                                    run_id, e
+                                );
                             }
                         }
                     }
@@ -959,15 +1051,20 @@ impl PipelineRunner {
                 }
                 Err(e) => {
                     let error_msg = format!("{:#}", e);
-                    match db.call({
-                        let error_msg = error_msg.clone();
-                        move |db| db.update_pipeline_run(
-                            run_id,
-                            &PipelineStatus::Failed,
-                            None,
-                            Some(&error_msg),
-                        )
-                    }).await {
+                    match db
+                        .call({
+                            let error_msg = error_msg.clone();
+                            move |db| {
+                                db.update_pipeline_run(
+                                    run_id,
+                                    &PipelineStatus::Failed,
+                                    None,
+                                    Some(&error_msg),
+                                )
+                            }
+                        })
+                        .await
+                    {
                         Ok(run) => broadcast_message(&tx, &WsMessage::PipelineFailed { run }),
                         Err(e) => {
                             eprintln!(
@@ -975,12 +1072,18 @@ impl PipelineRunner {
                                 run_id, e
                             );
                             // Still broadcast failure so UI doesn't show "running" forever
-                            broadcast_message(&tx, &WsMessage::AgentSignal {
-                                run_id,
-                                task_id: 0,
-                                signal_type: SignalType::Blocker,
-                                content: format!("[pipeline] Pipeline failed but could not persist error status: {}", e),
-                            });
+                            broadcast_message(
+                                &tx,
+                                &WsMessage::AgentSignal {
+                                    run_id,
+                                    task_id: 0,
+                                    signal_type: SignalType::Blocker,
+                                    content: format!(
+                                        "[pipeline] Pipeline failed but could not persist error status: {}",
+                                        e
+                                    ),
+                                },
+                            );
                         }
                     }
                     // Issue stays in InProgress on failure (error is visible on the card)
@@ -1149,13 +1252,19 @@ async fn execute_pipeline_streaming(
                 let phase_count = progress.phase_count;
                 let phase = progress.phase;
                 let iteration = progress.iteration;
-                if let Err(e) = db.call(move |db| {
-                    db.update_pipeline_progress(run_id, phase_count, phase, iteration)
-                }).await {
-                    broadcast_message(tx, &WsMessage::PipelineError {
-                        run_id,
-                        message: format!("Failed to update pipeline progress: {:#}", e),
-                    });
+                if let Err(e) = db
+                    .call(move |db| {
+                        db.update_pipeline_progress(run_id, phase_count, phase, iteration)
+                    })
+                    .await
+                {
+                    broadcast_message(
+                        tx,
+                        &WsMessage::PipelineError {
+                            run_id,
+                            message: format!("Failed to update pipeline progress: {:#}", e),
+                        },
+                    );
                 }
             }
 
@@ -1302,13 +1411,19 @@ async fn execute_pipeline_docker(
                 let phase_count = progress.phase_count;
                 let phase = progress.phase;
                 let iteration = progress.iteration;
-                if let Err(e) = db.call(move |db| {
-                    db.update_pipeline_progress(run_id, phase_count, phase, iteration)
-                }).await {
-                    broadcast_message(tx, &WsMessage::PipelineError {
-                        run_id,
-                        message: format!("Failed to update pipeline progress: {:#}", e),
-                    });
+                if let Err(e) = db
+                    .call(move |db| {
+                        db.update_pipeline_progress(run_id, phase_count, phase, iteration)
+                    })
+                    .await
+                {
+                    broadcast_message(
+                        tx,
+                        &WsMessage::PipelineError {
+                            run_id,
+                            message: format!("Failed to update pipeline progress: {:#}", e),
+                        },
+                    );
                 }
 
                 let percent = compute_percent(&progress);
@@ -1478,13 +1593,26 @@ async fn process_phase_event(
     match event {
         PhaseEventJson::Started { phase, wave } => {
             let phase_owned = phase.clone();
-            if let Err(e) = db.call(move |db| {
-                db.upsert_pipeline_phase(run_id, &phase_owned, &phase_owned, "running", None, None)
-            }).await {
-                broadcast_message(tx, &WsMessage::PipelineError {
-                    run_id,
-                    message: format!("Failed to upsert pipeline phase (started): {:#}", e),
-                });
+            if let Err(e) = db
+                .call(move |db| {
+                    db.upsert_pipeline_phase(
+                        run_id,
+                        &phase_owned,
+                        &phase_owned,
+                        "running",
+                        None,
+                        None,
+                    )
+                })
+                .await
+            {
+                broadcast_message(
+                    tx,
+                    &WsMessage::PipelineError {
+                        run_id,
+                        message: format!("Failed to upsert pipeline phase (started): {:#}", e),
+                    },
+                );
             }
             broadcast_message(
                 tx,
@@ -1505,20 +1633,26 @@ async fn process_phase_event(
             let phase_owned = phase.clone();
             let iteration_val = *iteration as i32;
             let budget_val = *budget as i32;
-            if let Err(e) = db.call(move |db| {
-                db.upsert_pipeline_phase(
-                    run_id,
-                    &phase_owned,
-                    &phase_owned,
-                    "running",
-                    Some(iteration_val),
-                    Some(budget_val),
-                )
-            }).await {
-                broadcast_message(tx, &WsMessage::PipelineError {
-                    run_id,
-                    message: format!("Failed to upsert pipeline phase (progress): {:#}", e),
-                });
+            if let Err(e) = db
+                .call(move |db| {
+                    db.upsert_pipeline_phase(
+                        run_id,
+                        &phase_owned,
+                        &phase_owned,
+                        "running",
+                        Some(iteration_val),
+                        Some(budget_val),
+                    )
+                })
+                .await
+            {
+                broadcast_message(
+                    tx,
+                    &WsMessage::PipelineError {
+                        run_id,
+                        message: format!("Failed to upsert pipeline phase (progress): {:#}", e),
+                    },
+                );
             }
             broadcast_message(
                 tx,
@@ -1538,13 +1672,26 @@ async fn process_phase_event(
             let status_str = if success { "completed" } else { "failed" };
             let phase_owned = phase.clone();
             let status_owned = status_str.to_string();
-            if let Err(e) = db.call(move |db| {
-                db.upsert_pipeline_phase(run_id, &phase_owned, &phase_owned, &status_owned, None, None)
-            }).await {
-                broadcast_message(tx, &WsMessage::PipelineError {
-                    run_id,
-                    message: format!("Failed to upsert pipeline phase (completed): {:#}", e),
-                });
+            if let Err(e) = db
+                .call(move |db| {
+                    db.upsert_pipeline_phase(
+                        run_id,
+                        &phase_owned,
+                        &phase_owned,
+                        &status_owned,
+                        None,
+                        None,
+                    )
+                })
+                .await
+            {
+                broadcast_message(
+                    tx,
+                    &WsMessage::PipelineError {
+                        run_id,
+                        message: format!("Failed to upsert pipeline phase (completed): {:#}", e),
+                    },
+                );
             }
             broadcast_message(
                 tx,
@@ -1609,9 +1756,9 @@ pub fn is_valid_transition(from: &PipelineStatus, to: &PipelineStatus) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::{Path, PathBuf};
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
 
     use super::super::agent_executor::TaskRunner;
     use super::super::db::{DbHandle, FactoryDb};
@@ -1852,21 +1999,26 @@ mod tests {
     #[tokio::test]
     async fn test_pipeline_cancel_kills_process() {
         let _lock = ENV_MUTEX.lock().await;
+        // Use an isolated temp dir so the planner's `find` doesn't scan all of /tmp
+        // (which causes permission-denied delays on CI runners).
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let tmp_path = tmp_dir.path().to_str().unwrap();
         // Create a script that:
-        // - Exits with error immediately when called with --system (planner call) so it falls back fast
-        // - Sleeps for 60s otherwise (pipeline execution) so we can cancel it
-        let script_path = "/tmp/forge_test_sleep_cancel.sh";
+        // - Exits with error when called with --output-format (planner call) so it falls back fast
+        // - Sleeps for 60s otherwise (pipeline execution via `claude --print <prompt>`) so we can cancel it
+        // Note: planner uses `claude --print --output-format text -p ...` while execution uses `claude --print <prompt>`
+        let script_path = tmp_dir.path().join("forge_test_sleep_cancel.sh");
         std::fs::write(
-            script_path,
-            "#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in --system) exit 1;; esac; done\nsleep 60\n",
+            &script_path,
+            "#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in --output-format) exit 1;; esac; done\nsleep 60\n",
         )
         .unwrap();
-        std::fs::set_permissions(script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        unsafe { std::env::set_var("CLAUDE_CMD", script_path) };
+        unsafe { std::env::set_var("CLAUDE_CMD", script_path.to_str().unwrap()) };
 
         let db = FactoryDb::new_in_memory().unwrap();
-        let project = db.create_project("test", "/tmp").unwrap();
+        let project = db.create_project("test", tmp_path).unwrap();
         let issue = db
             .create_issue(project.id, "Cancel test", "", &IssueColumn::Backlog)
             .unwrap();
@@ -1875,7 +2027,7 @@ mod tests {
         let db = DbHandle::new(db);
         let (tx, _rx) = broadcast::channel(16);
 
-        let runner = PipelineRunner::new("/tmp", None);
+        let runner = PipelineRunner::new(tmp_path, None);
         runner
             .start_run(run.id, &issue, db.clone(), tx.clone())
             .await
@@ -1910,26 +2062,28 @@ mod tests {
 
         // Clean up
         unsafe { std::env::remove_var("CLAUDE_CMD") };
-        let _ = std::fs::remove_file(script_path);
     }
 
     #[tokio::test]
     async fn test_pipeline_completed_cleans_up_process() {
         let _lock = ENV_MUTEX.lock().await;
-        // Create a script that exits with error for planner calls (--system arg)
+        // Use an isolated temp dir so the planner's `find` doesn't scan all of /tmp
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let tmp_path = tmp_dir.path().to_str().unwrap();
+        // Create a script that exits with error for planner calls (--output-format arg)
         // and exits immediately for pipeline calls (echo-like behavior)
-        let script_path = "/tmp/forge_test_echo_cleanup.sh";
+        let script_path = tmp_dir.path().join("forge_test_echo_cleanup.sh");
         std::fs::write(
-            script_path,
-            "#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in --system) exit 1;; esac; done\necho done\n",
+            &script_path,
+            "#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in --output-format) exit 1;; esac; done\necho done\n",
         )
         .unwrap();
-        std::fs::set_permissions(script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        unsafe { std::env::set_var("CLAUDE_CMD", script_path) };
+        unsafe { std::env::set_var("CLAUDE_CMD", script_path.to_str().unwrap()) };
 
         let db = FactoryDb::new_in_memory().unwrap();
-        let project = db.create_project("test", "/tmp").unwrap();
+        let project = db.create_project("test", tmp_path).unwrap();
         let issue = db
             .create_issue(project.id, "Cleanup test", "", &IssueColumn::Backlog)
             .unwrap();
@@ -1938,7 +2092,7 @@ mod tests {
         let db = DbHandle::new(db);
         let (tx, _rx) = broadcast::channel(16);
 
-        let runner = PipelineRunner::new("/tmp", None);
+        let runner = PipelineRunner::new(tmp_path, None);
         runner
             .start_run(run.id, &issue, db.clone(), tx)
             .await
@@ -1961,7 +2115,6 @@ mod tests {
 
         // Clean up
         unsafe { std::env::remove_var("CLAUDE_CMD") };
-        let _ = std::fs::remove_file(script_path);
     }
 
     #[tokio::test]
@@ -2036,15 +2189,36 @@ mod tests {
             .unwrap();
         let run = db.create_pipeline_run(issue.id).unwrap();
         let team = db
-            .create_agent_team(run.id, &ExecutionStrategy::Parallel, &IsolationStrategy::Worktree, "test reasoning")
+            .create_agent_team(
+                run.id,
+                &ExecutionStrategy::Parallel,
+                &IsolationStrategy::Worktree,
+                "test reasoning",
+            )
             .unwrap();
 
         // Create two tasks: wave 0 and wave 1
         let task_w0 = db
-            .create_agent_task(team.id, "task-w0", "wave 0 task", &AgentRole::Coder, 0, &[], &IsolationStrategy::Shared)
+            .create_agent_task(
+                team.id,
+                "task-w0",
+                "wave 0 task",
+                &AgentRole::Coder,
+                0,
+                &[],
+                &IsolationStrategy::Shared,
+            )
             .unwrap();
         let task_w1 = db
-            .create_agent_task(team.id, "task-w1", "wave 1 task", &AgentRole::Coder, 1, &[], &IsolationStrategy::Shared)
+            .create_agent_task(
+                team.id,
+                "task-w1",
+                "wave 1 task",
+                &AgentRole::Coder,
+                1,
+                &[],
+                &IsolationStrategy::Shared,
+            )
             .unwrap();
 
         // Set wave 0 task to Failed
@@ -2053,7 +2227,10 @@ mod tests {
         // Verify wave 1 task is still Pending (never started)
         let task_w1_updated = db.get_agent_task(task_w1.id)?;
         assert_eq!(task_w1_updated.status, AgentTaskStatus::Pending);
-        assert!(task_w1_updated.started_at.is_none(), "Wave 1 task should not have been started");
+        assert!(
+            task_w1_updated.started_at.is_none(),
+            "Wave 1 task should not have been started"
+        );
 
         // Verify the failed task has its error recorded
         let task_w0_updated = db.get_agent_task(task_w0.id)?;
@@ -2091,10 +2268,16 @@ mod tests {
 
     #[test]
     fn test_try_parse_phase_event_progress() {
-        let line = r#"{"type": "progress", "phase": "3", "iteration": 5, "budget": 10, "percent": 50}"#;
+        let line =
+            r#"{"type": "progress", "phase": "3", "iteration": 5, "budget": 10, "percent": 50}"#;
         let event = try_parse_phase_event(line).expect("should parse Progress event");
         match event {
-            PhaseEventJson::Progress { phase, iteration, budget, percent } => {
+            PhaseEventJson::Progress {
+                phase,
+                iteration,
+                budget,
+                percent,
+            } => {
                 assert_eq!(phase, "3");
                 assert_eq!(iteration, 5);
                 assert_eq!(budget, 10);
@@ -2109,7 +2292,12 @@ mod tests {
         let line = r#"[2024-01-15T10:30:00Z] {"type": "progress", "phase": "1", "iteration": 2, "budget": 5}"#;
         let event = try_parse_phase_event(line).expect("should parse embedded JSON");
         match event {
-            PhaseEventJson::Progress { phase, iteration, budget, .. } => {
+            PhaseEventJson::Progress {
+                phase,
+                iteration,
+                budget,
+                ..
+            } => {
                 assert_eq!(phase, "1");
                 assert_eq!(iteration, 2);
                 assert_eq!(budget, 5);
@@ -2205,7 +2393,9 @@ mod tests {
 
     impl MockPlanProvider {
         fn new(plan: Result<PlanResponse>) -> Self {
-            Self { plan: std::sync::Mutex::new(Some(plan)) }
+            Self {
+                plan: std::sync::Mutex::new(Some(plan)),
+            }
         }
         fn returning_plan(plan: PlanResponse) -> Self {
             Self::new(Ok(plan))
@@ -2223,7 +2413,10 @@ mod tests {
             _issue_description: &str,
             _issue_labels: &[String],
         ) -> Result<PlanResponse> {
-            self.plan.lock().unwrap().take()
+            self.plan
+                .lock()
+                .unwrap()
+                .take()
                 .unwrap_or_else(|| Err(anyhow::anyhow!("MockPlanProvider: plan already consumed")))
         }
     }
@@ -2245,13 +2438,19 @@ mod tests {
 
         #[allow(dead_code)]
         fn with_task_result(self, task_name: &str, success: bool) -> Self {
-            self.results.lock().unwrap().insert(task_name.to_string(), success);
+            self.results
+                .lock()
+                .unwrap()
+                .insert(task_name.to_string(), success);
             self
         }
 
         #[allow(dead_code)]
         fn with_merge_result(self, branch: &str, success: bool) -> Self {
-            self.merge_results.lock().unwrap().insert(branch.to_string(), success);
+            self.merge_results
+                .lock()
+                .unwrap()
+                .insert(branch.to_string(), success);
             self
         }
     }
@@ -2265,7 +2464,10 @@ mod tests {
             _base_branch: &str,
         ) -> Result<(PathBuf, String)> {
             let branch = format!("mock-branch-{}", task.id);
-            Ok((PathBuf::from(format!("/tmp/mock-worktree-{}", task.id)), branch))
+            Ok((
+                PathBuf::from(format!("/tmp/mock-worktree-{}", task.id)),
+                branch,
+            ))
         }
 
         async fn cleanup_worktree(&self, _worktree_path: &Path) -> Result<()> {
@@ -2309,12 +2511,16 @@ mod tests {
     fn setup_test_db() -> (DbHandle, i64) {
         let db = FactoryDb::new_in_memory().unwrap();
         let project = db.create_project("test", "/tmp/test-project").unwrap();
-        let issue = db.create_issue(project.id, "Test issue", "Test desc", &IssueColumn::Backlog).unwrap();
+        let issue = db
+            .create_issue(project.id, "Test issue", "Test desc", &IssueColumn::Backlog)
+            .unwrap();
         let run = db.create_pipeline_run(issue.id).unwrap();
         let db = DbHandle::new(db);
         {
             let guard = db.lock_sync().unwrap();
-            guard.update_pipeline_run(run.id, &PipelineStatus::Running, None, None).unwrap();
+            guard
+                .update_pipeline_run(run.id, &PipelineStatus::Running, None, None)
+                .unwrap();
         }
         (db, run.id)
     }
@@ -2337,9 +2543,20 @@ mod tests {
         let git_locks = GitLockMap::default();
 
         let result = PipelineRunner::execute_agent_team(
-            "/tmp/test-project", run_id, "Test", "desc", &[], &Some("main".to_string()),
-            &db, &tx, &git_locks, &planner, &runner,
-        ).await.unwrap();
+            "/tmp/test-project",
+            run_id,
+            "Test",
+            "desc",
+            &[],
+            &Some("main".to_string()),
+            &db,
+            &tx,
+            &git_locks,
+            &planner,
+            &runner,
+        )
+        .await
+        .unwrap();
 
         assert!(matches!(result, PlanOutcome::FallbackToForge));
     }
@@ -2360,9 +2577,20 @@ mod tests {
         let git_locks = GitLockMap::default();
 
         let result = PipelineRunner::execute_agent_team(
-            "/tmp/test-project", run_id, "Test", "desc", &[], &Some("main".to_string()),
-            &db, &tx, &git_locks, &planner, &runner,
-        ).await.unwrap();
+            "/tmp/test-project",
+            run_id,
+            "Test",
+            "desc",
+            &[],
+            &Some("main".to_string()),
+            &db,
+            &tx,
+            &git_locks,
+            &planner,
+            &runner,
+        )
+        .await
+        .unwrap();
 
         assert!(matches!(result, PlanOutcome::TeamExecuted(_)));
     }
@@ -2386,9 +2614,20 @@ mod tests {
         let git_locks = GitLockMap::default();
 
         let result = PipelineRunner::execute_agent_team(
-            "/tmp/test-project", run_id, "Test", "desc", &[], &Some("main".to_string()),
-            &db, &tx, &git_locks, &planner, &runner,
-        ).await.unwrap();
+            "/tmp/test-project",
+            run_id,
+            "Test",
+            "desc",
+            &[],
+            &Some("main".to_string()),
+            &db,
+            &tx,
+            &git_locks,
+            &planner,
+            &runner,
+        )
+        .await
+        .unwrap();
 
         assert!(matches!(result, PlanOutcome::TeamExecuted(_)));
     }
@@ -2402,9 +2641,20 @@ mod tests {
         let git_locks = GitLockMap::default();
 
         let result = PipelineRunner::execute_agent_team(
-            "/tmp/test-project", run_id, "Test", "desc", &[], &Some("main".to_string()),
-            &db, &tx, &git_locks, &planner, &runner,
-        ).await.unwrap();
+            "/tmp/test-project",
+            run_id,
+            "Test",
+            "desc",
+            &[],
+            &Some("main".to_string()),
+            &db,
+            &tx,
+            &git_locks,
+            &planner,
+            &runner,
+        )
+        .await
+        .unwrap();
 
         assert!(matches!(result, PlanOutcome::FallbackToForge));
     }

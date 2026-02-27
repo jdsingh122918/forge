@@ -33,7 +33,7 @@ impl OrchestratorUI {
     /// # Arguments
     /// * `total_phases` — total number of phases in the run, sizes the phase bar
     /// * `verbose` — when `true`, per-step and thinking output is printed;
-    ///               when `false` only tool-use lines are shown
+    ///   when `false` only tool-use lines are shown
     ///
     /// Call this once at orchestrator startup, before `start_phase`.
     pub fn new(total_phases: u64, verbose: bool) -> Self {

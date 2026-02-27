@@ -6,12 +6,31 @@ import { IssueCard } from './IssueCard';
 import { AgentTeamPanel } from './AgentTeamPanel';
 import { VerificationPanel } from './VerificationPanel';
 
+interface MergeStatus {
+  wave: number;
+  started: boolean;
+  conflicts?: boolean;
+  conflictFiles?: string[];
+}
+
+interface VerificationResult {
+  run_id: number;
+  task_id: number;
+  verification_type: string;
+  passed: boolean;
+  summary: string;
+  screenshots: string[];
+  details: any;
+}
+
 interface ColumnProps {
   column: ColumnView;
   onIssueClick: (issueId: number) => void;
   onTriggerPipeline?: (issueId: number) => void;
   agentTeams?: Map<number, AgentTeamDetail>;
   agentEvents?: Map<number, AgentEvent[]>;
+  mergeStatus?: MergeStatus | null;
+  verificationResults?: VerificationResult[];
   headerAction?: ReactNode;
   topSlot?: ReactNode;
 }
@@ -41,7 +60,7 @@ function formatElapsedFromStr(startedAt: string | null | undefined): string {
   return `${minutes}m ${secs}s`;
 }
 
-export function Column({ column, onIssueClick, onTriggerPipeline, agentTeams, agentEvents, headerAction, topSlot }: ColumnProps) {
+export function Column({ column, onIssueClick, onTriggerPipeline, agentTeams, agentEvents, mergeStatus, verificationResults, headerAction, topSlot }: ColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: column.name });
 
   const itemIds = column.issues.map((item) => item.issue.id.toString());
@@ -83,6 +102,8 @@ export function Column({ column, onIssueClick, onTriggerPipeline, agentTeams, ag
                     teamDetail={teamDetail}
                     agentEvents={agentEvents}
                     elapsedTime={formatElapsedFromStr(item.active_run?.started_at)}
+                    mergeStatus={mergeStatus}
+                    verificationResults={verificationResults}
                   />
                 </div>
               );

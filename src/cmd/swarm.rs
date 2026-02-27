@@ -20,6 +20,7 @@ pub struct SwarmStatus {
 /// Returns a value in `[0.0, 100.0]`. Returns `0.0` when `total` is zero to
 /// avoid division-by-zero. This is pure logic that can be unit-tested without
 /// external processes.
+#[allow(dead_code)]
 pub fn completion_pct(completed: usize, total: usize) -> f64 {
     if total > 0 {
         (completed as f64 / total as f64) * 100.0
@@ -65,7 +66,6 @@ pub fn validate_arbiter_confidence(value: f64) -> Result<()> {
         )
     }
 }
-
 
 /// Show current swarm execution status
 pub fn cmd_swarm_status(project_dir: &std::path::Path) -> Result<()> {
@@ -240,9 +240,7 @@ pub async fn cmd_swarm(
 
     // Build review config
     let review_enabled = review.is_some();
-    let review_specialists: Vec<String> = review
-        .map(expand_review_specialists)
-        .unwrap_or_default();
+    let review_specialists: Vec<String> = review.map(expand_review_specialists).unwrap_or_default();
 
     let dag_review_config = ReviewConfig {
         enabled: review_enabled,
@@ -348,8 +346,7 @@ pub async fn cmd_swarm(
         });
         println!(
             "{}",
-            serde_json::to_string(&init_state)
-                .expect("serde_json::Value is always serializable")
+            serde_json::to_string(&init_state).expect("serde_json::Value is always serializable")
         );
     }
 
@@ -405,8 +402,7 @@ pub async fn cmd_swarm(
         });
         println!(
             "{}",
-            serde_json::to_string(&final_state)
-                .expect("serde_json::Value is always serializable")
+            serde_json::to_string(&final_state).expect("serde_json::Value is always serializable")
         );
     }
 
@@ -536,10 +532,7 @@ mod tests {
         assert!(matches!(parse_backend_key("tmux"), SwarmBackend::Tmux));
         assert!(matches!(parse_backend_key("iterm2"), SwarmBackend::Iterm2));
         assert!(matches!(parse_backend_key("auto"), SwarmBackend::Auto));
-        assert!(matches!(
-            parse_backend_key("unknown"),
-            SwarmBackend::Auto
-        ));
+        assert!(matches!(parse_backend_key("unknown"), SwarmBackend::Auto));
     }
 
     #[test]

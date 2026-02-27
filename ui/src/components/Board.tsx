@@ -11,10 +11,29 @@ import type { DragEndEvent } from '@dnd-kit/core';
 import type { BoardView, IssueColumn, AgentTeamDetail, AgentEvent } from '../types';
 import { Column } from './Column';
 
+interface MergeStatus {
+  wave: number;
+  started: boolean;
+  conflicts?: boolean;
+  conflictFiles?: string[];
+}
+
+interface VerificationResult {
+  run_id: number;
+  task_id: number;
+  verification_type: string;
+  passed: boolean;
+  summary: string;
+  screenshots: string[];
+  details: any;
+}
+
 interface BoardProps {
   board: BoardView;
   agentTeams?: Map<number, AgentTeamDetail>;
   agentEvents?: Map<number, AgentEvent[]>;
+  mergeStatus?: MergeStatus | null;
+  verificationResults?: VerificationResult[];
   onMoveIssue: (issueId: number, column: IssueColumn, position: number) => void;
   onIssueClick: (issueId: number) => void;
   onTriggerPipeline?: (issueId: number) => void;
@@ -22,7 +41,7 @@ interface BoardProps {
   backlogTopSlot?: ReactNode;
 }
 
-export function Board({ board, agentTeams, agentEvents, onMoveIssue, onIssueClick, onTriggerPipeline, backlogHeaderAction, backlogTopSlot }: BoardProps) {
+export function Board({ board, agentTeams, agentEvents, mergeStatus, verificationResults, onMoveIssue, onIssueClick, onTriggerPipeline, backlogHeaderAction, backlogTopSlot }: BoardProps) {
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 8 },
@@ -74,6 +93,8 @@ export function Board({ board, agentTeams, agentEvents, onMoveIssue, onIssueClic
             onTriggerPipeline={onTriggerPipeline}
             agentTeams={agentTeams}
             agentEvents={agentEvents}
+            mergeStatus={column.name === 'in_progress' ? mergeStatus : undefined}
+            verificationResults={column.name === 'in_progress' ? verificationResults : undefined}
             headerAction={column.name === 'backlog' ? backlogHeaderAction : undefined}
             topSlot={column.name === 'backlog' ? backlogTopSlot : undefined}
           />
