@@ -1,0 +1,1429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Forge Mission Control — Terminal Matrix</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg: #000000;
+  --pane-bg: #0a0a0a;
+  --border: #333333;
+  --border-active: #3fb950;
+  --text-primary: #c0c0c0;
+  --text-secondary: #666666;
+  --green: #3fb950;
+  --green-classic: #00ff41;
+  --error: #f85149;
+  --warning: #d29922;
+  --info: #58a6ff;
+  --thinking: #8b949e;
+  --action: #39d353;
+  --status-bg: #1a2b1a;
+  --status-text: #3fb950;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: default;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* === STATUS BARS === */
+.status-bar {
+  height: 22px;
+  background: var(--status-bg);
+  color: var(--status-text);
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  padding: 0 8px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.status-bar-top {
+  justify-content: space-between;
+}
+
+.status-bar-bottom {
+  justify-content: space-between;
+  border-top: 1px solid #1a3a1a;
+}
+
+.status-left, .status-center, .status-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-center {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.status-bar .separator {
+  color: #2a4a2a;
+}
+
+.status-bar kbd {
+  color: #5a9a5a;
+}
+
+/* === MAIN LAYOUT === */
+.layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.panes-container {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  position: relative;
+}
+
+/* === PANES === */
+.pane {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  background: var(--pane-bg);
+  min-height: 0;
+  position: relative;
+  transition: border-color 0.15s ease;
+}
+
+.pane.active {
+  border-color: var(--border-active);
+}
+
+.pane-left {
+  width: 30%;
+  flex-shrink: 0;
+}
+
+.pane-right {
+  flex: 1;
+  border-left: none;
+}
+
+.pane-bottom-wrapper {
+  width: 100%;
+  flex-shrink: 0;
+}
+
+.pane-bottom {
+  height: 160px;
+  border-top: none;
+  transition: height 0.2s ease, border-color 0.15s ease;
+  overflow: hidden;
+}
+
+.pane-bottom.collapsed {
+  height: 0;
+  border: none;
+}
+
+.upper-panes {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.pane-divider-h {
+  width: 1px;
+  background: var(--border);
+  cursor: col-resize;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.pane-divider-h:hover {
+  background: var(--text-secondary);
+}
+
+.pane-divider-v {
+  height: 1px;
+  background: var(--border);
+  cursor: row-resize;
+  flex-shrink: 0;
+}
+
+.pane-divider-v:hover {
+  background: var(--text-secondary);
+}
+
+/* === PANE HEADERS === */
+.pane-title {
+  height: 20px;
+  background: #111111;
+  border-bottom: 1px solid #222222;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.pane-title .label {
+  color: var(--green);
+  font-weight: 500;
+}
+
+/* === LEFT PANE: COMMAND & QUEUE === */
+.command-section {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.terminal-prompt-area {
+  padding: 8px;
+  flex-shrink: 0;
+  max-height: 40%;
+  overflow-y: auto;
+}
+
+.terminal-prompt-area::-webkit-scrollbar {
+  width: 4px;
+}
+
+.terminal-prompt-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.terminal-prompt-area::-webkit-scrollbar-thumb {
+  background: #333;
+}
+
+.prompt-history {
+  margin-bottom: 4px;
+}
+
+.prompt-history-line {
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.prompt-history-line .cmd {
+  color: var(--text-primary);
+}
+
+.prompt-history-line .output {
+  color: var(--green);
+}
+
+.prompt-history-line .err-output {
+  color: var(--error);
+}
+
+.prompt-line {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.prompt-prefix {
+  color: var(--green);
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.prompt-input {
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  outline: none;
+  flex: 1;
+  caret-color: var(--green);
+  padding: 0;
+  margin: 0;
+}
+
+.queue-divider {
+  height: 1px;
+  background: #222222;
+  margin: 0 8px;
+}
+
+.queue-section {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  min-height: 0;
+}
+
+.queue-section::-webkit-scrollbar {
+  width: 4px;
+}
+
+.queue-section::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.queue-section::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 0;
+}
+
+/* === RIGHT PANE: AGENT MONITOR === */
+.agent-monitor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.agent-tabs {
+  display: flex;
+  height: 22px;
+  background: #0d0d0d;
+  border-bottom: 1px solid #222222;
+  flex-shrink: 0;
+  overflow-x: auto;
+  user-select: none;
+}
+
+.agent-tabs::-webkit-scrollbar {
+  height: 0;
+}
+
+.agent-tab {
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-right: 1px solid #1a1a1a;
+  white-space: nowrap;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.agent-tab:hover {
+  background: #161616;
+  color: var(--text-primary);
+}
+
+.agent-tab.active {
+  background: var(--pane-bg);
+  color: var(--green);
+  border-bottom: 1px solid var(--green);
+  margin-bottom: -1px;
+}
+
+.agent-tab .tab-num {
+  color: var(--text-secondary);
+  margin-right: 4px;
+}
+
+.agent-tab.active .tab-num {
+  color: #2a7a3a;
+}
+
+.agent-tab .tab-status {
+  margin-left: 6px;
+  font-size: 10px;
+}
+
+.agent-title-bar {
+  height: 20px;
+  background: #111111;
+  border-bottom: 1px solid #222222;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+  font-size: 11px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.agent-output {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 8px;
+  min-height: 0;
+  font-size: 12px;
+}
+
+.agent-output::-webkit-scrollbar {
+  width: 4px;
+}
+
+.agent-output::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.agent-output::-webkit-scrollbar-thumb {
+  background: #333;
+}
+
+.agent-line {
+  margin-bottom: 1px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  animation: fadeIn 0.15s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* === BOTTOM PANE: SYSTEM LOG === */
+.system-log {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.log-output {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px;
+  min-height: 0;
+  font-size: 11px;
+}
+
+.log-output::-webkit-scrollbar {
+  width: 4px;
+}
+
+.log-output::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.log-output::-webkit-scrollbar-thumb {
+  background: #333;
+}
+
+.log-line {
+  margin-bottom: 0;
+  white-space: pre-wrap;
+  animation: fadeIn 0.15s ease;
+}
+
+/* === KEYBOARD SHORTCUTS OVERLAY === */
+.shortcuts-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.85);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.shortcuts-overlay.visible {
+  display: flex;
+}
+
+.shortcuts-box {
+  background: #111111;
+  border: 1px solid var(--border);
+  padding: 0;
+  max-width: 500px;
+  width: 90%;
+}
+
+.shortcuts-header {
+  padding: 8px 12px;
+  background: var(--status-bg);
+  color: var(--green);
+  font-weight: 500;
+  font-size: 12px;
+  border-bottom: 1px solid #222;
+  display: flex;
+  justify-content: space-between;
+}
+
+.shortcuts-header .close-hint {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+.shortcuts-body {
+  padding: 12px;
+}
+
+.shortcuts-group {
+  margin-bottom: 12px;
+}
+
+.shortcuts-group:last-child {
+  margin-bottom: 0;
+}
+
+.shortcuts-group-title {
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 6px;
+}
+
+.shortcut-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 0;
+  font-size: 12px;
+}
+
+.shortcut-key {
+  color: var(--green);
+  min-width: 100px;
+}
+
+.shortcut-desc {
+  color: var(--text-secondary);
+}
+
+.prompt-input::placeholder {
+  color: transparent;
+}
+
+::selection {
+  background: #264f78;
+  color: #ffffff;
+}
+</style>
+</head>
+<body>
+<div class="layout">
+  <!-- TOP STATUS BAR -->
+  <div class="status-bar status-bar-top">
+    <div class="status-left">
+      <span>forge@mission-ctrl</span>
+    </div>
+    <div class="status-center" id="status-center-stats"></div>
+    <div class="status-right">
+      <span id="clock">00:00:00</span>
+    </div>
+  </div>
+
+  <!-- MAIN PANES -->
+  <div class="panes-container" style="flex-direction: column;">
+    <div class="upper-panes">
+      <!-- LEFT PANE -->
+      <div class="pane pane-left active" id="pane-left" onclick="setActivePane('pane-left')">
+        <div class="pane-title"><span class="label">Command &amp; Queue</span></div>
+        <div class="command-section">
+          <div class="terminal-prompt-area" id="terminal-prompt-area">
+            <div id="prompt-history"></div>
+            <div class="prompt-line">
+              <span class="prompt-prefix">forge>&nbsp;</span>
+              <input type="text" class="prompt-input" id="prompt-input" spellcheck="false" autocomplete="off">
+            </div>
+          </div>
+          <div class="queue-divider"></div>
+          <div class="queue-section" id="queue-section"></div>
+        </div>
+      </div>
+
+      <div class="pane-divider-h"></div>
+
+      <!-- RIGHT PANE -->
+      <div class="pane pane-right" id="pane-right" onclick="setActivePane('pane-right')">
+        <div class="agent-monitor">
+          <div class="agent-tabs" id="agent-tabs"></div>
+          <div class="agent-title-bar" id="agent-title-bar"></div>
+          <div class="agent-output" id="agent-output"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pane-divider-v" id="bottom-divider"></div>
+
+    <!-- BOTTOM PANE -->
+    <div class="pane-bottom-wrapper">
+      <div class="pane pane-bottom" id="pane-bottom" onclick="setActivePane('pane-bottom')">
+        <div class="pane-title"><span class="label">System Log</span></div>
+        <div class="system-log">
+          <div class="log-output" id="log-output"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BOTTOM STATUS BAR -->
+  <div class="status-bar status-bar-bottom">
+    <div class="status-left">
+      <span><kbd>^N</kbd> new</span>
+      <span class="separator">|</span>
+      <span><kbd>^P</kbd> projects</span>
+      <span class="separator">|</span>
+      <span><kbd>^Q</kbd> queue</span>
+      <span class="separator">|</span>
+      <span><kbd>^L</kbd> log</span>
+      <span class="separator">|</span>
+      <span><kbd>?</kbd> help</span>
+    </div>
+    <div class="status-right">
+      <span id="active-pane-label">pane:command</span>
+    </div>
+  </div>
+</div>
+
+<!-- SHORTCUTS OVERLAY -->
+<div class="shortcuts-overlay" id="shortcuts-overlay">
+  <div class="shortcuts-box">
+    <div class="shortcuts-header">
+      <span>Keyboard Shortcuts</span>
+      <span class="close-hint">press ? or Esc to close</span>
+    </div>
+    <div class="shortcuts-body" id="shortcuts-body"></div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// UTILITY
+// ============================================================
+function esc(s) {
+  var d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function el(id) { return document.getElementById(id); }
+
+function mkEl(tag, attrs, children) {
+  var e = document.createElement(tag);
+  if (attrs) {
+    Object.keys(attrs).forEach(function(k) {
+      if (k === 'className') e.className = attrs[k];
+      else if (k === 'onclick') e.onclick = attrs[k];
+      else if (k === 'style') e.style.cssText = attrs[k];
+      else e.setAttribute(k, attrs[k]);
+    });
+  }
+  if (typeof children === 'string') e.textContent = children;
+  else if (Array.isArray(children)) children.forEach(function(c) { if (c) e.appendChild(c); });
+  return e;
+}
+
+function mkSpan(cls, text) {
+  var s = document.createElement('span');
+  if (cls) s.className = cls;
+  s.textContent = text;
+  return s;
+}
+
+function padR(s, n) { while (s.length < n) s += ' '; return s; }
+function padL(s, n) { while (s.length < n) s = ' ' + s; return s; }
+
+function nowTimeStr() {
+  var now = new Date();
+  return String(now.getHours()).padStart(2, '0') + ':' +
+    String(now.getMinutes()).padStart(2, '0') + ':' +
+    String(now.getSeconds()).padStart(2, '0');
+}
+
+function fmtTime(seconds) {
+  var m = Math.floor(seconds / 60);
+  var s = seconds % 60;
+  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+
+// ============================================================
+// DATA
+// ============================================================
+var agents = [
+  {
+    id: '#142', issue: 'Add auth system', tab: 'auth-agent',
+    status: 'RUN', statusIcon: '\u25b6', type: 'coder',
+    phase: '3/5', phaseName: 'Implementation', time: 754,
+    lines: [
+      { tag: 'thinking', text: 'Analyzing authentication requirements from spec...' },
+      { tag: 'thinking', text: 'Project uses axum with tower middleware. JWT approach fits best.' },
+      { tag: 'action', text: 'Reading src/auth/mod.rs' },
+      { tag: 'action', text: 'Reading src/middleware/mod.rs' },
+      { tag: 'output', text: 'Created src/auth/jwt.rs (47 lines)' },
+      { tag: 'output', text: 'Created src/auth/middleware.rs (82 lines)' },
+      { tag: 'action', text: 'Reading src/routes/mod.rs' },
+      { tag: 'thinking', text: 'Need to wrap protected routes with auth middleware layer...' },
+      { tag: 'output', text: 'Modified src/routes/mod.rs (+12 lines)' },
+      { tag: 'signal', text: '<progress> JWT middleware integrated, moving to token refresh' },
+      { tag: 'action', text: 'Reading src/config.rs for secret key configuration' },
+      { tag: 'thinking', text: 'Token refresh endpoint needs rate limiting. Checking existing patterns...' },
+      { tag: 'output', text: 'Created src/auth/refresh.rs (35 lines)' },
+      { tag: 'action', text: 'Writing tests for auth middleware' }
+    ],
+    streamLines: [
+      { tag: 'output', text: 'Created tests/auth_integration.rs (124 lines)' },
+      { tag: 'signal', text: '<progress> Phase 3 at 80%, running test suite' },
+      { tag: 'action', text: 'Running cargo test --test auth_integration' },
+      { tag: 'output', text: 'test auth::jwt_creation ... ok' },
+      { tag: 'output', text: 'test auth::jwt_validation ... ok' },
+      { tag: 'output', text: 'test auth::middleware_reject_invalid ... ok' },
+      { tag: 'output', text: 'test auth::middleware_pass_valid ... ok' },
+      { tag: 'output', text: 'test auth::refresh_token ... ok' },
+      { tag: 'info', text: '5 tests passed, 0 failed' },
+      { tag: 'signal', text: '<progress> Phase 3 complete, all tests passing' },
+      { tag: 'thinking', text: 'Authentication system complete. Moving to phase 4: Review' },
+      { tag: 'review', text: 'Requesting security review for auth implementation...' },
+      { tag: 'action', text: 'Generating diff summary for review specialist' },
+      { tag: 'thinking', text: 'Awaiting review feedback before proceeding to phase 5...' },
+      { tag: 'output', text: 'Modified src/auth/jwt.rs - added token expiry validation' },
+      { tag: 'action', text: 'Reading review feedback from security specialist' },
+      { tag: 'thinking', text: 'Review suggests adding CSRF protection for cookie-based tokens' },
+      { tag: 'output', text: 'Created src/auth/csrf.rs (28 lines)' }
+    ]
+  },
+  {
+    id: '#138', issue: 'Fix payment bug', tab: 'payment-fix',
+    status: 'RUN', statusIcon: '\u25b6', type: 'debugger',
+    phase: '2/3', phaseName: 'Fix & Verify', time: 501,
+    lines: [
+      { tag: 'thinking', text: 'Payment processing fails on amounts > $999.99 due to decimal handling' },
+      { tag: 'action', text: 'Reading src/payments/processor.rs' },
+      { tag: 'action', text: 'Reading src/payments/models.rs' },
+      { tag: 'thinking', text: 'Found it: line 142 uses f32 for amounts. Precision loss above 3 digits.' },
+      { tag: 'error', text: 'Root cause: f32 truncation in PaymentAmount::from_cents()' },
+      { tag: 'thinking', text: 'Need to switch to rust_decimal::Decimal for monetary values...' },
+      { tag: 'action', text: 'Adding rust_decimal = "1.33" to Cargo.toml' },
+      { tag: 'output', text: 'Modified Cargo.toml (+1 dependency)' },
+      { tag: 'output', text: 'Modified src/payments/models.rs - f32 -> Decimal' },
+      { tag: 'output', text: 'Modified src/payments/processor.rs - updated arithmetic' },
+      { tag: 'action', text: 'Running cargo test --test payment_tests' }
+    ],
+    streamLines: [
+      { tag: 'output', text: 'test payments::process_small_amount ... ok' },
+      { tag: 'output', text: 'test payments::process_large_amount ... ok' },
+      { tag: 'output', text: 'test payments::decimal_precision ... ok' },
+      { tag: 'info', text: '3 tests passed, 0 failed' },
+      { tag: 'signal', text: '<progress> Fix verified, amounts now precise to 28 digits' },
+      { tag: 'thinking', text: 'Checking for other f32 usage in payment paths...' },
+      { tag: 'action', text: 'Searching for f32 in src/payments/' },
+      { tag: 'output', text: 'No remaining f32 usage in payment module' },
+      { tag: 'signal', text: '<progress> Phase 2 complete, moving to phase 3: Regression tests' },
+      { tag: 'action', text: 'Writing regression test for $1000+ amounts' },
+      { tag: 'output', text: 'Created tests/payment_regression.rs (67 lines)' }
+    ]
+  },
+  {
+    id: '#150', issue: 'Refactor DB layer', tab: 'db-refactor',
+    status: 'RUN', statusIcon: '\u25b6', type: 'coder',
+    phase: '1/4', phaseName: 'Analysis', time: 180,
+    lines: [
+      { tag: 'thinking', text: 'Analyzing current database access patterns across the codebase...' },
+      { tag: 'action', text: 'Reading src/db/mod.rs' },
+      { tag: 'action', text: 'Reading src/db/queries.rs' },
+      { tag: 'action', text: 'Reading src/db/pool.rs' },
+      { tag: 'thinking', text: 'Current pattern uses raw SQL strings. Need to move to sqlx query macros.' },
+      { tag: 'action', text: 'Counting raw SQL usage across src/' },
+      { tag: 'info', text: 'Found 34 raw SQL queries across 8 files' }
+    ],
+    streamLines: [
+      { tag: 'thinking', text: 'Prioritizing by frequency: queries.rs (12), handlers/ (8), reports.rs (6)...' },
+      { tag: 'thinking', text: 'Strategy: create typed query functions, then replace callsites' },
+      { tag: 'action', text: 'Creating src/db/typed_queries.rs' },
+      { tag: 'output', text: 'Created src/db/typed_queries.rs (stub, 15 lines)' },
+      { tag: 'action', text: 'Implementing get_user_by_id() with sqlx::query_as!' },
+      { tag: 'output', text: 'Modified src/db/typed_queries.rs (+22 lines)' },
+      { tag: 'signal', text: '<progress> Phase 1 at 40%, cataloging queries' },
+      { tag: 'action', text: 'Implementing list_active_sessions() with sqlx::query_as!' },
+      { tag: 'output', text: 'Modified src/db/typed_queries.rs (+18 lines)' }
+    ]
+  },
+  {
+    id: '#147', issue: 'Add rate limiting', tab: 'rate-limit',
+    status: 'RUN', statusIcon: '\u25b6', type: 'coder',
+    phase: '2/4', phaseName: 'Implementation', time: 322,
+    lines: [
+      { tag: 'thinking', text: 'Implementing token bucket algorithm for rate limiting middleware' },
+      { tag: 'action', text: 'Reading src/middleware/mod.rs' },
+      { tag: 'output', text: 'Created src/middleware/rate_limit.rs (93 lines)' },
+      { tag: 'thinking', text: 'Need per-IP and per-API-key buckets with configurable limits' },
+      { tag: 'action', text: 'Reading src/config.rs for rate limit config structure' },
+      { tag: 'output', text: 'Modified src/config.rs (+15 lines, RateLimitConfig struct)' },
+      { tag: 'output', text: 'Modified src/middleware/rate_limit.rs - added config integration' },
+      { tag: 'action', text: 'Writing unit tests for token bucket' }
+    ],
+    streamLines: [
+      { tag: 'output', text: 'Created tests/rate_limit_tests.rs (56 lines)' },
+      { tag: 'action', text: 'Running cargo test --test rate_limit_tests' },
+      { tag: 'output', text: 'test rate_limit::bucket_allows_within_limit ... ok' },
+      { tag: 'output', text: 'test rate_limit::bucket_rejects_over_limit ... ok' },
+      { tag: 'output', text: 'test rate_limit::bucket_refills_over_time ... ok' },
+      { tag: 'info', text: '3 tests passed, 0 failed' },
+      { tag: 'signal', text: '<progress> Token bucket implementation verified' },
+      { tag: 'thinking', text: 'Now integrating with axum router as a tower Layer...' },
+      { tag: 'output', text: 'Modified src/middleware/rate_limit.rs (+24 lines, Layer impl)' },
+      { tag: 'action', text: 'Adding rate limit middleware to protected routes' }
+    ]
+  }
+];
+
+var queueItems = [
+  { id: '#142', issue: 'Add auth system', status: 'RUN', statusClass: 'run', time: '12:34' },
+  { id: '#138', issue: 'Fix payment bug', status: 'RUN', statusClass: 'run', time: '08:21' },
+  { id: '#150', issue: 'Refactor DB layer', status: 'RUN', statusClass: 'run', time: '03:00' },
+  { id: '#147', issue: 'Add rate limiting', status: 'RUN', statusClass: 'run', time: '05:22' },
+  { id: '#145', issue: 'Update API docs', status: 'QUEUE', statusClass: 'queue', time: '--:--' },
+  { id: '#151', issue: 'Add webhook support', status: 'QUEUE', statusClass: 'queue', time: '--:--' },
+  { id: '#139', issue: 'Setup CI pipeline', status: 'DONE', statusClass: 'done', time: '14:22' },
+  { id: '#136', issue: 'Init project scaffold', status: 'DONE', statusClass: 'done', time: '08:45' },
+  { id: '#141', issue: 'Add logging system', status: 'DONE', statusClass: 'done', time: '21:07' },
+  { id: '#143', issue: 'Fix CORS headers', status: 'DONE', statusClass: 'done', time: '04:12' },
+  { id: '#140', issue: 'Env config loader', status: 'FAIL', statusClass: 'fail', time: '02:18' }
+];
+
+var initialLogLines = [
+  { time: '14:21:33', source: 'system', msg: 'Forge v0.4.2 initialized, mission control online' },
+  { time: '14:21:34', source: 'forge', msg: 'Loading project "forge-platform" from .forge/spec.md' },
+  { time: '14:21:34', source: 'forge', msg: 'DAG scheduler ready, 4 execution slots available' },
+  { time: '14:21:35', source: 'forge', msg: 'Agent #142 spawned [coder] for "Add auth system"' },
+  { time: '14:21:35', source: 'forge', msg: 'Agent #138 spawned [debugger] for "Fix payment bug"' },
+  { time: '14:21:36', source: 'forge', msg: 'Agent #150 spawned [coder] for "Refactor DB layer"' },
+  { time: '14:21:36', source: 'forge', msg: 'Agent #147 spawned [coder] for "Add rate limiting"' },
+  { time: '14:22:10', source: 'agent', msg: '#142 entered phase 1 "Spec Analysis"' },
+  { time: '14:22:11', source: 'agent', msg: '#138 entered phase 1 "Diagnosis"' },
+  { time: '14:23:01', source: 'agent', msg: '#142 completed phase 2, entering phase 3 "Implementation"' },
+  { time: '14:23:05', source: 'agent', msg: '#142 reading 4 files in src/auth/' },
+  { time: '14:23:12', source: 'agent', msg: '#142 created src/auth/jwt.rs' },
+  { time: '14:23:15', source: 'review', msg: 'Security review queued for #142 phase 3 output' },
+  { time: '14:23:42', source: 'agent', msg: '#138 identified root cause: f32 precision loss' },
+  { time: '14:24:01', source: 'git', msg: '#139 pushed branch "ci-pipeline" (3 commits)' },
+  { time: '14:24:15', source: 'forge', msg: '#139 completed all phases, status: DONE' },
+  { time: '14:24:30', source: 'agent', msg: '#150 entered phase 1 "Analysis"' },
+  { time: '14:25:01', source: 'agent', msg: '#147 entered phase 2 "Implementation"' },
+  { time: '14:25:22', source: 'error', msg: '#140 failed: env var REDIS_URL not set in .env.example' }
+];
+
+var streamLogLines = [
+  { source: 'agent', msg: '#142 created tests/auth_integration.rs (124 lines)' },
+  { source: 'agent', msg: '#138 modified Cargo.toml, switching to rust_decimal' },
+  { source: 'review', msg: 'Security review started for #142 phase 3' },
+  { source: 'agent', msg: '#147 created src/middleware/rate_limit.rs' },
+  { source: 'git', msg: '#142 committed: "feat: add JWT auth middleware"' },
+  { source: 'agent', msg: '#150 cataloged 34 raw SQL queries across 8 files' },
+  { source: 'forge', msg: '#138 phase 2 "Fix & Verify" complete' },
+  { source: 'agent', msg: '#142 running cargo test --test auth_integration' },
+  { source: 'system', msg: 'Memory usage: 342MB / 2048MB (16.7%)' },
+  { source: 'agent', msg: '#147 running cargo test --test rate_limit_tests' },
+  { source: 'review', msg: 'Security review passed for #142 with 1 suggestion' },
+  { source: 'agent', msg: '#142 addressing review feedback: add CSRF protection' },
+  { source: 'git', msg: '#138 committed: "fix: use Decimal for payment amounts"' },
+  { source: 'forge', msg: '#138 entering phase 3 "Regression Tests"' },
+  { source: 'agent', msg: '#150 creating typed query functions in src/db/' },
+  { source: 'system', msg: 'CPU: 4 agents @ avg 12% each, total 48%' },
+  { source: 'agent', msg: '#147 token bucket tests all passing' },
+  { source: 'forge', msg: '#147 phase 2 at 75%, integrating with router' },
+  { source: 'git', msg: '#150 committed: "refactor: add typed_queries.rs stub"' },
+  { source: 'review', msg: 'Architecture review queued for #150 phase 1' },
+  { source: 'agent', msg: '#142 created src/auth/csrf.rs (28 lines)' },
+  { source: 'forge', msg: '#142 phase 3 complete, entering phase 4 "Review"' }
+];
+
+var commandResponses = {
+  'help': [
+    { ok: true, text: '  Available commands:' },
+    { ok: true, text: '    status          Show system status' },
+    { ok: true, text: '    agents          List active agents' },
+    { ok: true, text: '    queue           Show task queue' },
+    { ok: true, text: '    run <id>        Queue an issue for execution' },
+    { ok: true, text: '    stop <id>       Stop a running agent' },
+    { ok: true, text: '    logs <id>       Show agent logs' },
+    { ok: true, text: '    clear           Clear terminal' },
+    { ok: true, text: '    version         Show forge version' }
+  ],
+  'status': [
+    { ok: true, text: '  System Status: NOMINAL' },
+    { ok: true, text: '  Agents:  4 running | 2 queued | 12 done | 1 failed' },
+    { ok: true, text: '  Memory:  342MB / 2048MB (16.7%)' },
+    { ok: true, text: '  Uptime:  2h 14m 33s' }
+  ],
+  'agents': [
+    { ok: true, text: '  ID    Issue                Type      Phase   Time' },
+    { ok: true, text: '  #142  Add auth system      coder     3/5     12:34' },
+    { ok: true, text: '  #138  Fix payment bug      debugger  2/3     08:21' },
+    { ok: true, text: '  #150  Refactor DB layer    coder     1/4     03:00' },
+    { ok: true, text: '  #147  Add rate limiting    coder     2/4     05:22' }
+  ],
+  'queue': [
+    { ok: true, text: '  Queued:' },
+    { ok: true, text: '    #145  Update API docs' },
+    { ok: true, text: '    #151  Add webhook support' }
+  ],
+  'version': [
+    { ok: true, text: '  forge v0.4.2 (built 2026-02-27)' },
+    { ok: true, text: '  claude cli v1.2.0' },
+    { ok: true, text: '  runtime: tokio 1.36' }
+  ]
+};
+
+var shortcutData = [
+  { title: 'Navigation', items: [
+    { key: 'Tab', desc: 'Cycle through panes' },
+    { key: '1-4', desc: 'Switch agent tabs' },
+    { key: 'Ctrl+L', desc: 'Toggle system log' }
+  ]},
+  { title: 'Commands', items: [
+    { key: 'Ctrl+N', desc: 'New issue / agent' },
+    { key: 'Ctrl+P', desc: 'Switch project' },
+    { key: 'Ctrl+Q', desc: 'View full queue' },
+    { key: '/', desc: 'Focus command prompt' }
+  ]},
+  { title: 'Agent', items: [
+    { key: 'Enter', desc: 'Execute command' },
+    { key: 'Ctrl+C', desc: 'Cancel running agent' },
+    { key: 'Ctrl+R', desc: 'Restart agent' }
+  ]}
+];
+
+// ============================================================
+// STATE
+// ============================================================
+var activePane = 'pane-left';
+var activeAgentIdx = 0;
+var agentStreamIdx = agents.map(function() { return 0; });
+var logStreamIdx = 0;
+var shortcutsVisible = false;
+
+// ============================================================
+// RENDER: STATUS BAR STATS
+// ============================================================
+function renderStatusStats() {
+  var c = el('status-center-stats');
+  c.textContent = '';
+  var items = [
+    { text: '\u25b6 4 running', color: '#3fb950' },
+    { text: '\u23f3 2 queued', color: '#d29922' },
+    { text: '\u2713 12 done', color: '#666666' },
+    { text: '\u2717 1 failed', color: '#f85149' }
+  ];
+  items.forEach(function(item, i) {
+    if (i > 0) {
+      var sep = mkSpan('separator', '|');
+      c.appendChild(sep);
+    }
+    var s = document.createElement('span');
+    s.style.color = item.color;
+    s.textContent = item.text;
+    c.appendChild(s);
+  });
+}
+
+// ============================================================
+// RENDER: QUEUE TABLE (safe DOM building)
+// ============================================================
+var statusIcons = { run: '\u25b6', queue: '\u23f3', done: '\u2713', fail: '\u2717' };
+var statusColors = { run: '#3fb950', queue: '#d29922', done: '#666666', fail: '#f85149' };
+
+function renderQueue() {
+  var container = el('queue-section');
+  container.textContent = '';
+
+  var pre = document.createElement('pre');
+  pre.style.cssText = 'font-size:12px;line-height:1.3;margin:0;color:var(--text-primary);';
+
+  // Header
+  var topBorder = '\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n';
+  var headerLine = '\u2502 ID   \u2502 Issue                \u2502 Status  \u2502 Time   \u2502\n';
+  var midBorder = '\u251c\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2524\n';
+  var botBorder = '\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518';
+
+  var bdrSpan = function(text) {
+    var s = document.createElement('span');
+    s.style.color = '#444444';
+    s.textContent = text;
+    return s;
+  };
+
+  var hdrSpan = function(text) {
+    var s = document.createElement('span');
+    s.style.cssText = 'color:var(--text-secondary);font-weight:500';
+    s.textContent = text;
+    return s;
+  };
+
+  pre.appendChild(bdrSpan(topBorder));
+  // Header row
+  var hRow = document.createElement('span');
+  hRow.appendChild(bdrSpan('\u2502'));
+  hRow.appendChild(hdrSpan(' ID   '));
+  hRow.appendChild(bdrSpan('\u2502'));
+  hRow.appendChild(hdrSpan(' Issue                '));
+  hRow.appendChild(bdrSpan('\u2502'));
+  hRow.appendChild(hdrSpan(' Status  '));
+  hRow.appendChild(bdrSpan('\u2502'));
+  hRow.appendChild(hdrSpan(' Time   '));
+  hRow.appendChild(bdrSpan('\u2502'));
+  hRow.appendChild(document.createTextNode('\n'));
+  pre.appendChild(hRow);
+  pre.appendChild(bdrSpan(midBorder));
+
+  queueItems.forEach(function(item) {
+    var row = document.createElement('span');
+    row.style.cursor = 'pointer';
+    row.onmouseenter = function() { row.style.background = '#111'; };
+    row.onmouseleave = function() { row.style.background = 'transparent'; };
+
+    row.appendChild(bdrSpan('\u2502'));
+    var idS = document.createElement('span');
+    idS.style.color = 'var(--info)';
+    idS.textContent = ' ' + padR(item.id, 4) + ' ';
+    row.appendChild(idS);
+
+    row.appendChild(bdrSpan('\u2502'));
+    var issueS = document.createElement('span');
+    issueS.textContent = ' ' + padR(item.issue, 20) + ' ';
+    row.appendChild(issueS);
+
+    row.appendChild(bdrSpan('\u2502'));
+    var stS = document.createElement('span');
+    stS.style.color = statusColors[item.statusClass];
+    stS.textContent = ' ' + padR(statusIcons[item.statusClass] + ' ' + item.status, 7) + ' ';
+    row.appendChild(stS);
+
+    row.appendChild(bdrSpan('\u2502'));
+    var tS = document.createElement('span');
+    tS.style.color = 'var(--text-secondary)';
+    tS.textContent = ' ' + padL(item.time, 6) + ' ';
+    row.appendChild(tS);
+
+    row.appendChild(bdrSpan('\u2502'));
+    row.appendChild(document.createTextNode('\n'));
+    pre.appendChild(row);
+  });
+
+  pre.appendChild(bdrSpan(botBorder));
+  container.appendChild(pre);
+}
+
+// ============================================================
+// RENDER: AGENT TABS & OUTPUT
+// ============================================================
+function renderAgentTabs() {
+  var container = el('agent-tabs');
+  container.textContent = '';
+  agents.forEach(function(a, i) {
+    var tab = document.createElement('div');
+    tab.className = 'agent-tab' + (i === activeAgentIdx ? ' active' : '');
+    tab.onclick = function(e) { e.stopPropagation(); switchAgentTab(i); };
+
+    var num = mkSpan('tab-num', '[' + (i + 1) + ']');
+    tab.appendChild(num);
+    tab.appendChild(document.createTextNode(' ' + a.tab));
+
+    var st = mkSpan('tab-status', a.statusIcon);
+    st.style.color = a.status === 'RUN' ? 'var(--green)' : a.status === 'FAIL' ? 'var(--error)' : 'var(--warning)';
+    tab.appendChild(st);
+
+    container.appendChild(tab);
+  });
+}
+
+function renderAgentTitleBar() {
+  var a = agents[activeAgentIdx];
+  var bar = el('agent-title-bar');
+  bar.textContent = '';
+
+  var left = document.createElement('span');
+  var typeS = mkSpan('', '[agent:' + a.type + ']');
+  typeS.style.color = 'var(--info)';
+  left.appendChild(typeS);
+  left.appendChild(document.createTextNode(' '));
+  var issueS = document.createElement('span');
+  issueS.textContent = a.id + ' ' + a.issue;
+  left.appendChild(issueS);
+  bar.appendChild(left);
+
+  var right = document.createElement('span');
+  var phaseS = document.createElement('span');
+  phaseS.style.color = 'var(--warning)';
+  phaseS.textContent = 'Phase ' + a.phase + ' ' + a.phaseName;
+  right.appendChild(phaseS);
+  right.appendChild(document.createTextNode(' '));
+  var timeS = document.createElement('span');
+  timeS.style.color = 'var(--text-secondary)';
+  timeS.textContent = fmtTime(a.time);
+  right.appendChild(timeS);
+  bar.appendChild(right);
+}
+
+function makeAgentLineEl(line) {
+  var tagColors = {
+    thinking: { tag: 'var(--thinking)', text: 'var(--thinking)' },
+    action:   { tag: 'var(--action)', text: '#79c0ff' },
+    output:   { tag: 'var(--green)', text: 'var(--text-primary)' },
+    signal:   { tag: 'var(--warning)', text: 'var(--warning)' },
+    error:    { tag: 'var(--error)', text: 'var(--error)' },
+    review:   { tag: '#d2a8ff', text: '#d2a8ff' },
+    info:     { tag: 'var(--info)', text: 'var(--info)' }
+  };
+  var colors = tagColors[line.tag] || { tag: 'var(--text-secondary)', text: 'var(--text-primary)' };
+
+  var div = document.createElement('div');
+  div.className = 'agent-line';
+
+  var tagSpan = document.createElement('span');
+  tagSpan.style.cssText = 'font-weight:500;color:' + colors.tag;
+  tagSpan.textContent = '[' + line.tag + ']';
+  div.appendChild(tagSpan);
+
+  div.appendChild(document.createTextNode(' '));
+
+  var textSpan = document.createElement('span');
+  textSpan.style.color = colors.text;
+  textSpan.textContent = line.text;
+  div.appendChild(textSpan);
+
+  return div;
+}
+
+function renderAgentOutput() {
+  var a = agents[activeAgentIdx];
+  var container = el('agent-output');
+  container.textContent = '';
+  a.lines.forEach(function(line) {
+    container.appendChild(makeAgentLineEl(line));
+  });
+  container.scrollTop = container.scrollHeight;
+}
+
+function switchAgentTab(idx) {
+  activeAgentIdx = idx;
+  renderAgentTabs();
+  renderAgentTitleBar();
+  renderAgentOutput();
+}
+
+// ============================================================
+// RENDER: SYSTEM LOG
+// ============================================================
+var logSourceColors = {
+  forge: 'var(--green)', agent: 'var(--info)', review: '#d2a8ff',
+  system: 'var(--text-secondary)', git: 'var(--warning)', error: 'var(--error)'
+};
+
+function makeLogLineEl(line) {
+  var div = document.createElement('div');
+  div.className = 'log-line';
+
+  var timeS = document.createElement('span');
+  timeS.style.color = '#555555';
+  timeS.textContent = line.time;
+  div.appendChild(timeS);
+
+  div.appendChild(document.createTextNode(' '));
+
+  var srcS = document.createElement('span');
+  srcS.style.cssText = 'font-weight:500;color:' + (logSourceColors[line.source] || 'var(--text-secondary)');
+  srcS.textContent = '[' + line.source + ']';
+  div.appendChild(srcS);
+
+  div.appendChild(document.createTextNode(' '));
+
+  var msgS = document.createElement('span');
+  msgS.style.color = 'var(--text-secondary)';
+  msgS.textContent = line.msg;
+  div.appendChild(msgS);
+
+  return div;
+}
+
+function renderInitialLog() {
+  var container = el('log-output');
+  container.textContent = '';
+  initialLogLines.forEach(function(line) {
+    container.appendChild(makeLogLineEl(line));
+  });
+  container.scrollTop = container.scrollHeight;
+}
+
+function appendLogLine(line) {
+  var container = el('log-output');
+  var wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 30;
+  container.appendChild(makeLogLineEl(line));
+  if (wasAtBottom) container.scrollTop = container.scrollHeight;
+}
+
+// ============================================================
+// RENDER: SHORTCUTS OVERLAY
+// ============================================================
+function renderShortcuts() {
+  var body = el('shortcuts-body');
+  body.textContent = '';
+  shortcutData.forEach(function(group) {
+    var g = document.createElement('div');
+    g.className = 'shortcuts-group';
+    var title = document.createElement('div');
+    title.className = 'shortcuts-group-title';
+    title.textContent = group.title;
+    g.appendChild(title);
+    group.items.forEach(function(item) {
+      var row = document.createElement('div');
+      row.className = 'shortcut-row';
+      var key = document.createElement('span');
+      key.className = 'shortcut-key';
+      key.textContent = item.key;
+      row.appendChild(key);
+      var desc = document.createElement('span');
+      desc.className = 'shortcut-desc';
+      desc.textContent = item.desc;
+      row.appendChild(desc);
+      g.appendChild(row);
+    });
+    body.appendChild(g);
+  });
+}
+
+// ============================================================
+// PANE ACTIVATION
+// ============================================================
+function setActivePane(paneId) {
+  document.querySelectorAll('.pane').forEach(function(p) { p.classList.remove('active'); });
+  var pane = el(paneId);
+  if (pane) pane.classList.add('active');
+  activePane = paneId;
+
+  var labels = { 'pane-left': 'pane:command', 'pane-right': 'pane:agent', 'pane-bottom': 'pane:syslog' };
+  el('active-pane-label').textContent = labels[paneId] || 'pane:?';
+
+  if (paneId === 'pane-left') {
+    el('prompt-input').focus();
+  }
+}
+
+function cyclePanes() {
+  var order = ['pane-left', 'pane-right', 'pane-bottom'];
+  var idx = order.indexOf(activePane);
+  var next = order[(idx + 1) % order.length];
+  setActivePane(next);
+}
+
+// ============================================================
+// COMMAND INPUT
+// ============================================================
+function handleCommand(cmd) {
+  var historyEl = el('prompt-history');
+  var promptArea = el('terminal-prompt-area');
+  var trimmed = cmd.trim().toLowerCase();
+
+  // Show the command
+  var cmdLine = document.createElement('div');
+  cmdLine.className = 'prompt-history-line';
+  var cmdPrefix = mkSpan('cmd', 'forge> ');
+  cmdLine.appendChild(cmdPrefix);
+  var cmdText = mkSpan('output', cmd);
+  cmdLine.appendChild(cmdText);
+  historyEl.appendChild(cmdLine);
+
+  if (trimmed === 'clear') {
+    historyEl.textContent = '';
+    promptArea.scrollTop = promptArea.scrollHeight;
+    return;
+  }
+
+  var resp = commandResponses[trimmed];
+  if (resp) {
+    resp.forEach(function(r) {
+      var line = document.createElement('div');
+      line.className = 'prompt-history-line';
+      var out = mkSpan('output', r.text);
+      line.appendChild(out);
+      historyEl.appendChild(line);
+    });
+  } else if (trimmed.startsWith('run ')) {
+    var id = trimmed.replace('run ', '').trim();
+    var line = document.createElement('div');
+    line.className = 'prompt-history-line';
+    line.appendChild(mkSpan('output', '  Queued issue ' + id + ' for execution'));
+    historyEl.appendChild(line);
+    appendLogLine({ time: nowTimeStr(), source: 'forge', msg: 'Queued ' + id + ' for execution' });
+  } else if (trimmed.startsWith('stop ')) {
+    var id = trimmed.replace('stop ', '').trim();
+    var line = document.createElement('div');
+    line.className = 'prompt-history-line';
+    line.appendChild(mkSpan('output', '  Stopping agent ' + id + '...'));
+    historyEl.appendChild(line);
+    appendLogLine({ time: nowTimeStr(), source: 'forge', msg: 'Stopping agent ' + id });
+  } else if (trimmed.startsWith('logs ')) {
+    var id = trimmed.replace('logs ', '').trim();
+    var line = document.createElement('div');
+    line.className = 'prompt-history-line';
+    line.appendChild(mkSpan('output', '  Showing logs for ' + id + ' in agent pane'));
+    historyEl.appendChild(line);
+  } else if (trimmed) {
+    var line = document.createElement('div');
+    line.className = 'prompt-history-line';
+    var errS = document.createElement('span');
+    errS.style.color = 'var(--error)';
+    errS.textContent = '  Unknown command: ' + trimmed + '. Type "help" for commands.';
+    line.appendChild(errS);
+    historyEl.appendChild(line);
+  }
+
+  promptArea.scrollTop = promptArea.scrollHeight;
+}
+
+el('prompt-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    var val = this.value;
+    this.value = '';
+    handleCommand(val);
+  }
+});
+
+// ============================================================
+// SHORTCUTS OVERLAY
+// ============================================================
+function toggleShortcuts() {
+  shortcutsVisible = !shortcutsVisible;
+  el('shortcuts-overlay').classList.toggle('visible', shortcutsVisible);
+}
+
+el('shortcuts-overlay').addEventListener('click', function(e) {
+  if (e.target === this) toggleShortcuts();
+});
+
+// ============================================================
+// KEYBOARD SHORTCUTS
+// ============================================================
+document.addEventListener('keydown', function(e) {
+  var inPrompt = document.activeElement === el('prompt-input');
+
+  if (e.key === '?' && !inPrompt) {
+    e.preventDefault();
+    toggleShortcuts();
+    return;
+  }
+
+  if (e.key === 'Escape' && shortcutsVisible) {
+    e.preventDefault();
+    toggleShortcuts();
+    return;
+  }
+
+  if (e.key === 'Tab' && !inPrompt) {
+    e.preventDefault();
+    cyclePanes();
+    return;
+  }
+
+  if (e.key === '/' && !inPrompt && !shortcutsVisible) {
+    e.preventDefault();
+    setActivePane('pane-left');
+    return;
+  }
+
+  if (!inPrompt && !shortcutsVisible && e.key >= '1' && e.key <= '4') {
+    var idx = parseInt(e.key) - 1;
+    if (idx < agents.length) {
+      switchAgentTab(idx);
+      setActivePane('pane-right');
+    }
+    return;
+  }
+
+  if (e.ctrlKey && e.key === 'l') {
+    e.preventDefault();
+    el('pane-bottom').classList.toggle('collapsed');
+    return;
+  }
+});
+
+// ============================================================
+// CLOCK
+// ============================================================
+function updateClock() {
+  el('clock').textContent = nowTimeStr();
+}
+
+// ============================================================
+// STREAMING SIMULATION
+// ============================================================
+function streamAgentOutput() {
+  agents.forEach(function(agent, i) {
+    if (agentStreamIdx[i] < agent.streamLines.length) {
+      var line = agent.streamLines[agentStreamIdx[i]];
+      agent.lines.push(line);
+      agentStreamIdx[i]++;
+
+      if (i === activeAgentIdx) {
+        var container = el('agent-output');
+        var wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 30;
+        container.appendChild(makeAgentLineEl(line));
+        if (wasAtBottom) container.scrollTop = container.scrollHeight;
+      }
+
+      agent.time++;
+      if (i === activeAgentIdx) renderAgentTitleBar();
+    }
+  });
+}
+
+function streamLogOutput() {
+  if (logStreamIdx < streamLogLines.length) {
+    var line = streamLogLines[logStreamIdx];
+    line.time = nowTimeStr();
+    appendLogLine(line);
+    logStreamIdx++;
+  }
+}
+
+function updateQueueTimes() {
+  agents.forEach(function(a) { a.time++; });
+  var runIdx = 0;
+  queueItems.forEach(function(item) {
+    if (item.statusClass === 'run' && agents[runIdx]) {
+      item.time = fmtTime(agents[runIdx].time);
+      runIdx++;
+    }
+  });
+  renderQueue();
+  renderAgentTitleBar();
+}
+
+// ============================================================
+// INIT
+// ============================================================
+renderStatusStats();
+renderQueue();
+renderAgentTabs();
+renderAgentTitleBar();
+renderAgentOutput();
+renderInitialLog();
+renderShortcuts();
+updateClock();
+setActivePane('pane-left');
+
+setInterval(updateClock, 1000);
+setInterval(streamAgentOutput, 1500);
+setInterval(streamLogOutput, 2500);
+setInterval(updateQueueTimes, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,1125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FORGE - Stream Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0d1117;
+    --card-bg: #161b22;
+    --card-hover: #1c2333;
+    --border: #30363d;
+    --text-primary: #e6edf3;
+    --text-secondary: #8b949e;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --blue: #58a6ff;
+    --cyan: #39d353;
+  }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text-primary);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    line-height: 1.5;
+    overflow-x: hidden;
+  }
+
+  /* Top Bar */
+  .top-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--card-bg);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .brand {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    user-select: none;
+  }
+  .brand-name {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 6px;
+    color: var(--green);
+    text-shadow: 0 0 20px rgba(63, 185, 80, 0.3);
+  }
+  .brand-tag {
+    font-size: 10px;
+    color: var(--text-secondary);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+
+  .cmd-input-wrap {
+    flex: 0 1 420px;
+    position: relative;
+  }
+  .cmd-prompt {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--green);
+    font-weight: 600;
+    font-size: 13px;
+    pointer-events: none;
+  }
+  .cmd-input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px 8px 64px;
+    color: var(--text-primary);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .cmd-input:focus { border-color: var(--green); }
+  .cmd-input::placeholder { color: var(--text-secondary); opacity: 0.5; }
+
+  .sys-stats {
+    display: flex;
+    gap: 16px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .stat { display: flex; align-items: center; gap: 6px; }
+  .stat-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    display: inline-block;
+  }
+  .stat-dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .stat-dot.yellow { background: var(--yellow); }
+  .stat-val { color: var(--text-primary); font-weight: 600; }
+
+  /* Filter Bar */
+  .filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+    position: sticky;
+    top: 53px;
+    z-index: 99;
+  }
+
+  .filter-tab {
+    padding: 12px 16px;
+    font-size: 13px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-secondary);
+    cursor: pointer;
+    border: none;
+    background: none;
+    border-bottom: 2px solid transparent;
+    transition: color 0.2s, border-color 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .filter-tab:hover { color: var(--text-primary); }
+  .filter-tab.active {
+    color: var(--green);
+    border-bottom-color: var(--green);
+  }
+  .filter-badge {
+    background: var(--border);
+    color: var(--text-secondary);
+    border-radius: 10px;
+    padding: 1px 7px;
+    font-size: 11px;
+    font-weight: 600;
+    min-width: 20px;
+    text-align: center;
+  }
+  .filter-tab.active .filter-badge {
+    background: rgba(63, 185, 80, 0.15);
+    color: var(--green);
+  }
+
+  /* Stream Area */
+  .stream {
+    padding: 16px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-bottom: 100px;
+  }
+
+  /* Agent Card */
+  .agent-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
+    overflow: hidden;
+  }
+  .agent-card:hover {
+    background: var(--card-hover);
+    border-color: #3a414a;
+  }
+  .agent-card.expanded {
+    border-color: var(--green);
+    box-shadow: 0 0 20px rgba(63, 185, 80, 0.05);
+  }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    padding: 14px 20px;
+    cursor: pointer;
+    gap: 16px;
+    user-select: none;
+  }
+
+  /* Status dot */
+  .status-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .status-dot.running {
+    background: var(--green);
+    box-shadow: 0 0 8px var(--green);
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+  .status-dot.completed { background: var(--green); }
+  .status-dot.failed { background: var(--red); box-shadow: 0 0 6px rgba(248, 81, 73, 0.4); }
+  .status-dot.queued { background: var(--yellow); animation: pulse-dot 3s ease-in-out infinite; }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(0.85); }
+  }
+
+  .card-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .project-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
+    letter-spacing: 0.5px;
+  }
+  .project-badge.forge { background: rgba(63, 185, 80, 0.12); color: var(--green); }
+  .project-badge.nexus { background: rgba(88, 166, 255, 0.12); color: var(--blue); }
+  .project-badge.atlas { background: rgba(210, 153, 34, 0.12); color: var(--yellow); }
+  .project-badge.pulse { background: rgba(248, 81, 73, 0.12); color: var(--red); }
+  .project-badge.orbit { background: rgba(57, 211, 83, 0.12); color: var(--cyan); }
+
+  .issue-title {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .issue-number {
+    color: var(--text-secondary);
+    font-size: 12px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* Phase dots */
+  .phase-progress {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    margin: 0 12px;
+  }
+  .phase-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    border: 1.5px solid var(--border);
+    background: transparent;
+    transition: all 0.3s;
+  }
+  .phase-dot.done {
+    background: var(--green);
+    border-color: var(--green);
+  }
+  .phase-dot.active {
+    border-color: var(--green);
+    background: var(--green);
+    animation: pulse-phase 1.5s ease-in-out infinite;
+  }
+  .phase-dot.failed-dot {
+    background: var(--red);
+    border-color: var(--red);
+  }
+  @keyframes pulse-phase {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.4); }
+    50% { opacity: 0.6; box-shadow: 0 0 0 3px rgba(63, 185, 80, 0); }
+  }
+
+  .phase-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    margin-left: 4px;
+  }
+
+  /* Right side */
+  .card-meta {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-shrink: 0;
+  }
+
+  .elapsed {
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    min-width: 50px;
+    text-align: right;
+  }
+
+  .agent-count {
+    font-size: 11px;
+    padding: 2px 7px;
+    border-radius: 10px;
+    background: rgba(88, 166, 255, 0.1);
+    color: var(--blue);
+    font-weight: 600;
+  }
+
+  .card-actions {
+    display: flex;
+    gap: 4px;
+  }
+  .card-btn {
+    width: 28px; height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background 0.15s, color 0.15s;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .card-btn:hover { background: var(--border); color: var(--text-primary); }
+  .card-btn.expand-btn { transition: transform 0.3s; }
+  .agent-card.expanded .card-btn.expand-btn { transform: rotate(180deg); }
+
+  /* Expanded View */
+  .card-expanded {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .agent-card.expanded .card-expanded {
+    max-height: 500px;
+  }
+
+  .expanded-content {
+    display: flex;
+    border-top: 1px solid var(--border);
+    height: 350px;
+  }
+
+  /* Terminal pane */
+  .terminal-pane {
+    flex: 1;
+    background: #010409;
+    padding: 12px 16px;
+    overflow-y: auto;
+    font-size: 12px;
+    line-height: 1.7;
+    border-right: 1px solid var(--border);
+  }
+  .terminal-pane::-webkit-scrollbar { width: 6px; }
+  .terminal-pane::-webkit-scrollbar-track { background: transparent; }
+  .terminal-pane::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  .term-line { color: var(--green); opacity: 0.9; }
+  .term-line.dim { color: var(--text-secondary); opacity: 0.6; }
+  .term-line.info { color: var(--blue); }
+  .term-line.warn { color: var(--yellow); }
+  .term-line.err { color: var(--red); }
+  .term-line .ts { color: var(--text-secondary); opacity: 0.4; margin-right: 8px; }
+
+  /* Detail pane */
+  .detail-pane {
+    width: 320px;
+    flex-shrink: 0;
+    padding: 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .detail-pane::-webkit-scrollbar { width: 6px; }
+  .detail-pane::-webkit-scrollbar-track { background: transparent; }
+  .detail-pane::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  .detail-section h4 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+  }
+
+  .phase-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+  .phase-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 0;
+    font-size: 12px;
+    position: relative;
+  }
+  .phase-item:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    left: 5px;
+    top: 22px;
+    bottom: -6px;
+    width: 1px;
+    background: var(--border);
+  }
+  .phase-icon {
+    width: 11px; height: 11px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    border: 1.5px solid var(--border);
+  }
+  .phase-icon.done { background: var(--green); border-color: var(--green); }
+  .phase-icon.active { background: var(--green); border-color: var(--green); animation: pulse-phase 1.5s ease-in-out infinite; }
+  .phase-icon.pending { background: transparent; }
+  .phase-icon.failed-icon { background: var(--red); border-color: var(--red); }
+  .phase-name { color: var(--text-primary); }
+  .phase-name.pending-name { color: var(--text-secondary); opacity: 0.5; }
+  .phase-dur {
+    margin-left: auto;
+    color: var(--text-secondary);
+    font-size: 11px;
+  }
+
+  .file-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .file-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    padding: 3px 0;
+  }
+  .file-badge {
+    font-size: 10px;
+    font-weight: 700;
+    width: 16px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+  .file-badge.M { color: var(--yellow); }
+  .file-badge.A { color: var(--green); }
+  .file-badge.D { color: var(--red); }
+  .file-path { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* FAB */
+  .fab-container {
+    position: fixed;
+    bottom: 28px;
+    right: 28px;
+    z-index: 200;
+  }
+  .fab-menu {
+    position: absolute;
+    bottom: 60px;
+    right: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(10px) scale(0.95);
+    transition: opacity 0.2s, transform 0.2s;
+  }
+  .fab-container.open .fab-menu {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0) scale(1);
+  }
+  .fab-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .fab-menu-item:hover {
+    background: var(--card-hover);
+    border-color: var(--green);
+  }
+  .fab-menu-icon {
+    width: 20px;
+    text-align: center;
+    color: var(--green);
+  }
+  .fab-btn {
+    width: 52px; height: 52px;
+    border-radius: 50%;
+    background: var(--green);
+    border: none;
+    color: var(--bg);
+    font-size: 24px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 20px rgba(63, 185, 80, 0.3);
+    transition: transform 0.3s, box-shadow 0.2s;
+  }
+  .fab-btn:hover { box-shadow: 0 4px 28px rgba(63, 185, 80, 0.5); }
+  .fab-container.open .fab-btn { transform: rotate(45deg); }
+
+  /* Hidden cards */
+  .agent-card.hidden-card {
+    display: none;
+  }
+
+  /* Responsive */
+  @media (max-width: 900px) {
+    .phase-progress { display: none; }
+    .detail-pane { width: 260px; }
+  }
+  @media (max-width: 700px) {
+    .cmd-input-wrap { display: none; }
+    .expanded-content { flex-direction: column; height: auto; }
+    .terminal-pane { height: 200px; border-right: none; border-bottom: 1px solid var(--border); }
+    .detail-pane { width: 100%; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Top Bar -->
+<header class="top-bar">
+  <div class="brand">
+    <span class="brand-name">FORGE</span>
+    <span class="brand-tag">mission control</span>
+  </div>
+  <div class="cmd-input-wrap">
+    <span class="cmd-prompt">forge&gt;</span>
+    <input class="cmd-input" type="text" placeholder="run, status, cancel..." spellcheck="false">
+  </div>
+  <div class="sys-stats">
+    <div class="stat">
+      <span class="stat-dot green"></span>
+      <span>agents:</span>
+      <span class="stat-val" id="stat-running">3</span>
+      <span>running</span>
+    </div>
+    <div class="stat">
+      <span class="stat-dot yellow"></span>
+      <span class="stat-val" id="stat-queued">1</span>
+      <span>queued</span>
+    </div>
+  </div>
+</header>
+
+<!-- Filter Bar -->
+<nav class="filter-bar" id="filterBar">
+  <button class="filter-tab active" data-filter="all">All <span class="filter-badge" id="badge-all">8</span></button>
+  <button class="filter-tab" data-filter="running">Running <span class="filter-badge" id="badge-running">3</span></button>
+  <button class="filter-tab" data-filter="queued">Queued <span class="filter-badge" id="badge-queued">1</span></button>
+  <button class="filter-tab" data-filter="completed">Completed <span class="filter-badge" id="badge-completed">2</span></button>
+  <button class="filter-tab" data-filter="failed">Failed <span class="filter-badge" id="badge-failed">1</span></button>
+</nav>
+
+<!-- Stream -->
+<main class="stream" id="stream"></main>
+
+<!-- FAB -->
+<div class="fab-container" id="fab">
+  <div class="fab-menu">
+    <div class="fab-menu-item"><span class="fab-menu-icon">+</span> New Issue</div>
+    <div class="fab-menu-item"><span class="fab-menu-icon">&#9656;</span> New Project</div>
+    <div class="fab-menu-item"><span class="fab-menu-icon">&#8635;</span> Sync GitHub</div>
+  </div>
+  <button class="fab-btn" id="fabBtn">+</button>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  // -- Data --
+  var AGENTS = [
+    {
+      id: 'a1', status: 'running', project: 'forge', projectLabel: 'FORGE',
+      issue: 'Implement WebSocket reconnection with exponential backoff', issueNum: '#47',
+      phases: ['parse','plan','implement','test','review'],
+      phaseState: [2,2,1,0,0],
+      activePhase: 'implement',
+      elapsed: 342, agents: 2,
+      files: [{s:'M',p:'src/factory/ws.rs'},{s:'M',p:'src/factory/api.rs'},{s:'A',p:'src/factory/reconnect.rs'},{s:'M',p:'tests/ws_tests.rs'}],
+      termLines: [
+        {c:'dim',t:'[parse] Analyzing issue #47...'},
+        {c:'',t:'[parse] Found 3 related files in src/factory/'},
+        {c:'dim',t:'[parse] Phase complete. 2 iterations.'},
+        {c:'dim',t:'[plan] Generating implementation plan...'},
+        {c:'info',t:'[plan] Strategy: exponential backoff with jitter'},
+        {c:'',t:'[plan] 4 files to modify, 1 new file'},
+        {c:'dim',t:'[plan] Phase complete. 1 iteration.'},
+        {c:'',t:'[implement] Starting code generation...'},
+        {c:'',t:'[implement] Writing reconnect.rs (1/4)...'},
+        {c:'info',t:'[implement] Added ReconnectPolicy struct'},
+        {c:'',t:'[implement] Modifying ws.rs (2/4)...'}
+      ]
+    },
+    {
+      id: 'a2', status: 'running', project: 'forge', projectLabel: 'FORGE',
+      issue: 'Add phase-level progress reporting to DAG executor', issueNum: '#52',
+      phases: ['parse','plan','implement','test','review'],
+      phaseState: [2,2,2,1,0],
+      activePhase: 'test',
+      elapsed: 518, agents: 1,
+      files: [{s:'M',p:'src/dag/executor.rs'},{s:'M',p:'src/dag/scheduler.rs'},{s:'A',p:'src/dag/progress.rs'},{s:'M',p:'src/swarm/executor.rs'}],
+      termLines: [
+        {c:'dim',t:'[parse] Analyzing issue #52...'},
+        {c:'dim',t:'[parse] Phase complete. 1 iteration.'},
+        {c:'dim',t:'[plan] Phase complete. 2 iterations.'},
+        {c:'dim',t:'[implement] Phase complete. 3 iterations.'},
+        {c:'',t:'[test] Running cargo test --lib...'},
+        {c:'',t:'[test] test dag::progress::test_emit ... ok'},
+        {c:'',t:'[test] test dag::progress::test_aggregate ... ok'},
+        {c:'warn',t:'[test] test dag::executor::test_parallel ... RETRY'},
+        {c:'',t:'[test] Adjusting timing tolerance...'}
+      ]
+    },
+    {
+      id: 'a3', status: 'running', project: 'nexus', projectLabel: 'NEXUS',
+      issue: 'Migrate authentication middleware to tower-based stack', issueNum: '#128',
+      phases: ['parse','plan','implement','test','review','deploy'],
+      phaseState: [2,1,0,0,0,0],
+      activePhase: 'plan',
+      elapsed: 97, agents: 1,
+      files: [{s:'M',p:'src/middleware/auth.rs'}],
+      termLines: [
+        {c:'dim',t:'[parse] Analyzing issue #128...'},
+        {c:'',t:'[parse] Detected tower v0.4 dependency'},
+        {c:'dim',t:'[parse] Phase complete. 1 iteration.'},
+        {c:'',t:'[plan] Evaluating migration path...'},
+        {c:'info',t:'[plan] Identified 6 middleware layers to convert'}
+      ]
+    },
+    {
+      id: 'a4', status: 'queued', project: 'atlas', projectLabel: 'ATLAS',
+      issue: 'Add geospatial indexing for location-based queries', issueNum: '#89',
+      phases: ['parse','plan','implement','test','review'],
+      phaseState: [0,0,0,0,0],
+      activePhase: null,
+      elapsed: 0, agents: 0,
+      files: [],
+      termLines: [{c:'dim',t:'Queued. Waiting for available agent...'}]
+    },
+    {
+      id: 'a5', status: 'completed', project: 'forge', projectLabel: 'FORGE',
+      issue: 'Fix checkpoint serialization for nested phase states', issueNum: '#41',
+      phases: ['parse','plan','implement','test','review'],
+      phaseState: [2,2,2,2,2],
+      activePhase: null,
+      elapsed: 647, agents: 1,
+      files: [{s:'M',p:'src/orchestrator/state.rs'},{s:'M',p:'src/phase.rs'},{s:'A',p:'tests/checkpoint_tests.rs'}],
+      termLines: [
+        {c:'dim',t:'[parse] Phase complete. 1 iteration.'},
+        {c:'dim',t:'[plan] Phase complete. 1 iteration.'},
+        {c:'dim',t:'[implement] Phase complete. 2 iterations.'},
+        {c:'',t:'[test] All 12 tests passed.'},
+        {c:'',t:'[review] Security: PASS | Performance: PASS'},
+        {c:'info',t:'[review] No issues found. Approved.'},
+        {c:'',t:'PR #42 created. Branch: fix/checkpoint-nested-states'}
+      ]
+    },
+    {
+      id: 'a6', status: 'completed', project: 'nexus', projectLabel: 'NEXUS',
+      issue: 'Implement rate limiting on public API endpoints', issueNum: '#115',
+      phases: ['parse','plan','implement','test','review'],
+      phaseState: [2,2,2,2,2],
+      activePhase: null,
+      elapsed: 423, agents: 2,
+      files: [{s:'A',p:'src/middleware/rate_limit.rs'},{s:'M',p:'src/routes/api.rs'},{s:'M',p:'Cargo.toml'},{s:'A',p:'tests/rate_limit_tests.rs'}],
+      termLines: [
+        {c:'dim',t:'[parse] Phase complete. 1 iteration.'},
+        {c:'dim',t:'[plan] Phase complete. 1 iteration.'},
+        {c:'dim',t:'[implement] Phase complete. 4 iterations.'},
+        {c:'',t:'[test] All 8 tests passed.'},
+        {c:'',t:'[review] Security: PASS | Performance: WARN (minor)'},
+        {c:'info',t:'[review] Approved with advisory.'},
+        {c:'',t:'PR #116 created. Branch: feat/rate-limiting'}
+      ]
+    },
+    {
+      id: 'a7', status: 'failed', project: 'pulse', projectLabel: 'PULSE',
+      issue: 'Add real-time metrics dashboard with SSE streaming', issueNum: '#34',
+      phases: ['parse','plan','implement','test','review'],
+      phaseState: [2,2,2,3,0],
+      activePhase: null,
+      elapsed: 512, agents: 1,
+      files: [{s:'A',p:'src/dashboard/sse.rs'},{s:'M',p:'src/dashboard/mod.rs'},{s:'M',p:'src/routes/metrics.rs'}],
+      termLines: [
+        {c:'dim',t:'[parse] Phase complete. 1 iteration.'},
+        {c:'dim',t:'[plan] Phase complete. 2 iterations.'},
+        {c:'dim',t:'[implement] Phase complete. 5 iterations.'},
+        {c:'err',t:'[test] FAILED: test_sse_stream_connection'},
+        {c:'err',t:'[test] Error: connection reset by peer'},
+        {c:'err',t:'[test] Budget exhausted after 3 iterations.'},
+        {c:'warn',t:'Phase "test" failed. Run aborted.'}
+      ]
+    },
+    {
+      id: 'a8', status: 'completing', project: 'orbit', projectLabel: 'ORBIT',
+      issue: 'Optimize batch processing pipeline with parallel chunks', issueNum: '#67',
+      phases: ['parse','plan','implement','test','review'],
+      phaseState: [2,2,2,2,1],
+      activePhase: 'review',
+      elapsed: 731, agents: 1,
+      files: [{s:'M',p:'src/pipeline/batch.rs'},{s:'M',p:'src/pipeline/chunk.rs'},{s:'A',p:'src/pipeline/parallel.rs'},{s:'M',p:'benches/pipeline_bench.rs'}],
+      termLines: [
+        {c:'dim',t:'[parse] Phase complete. 1 iteration.'},
+        {c:'dim',t:'[plan] Phase complete. 1 iteration.'},
+        {c:'dim',t:'[implement] Phase complete. 3 iterations.'},
+        {c:'',t:'[test] All 15 tests passed.'},
+        {c:'',t:'[test] Benchmark: 3.2x throughput improvement'},
+        {c:'',t:'[review] Security: PASS'},
+        {c:'info',t:'[review] Performance: analyzing benchmark results...'}
+      ]
+    }
+  ];
+
+  // Sort: running first, then completing, queued, failed, completed
+  var STATUS_ORDER = { running: 0, completing: 1, queued: 2, failed: 3, completed: 4 };
+  AGENTS.sort(function(a, b) { return STATUS_ORDER[a.status] - STATUS_ORDER[b.status]; });
+
+  // -- Helpers --
+  function escapeHtml(t) {
+    var div = document.createElement('div');
+    div.appendChild(document.createTextNode(t));
+    return div.textContent;
+  }
+
+  function formatElapsed(sec) {
+    var m = Math.floor(sec / 60);
+    var s = sec % 60;
+    return m > 0 ? m + 'm ' + (s < 10 ? '0' : '') + s + 's' : s + 's';
+  }
+
+  function formatTime(sec) {
+    if (sec < 0) sec = 0;
+    var m = Math.floor(sec / 60);
+    var s = sec % 60;
+    return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+  }
+
+  function displayStatus(status) {
+    return status === 'completing' ? 'running' : status;
+  }
+
+  function statusForFilter(status) {
+    return status === 'completing' ? 'running' : status;
+  }
+
+  // -- Safe DOM builder helpers --
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    if (attrs) {
+      Object.keys(attrs).forEach(function(k) {
+        if (k === 'className') node.className = attrs[k];
+        else if (k === 'textContent') node.textContent = attrs[k];
+        else if (k.indexOf('data-') === 0) node.setAttribute(k, attrs[k]);
+        else node.setAttribute(k, attrs[k]);
+      });
+    }
+    if (children) {
+      children.forEach(function(c) {
+        if (typeof c === 'string') node.appendChild(document.createTextNode(c));
+        else if (c) node.appendChild(c);
+      });
+    }
+    return node;
+  }
+
+  function createTermLine(line, elapsed) {
+    var div = el('div', { className: 'term-line ' + line.c });
+    var ts = el('span', { className: 'ts', textContent: formatTime(elapsed - Math.floor(Math.random() * 60)) });
+    div.appendChild(ts);
+    div.appendChild(document.createTextNode(line.t));
+    return div;
+  }
+
+  function createPhaseDots(agent) {
+    var wrap = document.createDocumentFragment();
+    agent.phases.forEach(function(p, i) {
+      var cls = 'phase-dot';
+      if (agent.phaseState[i] === 2) cls += ' done';
+      else if (agent.phaseState[i] === 1) cls += ' active';
+      else if (agent.phaseState[i] === 3) cls += ' failed-dot';
+      wrap.appendChild(el('div', { className: cls, title: p }));
+    });
+    return wrap;
+  }
+
+  function createPhaseTimeline(agent) {
+    var wrap = document.createDocumentFragment();
+    agent.phases.forEach(function(p, i) {
+      var iconCls = 'phase-icon';
+      var nameCls = 'phase-name';
+      var dur = '';
+      if (agent.phaseState[i] === 2) { iconCls += ' done'; dur = Math.floor(Math.random() * 90 + 20) + 's'; }
+      else if (agent.phaseState[i] === 1) { iconCls += ' active'; dur = 'running'; }
+      else if (agent.phaseState[i] === 3) { iconCls += ' failed-icon'; dur = 'failed'; }
+      else { iconCls += ' pending'; nameCls += ' pending-name'; dur = '--'; }
+
+      var item = el('div', { className: 'phase-item' }, [
+        el('div', { className: iconCls }),
+        el('span', { className: nameCls, textContent: p }),
+        el('span', { className: 'phase-dur', textContent: dur })
+      ]);
+      wrap.appendChild(item);
+    });
+    return wrap;
+  }
+
+  function createFileList(agent) {
+    var wrap = document.createDocumentFragment();
+    if (!agent.files.length) {
+      wrap.appendChild(el('span', { style: 'color:var(--text-secondary);font-size:12px;', textContent: 'No changes yet' }));
+      return wrap;
+    }
+    agent.files.forEach(function(f) {
+      wrap.appendChild(el('div', { className: 'file-item' }, [
+        el('span', { className: 'file-badge ' + f.s, textContent: f.s }),
+        el('span', { className: 'file-path', textContent: f.p })
+      ]));
+    });
+    return wrap;
+  }
+
+  // -- Render Cards --
+  var stream = document.getElementById('stream');
+
+  AGENTS.forEach(function(agent) {
+    var card = el('div', { className: 'agent-card', 'data-status': agent.status, 'data-id': agent.id });
+
+    var phaseLabel = agent.activePhase ? agent.activePhase : (agent.status === 'completed' ? 'done' : agent.status === 'failed' ? 'failed' : 'waiting');
+
+    // Header
+    var header = el('div', { className: 'card-header' });
+
+    // Status dot
+    header.appendChild(el('div', { className: 'status-dot ' + displayStatus(agent.status) }));
+
+    // Info section
+    var info = el('div', { className: 'card-info' }, [
+      el('span', { className: 'project-badge ' + agent.project, textContent: agent.projectLabel }),
+      el('span', { className: 'issue-title', textContent: agent.issue }),
+      el('span', { className: 'issue-number', textContent: agent.issueNum })
+    ]);
+    header.appendChild(info);
+
+    // Phase progress
+    var phaseProgress = el('div', { className: 'phase-progress' });
+    phaseProgress.appendChild(createPhaseDots(agent));
+    phaseProgress.appendChild(el('span', { className: 'phase-label', textContent: phaseLabel }));
+    header.appendChild(phaseProgress);
+
+    // Meta section
+    var meta = el('div', { className: 'card-meta' });
+    meta.appendChild(el('span', { className: 'elapsed', 'data-agent': agent.id, textContent: formatElapsed(agent.elapsed) }));
+    if (agent.agents > 0) {
+      meta.appendChild(el('span', { className: 'agent-count', textContent: agent.agents + ' agent' + (agent.agents > 1 ? 's' : '') }));
+    }
+
+    var actions = el('div', { className: 'card-actions' });
+    actions.appendChild(el('button', { className: 'card-btn expand-btn', title: 'Expand', textContent: '\u25BE' }));
+    if (agent.status === 'running' || agent.status === 'completing') {
+      actions.appendChild(el('button', { className: 'card-btn cancel-btn', title: 'Cancel', textContent: '\u00D7' }));
+    }
+    if (agent.status === 'failed') {
+      actions.appendChild(el('button', { className: 'card-btn retry-btn', title: 'Retry', textContent: '\u21BB' }));
+    }
+    meta.appendChild(actions);
+    header.appendChild(meta);
+
+    card.appendChild(header);
+
+    // Expanded content
+    var cardExpanded = el('div', { className: 'card-expanded' });
+    var expandedContent = el('div', { className: 'expanded-content' });
+
+    // Terminal
+    var termPane = el('div', { className: 'terminal-pane', id: 'term-' + agent.id });
+    agent.termLines.forEach(function(line) {
+      termPane.appendChild(createTermLine(line, agent.elapsed));
+    });
+    expandedContent.appendChild(termPane);
+
+    // Detail pane
+    var detailPane = el('div', { className: 'detail-pane' });
+
+    var phaseSection = el('div', { className: 'detail-section' });
+    phaseSection.appendChild(el('h4', { textContent: 'Phase Timeline' }));
+    var timelineWrap = el('div', { className: 'phase-timeline' });
+    timelineWrap.appendChild(createPhaseTimeline(agent));
+    phaseSection.appendChild(timelineWrap);
+    detailPane.appendChild(phaseSection);
+
+    var fileSection = el('div', { className: 'detail-section' });
+    fileSection.appendChild(el('h4', { textContent: 'File Changes' }));
+    var fileListWrap = el('div', { className: 'file-list' });
+    fileListWrap.appendChild(createFileList(agent));
+    fileSection.appendChild(fileListWrap);
+    detailPane.appendChild(fileSection);
+
+    expandedContent.appendChild(detailPane);
+    cardExpanded.appendChild(expandedContent);
+    card.appendChild(cardExpanded);
+
+    stream.appendChild(card);
+  });
+
+  // -- Expand / Collapse --
+  document.querySelectorAll('.card-header').forEach(function(header) {
+    header.addEventListener('click', function(e) {
+      if (e.target.closest('.cancel-btn') || e.target.closest('.retry-btn')) return;
+      var card = header.closest('.agent-card');
+      card.classList.toggle('expanded');
+      if (card.classList.contains('expanded')) {
+        var term = card.querySelector('.terminal-pane');
+        setTimeout(function() { term.scrollTop = term.scrollHeight; }, 50);
+      }
+    });
+  });
+
+  // -- Filter Tabs --
+  document.querySelectorAll('.filter-tab').forEach(function(tab) {
+    tab.addEventListener('click', function() {
+      document.querySelectorAll('.filter-tab').forEach(function(t) { t.classList.remove('active'); });
+      tab.classList.add('active');
+      var filter = tab.getAttribute('data-filter');
+      document.querySelectorAll('.agent-card').forEach(function(card) {
+        if (filter === 'all') {
+          card.classList.remove('hidden-card');
+        } else {
+          var cardStatus = statusForFilter(card.getAttribute('data-status'));
+          card.classList.toggle('hidden-card', cardStatus !== filter);
+        }
+      });
+    });
+  });
+
+  // -- FAB --
+  var fab = document.getElementById('fab');
+  document.getElementById('fabBtn').addEventListener('click', function() {
+    fab.classList.toggle('open');
+  });
+  document.addEventListener('click', function(e) {
+    if (!fab.contains(e.target)) fab.classList.remove('open');
+  });
+
+  // -- Running Timers --
+  setInterval(function() {
+    AGENTS.forEach(function(agent) {
+      if (agent.status === 'running' || agent.status === 'completing') {
+        agent.elapsed++;
+        var elNode = document.querySelector('.elapsed[data-agent="' + agent.id + '"]');
+        if (elNode) elNode.textContent = formatElapsed(agent.elapsed);
+      }
+    });
+  }, 1000);
+
+  // -- Streaming Terminal Text --
+  var STREAM_LINES = {
+    a1: [
+      {c:'',t:'[implement] Updating WebSocket handshake handler...'},
+      {c:'info',t:'[implement] Added backoff config: base=1s, max=30s, jitter=true'},
+      {c:'',t:'[implement] Writing reconnection state machine...'},
+      {c:'',t:'[implement] Adding connection health check...'},
+      {c:'info',t:'[implement] Integrated heartbeat ping/pong (30s interval)'},
+      {c:'',t:'[implement] Updating error handling paths...'},
+      {c:'',t:'[implement] Modifying ws.rs (3/4)...'},
+      {c:'',t:'[implement] Adding graceful shutdown drain...'},
+      {c:'info',t:'[implement] Connection pool size: max 64, idle timeout 120s'},
+      {c:'',t:'[implement] Modifying api.rs (4/4)...'},
+      {c:'',t:'[implement] Exposing reconnect metrics endpoint'},
+      {c:'dim',t:'[implement] Phase complete. 4 iterations.'},
+      {c:'',t:'[test] Running cargo test --lib...'},
+      {c:'',t:'[test] test factory::reconnect::test_backoff_timing ... ok'}
+    ],
+    a2: [
+      {c:'',t:'[test] Retrying test_parallel with 200ms tolerance...'},
+      {c:'',t:'[test] test dag::executor::test_parallel ... ok'},
+      {c:'',t:'[test] test dag::executor::test_cancel ... ok'},
+      {c:'',t:'[test] Running integration tests...'},
+      {c:'',t:'[test] test integration::dag_progress_e2e ... ok'},
+      {c:'info',t:'[test] All 9 tests passed.'},
+      {c:'dim',t:'[test] Phase complete. 2 iterations.'},
+      {c:'',t:'[review] Starting security review...'},
+      {c:'',t:'[review] Scanning for unsafe blocks...'},
+      {c:'',t:'[review] Security: PASS'},
+      {c:'',t:'[review] Starting performance review...'}
+    ],
+    a3: [
+      {c:'',t:'[plan] Mapping tower::Service trait bounds...'},
+      {c:'info',t:'[plan] Migration strategy: adapter pattern'},
+      {c:'',t:'[plan] Generating compatibility shim for existing handlers'},
+      {c:'',t:'[plan] Estimated: 3 files to modify'},
+      {c:'dim',t:'[plan] Phase complete. 2 iterations.'},
+      {c:'',t:'[implement] Starting code generation...'},
+      {c:'',t:'[implement] Refactoring auth.rs middleware layer...'},
+      {c:'info',t:'[implement] Converting from fn-based to tower::Layer'},
+      {c:'',t:'[implement] Adding tower::ServiceBuilder chain...'}
+    ],
+    a8: [
+      {c:'info',t:'[review] Performance: 3.2x improvement confirmed'},
+      {c:'',t:'[review] Architecture: clean separation of concerns'},
+      {c:'',t:'[review] Simplicity: PASS'},
+      {c:'info',t:'[review] All checks passed. Approved.'},
+      {c:'dim',t:'[review] Phase complete. 1 iteration.'},
+      {c:'',t:'PR #68 created. Branch: feat/parallel-batch-processing'},
+      {c:'info',t:'Run complete. All phases passed.'}
+    ]
+  };
+
+  var streamIdx = {};
+  Object.keys(STREAM_LINES).forEach(function(k) { streamIdx[k] = 0; });
+
+  function appendTermLine(agentId) {
+    var lines = STREAM_LINES[agentId];
+    if (!lines || streamIdx[agentId] >= lines.length) return;
+
+    var term = document.getElementById('term-' + agentId);
+    if (!term) return;
+
+    var line = lines[streamIdx[agentId]];
+    var agent = AGENTS.find(function(a) { return a.id === agentId; });
+
+    var div = el('div', { className: 'term-line ' + line.c });
+    div.appendChild(el('span', { className: 'ts', textContent: formatTime(agent.elapsed) }));
+    div.appendChild(document.createTextNode(line.t));
+    term.appendChild(div);
+
+    var card = term.closest('.agent-card');
+    if (card && card.classList.contains('expanded')) {
+      term.scrollTop = term.scrollHeight;
+    }
+
+    streamIdx[agentId]++;
+  }
+
+  // Stagger streaming at different rates
+  setInterval(function() { appendTermLine('a1'); }, 2500);
+  setInterval(function() { appendTermLine('a2'); }, 3000);
+  setInterval(function() { appendTermLine('a3'); }, 3500);
+  setInterval(function() { appendTermLine('a8'); }, 4000);
+
+  // Handle a8 completing
+  var a8Completed = false;
+  setInterval(function() {
+    var a8 = AGENTS.find(function(a) { return a.id === 'a8'; });
+    var lines = STREAM_LINES['a8'];
+    if (!a8Completed && streamIdx['a8'] >= lines.length) {
+      a8Completed = true;
+      a8.status = 'completed';
+      a8.phaseState = [2,2,2,2,2];
+      a8.activePhase = null;
+      var card = document.querySelector('[data-id="a8"]');
+      if (card) {
+        card.setAttribute('data-status', 'completed');
+        var dot = card.querySelector('.status-dot');
+        dot.className = 'status-dot completed';
+        var label = card.querySelector('.phase-label');
+        label.textContent = 'done';
+        card.querySelectorAll('.phase-progress .phase-dot').forEach(function(d) {
+          d.className = 'phase-dot done';
+        });
+      }
+      updateBadges();
+    }
+  }, 1000);
+
+  function updateBadges() {
+    var counts = { all: 0, running: 0, queued: 0, completed: 0, failed: 0 };
+    AGENTS.forEach(function(a) {
+      counts.all++;
+      var s = statusForFilter(a.status);
+      if (counts[s] !== undefined) counts[s]++;
+    });
+    document.getElementById('badge-all').textContent = counts.all;
+    document.getElementById('badge-running').textContent = counts.running;
+    document.getElementById('badge-queued').textContent = counts.queued;
+    document.getElementById('badge-completed').textContent = counts.completed;
+    document.getElementById('badge-failed').textContent = counts.failed;
+    document.getElementById('stat-running').textContent = counts.running;
+    document.getElementById('stat-queued').textContent = counts.queued;
+  }
+
+  // -- Command Input --
+  document.querySelector('.cmd-input').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+      var val = e.target.value.trim();
+      if (val) {
+        e.target.value = '';
+        e.target.placeholder = '> ' + val + ' (executed)';
+        setTimeout(function() { e.target.placeholder = 'run, status, cancel...'; }, 2000);
+      }
+    }
+  });
+
+})();
+</script>
+</body>
+</html>
