@@ -72,6 +72,7 @@ const mockTriggerPipeline = vi.fn()
 const mockCancelPipelineRun = vi.fn()
 const mockCreateIssue = vi.fn()
 const mockCreateProject = vi.fn()
+const mockCloneProject = vi.fn()
 
 vi.mock('../api/client', () => ({
   api: {
@@ -81,6 +82,7 @@ vi.mock('../api/client', () => ({
     cancelPipelineRun: (...args: unknown[]) => mockCancelPipelineRun(...args),
     createIssue: (...args: unknown[]) => mockCreateIssue(...args),
     createProject: (...args: unknown[]) => mockCreateProject(...args),
+    cloneProject: (...args: unknown[]) => mockCloneProject(...args),
   },
 }))
 
@@ -288,6 +290,31 @@ describe('useMissionControl', () => {
 
       expect(result.current.eventLog.some(e => e.source === 'review' && e.message.includes('passed'))).toBe(true)
     })
+
+    it('adds project on ProjectCreated', async () => {
+      const { result } = renderHook(() => useMissionControl())
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      const newProject: Project = { id: 8, name: 'ws-project', path: '/tmp/ws-project', github_repo: null, created_at: '2024-01-01' }
+      act(() => {
+        pushWs({ type: 'ProjectCreated', data: { project: newProject } })
+      })
+
+      expect(result.current.projects).toHaveLength(2)
+      expect(result.current.projects.some(p => p.name === 'ws-project')).toBe(true)
+    })
+
+    it('does not duplicate project on ProjectCreated if already in state', async () => {
+      const { result } = renderHook(() => useMissionControl())
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      // Push same project that was already loaded (mockProject id=1)
+      act(() => {
+        pushWs({ type: 'ProjectCreated', data: { project: { ...mockProject } } })
+      })
+
+      expect(result.current.projects).toHaveLength(1)
+    })
   })
 
   // ── Filtering ────────────────────────────────────────────────────
@@ -485,6 +512,24 @@ describe('useMissionControl', () => {
       expect(result.current.projects[1].name).toBe('new-project')
     })
 
+    it('cloneProject calls API and adds project to state', async () => {
+      const clonedProject: Project = {
+        id: 7, name: 'cloned-repo', path: '/tmp/cloned-repo', github_repo: 'owner/cloned-repo', created_at: '2024-01-01',
+      }
+      mockCloneProject.mockResolvedValue(clonedProject)
+
+      const { result } = renderHook(() => useMissionControl())
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      await act(async () => {
+        await result.current.cloneProject('https://github.com/owner/cloned-repo')
+      })
+
+      expect(mockCloneProject).toHaveBeenCalledWith('https://github.com/owner/cloned-repo')
+      expect(result.current.projects).toHaveLength(2)
+      expect(result.current.projects[1].name).toBe('cloned-repo')
+    })
+
     it('refresh reloads all data', async () => {
       const { result } = renderHook(() => useMissionControl())
       await waitFor(() => expect(result.current.loading).toBe(false))
@@ -593,6 +638,7 @@ describe('useMissionControl', () => {
       expect(result.current).toHaveProperty('cancelPipeline')
       expect(result.current).toHaveProperty('createIssue')
       expect(result.current).toHaveProperty('createProject')
+      expect(result.current).toHaveProperty('cloneProject')
       expect(result.current).toHaveProperty('refresh')
     })
   })

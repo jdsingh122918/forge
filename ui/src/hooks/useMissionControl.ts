@@ -64,6 +64,8 @@ export interface MissionControlReturn {
   createIssue: (projectId: number, title: string, description: string) => Promise<Issue>;
   /** Create a new project */
   createProject: (name: string, path: string) => Promise<Project>;
+  /** Clone a project from a repository URL */
+  cloneProject: (repoUrl: string) => Promise<Project>;
   /** Delete a project and all its data */
   deleteProject: (projectId: number) => Promise<void>;
   /** Refresh all data from the server */
@@ -382,6 +384,16 @@ export default function useMissionControl(): MissionControlReturn {
         break;
       }
 
+      case 'ProjectCreated': {
+        const project = msg.data.project;
+        setState(prev => {
+          if (prev.projects.some(p => p.id === project.id)) return prev;
+          return { ...prev, projects: [...prev.projects, project] };
+        });
+        addLogEntry('system', `Project added: "${project.name}"`);
+        break;
+      }
+
       case 'ProjectDeleted': {
         const deletedId = msg.data.project_id;
         setState(prev => {
@@ -494,6 +506,15 @@ export default function useMissionControl(): MissionControlReturn {
     return project;
   }, []);
 
+  const cloneProject = useCallback(async (repoUrl: string) => {
+    const project = await api.cloneProject(repoUrl);
+    setState(prev => ({
+      ...prev,
+      projects: [...prev.projects, project],
+    }));
+    return project;
+  }, []);
+
   const deleteProject = useCallback(async (projectId: number) => {
     await api.deleteProject(projectId);
     // Optimistic removal — WS message will also trigger state cleanup
@@ -566,6 +587,7 @@ export default function useMissionControl(): MissionControlReturn {
     cancelPipeline,
     createIssue,
     createProject,
+    cloneProject,
     deleteProject,
     refresh,
     issuesByProject,

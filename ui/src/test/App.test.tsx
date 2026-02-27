@@ -82,6 +82,16 @@ const server = setupServer(
   http.post('/api/projects/:id/sync-github', () => {
     return HttpResponse.json({ imported: 3, skipped: 0, total_github: 3 })
   }),
+  http.post('/api/projects/clone', async ({ request }) => {
+    const body = await request.json() as { repo_url: string }
+    const name = body.repo_url.split('/').pop() || 'cloned'
+    const newProject: Project = {
+      id: 10, name, path: `/tmp/${name}`, github_repo: `owner/${name}`, created_at: '2024-01-01',
+    }
+    // Add board data so the new project can be fetched
+    boardsResponse[10] = makeBoard(newProject, [])
+    return HttpResponse.json(newProject, { status: 201 })
+  }),
 )
 
 // ── Mock WebSocket context ──────────────────────────────────────────
@@ -264,6 +274,47 @@ describe('App — Mission Control shell', () => {
     await waitFor(() => {
       // ProjectSetup has the GitHub tab
       expect(screen.getByText('Local path')).toBeInTheDocument()
+    })
+  })
+
+  // ── Cloning a GitHub project adds it to the sidebar ──────────────
+
+  it('cloning a GitHub project adds it to the sidebar', async () => {
+    render(<App />)
+    // Wait for initial load to complete
+    await waitFor(() => {
+      expect(screen.getByText('+')).toBeInTheDocument()
+    })
+
+    // Open FAB menu
+    fireEvent.click(screen.getByText('+'))
+    await waitFor(() => {
+      expect(screen.getByText('New Project')).toBeInTheDocument()
+    })
+
+    // Click "New Project" to open ProjectSetup modal
+    fireEvent.click(screen.getByText('New Project'))
+    await waitFor(() => {
+      expect(screen.getByText('GitHub')).toBeInTheDocument()
+    })
+
+    // We're on the GitHub tab by default (idle state, not connected).
+    // Click "Or clone by URL" to show the manual URL input.
+    fireEvent.click(screen.getByText('Or clone by URL'))
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText('owner/repo or https://github.com/owner/repo')).toBeInTheDocument()
+    })
+
+    // Enter a GitHub URL
+    const urlInput = screen.getByPlaceholderText('owner/repo or https://github.com/owner/repo')
+    fireEvent.change(urlInput, { target: { value: 'https://github.com/owner/my-repo' } })
+
+    // Click "Clone & connect"
+    fireEvent.click(screen.getByText('Clone & connect'))
+
+    // The cloned project should appear in the sidebar (and possibly the project card)
+    await waitFor(() => {
+      expect(screen.getAllByText('my-repo').length).toBeGreaterThanOrEqual(1)
     })
   })
 })

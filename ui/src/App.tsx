@@ -33,6 +33,7 @@ function MissionControl() {
     cancelPipeline,
     createIssue,
     createProject,
+    cloneProject,
     deleteProject,
     issuesByProject,
   } = useMissionControl();
@@ -101,10 +102,10 @@ function MissionControl() {
   }, [createProject]);
 
   const handleCloneProject = useCallback(async (repoUrl: string) => {
-    const project = await api.cloneProject(repoUrl);
+    const project = await cloneProject(repoUrl);
     setShowProjectSetup(false);
     setSelectedProjectId(project.id);
-  }, [setSelectedProjectId]);
+  }, [cloneProject, setSelectedProjectId]);
 
   const handleDeleteProject = useCallback(async (projectId: number) => {
     await deleteProject(projectId);
