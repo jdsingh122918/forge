@@ -158,7 +158,8 @@ export type WsMessage =
   | { type: 'MergeConflict'; data: { run_id: number; wave: number; files: string[] } }
   | { type: 'VerificationResult'; data: { run_id: number; task_id: number; verification_type: VerificationType; passed: boolean; summary: string; screenshots: string[]; details: any } }
   | { type: 'PipelineError'; data: { run_id: number; message: string } }
-  | { type: 'ProjectCreated'; data: { project: Project } };
+  | { type: 'ProjectCreated'; data: { project: Project } }
+  | { type: 'ProjectDeleted'; data: { project_id: number } };
 
 // GitHub OAuth types
 export interface GitHubDeviceCode {
@@ -212,4 +213,53 @@ export const STATUS_COLORS: Record<PipelineStatus, string> = {
   completed: 'text-green-500',
   failed: 'text-red-500',
   cancelled: 'text-gray-400',
+};
+
+// ── Mission Control view types ──────────────────────────────────────
+
+/** Status filter for the agent run grid. 'all' shows every status. */
+export type RunStatusFilter = 'all' | 'running' | 'queued' | 'completed' | 'failed';
+
+/**
+ * An agent run card in the grid — combines issue, pipeline run, and project data
+ * into a single presentational unit.
+ */
+export interface AgentRunCard {
+  /** The issue being worked on */
+  issue: Issue;
+  /** The active or most recent pipeline run */
+  run: PipelineRun;
+  /** The project this run belongs to */
+  project: Project;
+}
+
+/**
+ * Event log entry for the bottom panel.
+ * Each entry represents a timestamped event from the system.
+ */
+export interface EventLogEntry {
+  /** Unique identifier for deduplication */
+  id: string;
+  /** ISO 8601 timestamp */
+  timestamp: string;
+  /** Origin of the event */
+  source: 'agent' | 'phase' | 'review' | 'system' | 'error' | 'git';
+  /** Human-readable event description */
+  message: string;
+  /** Name of the project this event relates to */
+  projectName?: string;
+  /** Pipeline run ID this event relates to */
+  runId?: number;
+}
+
+/** View mode for the main agent run grid */
+export type ViewMode = 'grid' | 'list';
+
+/** Status colors mapped to CSS custom property values for the Mission Control theme */
+export const MC_STATUS_COLORS: Record<PipelineStatus, string> = {
+  running: 'var(--color-success)',
+  queued: 'var(--color-warning)',
+  completed: 'var(--color-success)',
+  failed: 'var(--color-error)',
+  cancelled: 'var(--color-text-secondary)',
 };

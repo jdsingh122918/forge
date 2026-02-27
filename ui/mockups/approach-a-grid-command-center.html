@@ -1,0 +1,1569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Forge Mission Control — Grid Command Center</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #0d1117;
+  --card-bg: #161b22;
+  --border: #30363d;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d29922;
+  --blue: #58a6ff;
+  --cyan: #39d353;
+  --sidebar-width: 200px;
+  --topbar-height: 48px;
+  --bottom-panel-collapsed: 36px;
+  --bottom-panel-expanded: 220px;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* ── Top Bar ── */
+.topbar {
+  height: var(--topbar-height);
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 24px;
+  z-index: 100;
+  position: relative;
+}
+
+.topbar-logo {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--cyan);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-logo svg {
+  width: 18px;
+  height: 18px;
+}
+
+.topbar-stats {
+  display: flex;
+  gap: 20px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.topbar-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.topbar-stat .value {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.topbar-stat .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.dot-green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.dot-yellow { background: var(--yellow); }
+.dot-red { background: var(--red); }
+.dot-blue { background: var(--blue); }
+.dot-gray { background: var(--text-secondary); }
+
+.topbar-command {
+  flex: 1;
+  max-width: 480px;
+  margin-left: auto;
+  position: relative;
+}
+
+.topbar-command input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  padding: 6px 12px 6px 56px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.topbar-command input:focus {
+  border-color: var(--cyan);
+}
+
+.topbar-command .prompt-label {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--cyan);
+  font-size: 12px;
+  pointer-events: none;
+  font-weight: 600;
+}
+
+.topbar-view-toggle {
+  display: flex;
+  gap: 4px;
+  margin-left: 12px;
+}
+
+.view-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  transition: all 0.2s;
+}
+
+.view-btn:hover {
+  border-color: var(--text-secondary);
+  color: var(--text-primary);
+}
+
+.view-btn.active {
+  background: var(--border);
+  border-color: var(--text-secondary);
+  color: var(--text-primary);
+}
+
+/* ── Layout ── */
+.layout {
+  display: flex;
+  height: calc(100vh - var(--topbar-height));
+}
+
+/* ── Sidebar ── */
+.sidebar {
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
+  background: var(--card-bg);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  padding: 12px 14px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.sidebar-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 6px;
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+  transition: all 0.15s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-item:hover {
+  background: rgba(255,255,255,0.04);
+  color: var(--text-primary);
+}
+
+.sidebar-item.active {
+  background: rgba(56, 139, 253, 0.1);
+  color: var(--text-primary);
+}
+
+.sidebar-item .project-dot {
+  width: 7px;
+  height: 7px;
+  min-width: 7px;
+  border-radius: 50%;
+}
+
+.sidebar-item .project-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: rgba(255,255,255,0.06);
+  padding: 1px 5px;
+  border-radius: 8px;
+}
+
+.sidebar-footer {
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+/* ── Main Content ── */
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.grid-area {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px;
+  transition: padding-bottom 0.3s;
+}
+
+/* ── Agent Grid ── */
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+}
+
+.agent-grid.list-view {
+  grid-template-columns: 1fr;
+}
+
+/* ── Agent Card ── */
+.agent-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: all 0.2s;
+  position: relative;
+  overflow: hidden;
+}
+
+.agent-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 3px;
+  height: 100%;
+  border-radius: 6px 0 0 6px;
+}
+
+.agent-card.status-running::before { background: var(--green); }
+.agent-card.status-queued::before { background: var(--yellow); }
+.agent-card.status-completed::before { background: var(--blue); }
+.agent-card.status-failed::before { background: var(--red); }
+
+.agent-card:hover {
+  border-color: var(--text-secondary);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+.agent-card.expanded {
+  grid-column: 1 / -1;
+  transform: none;
+}
+
+.card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.card-project {
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.card-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+}
+
+.card-badge {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.badge-running {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--green);
+}
+.badge-queued {
+  background: rgba(210, 153, 34, 0.15);
+  color: var(--yellow);
+}
+.badge-completed {
+  background: rgba(88, 166, 255, 0.15);
+  color: var(--blue);
+}
+.badge-failed {
+  background: rgba(248, 81, 73, 0.15);
+  color: var(--red);
+}
+
+.card-meta {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.card-phase {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.phase-dots {
+  display: flex;
+  gap: 2px;
+}
+
+.phase-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--border);
+}
+
+.phase-dot.done { background: var(--green); }
+.phase-dot.current { background: var(--cyan); box-shadow: 0 0 4px var(--cyan); }
+
+.card-progress {
+  width: 100%;
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.card-progress-bar {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.5s ease;
+}
+
+.status-running .card-progress-bar { background: var(--green); }
+.status-queued .card-progress-bar { background: var(--yellow); }
+.status-completed .card-progress-bar { background: var(--blue); }
+.status-failed .card-progress-bar { background: var(--red); }
+
+.card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.card-elapsed {
+  font-variant-numeric: tabular-nums;
+}
+
+.card-sparkline {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 14px;
+}
+
+.sparkline-bar {
+  width: 3px;
+  border-radius: 1px;
+  transition: height 0.3s;
+}
+
+.status-running .sparkline-bar { background: var(--green); }
+.status-queued .sparkline-bar { background: var(--yellow); }
+.status-completed .sparkline-bar { background: var(--blue); }
+.status-failed .sparkline-bar { background: var(--red); }
+
+/* ── Expanded Card Detail ── */
+.card-detail {
+  display: none;
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.agent-card.expanded .card-detail {
+  display: block;
+}
+
+.detail-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.detail-tab {
+  padding: 6px 14px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+}
+
+.detail-tab:hover { color: var(--text-primary); }
+.detail-tab.active {
+  color: var(--cyan);
+  border-bottom-color: var(--cyan);
+}
+
+.terminal-output {
+  background: #010409;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  height: 200px;
+  overflow-y: auto;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.terminal-output::-webkit-scrollbar {
+  width: 6px;
+}
+.terminal-output::-webkit-scrollbar-track {
+  background: transparent;
+}
+.terminal-output::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.terminal-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.t-green { color: var(--green); }
+.t-blue { color: var(--blue); }
+.t-yellow { color: var(--yellow); }
+.t-red { color: var(--red); }
+.t-cyan { color: var(--cyan); }
+.t-dim { color: #484f58; }
+
+.phase-timeline {
+  display: none;
+  padding: 8px 0;
+}
+
+.phase-timeline.active { display: block; }
+
+.timeline-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 11px;
+}
+
+.timeline-dot {
+  width: 10px;
+  height: 10px;
+  min-width: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  position: relative;
+}
+
+.timeline-dot.done {
+  background: var(--green);
+  border-color: var(--green);
+}
+
+.timeline-dot.current {
+  border-color: var(--cyan);
+  box-shadow: 0 0 6px var(--cyan);
+}
+
+.timeline-dot.current::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  background: var(--cyan);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.timeline-label { color: var(--text-primary); }
+.timeline-time { color: var(--text-secondary); margin-left: auto; font-size: 10px; }
+
+.file-changes {
+  display: none;
+  padding: 8px 0;
+}
+
+.file-changes.active { display: block; }
+
+.file-change {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 11px;
+}
+
+.file-change-type {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 3px;
+  min-width: 20px;
+  text-align: center;
+}
+
+.file-change-type.added { background: rgba(63,185,80,0.2); color: var(--green); }
+.file-change-type.modified { background: rgba(210,153,34,0.2); color: var(--yellow); }
+.file-change-type.deleted { background: rgba(248,81,73,0.2); color: var(--red); }
+
+/* ── Bottom Panel ── */
+.bottom-panel {
+  background: var(--card-bg);
+  border-top: 1px solid var(--border);
+  height: var(--bottom-panel-collapsed);
+  transition: height 0.3s ease;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.bottom-panel.expanded {
+  height: var(--bottom-panel-expanded);
+}
+
+.bottom-panel-header {
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  height: 36px;
+  min-height: 36px;
+  cursor: pointer;
+  gap: 8px;
+  user-select: none;
+}
+
+.bottom-panel-header:hover {
+  background: rgba(255,255,255,0.02);
+}
+
+.bottom-panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.bottom-panel-chevron {
+  color: var(--text-secondary);
+  transition: transform 0.3s;
+  font-size: 10px;
+}
+
+.bottom-panel.expanded .bottom-panel-chevron {
+  transform: rotate(180deg);
+}
+
+.bottom-panel-count {
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: rgba(255,255,255,0.06);
+  padding: 1px 6px;
+  border-radius: 8px;
+  margin-left: auto;
+}
+
+.event-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 16px 8px;
+  font-size: 11px;
+}
+
+.event-log::-webkit-scrollbar {
+  width: 6px;
+}
+.event-log::-webkit-scrollbar-track {
+  background: transparent;
+}
+.event-log::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.event-line {
+  display: flex;
+  gap: 10px;
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(48,54,61,0.3);
+}
+
+.event-time {
+  color: #484f58;
+  white-space: nowrap;
+  min-width: 70px;
+}
+
+.event-type {
+  font-weight: 600;
+  min-width: 60px;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.event-type.type-phase { color: var(--blue); }
+.event-type.type-agent { color: var(--green); }
+.event-type.type-error { color: var(--red); }
+.event-type.type-review { color: var(--yellow); }
+.event-type.type-system { color: var(--text-secondary); }
+.event-type.type-commit { color: var(--cyan); }
+
+.event-msg {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Scrollbar ── */
+.grid-area::-webkit-scrollbar {
+  width: 6px;
+}
+.grid-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+.grid-area::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+/* ── Running animation ── */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.badge-running .dot-green {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.cursor-blink {
+  animation: blink 1s step-end infinite;
+  color: var(--cyan);
+}
+
+/* ── Responsive ── */
+@media (max-width: 900px) {
+  .sidebar { display: none; }
+  .topbar-stats { display: none; }
+  .agent-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .topbar-view-toggle { display: none; }
+  .topbar-command { max-width: 200px; }
+}
+</style>
+</head>
+<body>
+
+<!-- ── Top Bar ── -->
+<div class="topbar">
+  <div class="topbar-logo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+    </svg>
+    FORGE
+  </div>
+  <div class="topbar-stats">
+    <div class="topbar-stat">
+      <span class="dot dot-green"></span>
+      <span>Agents:</span>
+      <span class="value" id="stat-agents">4</span>
+    </div>
+    <div class="topbar-stat">
+      <span>CPU:</span>
+      <span class="value">67%</span>
+    </div>
+    <div class="topbar-stat">
+      <span>Mem:</span>
+      <span class="value">2.4G</span>
+    </div>
+    <div class="topbar-stat">
+      <span>Uptime:</span>
+      <span class="value" id="stat-uptime">3h 24m</span>
+    </div>
+    <div class="topbar-stat">
+      <span>Projects:</span>
+      <span class="value">4</span>
+    </div>
+  </div>
+  <div class="topbar-command">
+    <span class="prompt-label">forge&gt;</span>
+    <input type="text" id="command-input" placeholder="type a command..." spellcheck="false" autocomplete="off" />
+  </div>
+  <div class="topbar-view-toggle">
+    <button class="view-btn active" id="btn-grid" onclick="setView('grid')">Grid</button>
+    <button class="view-btn" id="btn-list" onclick="setView('list')">List</button>
+  </div>
+</div>
+
+<!-- ── Layout ── -->
+<div class="layout">
+
+  <!-- ── Sidebar ── -->
+  <div class="sidebar">
+    <div class="sidebar-header">Projects</div>
+    <div class="sidebar-list" id="sidebar-list"></div>
+    <div class="sidebar-footer">
+      <span id="sidebar-summary">6 runs total</span>
+    </div>
+  </div>
+
+  <!-- ── Main ── -->
+  <div class="main-content">
+    <div class="grid-area" id="grid-area">
+      <div class="agent-grid" id="agent-grid"></div>
+    </div>
+
+    <!-- ── Bottom Panel ── -->
+    <div class="bottom-panel" id="bottom-panel">
+      <div class="bottom-panel-header" onclick="toggleBottomPanel()">
+        <span class="bottom-panel-chevron" id="bottom-chevron">&#9650;</span>
+        <span class="bottom-panel-title">Event Log</span>
+        <span class="bottom-panel-count" id="event-count">0 events</span>
+      </div>
+      <div class="event-log" id="event-log"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Data ──
+// All data below is hardcoded mockup content — no user input is rendered as HTML.
+
+var PROJECTS = [
+  { id: 'all', name: 'All Projects', dot: 'dot-blue', count: 6 },
+  { id: 'forge', name: 'forge', dot: 'dot-green', count: 2 },
+  { id: 'api-gateway', name: 'api-gateway', dot: 'dot-green', count: 2 },
+  { id: 'web-dashboard', name: 'web-dashboard', dot: 'dot-gray', count: 1 },
+  { id: 'ml-pipeline', name: 'ml-pipeline', dot: 'dot-gray', count: 1 },
+];
+
+var AGENTS = [
+  {
+    id: 'a1',
+    project: 'forge',
+    issue: 'Implement DAG-based parallel phase execution',
+    status: 'running',
+    phase: 3,
+    totalPhases: 5,
+    progress: 58,
+    elapsed: 847,
+    sparkline: [4,7,8,6,9,10,8,12,9,11,7,10],
+    terminalLines: [
+      { time: '14:23:01', cls: '', parts: [{ cls: 't-dim', text: '[14:23:01]' }, { cls: 't-green', text: ' Phase 3/5:' }, { cls: '', text: ' Implementing executor pool' }] },
+      { time: '14:23:03', text: 'Reading src/dag/scheduler.rs...' },
+      { time: '14:23:05', text: 'Analyzing dependency graph for 12 nodes' },
+      { time: '14:23:08', parts: [{ cls: 't-cyan', text: '<progress>' }, { cls: '', text: ' Topological sort complete, 4 parallel groups found' }] },
+      { time: '14:23:12', text: 'Writing src/dag/executor.rs (new file)' },
+      { time: '14:23:15', text: 'Added tokio::task::JoinSet for concurrent execution' },
+      { time: '14:23:18', parts: [{ cls: 't-yellow', text: '<blocker>' }, { cls: '', text: ' Need to handle cycle detection edge case' }] },
+      { time: '14:23:22', text: 'Implementing Kahn\'s algorithm for cycle detection' },
+      { time: '14:23:25', text: 'Writing unit test: test_executor_parallel_groups' },
+      { time: '14:23:28', parts: [{ cls: 't-green', text: 'cargo test' }, { cls: '', text: ' -- 14 passed, 0 failed' }] },
+      { time: '14:23:31', parts: [{ cls: 't-cyan', text: '<progress>' }, { cls: '', text: ' Executor pool spawning verified' }] },
+      { time: '14:23:34', text: 'Integrating with orchestrator runner...' },
+    ],
+    streamingTexts: [
+      { text: 'Wiring executor into run_phase() dispatch' },
+      { parts: [{ cls: 't-cyan', text: '<progress>' }, { cls: '', text: ' 58% through phase 3 implementation' }] },
+      { text: 'Updating state serialization for parallel results' },
+      { text: 'Adding backpressure via semaphore (max_concurrent=4)' },
+      { parts: [{ cls: 't-green', text: 'cargo check' }, { cls: '', text: ' -- no errors' }] },
+      { text: 'Writing integration test: test_dag_end_to_end' },
+      { parts: [{ cls: 't-cyan', text: '<progress>' }, { cls: '', text: ' Integration test passing' }] },
+      { text: 'Refactoring error propagation with anyhow context' },
+    ],
+    phases: [
+      { name: 'Parse spec into DAG', status: 'done', time: '4m 12s' },
+      { name: 'Build dependency resolver', status: 'done', time: '6m 38s' },
+      { name: 'Implement executor pool', status: 'current', time: '3m 27s' },
+      { name: 'State persistence', status: 'pending', time: '--' },
+      { name: 'CLI integration', status: 'pending', time: '--' },
+    ],
+    files: [
+      { path: 'src/dag/executor.rs', type: 'added' },
+      { path: 'src/dag/scheduler.rs', type: 'modified' },
+      { path: 'src/dag/mod.rs', type: 'modified' },
+      { path: 'tests/dag_tests.rs', type: 'added' },
+    ],
+  },
+  {
+    id: 'a2',
+    project: 'api-gateway',
+    issue: 'Add rate limiting middleware with Redis backend',
+    status: 'running',
+    phase: 2,
+    totalPhases: 4,
+    progress: 45,
+    elapsed: 523,
+    sparkline: [3,5,6,8,4,7,9,5,8,6,7,9],
+    terminalLines: [
+      { time: '14:15:22', parts: [{ cls: 't-green', text: 'Phase 2/4:' }, { cls: '', text: ' Redis connection pool setup' }] },
+      { time: '14:15:25', text: 'Reading existing middleware stack...' },
+      { time: '14:15:28', text: 'Found 3 existing middleware layers in tower chain' },
+      { time: '14:15:31', text: 'Adding redis = "0.25" and bb8-redis to Cargo.toml' },
+      { time: '14:15:34', parts: [{ cls: 't-cyan', text: '<progress>' }, { cls: '', text: ' Connection pool configured, max_size=20' }] },
+      { time: '14:15:38', text: 'Implementing sliding window rate limiter' },
+      { time: '14:15:41', text: 'Using MULTI/EXEC for atomic counter operations' },
+      { time: '14:15:44', text: 'Writing src/middleware/rate_limit.rs' },
+    ],
+    streamingTexts: [
+      { text: 'Implementing token bucket algorithm' },
+      { parts: [{ cls: 't-cyan', text: '<progress>' }, { cls: '', text: ' Rate limiter core logic complete' }] },
+      { text: 'Adding per-route configuration support' },
+      { text: 'Writing header injection (X-RateLimit-*)' },
+      { parts: [{ cls: 't-green', text: 'cargo test' }, { cls: '', text: ' -- 8 passed, 0 failed' }] },
+    ],
+    phases: [
+      { name: 'Design rate limit schema', status: 'done', time: '3m 05s' },
+      { name: 'Redis connection pool', status: 'current', time: '5m 41s' },
+      { name: 'Middleware integration', status: 'pending', time: '--' },
+      { name: 'Load testing', status: 'pending', time: '--' },
+    ],
+    files: [
+      { path: 'src/middleware/rate_limit.rs', type: 'added' },
+      { path: 'Cargo.toml', type: 'modified' },
+      { path: 'src/middleware/mod.rs', type: 'modified' },
+    ],
+  },
+  {
+    id: 'a3',
+    project: 'forge',
+    issue: 'Fix checkpoint recovery losing phase context',
+    status: 'running',
+    phase: 2,
+    totalPhases: 3,
+    progress: 72,
+    elapsed: 312,
+    sparkline: [6,8,7,10,9,11,8,12,10,9,11,8],
+    terminalLines: [
+      { time: '14:19:45', parts: [{ cls: 't-green', text: 'Phase 2/3:' }, { cls: '', text: ' Fix state deserialization' }] },
+      { time: '14:19:48', text: 'Reading src/orchestrator/state.rs...' },
+      { time: '14:19:51', parts: [{ cls: 't-red', text: 'Bug found:' }, { cls: '', text: ' phase_context field not serialized in v2 format' }] },
+      { time: '14:19:54', text: 'Adding #[serde(default)] for backwards compat' },
+      { time: '14:19:57', parts: [{ cls: 't-cyan', text: '<progress>' }, { cls: '', text: ' Migration path for v1 -> v2 checkpoints' }] },
+      { time: '14:20:01', text: 'Writing regression test with v1 fixture data' },
+      { time: '14:20:04', parts: [{ cls: 't-green', text: 'cargo test' }, { cls: '', text: ' -- test_checkpoint_v1_compat passed' }] },
+    ],
+    streamingTexts: [
+      { text: 'Validating recovery with 3 checkpoint fixtures' },
+      { parts: [{ cls: 't-cyan', text: '<progress>' }, { cls: '', text: ' All fixtures recover correctly' }] },
+      { text: 'Adding context preservation in phase transitions' },
+      { parts: [{ cls: 't-green', text: 'cargo test' }, { cls: '', text: ' -- 22 passed, 0 failed' }] },
+    ],
+    phases: [
+      { name: 'Reproduce & diagnose', status: 'done', time: '2m 11s' },
+      { name: 'Fix state deserialization', status: 'current', time: '3m 01s' },
+      { name: 'Regression tests', status: 'pending', time: '--' },
+    ],
+    files: [
+      { path: 'src/orchestrator/state.rs', type: 'modified' },
+      { path: 'tests/fixtures/checkpoint_v1.json', type: 'added' },
+      { path: 'tests/checkpoint_tests.rs', type: 'modified' },
+    ],
+  },
+  {
+    id: 'a4',
+    project: 'api-gateway',
+    issue: 'Migrate auth from JWT to PASETO tokens',
+    status: 'queued',
+    phase: 0,
+    totalPhases: 6,
+    progress: 0,
+    elapsed: 0,
+    sparkline: [0,0,0,0,0,0,0,0,0,0,0,0],
+    terminalLines: [
+      { time: '14:25:00', parts: [{ cls: 't-yellow', text: 'Queued' }, { cls: '', text: ' -- waiting for agent slot' }] },
+      { time: '14:25:00', text: 'Dependencies: none' },
+      { time: '14:25:00', text: 'Estimated phases: 6' },
+    ],
+    streamingTexts: [],
+    phases: [
+      { name: 'Audit current JWT usage', status: 'pending', time: '--' },
+      { name: 'Add PASETO library', status: 'pending', time: '--' },
+      { name: 'Token generation', status: 'pending', time: '--' },
+      { name: 'Token validation', status: 'pending', time: '--' },
+      { name: 'Migration path', status: 'pending', time: '--' },
+      { name: 'Remove JWT code', status: 'pending', time: '--' },
+    ],
+    files: [],
+  },
+  {
+    id: 'a5',
+    project: 'web-dashboard',
+    issue: 'Optimize bundle size — remove unused lodash imports',
+    status: 'completed',
+    phase: 3,
+    totalPhases: 3,
+    progress: 100,
+    elapsed: 245,
+    sparkline: [8,10,12,9,11,10,8,6,4,2,1,0],
+    terminalLines: [
+      { time: '13:58:12', parts: [{ cls: 't-green', text: 'Phase 3/3:' }, { cls: '', text: ' Verify bundle reduction' }] },
+      { time: '13:58:15', text: 'Running production build...' },
+      { time: '13:58:22', parts: [{ cls: '', text: 'Bundle size: 342KB -> 218KB (' }, { cls: 't-green', text: '-36.3%' }, { cls: '', text: ')' }] },
+      { time: '13:58:25', parts: [{ cls: 't-green', text: '<promise>DONE</promise>' }] },
+      { time: '13:58:25', text: 'All 3 phases completed successfully' },
+      { time: '13:58:26', parts: [{ cls: 't-blue', text: 'Review:' }, { cls: '', text: ' simplicity -- PASS' }] },
+      { time: '13:58:27', parts: [{ cls: 't-blue', text: 'Review:' }, { cls: '', text: ' performance -- PASS' }] },
+    ],
+    streamingTexts: [],
+    phases: [
+      { name: 'Identify unused imports', status: 'done', time: '1m 22s' },
+      { name: 'Replace with native/targeted', status: 'done', time: '1m 48s' },
+      { name: 'Verify bundle reduction', status: 'done', time: '0m 55s' },
+    ],
+    files: [
+      { path: 'src/utils/helpers.ts', type: 'modified' },
+      { path: 'src/components/DataTable.tsx', type: 'modified' },
+      { path: 'package.json', type: 'modified' },
+    ],
+  },
+  {
+    id: 'a6',
+    project: 'ml-pipeline',
+    issue: 'Fix OOM crash in batch inference with large models',
+    status: 'failed',
+    phase: 2,
+    totalPhases: 4,
+    progress: 35,
+    elapsed: 189,
+    sparkline: [5,7,9,11,13,12,10,8,14,2,0,0],
+    terminalLines: [
+      { time: '14:10:33', parts: [{ cls: 't-green', text: 'Phase 2/4:' }, { cls: '', text: ' Implement streaming batch processor' }] },
+      { time: '14:10:36', text: 'Reading src/inference/batch.py...' },
+      { time: '14:10:39', text: 'Current implementation loads all samples into memory' },
+      { time: '14:10:42', text: 'Refactoring to use generator-based batching' },
+      { time: '14:10:45', parts: [{ cls: 't-red', text: 'Error:' }, { cls: '', text: ' torch.cuda.OutOfMemoryError during test run' }] },
+      { time: '14:10:48', parts: [{ cls: 't-red', text: '<blocker>' }, { cls: '', text: ' GPU memory insufficient for model + batch' }] },
+      { time: '14:10:51', text: 'Attempted gradient checkpointing -- still OOM at batch_size=4' },
+      { time: '14:10:54', parts: [{ cls: 't-red', text: 'FAILED:' }, { cls: '', text: ' Exceeded iteration budget (5/5)' }] },
+    ],
+    streamingTexts: [],
+    phases: [
+      { name: 'Profile memory usage', status: 'done', time: '1m 44s' },
+      { name: 'Streaming batch processor', status: 'current', time: '1m 25s' },
+      { name: 'Memory-mapped loading', status: 'pending', time: '--' },
+      { name: 'Stress testing', status: 'pending', time: '--' },
+    ],
+    files: [
+      { path: 'src/inference/batch.py', type: 'modified' },
+      { path: 'src/inference/memory_profile.py', type: 'added' },
+    ],
+  },
+];
+
+var EVENT_SEED = [
+  { type: 'system', cls: 'type-system', msg: 'Forge Mission Control initialized -- 4 projects loaded' },
+  { type: 'agent', cls: 'type-agent', msg: 'Agent a5 completed -- web-dashboard bundle optimization' },
+  { type: 'phase', cls: 'type-phase', msg: 'web-dashboard#a5: Phase 3 completed in 0m 55s' },
+  { type: 'review', cls: 'type-review', msg: 'Simplicity review passed for web-dashboard#a5' },
+  { type: 'commit', cls: 'type-commit', msg: 'Auto-commit: web-dashboard@fix/bundle -- "tree-shake lodash imports"' },
+  { type: 'error', cls: 'type-error', msg: 'ml-pipeline#a6: FAILED -- exceeded iteration budget (5/5)' },
+  { type: 'agent', cls: 'type-agent', msg: 'Agent a1 started phase 3 -- Implement executor pool' },
+  { type: 'agent', cls: 'type-agent', msg: 'Agent a2 started phase 2 -- Redis connection pool' },
+  { type: 'phase', cls: 'type-phase', msg: 'forge#a1: Phase 2 completed in 6m 38s' },
+  { type: 'agent', cls: 'type-agent', msg: 'Agent a3 started phase 2 -- Fix state deserialization' },
+  { type: 'system', cls: 'type-system', msg: 'Queue updated: api-gateway#a4 waiting for agent slot' },
+  { type: 'commit', cls: 'type-commit', msg: 'Auto-commit: forge@fix/checkpoint -- "preserve phase context in v2 format"' },
+];
+
+var RANDOM_EVENTS = [
+  { type: 'agent', cls: 'type-agent', msgs: [
+    'Agent a1 running cargo test -- 14 passed',
+    'Agent a3 iteration 4/8 -- fixing state deserialization',
+    'Agent a2 writing src/middleware/rate_limit.rs',
+    'Agent a1 checkpoint saved at iteration 6',
+    'Agent a3 checkpoint saved at iteration 4',
+  ]},
+  { type: 'phase', cls: 'type-phase', msgs: [
+    'forge#a1: Phase 3 progress -- 62%',
+    'api-gateway#a2: Phase 2 progress -- 51%',
+    'forge#a3: Phase 2 progress -- 78%',
+  ]},
+  { type: 'review', cls: 'type-review', msgs: [
+    'Security review passed for api-gateway#a2',
+    'Architecture review: approved with minor suggestion',
+    'Performance review queued for forge#a1',
+  ]},
+  { type: 'commit', cls: 'type-commit', msgs: [
+    'Auto-commit: forge@feat/dag-executor -- "add parallel group execution"',
+    'Auto-commit: api-gateway@feat/rate-limit -- "add sliding window limiter"',
+  ]},
+  { type: 'system', cls: 'type-system', msgs: [
+    'Queue updated: 1 agent waiting for slot',
+    'Memory pressure: 2.4GB / 4GB -- within limits',
+    'Checkpoint sync completed for 3 active agents',
+  ]},
+];
+
+// ── State ──
+var activeProject = 'all';
+var expandedCard = null;
+var viewMode = 'grid';
+var eventLog = [];
+var streamingIntervals = {};
+
+// ── Safe DOM helpers ──
+function createTextSpan(cls, text) {
+  var span = document.createElement('span');
+  if (cls) span.className = cls;
+  span.textContent = text;
+  return span;
+}
+
+function buildTerminalLine(lineData) {
+  var div = document.createElement('div');
+  div.className = 'terminal-line';
+
+  var timeSpan = createTextSpan('t-dim', '[' + lineData.time + '] ');
+  div.appendChild(timeSpan);
+
+  if (lineData.text) {
+    div.appendChild(document.createTextNode(lineData.text));
+  } else if (lineData.parts) {
+    lineData.parts.forEach(function(part) {
+      div.appendChild(createTextSpan(part.cls, part.text));
+    });
+  }
+  return div;
+}
+
+function buildStreamingLine(streamData, timeStr) {
+  var div = document.createElement('div');
+  div.className = 'terminal-line';
+
+  var timeSpan = createTextSpan('t-dim', '[' + timeStr + '] ');
+  div.appendChild(timeSpan);
+
+  if (streamData.text) {
+    div.appendChild(document.createTextNode(streamData.text));
+  } else if (streamData.parts) {
+    streamData.parts.forEach(function(part) {
+      div.appendChild(createTextSpan(part.cls, part.text));
+    });
+  }
+  return div;
+}
+
+// ── Render Sidebar ──
+function renderSidebar() {
+  var list = document.getElementById('sidebar-list');
+  list.textContent = '';
+  PROJECTS.forEach(function(p) {
+    var el = document.createElement('div');
+    el.className = 'sidebar-item' + (activeProject === p.id ? ' active' : '');
+
+    var dot = document.createElement('span');
+    dot.className = 'project-dot ' + p.dot;
+    el.appendChild(dot);
+
+    var name = document.createElement('span');
+    name.textContent = p.name;
+    el.appendChild(name);
+
+    var count = document.createElement('span');
+    count.className = 'project-count';
+    count.textContent = p.count;
+    el.appendChild(count);
+
+    el.onclick = function() {
+      activeProject = p.id;
+      renderSidebar();
+      renderGrid();
+    };
+    list.appendChild(el);
+  });
+}
+
+// ── Render Grid ──
+function renderGrid() {
+  var grid = document.getElementById('agent-grid');
+  grid.textContent = '';
+
+  var filtered = activeProject === 'all'
+    ? AGENTS
+    : AGENTS.filter(function(a) { return a.project === activeProject; });
+
+  filtered.forEach(function(agent) {
+    var card = document.createElement('div');
+    card.className = 'agent-card status-' + agent.status + (expandedCard === agent.id ? ' expanded' : '');
+    card.id = 'card-' + agent.id;
+    card.onclick = function(e) {
+      if (e.target.closest('.detail-tab')) return;
+      toggleCard(agent.id);
+    };
+
+    var statusLabel = agent.status.charAt(0).toUpperCase() + agent.status.slice(1);
+    var dotCls = agent.status === 'running' ? 'dot-green'
+      : agent.status === 'queued' ? 'dot-yellow'
+      : agent.status === 'completed' ? 'dot-blue'
+      : 'dot-red';
+    var badgeCls = 'badge-' + agent.status;
+
+    // ── Card Header ──
+    var header = document.createElement('div');
+    header.className = 'card-header';
+
+    var headerLeft = document.createElement('div');
+    var projLabel = document.createElement('div');
+    projLabel.className = 'card-project';
+    projLabel.textContent = agent.project;
+    headerLeft.appendChild(projLabel);
+
+    var titleEl = document.createElement('div');
+    titleEl.className = 'card-title';
+    titleEl.textContent = agent.issue;
+    titleEl.title = agent.issue;
+    headerLeft.appendChild(titleEl);
+    header.appendChild(headerLeft);
+
+    var badge = document.createElement('span');
+    badge.className = 'card-badge ' + badgeCls;
+    var badgeDot = document.createElement('span');
+    badgeDot.className = 'dot ' + dotCls;
+    badge.appendChild(badgeDot);
+    badge.appendChild(document.createTextNode(' ' + statusLabel));
+    header.appendChild(badge);
+
+    card.appendChild(header);
+
+    // ── Card Meta ──
+    var meta = document.createElement('div');
+    meta.className = 'card-meta';
+
+    var phaseInfo = document.createElement('div');
+    phaseInfo.className = 'card-phase';
+    var phaseText = document.createElement('span');
+    phaseText.textContent = 'Phase ' + agent.phase + '/' + agent.totalPhases;
+    phaseInfo.appendChild(phaseText);
+
+    var phaseDots = document.createElement('span');
+    phaseDots.className = 'phase-dots';
+    for (var i = 0; i < agent.totalPhases; i++) {
+      var pd = document.createElement('span');
+      pd.className = 'phase-dot';
+      if (i < agent.phase) pd.classList.add('done');
+      else if (i === agent.phase && agent.status === 'running') pd.classList.add('current');
+      phaseDots.appendChild(pd);
+    }
+    phaseInfo.appendChild(phaseDots);
+    meta.appendChild(phaseInfo);
+    card.appendChild(meta);
+
+    // ── Progress Bar ──
+    var progress = document.createElement('div');
+    progress.className = 'card-progress';
+    var progressBar = document.createElement('div');
+    progressBar.className = 'card-progress-bar';
+    progressBar.style.width = agent.progress + '%';
+    progress.appendChild(progressBar);
+    card.appendChild(progress);
+
+    // ── Footer ──
+    var footer = document.createElement('div');
+    footer.className = 'card-footer';
+
+    var elapsed = document.createElement('span');
+    elapsed.className = 'card-elapsed';
+    elapsed.textContent = formatTime(agent.elapsed);
+    footer.appendChild(elapsed);
+
+    var sparkContainer = document.createElement('div');
+    sparkContainer.className = 'card-sparkline';
+    var maxSpark = Math.max.apply(null, agent.sparkline.concat([1]));
+    agent.sparkline.forEach(function(v) {
+      var bar = document.createElement('span');
+      bar.className = 'sparkline-bar';
+      bar.style.height = Math.max(1, (v / maxSpark) * 14) + 'px';
+      sparkContainer.appendChild(bar);
+    });
+    footer.appendChild(sparkContainer);
+    card.appendChild(footer);
+
+    // ── Detail Panel ──
+    var detail = document.createElement('div');
+    detail.className = 'card-detail';
+
+    // Tabs
+    var tabs = document.createElement('div');
+    tabs.className = 'detail-tabs';
+
+    ['Output', 'Phases', 'Files'].forEach(function(tabName, idx) {
+      var tab = document.createElement('div');
+      tab.className = 'detail-tab' + (idx === 0 ? ' active' : '');
+      tab.dataset.tab = tabName.toLowerCase();
+      tab.textContent = tabName;
+      tab.onclick = function(e) {
+        e.stopPropagation();
+        switchTab(e, agent.id, tabName.toLowerCase());
+      };
+      tabs.appendChild(tab);
+    });
+    detail.appendChild(tabs);
+
+    // Terminal output
+    var terminal = document.createElement('div');
+    terminal.className = 'terminal-output';
+    terminal.id = 'terminal-' + agent.id;
+    agent.terminalLines.forEach(function(lineData) {
+      terminal.appendChild(buildTerminalLine(lineData));
+    });
+    detail.appendChild(terminal);
+
+    // Phase timeline
+    var timeline = document.createElement('div');
+    timeline.className = 'phase-timeline';
+    timeline.id = 'timeline-' + agent.id;
+    agent.phases.forEach(function(p) {
+      var item = document.createElement('div');
+      item.className = 'timeline-item';
+
+      var tdot = document.createElement('span');
+      tdot.className = 'timeline-dot' + (p.status === 'done' ? ' done' : p.status === 'current' ? ' current' : '');
+      item.appendChild(tdot);
+
+      var tlabel = document.createElement('span');
+      tlabel.className = 'timeline-label';
+      tlabel.textContent = p.name;
+      item.appendChild(tlabel);
+
+      var ttime = document.createElement('span');
+      ttime.className = 'timeline-time';
+      ttime.textContent = p.time;
+      item.appendChild(ttime);
+
+      timeline.appendChild(item);
+    });
+    detail.appendChild(timeline);
+
+    // File changes
+    var filesPanel = document.createElement('div');
+    filesPanel.className = 'file-changes';
+    filesPanel.id = 'files-' + agent.id;
+    if (agent.files.length === 0) {
+      var noFiles = document.createElement('div');
+      noFiles.style.cssText = 'color:var(--text-secondary);font-size:11px;padding:8px 0;';
+      noFiles.textContent = 'No changes yet';
+      filesPanel.appendChild(noFiles);
+    } else {
+      agent.files.forEach(function(f) {
+        var fc = document.createElement('div');
+        fc.className = 'file-change';
+
+        var ft = document.createElement('span');
+        ft.className = 'file-change-type ' + f.type;
+        ft.textContent = f.type === 'added' ? 'A' : f.type === 'modified' ? 'M' : 'D';
+        fc.appendChild(ft);
+
+        var fp = document.createElement('span');
+        fp.style.color = 'var(--text-primary)';
+        fp.textContent = f.path;
+        fc.appendChild(fp);
+
+        filesPanel.appendChild(fc);
+      });
+    }
+    detail.appendChild(filesPanel);
+
+    card.appendChild(detail);
+    grid.appendChild(card);
+  });
+
+  // Start streaming for expanded card
+  if (expandedCard) {
+    startStreaming(expandedCard);
+  }
+}
+
+function toggleCard(agentId) {
+  Object.keys(streamingIntervals).forEach(function(id) {
+    clearInterval(streamingIntervals[id]);
+    delete streamingIntervals[id];
+  });
+
+  if (expandedCard === agentId) {
+    expandedCard = null;
+  } else {
+    expandedCard = agentId;
+  }
+  renderGrid();
+}
+
+function switchTab(event, agentId, tab) {
+  event.stopPropagation();
+  var card = document.getElementById('card-' + agentId);
+  if (!card) return;
+
+  card.querySelectorAll('.detail-tab').forEach(function(t) { t.classList.remove('active'); });
+  event.target.classList.add('active');
+
+  var terminal = document.getElementById('terminal-' + agentId);
+  var timeline = document.getElementById('timeline-' + agentId);
+  var files = document.getElementById('files-' + agentId);
+
+  terminal.style.display = tab === 'output' ? 'block' : 'none';
+  timeline.className = 'phase-timeline' + (tab === 'phases' ? ' active' : '');
+  files.className = 'file-changes' + (tab === 'files' ? ' active' : '');
+}
+
+function startStreaming(agentId) {
+  var agent = AGENTS.find(function(a) { return a.id === agentId; });
+  if (!agent || agent.streamingTexts.length === 0) return;
+
+  var lineIdx = 0;
+  streamingIntervals[agentId] = setInterval(function() {
+    var terminal = document.getElementById('terminal-' + agentId);
+    if (!terminal) {
+      clearInterval(streamingIntervals[agentId]);
+      delete streamingIntervals[agentId];
+      return;
+    }
+
+    var now = new Date();
+    var timeStr = now.toTimeString().slice(0, 8);
+    var streamData = agent.streamingTexts[lineIdx % agent.streamingTexts.length];
+
+    terminal.appendChild(buildStreamingLine(streamData, timeStr));
+    terminal.scrollTop = terminal.scrollHeight;
+
+    lineIdx++;
+  }, 2200 + Math.random() * 1500);
+}
+
+function formatTime(seconds) {
+  if (seconds === 0) return '--:--';
+  var m = Math.floor(seconds / 60);
+  var s = seconds % 60;
+  return m + 'm ' + (s < 10 ? '0' : '') + s + 's';
+}
+
+function setView(mode) {
+  viewMode = mode;
+  var grid = document.getElementById('agent-grid');
+  document.getElementById('btn-grid').classList.toggle('active', mode === 'grid');
+  document.getElementById('btn-list').classList.toggle('active', mode === 'list');
+  grid.classList.toggle('list-view', mode === 'list');
+}
+
+// ── Bottom Panel ──
+function toggleBottomPanel() {
+  document.getElementById('bottom-panel').classList.toggle('expanded');
+}
+
+function addEvent(eventData) {
+  var log = document.getElementById('event-log');
+  var now = new Date();
+  var timeStr = now.toTimeString().slice(0, 8);
+
+  var line = document.createElement('div');
+  line.className = 'event-line';
+
+  var timeEl = document.createElement('span');
+  timeEl.className = 'event-time';
+  timeEl.textContent = timeStr;
+  line.appendChild(timeEl);
+
+  var typeEl = document.createElement('span');
+  typeEl.className = 'event-type ' + eventData.cls;
+  typeEl.textContent = eventData.type;
+  line.appendChild(typeEl);
+
+  var msgEl = document.createElement('span');
+  msgEl.className = 'event-msg';
+  msgEl.textContent = eventData.msg;
+  line.appendChild(msgEl);
+
+  log.insertBefore(line, log.firstChild);
+  eventLog.push(eventData);
+  document.getElementById('event-count').textContent = eventLog.length + ' events';
+}
+
+function generateRandomEvent() {
+  var group = RANDOM_EVENTS[Math.floor(Math.random() * RANDOM_EVENTS.length)];
+  var msg = group.msgs[Math.floor(Math.random() * group.msgs.length)];
+  addEvent({ type: group.type, cls: group.cls, msg: msg });
+}
+
+function seedEvents() {
+  EVENT_SEED.forEach(function(e) { addEvent(e); });
+}
+
+// ── Sparkline animation ──
+function animateSparklines() {
+  AGENTS.forEach(function(agent) {
+    if (agent.status === 'running') {
+      agent.sparkline.shift();
+      agent.sparkline.push(Math.floor(Math.random() * 14) + 1);
+    }
+
+    var card = document.getElementById('card-' + agent.id);
+    if (!card) return;
+    var sparkContainer = card.querySelector('.card-sparkline');
+    if (!sparkContainer) return;
+
+    sparkContainer.textContent = '';
+    var maxSpark = Math.max.apply(null, agent.sparkline.concat([1]));
+    agent.sparkline.forEach(function(v) {
+      var bar = document.createElement('span');
+      bar.className = 'sparkline-bar';
+      bar.style.height = Math.max(1, (v / maxSpark) * 14) + 'px';
+      sparkContainer.appendChild(bar);
+    });
+  });
+}
+
+// ── Elapsed time ticking ──
+function tickElapsed() {
+  AGENTS.forEach(function(agent) {
+    if (agent.status === 'running') {
+      agent.elapsed++;
+      var card = document.getElementById('card-' + agent.id);
+      if (!card) return;
+      var elapsedEl = card.querySelector('.card-elapsed');
+      if (elapsedEl) elapsedEl.textContent = formatTime(agent.elapsed);
+    }
+  });
+}
+
+// ── Progress animation ──
+function tickProgress() {
+  AGENTS.forEach(function(agent) {
+    if (agent.status === 'running' && agent.progress < 95) {
+      agent.progress += Math.random() * 0.3;
+      if (agent.progress > 95) agent.progress = 95;
+      var card = document.getElementById('card-' + agent.id);
+      if (!card) return;
+      var bar = card.querySelector('.card-progress-bar');
+      if (bar) bar.style.width = agent.progress + '%';
+    }
+  });
+}
+
+// ── Command bar ──
+document.getElementById('command-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    var val = this.value.trim();
+    if (val) {
+      addEvent({ type: 'system', cls: 'type-system', msg: 'Command: ' + val });
+      this.value = '';
+
+      var panel = document.getElementById('bottom-panel');
+      if (!panel.classList.contains('expanded')) {
+        panel.classList.add('expanded');
+      }
+    }
+  }
+});
+
+// ── Init ──
+renderSidebar();
+renderGrid();
+seedEvents();
+
+document.getElementById('bottom-panel').classList.add('expanded');
+
+setInterval(generateRandomEvent, 4000 + Math.random() * 3000);
+setInterval(animateSparklines, 2000);
+setInterval(tickElapsed, 1000);
+setInterval(tickProgress, 1500);
+</script>
+</body>
+</html>

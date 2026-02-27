@@ -1,4 +1,4 @@
-import type { Project, Issue, PipelineRun, BoardView, AgentTeam, AgentTask, AgentEvent, AgentTeamDetail, PipelinePhase } from '../types'
+import type { Project, Issue, PipelineRun, BoardView, AgentTeam, AgentTask, AgentEvent, AgentTeamDetail, PipelinePhase, AgentRunCard, EventLogEntry } from '../types'
 
 export function makeProject(overrides: Partial<Project> = {}): Project {
   return { id: 1, name: 'test-project', path: '/tmp/test', github_repo: null, created_at: '2024-01-01', ...overrides }
@@ -33,6 +33,18 @@ export function makeAgentTeamDetail(overrides?: { team?: Partial<AgentTeam>; tas
     team: makeAgentTeam(overrides?.team),
     tasks: overrides?.tasks?.map(t => makeAgentTask(t)) ?? [makeAgentTask()],
   }
+}
+
+export function makeAgentRunCard(overrides?: { issue?: Partial<Issue>; run?: Partial<PipelineRun>; project?: Partial<Project> }): AgentRunCard {
+  return {
+    issue: makeIssue(overrides?.issue),
+    run: makePipelineRun(overrides?.run),
+    project: makeProject(overrides?.project),
+  }
+}
+
+export function makeEventLogEntry(overrides: Partial<EventLogEntry> = {}): EventLogEntry {
+  return { id: 'evt-1', timestamp: '2024-01-01T00:00:00Z', source: 'system', message: 'Test event', ...overrides }
 }
 
 export function makeBoard(overrides?: Partial<BoardView>): BoardView {

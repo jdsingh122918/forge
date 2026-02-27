@@ -1,1 +1,63 @@
 @import "tailwindcss";
+
+@theme {
+  --color-bg-primary: #0d1117;
+  --color-bg-card: #161b22;
+  --color-bg-card-hover: #1c2333;
+  --color-border: #30363d;
+  --color-text-primary: #e6edf3;
+  --color-text-secondary: #8b949e;
+  --color-success: #3fb950;
+  --color-error: #f85149;
+  --color-warning: #d29922;
+  --color-info: #58a6ff;
+  --color-accent: #39d353;
+  --font-family-mono: 'JetBrains Mono', monospace;
+}
+
+* {
+  font-family: var(--font-family-mono);
+}
+
+body {
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  margin: 0;
+  overflow: hidden;
+}
+
+/* Pulsing dot animation for active agents */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.pulse-dot {
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+/* Project sidebar delete button — visible on hover */
+.project-sidebar-row .project-delete-btn {
+  opacity: 0;
+}
+.project-sidebar-row:hover .project-delete-btn {
+  opacity: 1;
+}
+.project-delete-btn:hover {
+  color: var(--color-danger) !important;
+}
+
+/* Terminal scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-bg-primary);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-secondary);
+}

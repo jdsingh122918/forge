@@ -27,6 +27,8 @@ export const api = {
       body: JSON.stringify({ repo_url: repoUrl }),
     }),
   getProject: (id: number) => request<import('../types').Project>(`/projects/${id}`),
+  deleteProject: (id: number) =>
+    request<void>(`/projects/${id}`, { method: 'DELETE' }),
 
   // Board
   getBoard: (projectId: number) =>
