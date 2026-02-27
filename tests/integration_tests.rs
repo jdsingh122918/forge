@@ -2211,8 +2211,7 @@ mod arbiter_library_tests {
 
     #[test]
     fn test_arbiter_config_arbiter_mode() {
-        let config = ArbiterConfig::arbiter_mode()
-            .with_confidence_threshold(0.9);
+        let config = ArbiterConfig::arbiter_mode().with_confidence_threshold(0.9);
 
         assert!(config.mode.has_llm());
         assert_eq!(config.mode.confidence_threshold(), Some(0.9));

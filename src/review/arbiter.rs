@@ -102,32 +102,32 @@ impl<'de> serde::Deserialize<'de> for ResolutionMode {
             },
             serde_json::Value::Object(map) => {
                 // Handle tagged enum format: {"mode": "manual|auto|arbiter", ...}
-                if let Some(mode_val) = map.get("mode") {
-                    if let Some(mode_str) = mode_val.as_str() {
-                        match mode_str {
-                            "manual" => {
-                                eprintln!("  Warning: 'manual' resolution mode is deprecated, using auto");
-                                return Ok(ResolutionMode::default());
-                            }
-                            "arbiter" => {
-                                let model = map
-                                    .get("model")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("claude-3-sonnet");
-                                let threshold = map
-                                    .get("confidence_threshold")
-                                    .and_then(|v| v.as_f64())
-                                    .unwrap_or(default_confidence_threshold());
-                                let max = map
-                                    .get("max_attempts")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(default_max_attempts() as u64);
-                                return Ok(ResolutionMode::auto_with_llm(
-                                    max as u32, model, threshold,
-                                ));
-                            }
-                            _ => {}
+                if let Some(mode_val) = map.get("mode")
+                    && let Some(mode_str) = mode_val.as_str()
+                {
+                    match mode_str {
+                        "manual" => {
+                            eprintln!(
+                                "  Warning: 'manual' resolution mode is deprecated, using auto"
+                            );
+                            return Ok(ResolutionMode::default());
                         }
+                        "arbiter" => {
+                            let model = map
+                                .get("model")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("claude-3-sonnet");
+                            let threshold = map
+                                .get("confidence_threshold")
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(default_confidence_threshold());
+                            let max = map
+                                .get("max_attempts")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(default_max_attempts() as u64);
+                            return Ok(ResolutionMode::auto_with_llm(max as u32, model, threshold));
+                        }
+                        _ => {}
                     }
                 }
                 // Default: extract fields directly
@@ -149,7 +149,9 @@ impl<'de> serde::Deserialize<'de> for ResolutionMode {
                     confidence_threshold: threshold,
                 })
             }
-            _ => Err(de::Error::custom("expected string or object for resolution mode")),
+            _ => Err(de::Error::custom(
+                "expected string or object for resolution mode",
+            )),
         }
     }
 }
@@ -940,7 +942,6 @@ fn extract_json(response: &str) -> Option<String> {
     None
 }
 
-
 /// Apply rule-based logic to determine decision without LLM.
 ///
 /// Used when the resolution mode doesn't require LLM or as a fallback.
@@ -1314,8 +1315,7 @@ mod tests {
 
     #[test]
     fn test_arbiter_config_arbiter_mode() {
-        let config = ArbiterConfig::arbiter_mode()
-            .with_confidence_threshold(0.8);
+        let config = ArbiterConfig::arbiter_mode().with_confidence_threshold(0.8);
 
         assert!(config.mode.has_llm());
         assert_eq!(config.mode.confidence_threshold(), Some(0.8));

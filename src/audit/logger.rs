@@ -250,7 +250,9 @@ mod tests {
         );
 
         // ended_at must be present and not null (set by finish_run via run.finish())
-        let ended_at = value.get("ended_at").expect("ended_at field must be present");
+        let ended_at = value
+            .get("ended_at")
+            .expect("ended_at field must be present");
         assert!(
             !ended_at.is_null(),
             "ended_at must not be null after finish_run"
@@ -289,7 +291,10 @@ mod tests {
         let loaded = second_logger
             .load_current()
             .expect("load_current must succeed");
-        assert!(loaded, "load_current must return true when a run file exists");
+        assert!(
+            loaded,
+            "load_current must return true when a run file exists"
+        );
         let disk_count = second_logger
             .current_run()
             .expect("loaded run must be present")

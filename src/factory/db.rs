@@ -33,7 +33,9 @@ impl DbHandle {
     {
         let db = self.inner.clone();
         tokio::task::spawn_blocking(move || {
-            let guard = db.lock().map_err(|e| anyhow::anyhow!("DB lock poisoned: {}", e))?;
+            let guard = db
+                .lock()
+                .map_err(|e| anyhow::anyhow!("DB lock poisoned: {}", e))?;
             f(&guard)
         })
         .await
@@ -144,19 +146,25 @@ impl FactoryDb {
 
         // Additive migrations (columns are nullable, safe to re-run).
         // We only ignore "duplicate column" errors — any other error is propagated.
-        match self.conn.execute("ALTER TABLE projects ADD COLUMN github_repo TEXT", []) {
+        match self
+            .conn
+            .execute("ALTER TABLE projects ADD COLUMN github_repo TEXT", [])
+        {
             Ok(_) => {}
             Err(e) if e.to_string().contains("duplicate column") => {}
             Err(e) => return Err(anyhow::anyhow!("Failed to add github_repo column: {}", e)),
         }
-        match self.conn.execute("ALTER TABLE issues ADD COLUMN github_issue_number INTEGER", []) {
+        match self.conn.execute(
+            "ALTER TABLE issues ADD COLUMN github_issue_number INTEGER",
+            [],
+        ) {
             Ok(_) => {}
             Err(e) if e.to_string().contains("duplicate column") => {}
             Err(e) => {
                 return Err(anyhow::anyhow!(
                     "Failed to add github_issue_number column: {}",
                     e
-                ))
+                ));
             }
         }
         self.conn
@@ -240,10 +248,9 @@ impl FactoryDb {
             .context("Failed to create settings table")?;
 
         // Add team_id and has_team columns to pipeline_runs
-        let _ = self.conn.execute(
-            "ALTER TABLE pipeline_runs ADD COLUMN team_id INTEGER",
-            [],
-        );
+        let _ = self
+            .conn
+            .execute("ALTER TABLE pipeline_runs ADD COLUMN team_id INTEGER", []);
         let _ = self.conn.execute(
             "ALTER TABLE pipeline_runs ADD COLUMN has_team INTEGER NOT NULL DEFAULT 0",
             [],
@@ -436,7 +443,9 @@ impl FactoryDb {
 
         // Use unchecked_transaction so all updates are atomic.
         // Safety: DbHandle's Mutex already guarantees single-threaded access.
-        let tx = self.conn.unchecked_transaction()
+        let tx = self
+            .conn
+            .unchecked_transaction()
             .context("Failed to begin transaction")?;
 
         if let Some(t) = title {
@@ -807,7 +816,14 @@ impl FactoryDb {
         iteration: Option<i32>,
         budget: Option<i32>,
     ) -> Result<()> {
-        self.upsert_pipeline_phase(run_id, phase_number, phase_name, &status.to_string(), iteration, budget)
+        self.upsert_pipeline_phase(
+            run_id,
+            phase_number,
+            phase_name,
+            &status.to_string(),
+            iteration,
+            budget,
+        )
     }
 
     /// Get all phases for a pipeline run.
@@ -896,8 +912,12 @@ impl FactoryDb {
         Ok(AgentTeam {
             id,
             run_id,
-            strategy: strategy_str.parse().map_err(|_| anyhow::anyhow!("invalid strategy in database: '{}'", strategy_str))?,
-            isolation: isolation_str.parse().map_err(|_| anyhow::anyhow!("invalid isolation in database: '{}'", isolation_str))?,
+            strategy: strategy_str
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid strategy in database: '{}'", strategy_str))?,
+            isolation: isolation_str.parse().map_err(|_| {
+                anyhow::anyhow!("invalid isolation in database: '{}'", isolation_str)
+            })?,
             plan_summary,
             created_at,
         })
@@ -923,8 +943,12 @@ impl FactoryDb {
                 Ok(Some(AgentTeam {
                     id,
                     run_id,
-                    strategy: strategy_str.parse().map_err(|_| anyhow::anyhow!("invalid strategy in database: '{}'", strategy_str))?,
-                    isolation: isolation_str.parse().map_err(|_| anyhow::anyhow!("invalid isolation in database: '{}'", isolation_str))?,
+                    strategy: strategy_str.parse().map_err(|_| {
+                        anyhow::anyhow!("invalid strategy in database: '{}'", strategy_str)
+                    })?,
+                    isolation: isolation_str.parse().map_err(|_| {
+                        anyhow::anyhow!("invalid isolation in database: '{}'", isolation_str)
+                    })?,
                     plan_summary,
                     created_at,
                 }))
@@ -1046,8 +1070,23 @@ impl FactoryDb {
         })?;
         let mut tasks = Vec::new();
         for row in rows {
-            let (id, team_id, name, description, agent_role_str, wave, depends_str, status_str,
-                 isolation_str, worktree_path, container_id, branch_name, started_at, completed_at, error) = row?;
+            let (
+                id,
+                team_id,
+                name,
+                description,
+                agent_role_str,
+                wave,
+                depends_str,
+                status_str,
+                isolation_str,
+                worktree_path,
+                container_id,
+                branch_name,
+                started_at,
+                completed_at,
+                error,
+            ) = row?;
             let depends_on: Vec<i64> = serde_json::from_str(&depends_str)
                 .map_err(|e| anyhow::anyhow!("corrupt depends_on JSON '{}': {}", depends_str, e))?;
             tasks.push(AgentTask {
@@ -1055,11 +1094,17 @@ impl FactoryDb {
                 team_id,
                 name,
                 description,
-                agent_role: agent_role_str.parse().map_err(|_| anyhow::anyhow!("invalid agent_role in database: '{}'", agent_role_str))?,
+                agent_role: agent_role_str.parse().map_err(|_| {
+                    anyhow::anyhow!("invalid agent_role in database: '{}'", agent_role_str)
+                })?,
                 wave,
                 depends_on,
-                status: status_str.parse().map_err(|_| anyhow::anyhow!("invalid status in database: '{}'", status_str))?,
-                isolation_type: isolation_str.parse().map_err(|_| anyhow::anyhow!("invalid isolation_type in database: '{}'", isolation_str))?,
+                status: status_str
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("invalid status in database: '{}'", status_str))?,
+                isolation_type: isolation_str.parse().map_err(|_| {
+                    anyhow::anyhow!("invalid isolation_type in database: '{}'", isolation_str)
+                })?,
                 worktree_path,
                 container_id,
                 branch_name,
@@ -1104,11 +1149,17 @@ impl FactoryDb {
             team_id,
             name,
             description,
-            agent_role: agent_role_str.parse().map_err(|_| anyhow::anyhow!("invalid agent_role in database: '{}'", agent_role_str))?,
+            agent_role: agent_role_str.parse().map_err(|_| {
+                anyhow::anyhow!("invalid agent_role in database: '{}'", agent_role_str)
+            })?,
             wave,
             depends_on,
-            status: status_str.parse().map_err(|_| anyhow::anyhow!("invalid status in database: '{}'", status_str))?,
-            isolation_type: isolation_str.parse().map_err(|_| anyhow::anyhow!("invalid isolation_type in database: '{}'", isolation_str))?,
+            status: status_str
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid status in database: '{}'", status_str))?,
+            isolation_type: isolation_str.parse().map_err(|_| {
+                anyhow::anyhow!("invalid isolation_type in database: '{}'", isolation_str)
+            })?,
             worktree_path,
             container_id,
             branch_name,
@@ -1137,7 +1188,9 @@ impl FactoryDb {
         metadata: Option<&serde_json::Value>,
     ) -> Result<AgentEvent> {
         let metadata_str = match metadata {
-            Some(m) => Some(serde_json::to_string(m).context("Failed to serialize event metadata")?),
+            Some(m) => {
+                Some(serde_json::to_string(m).context("Failed to serialize event metadata")?)
+            }
             None => None,
         };
         self.conn.execute(
@@ -1150,7 +1203,8 @@ impl FactoryDb {
             task_id,
             event_type: {
                 let val = event_type;
-                val.parse().map_err(|_| anyhow::anyhow!("invalid event_type in database: '{}'", val))?
+                val.parse()
+                    .map_err(|_| anyhow::anyhow!("invalid event_type in database: '{}'", val))?
             },
             content: content.to_string(),
             metadata: metadata.cloned(),
@@ -1184,15 +1238,19 @@ impl FactoryDb {
         let mut events = Vec::new();
         for row in rows {
             let (id, task_id, event_type_str, content, metadata_str, created_at) = row?;
-            let metadata: Option<serde_json::Value> = match metadata_str {
-                Some(s) => Some(serde_json::from_str(&s)
-                    .map_err(|e| anyhow::anyhow!("corrupt event metadata JSON '{}': {}", s, e))?),
-                None => None,
-            };
+            let metadata: Option<serde_json::Value> =
+                match metadata_str {
+                    Some(s) => Some(serde_json::from_str(&s).map_err(|e| {
+                        anyhow::anyhow!("corrupt event metadata JSON '{}': {}", s, e)
+                    })?),
+                    None => None,
+                };
             events.push(AgentEvent {
                 id,
                 task_id,
-                event_type: event_type_str.parse().map_err(|_| anyhow::anyhow!("invalid event_type in database: '{}'", event_type_str))?,
+                event_type: event_type_str.parse().map_err(|_| {
+                    anyhow::anyhow!("invalid event_type in database: '{}'", event_type_str)
+                })?,
                 content,
                 metadata,
                 created_at,
@@ -1489,7 +1547,13 @@ mod tests {
         assert_eq!(updated.description, "New desc");
 
         // Update both
-        let updated = db.update_issue(issue.id, Some("Final title"), Some("Final desc"), None, None)?;
+        let updated = db.update_issue(
+            issue.id,
+            Some("Final title"),
+            Some("Final desc"),
+            None,
+            None,
+        )?;
         assert_eq!(updated.title, "Final title");
         assert_eq!(updated.description, "Final desc");
 
@@ -1665,7 +1729,12 @@ mod tests {
         let project = db.create_project("test", "/tmp/test")?;
         let issue = db.create_issue(project.id, "Test issue", "", &IssueColumn::Backlog)?;
         let run = db.create_pipeline_run(issue.id)?;
-        let team = db.create_agent_team(run.id, &ExecutionStrategy::Parallel, &IsolationStrategy::Worktree, "Two tasks")?;
+        let team = db.create_agent_team(
+            run.id,
+            &ExecutionStrategy::Parallel,
+            &IsolationStrategy::Worktree,
+            "Two tasks",
+        )?;
 
         // Create two tasks in wave 0, one in wave 1
         let task1 = db.create_agent_task(
@@ -1677,8 +1746,15 @@ mod tests {
             &[],
             &IsolationStrategy::Worktree,
         )?;
-        let task2 =
-            db.create_agent_task(team.id, "Fix UI", "Fix the UI", &AgentRole::Coder, 0, &[], &IsolationStrategy::Worktree)?;
+        let task2 = db.create_agent_task(
+            team.id,
+            "Fix UI",
+            "Fix the UI",
+            &AgentRole::Coder,
+            0,
+            &[],
+            &IsolationStrategy::Worktree,
+        )?;
         let task3 = db.create_agent_task(
             team.id,
             "Run tests",
@@ -1825,9 +1901,21 @@ mod tests {
         let project = db.create_project("test", "/tmp/test")?;
         let issue = db.create_issue(project.id, "Test", "", &IssueColumn::Backlog)?;
         let run = db.create_pipeline_run(issue.id)?;
-        let team = db.create_agent_team(run.id, &ExecutionStrategy::Parallel, &IsolationStrategy::Worktree, "Test")?;
-        let task =
-            db.create_agent_task(team.id, "Task 1", "Do stuff", &AgentRole::Coder, 0, &[], &IsolationStrategy::Worktree)?;
+        let team = db.create_agent_team(
+            run.id,
+            &ExecutionStrategy::Parallel,
+            &IsolationStrategy::Worktree,
+            "Test",
+        )?;
+        let task = db.create_agent_task(
+            team.id,
+            "Task 1",
+            "Do stuff",
+            &AgentRole::Coder,
+            0,
+            &[],
+            &IsolationStrategy::Worktree,
+        )?;
 
         // Initially null
         assert!(task.worktree_path.is_none());
@@ -1950,12 +2038,8 @@ mod tests {
 
         // Transition through running → failed with an error message
         db.update_pipeline_run(run.id, &PipelineStatus::Running, None, None)?;
-        let failed = db.update_pipeline_run(
-            run.id,
-            &PipelineStatus::Failed,
-            None,
-            Some("OOM killed"),
-        )?;
+        let failed =
+            db.update_pipeline_run(run.id, &PipelineStatus::Failed, None, Some("OOM killed"))?;
 
         // Verify the returned value
         assert_eq!(failed.status, PipelineStatus::Failed);
@@ -1974,7 +2058,10 @@ mod tests {
             .get_pipeline_run(run.id)?
             .expect("pipeline run should still exist");
         assert_eq!(fetched.status, PipelineStatus::Failed);
-        let fetched_err = fetched.error.as_deref().expect("persisted error should be Some");
+        let fetched_err = fetched
+            .error
+            .as_deref()
+            .expect("persisted error should be Some");
         assert!(
             fetched_err.contains("OOM killed"),
             "expected persisted error to contain 'OOM killed', got: {fetched_err}"
@@ -1991,7 +2078,8 @@ mod tests {
     fn test_get_pipeline_phases_ordering() -> Result<()> {
         let db = FactoryDb::new_in_memory()?;
         let project = db.create_project("phase-test", "/tmp/phase-test")?;
-        let issue = db.create_issue(project.id, "Multi-phase task", "", &IssueColumn::InProgress)?;
+        let issue =
+            db.create_issue(project.id, "Multi-phase task", "", &IssueColumn::InProgress)?;
         let run = db.create_pipeline_run(issue.id)?;
 
         // Insert 5 phases out of natural insertion order to confirm ORDER BY takes effect
@@ -2075,7 +2163,9 @@ mod tests {
     fn test_get_agent_team_for_run_returns_none_when_no_team() {
         let db = FactoryDb::new_in_memory().unwrap();
         let project = db.create_project("test", "/tmp/test").unwrap();
-        let issue = db.create_issue(project.id, "Test", "", &IssueColumn::Backlog).unwrap();
+        let issue = db
+            .create_issue(project.id, "Test", "", &IssueColumn::Backlog)
+            .unwrap();
         let run = db.create_pipeline_run(issue.id).unwrap();
         assert!(db.get_agent_team_for_run(run.id).unwrap().is_none());
     }
@@ -2084,11 +2174,38 @@ mod tests {
     fn test_get_agent_team_for_run_returns_team_with_tasks() {
         let db = FactoryDb::new_in_memory().unwrap();
         let project = db.create_project("test", "/tmp/test").unwrap();
-        let issue = db.create_issue(project.id, "Test", "", &IssueColumn::Backlog).unwrap();
+        let issue = db
+            .create_issue(project.id, "Test", "", &IssueColumn::Backlog)
+            .unwrap();
         let run = db.create_pipeline_run(issue.id).unwrap();
-        let team = db.create_agent_team(run.id, &ExecutionStrategy::WavePipeline, &IsolationStrategy::Worktree, "Two tasks").unwrap();
-        db.create_agent_task(team.id, "Fix API", "Fix it", &AgentRole::Coder, 0, &[], &IsolationStrategy::Worktree).unwrap();
-        db.create_agent_task(team.id, "Add tests", "Test it", &AgentRole::Tester, 1, &[], &IsolationStrategy::Worktree).unwrap();
+        let team = db
+            .create_agent_team(
+                run.id,
+                &ExecutionStrategy::WavePipeline,
+                &IsolationStrategy::Worktree,
+                "Two tasks",
+            )
+            .unwrap();
+        db.create_agent_task(
+            team.id,
+            "Fix API",
+            "Fix it",
+            &AgentRole::Coder,
+            0,
+            &[],
+            &IsolationStrategy::Worktree,
+        )
+        .unwrap();
+        db.create_agent_task(
+            team.id,
+            "Add tests",
+            "Test it",
+            &AgentRole::Tester,
+            1,
+            &[],
+            &IsolationStrategy::Worktree,
+        )
+        .unwrap();
 
         let detail = db.get_agent_team_for_run(run.id).unwrap().unwrap();
         assert_eq!(detail.team.id, team.id);
@@ -2100,14 +2217,36 @@ mod tests {
     fn test_get_agent_events_for_task() {
         let db = FactoryDb::new_in_memory().unwrap();
         let project = db.create_project("test", "/tmp/test").unwrap();
-        let issue = db.create_issue(project.id, "Test", "", &IssueColumn::Backlog).unwrap();
+        let issue = db
+            .create_issue(project.id, "Test", "", &IssueColumn::Backlog)
+            .unwrap();
         let run = db.create_pipeline_run(issue.id).unwrap();
-        let team = db.create_agent_team(run.id, &ExecutionStrategy::Parallel, &IsolationStrategy::Shared, "").unwrap();
-        let task = db.create_agent_task(team.id, "Fix", "", &AgentRole::Coder, 0, &[], &IsolationStrategy::Shared).unwrap();
+        let team = db
+            .create_agent_team(
+                run.id,
+                &ExecutionStrategy::Parallel,
+                &IsolationStrategy::Shared,
+                "",
+            )
+            .unwrap();
+        let task = db
+            .create_agent_task(
+                team.id,
+                "Fix",
+                "",
+                &AgentRole::Coder,
+                0,
+                &[],
+                &IsolationStrategy::Shared,
+            )
+            .unwrap();
 
-        db.insert_agent_event(task.id, "action", "Edited file", None).unwrap();
-        db.insert_agent_event(task.id, "thinking", "Analyzing...", None).unwrap();
-        db.insert_agent_event(task.id, "output", "Done", None).unwrap();
+        db.insert_agent_event(task.id, "action", "Edited file", None)
+            .unwrap();
+        db.insert_agent_event(task.id, "thinking", "Analyzing...", None)
+            .unwrap();
+        db.insert_agent_event(task.id, "output", "Done", None)
+            .unwrap();
 
         let events = db.get_agent_events_for_task(task.id, 100).unwrap();
         assert_eq!(events.len(), 3);
@@ -2117,13 +2256,33 @@ mod tests {
     fn test_get_agent_events_respects_limit() {
         let db = FactoryDb::new_in_memory().unwrap();
         let project = db.create_project("test", "/tmp/test").unwrap();
-        let issue = db.create_issue(project.id, "Test", "", &IssueColumn::Backlog).unwrap();
+        let issue = db
+            .create_issue(project.id, "Test", "", &IssueColumn::Backlog)
+            .unwrap();
         let run = db.create_pipeline_run(issue.id).unwrap();
-        let team = db.create_agent_team(run.id, &ExecutionStrategy::Parallel, &IsolationStrategy::Shared, "").unwrap();
-        let task = db.create_agent_task(team.id, "Fix", "", &AgentRole::Coder, 0, &[], &IsolationStrategy::Shared).unwrap();
+        let team = db
+            .create_agent_team(
+                run.id,
+                &ExecutionStrategy::Parallel,
+                &IsolationStrategy::Shared,
+                "",
+            )
+            .unwrap();
+        let task = db
+            .create_agent_task(
+                team.id,
+                "Fix",
+                "",
+                &AgentRole::Coder,
+                0,
+                &[],
+                &IsolationStrategy::Shared,
+            )
+            .unwrap();
 
         for i in 0..10 {
-            db.insert_agent_event(task.id, "output", &format!("Event {}", i), None).unwrap();
+            db.insert_agent_event(task.id, "output", &format!("Event {}", i), None)
+                .unwrap();
         }
 
         let events = db.get_agent_events_for_task(task.id, 3).unwrap();

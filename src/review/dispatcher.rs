@@ -902,7 +902,6 @@ mod tests {
         assert_eq!(gating[0].specialist_type, SpecialistType::SecuritySentinel);
     }
 
-
     #[test]
     fn test_phase_review_config_apply_sensitive_overrides() {
         let mut config = PhaseReviewConfig::new("05", "database-migration")

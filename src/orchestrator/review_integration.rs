@@ -339,7 +339,10 @@ mod tests {
     #[test]
     fn test_default_specialist_advisory() {
         let specialist = DefaultSpecialist::advisory("performance");
-        assert_eq!(specialist.specialist_type, SpecialistType::PerformanceOracle);
+        assert_eq!(
+            specialist.specialist_type,
+            SpecialistType::PerformanceOracle
+        );
         assert!(!specialist.gate);
     }
 

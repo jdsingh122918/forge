@@ -492,7 +492,7 @@ impl IterationTracker {
     fn failure_diagnosis(&self, latest_pct: Option<u8>) -> String {
         let mut parts = Vec::new();
         match latest_pct {
-            Some(pct) if pct == 0 => parts.push("no progress signals emitted".to_string()),
+            Some(0) => parts.push("no progress signals emitted".to_string()),
             Some(pct) => parts.push(format!("last reported progress: {}%", pct)),
             None => parts.push("no progress signals emitted".to_string()),
         }
@@ -810,12 +810,7 @@ async fn execute_single_phase(
     if !completed {
         let latest_pct = accumulated_signals.latest_progress();
         let diagnosis = iter_tracker.failure_diagnosis(latest_pct);
-        return PhaseResult::failure(
-            &phase.number,
-            &diagnosis,
-            iteration,
-            timer.elapsed(),
-        );
+        return PhaseResult::failure(&phase.number, &diagnosis, iteration, timer.elapsed());
     }
 
     let mut result = PhaseResult::success(

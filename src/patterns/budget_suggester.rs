@@ -445,7 +445,8 @@ mod tests {
 
     #[test]
     fn suggest_budgets_no_phases_returns_empty_vec() {
-        let pattern = make_pattern_with_stats("p", vec![make_stat("Scaffold", 5, 10, PhaseType::Scaffold)]);
+        let pattern =
+            make_pattern_with_stats("p", vec![make_stat("Scaffold", 5, 10, PhaseType::Scaffold)]);
         let suggestions = suggest_budgets(&[&pattern], &[]);
         assert!(suggestions.is_empty());
     }
@@ -501,11 +502,21 @@ mod tests {
         // Two patterns each with one Implement phase: actuals 4 and 8 → avg 6
         let p1 = make_pattern_with_stats(
             "p1",
-            vec![make_stat("Core implementation", 4, 10, PhaseType::Implement)],
+            vec![make_stat(
+                "Core implementation",
+                4,
+                10,
+                PhaseType::Implement,
+            )],
         );
         let p2 = make_pattern_with_stats(
             "p2",
-            vec![make_stat("Core implementation", 8, 10, PhaseType::Implement)],
+            vec![make_stat(
+                "Core implementation",
+                8,
+                10,
+                PhaseType::Implement,
+            )],
         );
         let phase = vec![make_phase("01", "Core implementation", 10)];
 
@@ -519,10 +530,8 @@ mod tests {
     #[test]
     fn suggest_budgets_budget_never_zero_for_any_realistic_input() {
         // Even if a phase completed in 1 iteration, the suggestion should be >= 1.
-        let pattern = make_pattern_with_stats(
-            "fast",
-            vec![make_stat("Quick fix", 1, 5, PhaseType::Fix)],
-        );
+        let pattern =
+            make_pattern_with_stats("fast", vec![make_stat("Quick fix", 1, 5, PhaseType::Fix)]);
         let phases = vec![make_phase("01", "Fix crash", 5)];
         let suggestions = suggest_budgets(&[&pattern], &phases);
         // ceil(1 * 1.2) = 2
@@ -651,13 +660,22 @@ mod tests {
     #[test]
     fn match_patterns_filters_very_poor_matches() {
         // A pattern with totally different tags should score below the 0.1 filter
-        let patterns = vec![make_full_pattern("unrelated", &["java", "mobile"], 50, "A java mobile app")];
+        let patterns = vec![make_full_pattern(
+            "unrelated",
+            &["java", "mobile"],
+            50,
+            "A java mobile app",
+        )];
         let spec = "# Rust API\n\nBuild a Rust REST API.";
         let matches = match_patterns(spec, &patterns);
 
         // Either filtered out entirely, or score is very low
         for m in &matches {
-            assert!(m.score <= 0.3, "score {} should be low for mismatched tags", m.score);
+            assert!(
+                m.score <= 0.3,
+                "score {} should be low for mismatched tags",
+                m.score
+            );
         }
     }
 

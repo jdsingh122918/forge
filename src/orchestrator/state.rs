@@ -399,13 +399,26 @@ mod tests {
         mgr.save_sub_phase("01", "01.1", 1, "completed").unwrap();
 
         let phase_01_entries = mgr.get_phase_entries("01").unwrap();
-        assert_eq!(phase_01_entries.len(), 2, "phase 01 must have exactly 2 entries");
+        assert_eq!(
+            phase_01_entries.len(),
+            2,
+            "phase 01 must have exactly 2 entries"
+        );
         assert!(
             phase_01_entries.iter().all(|e| e.phase == "01"),
             "every returned entry must have phase == '01'"
         );
-        assert_eq!(phase_01_entries.iter().filter(|e| e.is_sub_phase()).count(), 1);
-        assert_eq!(phase_01_entries.iter().filter(|e| !e.is_sub_phase()).count(), 1);
+        assert_eq!(
+            phase_01_entries.iter().filter(|e| e.is_sub_phase()).count(),
+            1
+        );
+        assert_eq!(
+            phase_01_entries
+                .iter()
+                .filter(|e| !e.is_sub_phase())
+                .count(),
+            1
+        );
 
         let phase_02_entries = mgr.get_phase_entries("02").unwrap();
         assert_eq!(phase_02_entries.len(), 1);
@@ -413,7 +426,10 @@ mod tests {
         assert_eq!(phase_02_entries[0].status, "in_progress");
 
         let phase_99_entries = mgr.get_phase_entries("99").unwrap();
-        assert!(phase_99_entries.is_empty(), "non-existent phase must return empty vec");
+        assert!(
+            phase_99_entries.is_empty(),
+            "non-existent phase must return empty vec"
+        );
     }
 
     // Issue 2 fix: test both the None and Some branches of full_phase_id().
@@ -433,8 +449,16 @@ mod tests {
 
         let sub = &entries[1];
         assert!(sub.is_sub_phase(), "second entry must be a sub-phase");
-        assert_eq!(sub.full_phase_id(), "03.1", "sub-phase full_phase_id must return sub-phase number");
-        assert_eq!(sub.parent_phase(), "03", "sub-phase parent_phase must return parent number");
+        assert_eq!(
+            sub.full_phase_id(),
+            "03.1",
+            "sub-phase full_phase_id must return sub-phase number"
+        );
+        assert_eq!(
+            sub.parent_phase(),
+            "03",
+            "sub-phase parent_phase must return parent number"
+        );
     }
 
     // Issue 3 regression: corrupt iteration field must be skipped, not silently

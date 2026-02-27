@@ -90,43 +90,67 @@ impl PlanResponse {
                 plan
             } else {
                 // Extract first balanced JSON object
-                let extracted = extract_json_object(&cleaned)
-                    .unwrap_or(cleaned.trim());
+                let extracted = extract_json_object(&cleaned).unwrap_or(cleaned.trim());
                 serde_json::from_str(extracted)
                     .context("Failed to parse planner response as JSON")?
             }
         };
-        plan.validate().context("Planner produced an invalid plan")?;
+        plan.validate()
+            .context("Planner produced an invalid plan")?;
         Ok(plan)
     }
 
     /// Validate that the plan's fields contain valid enum values and dependency indices.
     pub fn validate(&self) -> Result<()> {
-        use super::models::{ExecutionStrategy, AgentRole, IsolationStrategy};
+        use super::models::{AgentRole, ExecutionStrategy, IsolationStrategy};
 
-        self.strategy.parse::<ExecutionStrategy>()
+        self.strategy
+            .parse::<ExecutionStrategy>()
             .map_err(|_| anyhow::anyhow!("Invalid strategy '{}' from planner", self.strategy))?;
 
-        self.isolation.parse::<IsolationStrategy>()
+        self.isolation
+            .parse::<IsolationStrategy>()
             .map_err(|_| anyhow::anyhow!("Invalid isolation '{}' from planner", self.isolation))?;
 
         for (i, task) in self.tasks.iter().enumerate() {
-            task.role.parse::<AgentRole>()
-                .map_err(|_| anyhow::anyhow!("Invalid role '{}' for task {} ('{}')", task.role, i, task.name))?;
+            task.role.parse::<AgentRole>().map_err(|_| {
+                anyhow::anyhow!(
+                    "Invalid role '{}' for task {} ('{}')",
+                    task.role,
+                    i,
+                    task.name
+                )
+            })?;
 
-            task.isolation.parse::<IsolationStrategy>()
-                .map_err(|_| anyhow::anyhow!("Invalid isolation '{}' for task {} ('{}')", task.isolation, i, task.name))?;
+            task.isolation.parse::<IsolationStrategy>().map_err(|_| {
+                anyhow::anyhow!(
+                    "Invalid isolation '{}' for task {} ('{}')",
+                    task.isolation,
+                    i,
+                    task.name
+                )
+            })?;
 
             for &dep_idx in &task.depends_on {
                 if dep_idx < 0 || dep_idx as usize >= self.tasks.len() {
-                    anyhow::bail!("Task {} ('{}') has out-of-bounds depends_on index {}", i, task.name, dep_idx);
+                    anyhow::bail!(
+                        "Task {} ('{}') has out-of-bounds depends_on index {}",
+                        i,
+                        task.name,
+                        dep_idx
+                    );
                 }
                 if let Some(dep_task) = self.tasks.get(dep_idx as usize)
                     && dep_task.wave >= task.wave
                 {
                     anyhow::bail!(
                         "Task {} ('{}', wave {}) depends on task {} ('{}', wave {}) which is not in an earlier wave",
-                        i, task.name, task.wave, dep_idx, dep_task.name, dep_task.wave
+                        i,
+                        task.name,
+                        task.wave,
+                        dep_idx,
+                        dep_task.name,
+                        dep_task.wave
                     );
                 }
             }
@@ -222,10 +246,11 @@ impl Planner {
         let repo_context = self.gather_repo_context().await?;
         let prompt = self.build_prompt(issue_title, issue_description, issue_labels, &repo_context);
 
-        let response = self.call_claude(&prompt).await
+        let response = self
+            .call_claude(&prompt)
+            .await
             .context("Claude CLI call failed during planning")?;
-        PlanResponse::parse(&response)
-            .context("Failed to parse planner response")
+        PlanResponse::parse(&response).context("Failed to parse planner response")
     }
 
     fn build_prompt(
@@ -308,13 +333,7 @@ impl Planner {
         let full_prompt = format!("{}\n\n{}", PLANNER_SYSTEM_PROMPT, prompt);
 
         let output = Command::new(&claude_cmd)
-            .args([
-                "--print",
-                "--output-format",
-                "text",
-                "-p",
-                &full_prompt,
-            ])
+            .args(["--print", "--output-format", "text", "-p", &full_prompt])
             .current_dir(&self.project_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -339,7 +358,8 @@ impl PlanProvider for Planner {
         issue_description: &str,
         issue_labels: &[String],
     ) -> Result<PlanResponse> {
-        self.create_plan(issue_title, issue_description, issue_labels).await
+        self.create_plan(issue_title, issue_description, issue_labels)
+            .await
     }
 }
 

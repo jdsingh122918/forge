@@ -861,7 +861,14 @@ mod tests {
 
     #[test]
     fn classify_scaffold_keywords() {
-        for name in &["Project scaffold", "Initial setup", "Bootstrap", "Init phase", "Boilerplate", "skeleton"] {
+        for name in &[
+            "Project scaffold",
+            "Initial setup",
+            "Bootstrap",
+            "Init phase",
+            "Boilerplate",
+            "skeleton",
+        ] {
             assert_eq!(
                 PhaseType::classify(name),
                 PhaseType::Scaffold,
@@ -873,7 +880,12 @@ mod tests {
 
     #[test]
     fn classify_test_keywords() {
-        for name in &["Unit tests", "Add test coverage", "E2E spec", "Integration test"] {
+        for name in &[
+            "Unit tests",
+            "Add test coverage",
+            "E2E spec",
+            "Integration test",
+        ] {
             assert_eq!(
                 PhaseType::classify(name),
                 PhaseType::Test,
@@ -885,7 +897,12 @@ mod tests {
 
     #[test]
     fn classify_refactor_keywords() {
-        for name in &["Refactor auth", "Code cleanup", "Optimize queries", "Simplify logic"] {
+        for name in &[
+            "Refactor auth",
+            "Code cleanup",
+            "Optimize queries",
+            "Simplify logic",
+        ] {
             assert_eq!(
                 PhaseType::classify(name),
                 PhaseType::Refactor,
@@ -899,12 +916,22 @@ mod tests {
     fn classify_restructure_is_scaffold_due_to_substring_priority() {
         // "restructure" contains "structure", so the Scaffold check fires first.
         // This documents the current priority behaviour of classify().
-        assert_eq!(PhaseType::classify("Restructure modules"), PhaseType::Scaffold);
+        assert_eq!(
+            PhaseType::classify("Restructure modules"),
+            PhaseType::Scaffold
+        );
     }
 
     #[test]
     fn classify_fix_keywords() {
-        for name in &["Fix login bug", "Bug fixes", "Hotfix deploy", "Patch CVE", "Repair crash", "Correct output"] {
+        for name in &[
+            "Fix login bug",
+            "Bug fixes",
+            "Hotfix deploy",
+            "Patch CVE",
+            "Repair crash",
+            "Correct output",
+        ] {
             assert_eq!(
                 PhaseType::classify(name),
                 PhaseType::Fix,
@@ -917,7 +944,12 @@ mod tests {
     #[test]
     fn classify_defaults_to_implement() {
         // None of the reserved keywords appear in these names.
-        for name in &["API implementation", "Auth module", "Database schema", "Core logic"] {
+        for name in &[
+            "API implementation",
+            "Auth module",
+            "Database schema",
+            "Core logic",
+        ] {
             assert_eq!(
                 PhaseType::classify(name),
                 PhaseType::Implement,
@@ -1050,10 +1082,10 @@ mod tests {
         let mut p = Pattern::new("partial");
         p.total_phases = 4;
         p.phase_stats = vec![
-            make_stat(5, 10, PhaseType::Scaffold),    // within
-            make_stat(10, 10, PhaseType::Implement),  // exactly at budget → within
-            make_stat(11, 10, PhaseType::Implement),  // exceeded
-            make_stat(8, 10, PhaseType::Test),        // within
+            make_stat(5, 10, PhaseType::Scaffold),   // within
+            make_stat(10, 10, PhaseType::Implement), // exactly at budget → within
+            make_stat(11, 10, PhaseType::Implement), // exceeded
+            make_stat(8, 10, PhaseType::Test),       // within
         ];
         // 3 out of 4 within budget
         assert_eq!(p.calculate_success_rate(), 0.75);
@@ -1199,7 +1231,11 @@ mod tests {
         p.compute_common_file_patterns();
 
         // src/*.rs appears twice but should be deduplicated in the output
-        let src_count = p.common_file_patterns.iter().filter(|f| *f == "src/*.rs").count();
+        let src_count = p
+            .common_file_patterns
+            .iter()
+            .filter(|f| *f == "src/*.rs")
+            .count();
         assert_eq!(src_count, 1);
     }
 
@@ -1207,7 +1243,11 @@ mod tests {
     fn compute_common_file_patterns_sorted() {
         let mut p = Pattern::new("sorted");
         let mut s = make_stat(5, 10, PhaseType::Implement);
-        s.file_patterns = vec!["z/*.rs".to_string(), "a/*.rs".to_string(), "m/*.rs".to_string()];
+        s.file_patterns = vec![
+            "z/*.rs".to_string(),
+            "a/*.rs".to_string(),
+            "m/*.rs".to_string(),
+        ];
         p.phase_stats = vec![s];
         p.compute_common_file_patterns();
 
@@ -1224,9 +1264,15 @@ mod tests {
     #[test]
     fn generalize_file_pattern_converts_to_glob() {
         assert_eq!(generalize_file_pattern("src/main.rs"), "src/*.rs");
-        assert_eq!(generalize_file_pattern("src/handlers/user.rs"), "src/handlers/*.rs");
+        assert_eq!(
+            generalize_file_pattern("src/handlers/user.rs"),
+            "src/handlers/*.rs"
+        );
         assert_eq!(generalize_file_pattern("tests/api_test.py"), "tests/*.py");
-        assert_eq!(generalize_file_pattern("migrations/001_init.sql"), "migrations/*.sql");
+        assert_eq!(
+            generalize_file_pattern("migrations/001_init.sql"),
+            "migrations/*.sql"
+        );
     }
 
     #[test]
@@ -1289,7 +1335,10 @@ mod tests {
 
     #[test]
     fn extract_summary_only_headers_returns_empty() {
-        assert_eq!(extract_summary_from_spec("# Title\n## Sub\n### Sub-sub"), "");
+        assert_eq!(
+            extract_summary_from_spec("# Title\n## Sub\n### Sub-sub"),
+            ""
+        );
     }
 
     #[test]
@@ -1331,7 +1380,10 @@ mod tests {
     fn truncate_str_over_limit_appends_ellipsis() {
         use super::truncate_str;
         let result = truncate_str("hello world", 5);
-        assert!(result.ends_with("..."), "truncated string must end with '...'");
+        assert!(
+            result.ends_with("..."),
+            "truncated string must end with '...'"
+        );
     }
 
     #[test]

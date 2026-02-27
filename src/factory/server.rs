@@ -9,8 +9,8 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::get,
 };
-use tower_http::cors::CorsLayer;
 use tokio::sync::broadcast;
+use tower_http::cors::CorsLayer;
 
 use super::api::{self, AppState};
 use super::db::{DbHandle, FactoryDb};
@@ -105,7 +105,9 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
                 Some(s)
             }
             None => {
-                eprintln!("[factory] FORGE_SANDBOX=true but Docker is not available, falling back to local execution");
+                eprintln!(
+                    "[factory] FORGE_SANDBOX=true but Docker is not available, falling back to local execution"
+                );
                 None
             }
         }
@@ -116,9 +118,12 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     let pipeline_runner = PipelineRunner::new(&config.project_path, sandbox);
     let db_handle = DbHandle::new(db);
 
-    let persisted_token = db_handle.lock_sync()
+    let persisted_token = db_handle
+        .lock_sync()
         .context("Failed to acquire DB lock during startup")?
-        .get_setting("github_token").ok().flatten();
+        .get_setting("github_token")
+        .ok()
+        .flatten();
 
     let state = Arc::new(AppState {
         db: db_handle,
@@ -135,7 +140,11 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
         app = app.layer(CorsLayer::permissive());
     }
 
-    let host = if config.dev_mode { "0.0.0.0" } else { "127.0.0.1" };
+    let host = if config.dev_mode {
+        "0.0.0.0"
+    } else {
+        "127.0.0.1"
+    };
     let addr = format!("{}:{}", host, config.port);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
@@ -223,10 +232,7 @@ mod tests {
     #[tokio::test]
     async fn test_static_handler_serves_index_html() {
         let app = test_router();
-        let req = Request::builder()
-            .uri("/")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let status = resp.status();
         // If ui/dist/index.html exists, we get 200; otherwise 404

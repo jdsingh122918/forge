@@ -51,12 +51,12 @@ pub struct GitHubIssue {
 /// Known GitHub token prefixes.
 /// See: https://github.blog/2021-04-05-behind-githubs-new-authentication-token-formats/
 const GITHUB_TOKEN_PREFIXES: &[&str] = &[
-    "ghp_",         // Personal access tokens (classic)
-    "github_pat_",  // Fine-grained personal access tokens
-    "gho_",         // OAuth access tokens
-    "ghu_",         // GitHub App user-to-server tokens
-    "ghs_",         // GitHub App server-to-server tokens
-    "ghr_",         // GitHub App refresh tokens
+    "ghp_",        // Personal access tokens (classic)
+    "github_pat_", // Fine-grained personal access tokens
+    "gho_",        // OAuth access tokens
+    "ghu_",        // GitHub App user-to-server tokens
+    "ghs_",        // GitHub App server-to-server tokens
+    "ghr_",        // GitHub App refresh tokens
 ];
 
 /// Validate that a string looks like a valid GitHub token based on its prefix.
@@ -68,7 +68,9 @@ pub fn is_valid_github_token(token: &str) -> bool {
     if token.is_empty() {
         return false;
     }
-    GITHUB_TOKEN_PREFIXES.iter().any(|prefix| token.starts_with(prefix))
+    GITHUB_TOKEN_PREFIXES
+        .iter()
+        .any(|prefix| token.starts_with(prefix))
 }
 
 /// Parse the `owner/repo` slug from a GitHub URL.
@@ -123,8 +125,12 @@ pub async fn request_device_code(client_id: &str) -> anyhow::Result<DeviceCodeRe
         );
     }
 
-    let resp = resp.error_for_status().context("GitHub device code endpoint returned error status")?;
-    Ok(resp.json::<DeviceCodeResponse>().await.context("Failed to parse device code response from GitHub")?)
+    let resp = resp
+        .error_for_status()
+        .context("GitHub device code endpoint returned error status")?;
+    resp.json::<DeviceCodeResponse>()
+        .await
+        .context("Failed to parse device code response from GitHub")
 }
 
 /// Poll GitHub for the access token. Returns Ok(Some(token)) when authorized,
@@ -323,19 +329,14 @@ mod tests {
     #[test]
     fn test_parse_token_embedded_url_no_git_suffix() {
         assert_eq!(
-            parse_owner_repo_from_url(
-                "https://x-access-token:ghp_abc123@github.com/owner/repo"
-            ),
+            parse_owner_repo_from_url("https://x-access-token:ghp_abc123@github.com/owner/repo"),
             Some("owner/repo".to_string())
         );
     }
 
     #[test]
     fn test_parse_url_missing_repo() {
-        assert_eq!(
-            parse_owner_repo_from_url("https://github.com/owner"),
-            None
-        );
+        assert_eq!(parse_owner_repo_from_url("https://github.com/owner"), None);
     }
 
     #[test]
@@ -481,7 +482,10 @@ mod tests {
             {"number": 2, "title": "PR", "body": null, "state": "open", "html_url": "https://github.com/o/r/pull/2", "pull_request": {"url": "..."}}
         ]"#;
         let issues: Vec<GitHubIssue> = serde_json::from_str(issues_json).unwrap();
-        let filtered: Vec<_> = issues.into_iter().filter(|i| i.pull_request.is_none()).collect();
+        let filtered: Vec<_> = issues
+            .into_iter()
+            .filter(|i| i.pull_request.is_none())
+            .collect();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].number, 1);
     }
@@ -532,7 +536,11 @@ mod tests {
         assert!(!GITHUB_TOKEN_PREFIXES.is_empty());
         for prefix in GITHUB_TOKEN_PREFIXES {
             assert!(!prefix.is_empty(), "Token prefix should not be empty");
-            assert!(prefix.ends_with('_'), "Token prefix should end with underscore: {}", prefix);
+            assert!(
+                prefix.ends_with('_'),
+                "Token prefix should end with underscore: {}",
+                prefix
+            );
         }
     }
 

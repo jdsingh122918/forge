@@ -256,8 +256,7 @@ pub async fn run_orchestrator(
                             if !pivot_was_issued && auto_strategy.stale_handler.pivot_issued =>
                         {
                             // Pivot was just issued — inject prompt
-                            previous_feedback =
-                                Some(auto_strategy.pivot_prompt().to_string());
+                            previous_feedback = Some(auto_strategy.pivot_prompt().to_string());
                         }
                         _ => {}
                     }
@@ -534,9 +533,7 @@ pub async fn run_orchestrator(
             };
             let blockers_note = blocker_note(total_blockers_raised);
             let pivots_note = pivot_note(total_pivots);
-            println!(
-                "  Summary: {progress_note}; {blockers_note}; {pivots_note}."
-            );
+            println!("  Summary: {progress_note}; {blockers_note}; {pivots_note}.");
             println!(
                 "  Tip: Verify the promise tag in your phases config matches exactly \
                 (case-sensitive). Run 'forge audit --last' to inspect Claude's raw output."
@@ -618,17 +615,12 @@ pub fn pivot_note(total_pivots: usize) -> String {
 ///   to two digits), falling back to `"01"` when nothing has been completed.
 ///
 /// This is pure logic that can be unit-tested without external processes.
-pub fn resolve_start_phase(
-    start_phase: Option<&str>,
-    last_completed: Option<&str>,
-) -> String {
-    start_phase
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            last_completed
-                .map(|p| format!("{:02}", p.parse::<u32>().unwrap_or(0) + 1))
-                .unwrap_or_else(|| "01".to_string())
-        })
+pub fn resolve_start_phase(start_phase: Option<&str>, last_completed: Option<&str>) -> String {
+    start_phase.map(|s| s.to_string()).unwrap_or_else(|| {
+        last_completed
+            .map(|p| format!("{:02}", p.parse::<u32>().unwrap_or(0) + 1))
+            .unwrap_or_else(|| "01".to_string())
+    })
 }
 
 pub async fn run_single_phase(cli: &Cli, project_dir: PathBuf, phase_num: &str) -> Result<()> {
@@ -667,9 +659,15 @@ mod tests {
         let note = blocker_note(1);
         assert_eq!(note, "1 blocker raised");
         assert!(note.contains('1'), "expected count in note: {note}");
-        assert!(note.contains("blocker"), "expected 'blocker' in note: {note}");
+        assert!(
+            note.contains("blocker"),
+            "expected 'blocker' in note: {note}"
+        );
         // Must NOT contain the plural suffix "s" (right after "blocker")
-        assert!(!note.contains("blockers"), "note should be singular: {note}");
+        assert!(
+            !note.contains("blockers"),
+            "note should be singular: {note}"
+        );
     }
 
     #[test]

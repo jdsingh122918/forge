@@ -215,9 +215,7 @@ mod tests {
         );
         let p2 = make_pattern(
             "proj-y",
-            vec![
-                make_stat("Implement C", 6, 10, PhaseType::Implement),
-            ],
+            vec![make_stat("Implement C", 6, 10, PhaseType::Implement)],
         );
 
         // Replicate the aggregation logic from display_type_statistics
