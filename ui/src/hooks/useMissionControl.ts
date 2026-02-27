@@ -64,8 +64,12 @@ export interface MissionControlReturn {
   createIssue: (projectId: number, title: string, description: string) => Promise<Issue>;
   /** Create a new project */
   createProject: (name: string, path: string) => Promise<Project>;
+  /** Delete a project and all its data */
+  deleteProject: (projectId: number) => Promise<void>;
   /** Refresh all data from the server */
   refresh: () => Promise<void>;
+  /** Issue counts grouped by project ID */
+  issuesByProject: Map<number, number>;
 }
 
 /** Status sort order: running first, then queued, failed, completed, cancelled */
@@ -377,6 +381,28 @@ export default function useMissionControl(): MissionControlReturn {
         });
         break;
       }
+
+      case 'ProjectDeleted': {
+        const deletedId = msg.data.project_id;
+        setState(prev => {
+          const newProjects = prev.projects.filter(p => p.id !== deletedId);
+          const newIssues = new Map(prev.issues);
+          const newRuns = new Map(prev.runs);
+          // Remove issues belonging to the deleted project
+          for (const [id, issue] of newIssues) {
+            if (issue.project_id === deletedId) {
+              // Also remove runs for this issue
+              for (const [runId, run] of newRuns) {
+                if (run.issue_id === id) newRuns.delete(runId);
+              }
+              newIssues.delete(id);
+            }
+          }
+          return { ...prev, projects: newProjects, issues: newIssues, runs: newRuns };
+        });
+        addLogEntry('system', 'Project deleted');
+        break;
+      }
     }
   }, [addLogEntry]));
 
@@ -468,6 +494,15 @@ export default function useMissionControl(): MissionControlReturn {
     return project;
   }, []);
 
+  const deleteProject = useCallback(async (projectId: number) => {
+    await api.deleteProject(projectId);
+    // Optimistic removal — WS message will also trigger state cleanup
+    setState(prev => ({
+      ...prev,
+      projects: prev.projects.filter(p => p.id !== projectId),
+    }));
+  }, []);
+
   const refresh = useCallback(async () => {
     setState(prev => ({ ...prev, loading: true }));
     try {
@@ -504,6 +539,15 @@ export default function useMissionControl(): MissionControlReturn {
     }
   }, []);
 
+  // Compute issue counts grouped by project ID
+  const issuesByProject = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const issue of state.issues.values()) {
+      map.set(issue.project_id, (map.get(issue.project_id) ?? 0) + 1);
+    }
+    return map;
+  }, [state.issues]);
+
   return {
     projects: state.projects,
     agentRunCards,
@@ -522,6 +566,8 @@ export default function useMissionControl(): MissionControlReturn {
     cancelPipeline,
     createIssue,
     createProject,
+    deleteProject,
     refresh,
+    issuesByProject,
   };
 }

@@ -192,6 +192,9 @@ pub enum WsMessage {
     ProjectCreated {
         project: Project,
     },
+    ProjectDeleted {
+        project_id: i64,
+    },
 }
 
 // ── WebSocket handler ────────────────────────────────────────────────

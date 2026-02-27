@@ -170,7 +170,7 @@ pub fn api_router() -> Router<SharedState> {
     Router::new()
         .route("/api/projects", get(list_projects).post(create_project))
         .route("/api/projects/clone", post(clone_project))
-        .route("/api/projects/:id", get(get_project))
+        .route("/api/projects/:id", get(get_project).delete(delete_project))
         .route("/api/projects/:id/board", get(get_board))
         .route("/api/projects/:id/sync-github", post(sync_github_issues))
         .route("/api/projects/:id/issues", post(create_issue))
@@ -608,6 +608,29 @@ async fn get_project(
     match project {
         Some(project) => Ok(Json(project)),
         None => Err(ApiError::NotFound(format!("Project {} not found", id))),
+    }
+}
+
+/// `DELETE /api/projects/:id` — delete a project and all associated data.
+///
+/// Cascades to issues, pipeline runs, and agent data via foreign keys.
+///
+/// **Response:** `204 No Content` on success.
+async fn delete_project(
+    State(state): State<SharedState>,
+    Path(id): Path<i64>,
+) -> Result<impl IntoResponse, ApiError> {
+    let deleted = state
+        .db
+        .call(move |db| db.delete_project(id))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    match deleted {
+        true => {
+            broadcast_message(&state.ws_tx, &WsMessage::ProjectDeleted { project_id: id });
+            Ok(StatusCode::NO_CONTENT)
+        }
+        false => Err(ApiError::NotFound(format!("Project {} not found", id))),
     }
 }
 

@@ -32,10 +32,13 @@ function MissionControl() {
     cancelPipeline,
     createIssue,
     createProject,
+    deleteProject,
+    issuesByProject,
   } = useMissionControl();
 
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [showNewIssueModal, setShowNewIssueModal] = useState(false);
+  const [newIssueProjectId, setNewIssueProjectId] = useState<number | null>(null);
   const [showProjectSetup, setShowProjectSetup] = useState(false);
 
   /** Compute run counts by project for the sidebar */
@@ -51,7 +54,14 @@ function MissionControl() {
     return map;
   }, [agentRunCards]);
 
+  /** Projects filtered by the current sidebar selection */
+  const displayedProjects = useMemo(() => {
+    if (selectedProjectId === null) return projects;
+    return projects.filter(p => p.id === selectedProjectId);
+  }, [projects, selectedProjectId]);
+
   const handleNewIssue = useCallback(() => {
+    setNewIssueProjectId(null);
     setShowNewIssueModal(true);
   }, []);
 
@@ -93,6 +103,13 @@ function MissionControl() {
     setShowProjectSetup(false);
     setSelectedProjectId(project.id);
   }, [setSelectedProjectId]);
+
+  const handleDeleteProject = useCallback(async (projectId: number) => {
+    await deleteProject(projectId);
+    if (selectedProjectId === projectId) {
+      setSelectedProjectId(null);
+    }
+  }, [deleteProject, selectedProjectId, setSelectedProjectId]);
 
   // Loading state
   if (loading) {
@@ -162,6 +179,7 @@ function MissionControl() {
           projects={projects}
           selectedProjectId={selectedProjectId}
           onSelectProject={setSelectedProjectId}
+          onDeleteProject={handleDeleteProject}
           runsByProject={runsByProject}
         />
 
@@ -173,14 +191,92 @@ function MissionControl() {
         }}>
           {agentRunCards.length === 0 ? (
             <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              height: '100%',
-              color: 'var(--color-text-secondary)',
-              fontSize: '14px',
+              display: viewMode === 'grid' ? 'grid' : 'flex',
+              gridTemplateColumns: viewMode === 'grid' ? 'repeat(auto-fill, minmax(400px, 1fr))' : undefined,
+              flexDirection: viewMode === 'list' ? 'column' : undefined,
+              gap: '12px',
             }}>
-              No active agent runs
+              {displayedProjects.map(project => {
+                const issueCount = issuesByProject.get(project.id) ?? 0;
+                return (
+                  <div
+                    key={project.id}
+                    style={{
+                      backgroundColor: 'var(--color-bg-card)',
+                      border: '1px solid var(--color-border)',
+                      borderLeft: '3px solid var(--color-text-secondary)',
+                    }}
+                  >
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      padding: '12px',
+                      gap: '12px',
+                    }}>
+                      {/* Idle dot */}
+                      <span style={{
+                        width: '8px',
+                        height: '8px',
+                        borderRadius: '50%',
+                        backgroundColor: 'var(--color-text-secondary)',
+                        flexShrink: 0,
+                      }} />
+
+                      {/* Project name */}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{
+                          fontSize: '13px',
+                          fontWeight: 600,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}>
+                          {project.name}
+                        </div>
+                        <div style={{
+                          fontSize: '11px',
+                          color: 'var(--color-text-secondary)',
+                          marginTop: '2px',
+                        }}>
+                          {issueCount} {issueCount === 1 ? 'issue' : 'issues'}
+                        </div>
+                      </div>
+
+                      {/* Status label */}
+                      <span style={{
+                        fontSize: '11px',
+                        color: 'var(--color-text-secondary)',
+                        fontWeight: 600,
+                        flexShrink: 0,
+                      }}>
+                        IDLE
+                      </span>
+
+                      {/* Create Issue button */}
+                      <button
+                        onClick={() => {
+                          setNewIssueProjectId(project.id);
+                          setShowNewIssueModal(true);
+                        }}
+                        style={{
+                          padding: '4px 10px',
+                          fontSize: '11px',
+                          fontFamily: 'inherit',
+                          background: 'transparent',
+                          border: '1px solid var(--color-border)',
+                          color: 'var(--color-success)',
+                          cursor: 'pointer',
+                          flexShrink: 0,
+                        }}
+                        onMouseEnter={e => (e.currentTarget.style.backgroundColor = 'var(--color-bg-card-hover)')}
+                        onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
+                      >
+                        + Issue
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           ) : (
             <div style={{
@@ -219,8 +315,9 @@ function MissionControl() {
       {showNewIssueModal && (
         <NewIssueModal
           projects={projects}
+          defaultProjectId={newIssueProjectId}
           onSubmit={handleIssueSubmit}
-          onClose={() => setShowNewIssueModal(false)}
+          onClose={() => { setShowNewIssueModal(false); setNewIssueProjectId(null); }}
         />
       )}
 

@@ -36,6 +36,17 @@ body {
   animation: pulse-dot 1.5s ease-in-out infinite;
 }
 
+/* Project sidebar delete button — visible on hover */
+.project-sidebar-row .project-delete-btn {
+  opacity: 0;
+}
+.project-sidebar-row:hover .project-delete-btn {
+  opacity: 1;
+}
+.project-delete-btn:hover {
+  color: var(--color-danger) !important;
+}
+
 /* Terminal scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

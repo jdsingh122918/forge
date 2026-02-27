@@ -10,6 +10,8 @@ export interface NewIssueModalProps {
   onSubmit: (projectId: number, title: string, description: string) => Promise<void>;
   /** Handler called when the modal should close (backdrop click, cancel, or successful submit) */
   onClose: () => void;
+  /** Optional pre-selected project ID */
+  defaultProjectId?: number | null;
 }
 
 /**
@@ -17,8 +19,8 @@ export interface NewIssueModalProps {
  * Includes project selector, title input, description textarea,
  * and handles loading/error states during submission.
  */
-export default function NewIssueModal({ projects, onSubmit, onClose }: NewIssueModalProps): React.JSX.Element {
-  const [projectId, setProjectId] = useState<number>(projects[0]?.id ?? 0);
+export default function NewIssueModal({ projects, onSubmit, onClose, defaultProjectId }: NewIssueModalProps): React.JSX.Element {
+  const [projectId, setProjectId] = useState<number>(defaultProjectId ?? projects[0]?.id ?? 0);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [submitting, setSubmitting] = useState(false);

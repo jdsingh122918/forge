@@ -329,6 +329,14 @@ impl FactoryDb {
             .context("Project not found after github_repo update")
     }
 
+    pub fn delete_project(&self, id: i64) -> Result<bool> {
+        let count = self
+            .conn
+            .execute("DELETE FROM projects WHERE id = ?1", params![id])
+            .context("Failed to delete project")?;
+        Ok(count > 0)
+    }
+
     // ── Issue CRUD ────────────────────────────────────────────────────
 
     pub fn create_issue(
