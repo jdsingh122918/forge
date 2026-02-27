@@ -424,6 +424,8 @@ impl FactoryDb {
         id: i64,
         title: Option<&str>,
         description: Option<&str>,
+        priority: Option<&str>,
+        labels: Option<&str>,
     ) -> Result<Issue> {
         if let Some(t) = title {
             self.conn
@@ -440,6 +442,22 @@ impl FactoryDb {
                     params![d, id],
                 )
                 .context("Failed to update issue description")?;
+        }
+        if let Some(p) = priority {
+            self.conn
+                .execute(
+                    "UPDATE issues SET priority = ?1, updated_at = datetime('now') WHERE id = ?2",
+                    params![p, id],
+                )
+                .context("Failed to update issue priority")?;
+        }
+        if let Some(l) = labels {
+            self.conn
+                .execute(
+                    "UPDATE issues SET labels = ?1, updated_at = datetime('now') WHERE id = ?2",
+                    params![l, id],
+                )
+                .context("Failed to update issue labels")?;
         }
         self.get_issue(id)?.context("Issue not found after update")
     }
@@ -1451,17 +1469,17 @@ mod tests {
         let issue = db.create_issue(project.id, "Old title", "Old desc", &IssueColumn::Backlog)?;
 
         // Update title only
-        let updated = db.update_issue(issue.id, Some("New title"), None)?;
+        let updated = db.update_issue(issue.id, Some("New title"), None, None, None)?;
         assert_eq!(updated.title, "New title");
         assert_eq!(updated.description, "Old desc");
 
         // Update description only
-        let updated = db.update_issue(issue.id, None, Some("New desc"))?;
+        let updated = db.update_issue(issue.id, None, Some("New desc"), None, None)?;
         assert_eq!(updated.title, "New title");
         assert_eq!(updated.description, "New desc");
 
         // Update both
-        let updated = db.update_issue(issue.id, Some("Final title"), Some("Final desc"))?;
+        let updated = db.update_issue(issue.id, Some("Final title"), Some("Final desc"), None, None)?;
         assert_eq!(updated.title, "Final title");
         assert_eq!(updated.description, "Final desc");
 

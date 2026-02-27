@@ -56,6 +56,8 @@ pub struct CreateIssueRequest {
 pub struct UpdateIssueRequest {
     pub title: Option<String>,
     pub description: Option<String>,
+    pub priority: Option<String>,
+    pub labels: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -641,8 +643,10 @@ async fn update_issue(
 ) -> Result<impl IntoResponse, ApiError> {
     let title = req.title;
     let description = req.description;
+    let priority = req.priority;
+    let labels = req.labels;
     let issue = state.db.call(move |db| {
-        db.update_issue(id, title.as_deref(), description.as_deref())
+        db.update_issue(id, title.as_deref(), description.as_deref(), priority.as_deref(), labels.as_deref())
     }).await.map_err(|e| ApiError::Internal(e.to_string()))?;
     broadcast_message(&state.ws_tx, &WsMessage::IssueUpdated { issue: issue.clone() });
     Ok(Json(issue))

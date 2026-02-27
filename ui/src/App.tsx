@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import type { Project, IssueColumn } from './types';
 import { useBoard } from './hooks/useBoard';
 import { useAgentTeam } from './hooks/useAgentTeam';
-import { WebSocketProvider, useWsStatus } from './contexts/WebSocketContext';
+import { WebSocketProvider, useWsStatus, useWsSubscribe } from './contexts/WebSocketContext';
 import { api } from './api/client';
 import { Header } from './components/Header';
 import { Board } from './components/Board';
@@ -88,7 +88,7 @@ function AppContent() {
     .find(item => item.active_run?.status === 'running' || item.active_run?.status === 'queued')
     ?.active_run?.id ?? null;
 
-  const { agentTeam, agentEvents } = useAgentTeam(activeRunId);
+  const { agentTeam, agentEvents, mergeStatus, verificationResults } = useAgentTeam(activeRunId);
 
   // Build agentTeams map for Board component (keyed by run_id)
   const agentTeams = agentTeam && activeRunId
@@ -102,6 +102,17 @@ function AppContent() {
       if (ps.length > 0) setSelectedProject(ps[0]);
     }).catch(console.error).finally(() => setProjectsLoading(false));
   }, []);
+
+  // Handle ProjectCreated WebSocket messages
+  const handleProjectCreated = useCallback((msg: import('./types').WsMessage) => {
+    if (msg.type === 'ProjectCreated') {
+      setProjects(prev => {
+        if (prev.some(p => p.id === msg.data.project.id)) return prev;
+        return [...prev, msg.data.project];
+      });
+    }
+  }, []);
+  useWsSubscribe(handleProjectCreated);
 
   const handleSelectProject = useCallback((project: Project) => {
     setSelectedProject(project);
@@ -240,6 +251,8 @@ function AppContent() {
             board={board}
             agentTeams={agentTeams}
             agentEvents={agentEvents}
+            mergeStatus={mergeStatus}
+            verificationResults={verificationResults}
             onMoveIssue={handleMoveIssue}
             onIssueClick={setSelectedIssueId}
             onTriggerPipeline={handleTriggerPipeline}
@@ -288,7 +301,7 @@ function AppContent() {
 }
 
 function App() {
-  const wsUrl = `ws://${window.location.host}/ws`;
+  const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
   return (
     <WebSocketProvider url={wsUrl}>
       <AppContent />

@@ -17,6 +17,9 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
   const [loading, setLoading] = useState(true);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
+  const [editingDescription, setEditingDescription] = useState(false);
+  const [descriptionDraft, setDescriptionDraft] = useState('');
+  const [newLabel, setNewLabel] = useState('');
 
   useEffect(() => {
     setLoading(true);
@@ -91,36 +94,112 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
       {/* Body */}
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
         {/* Priority & Column */}
-        <div className="flex gap-3">
-          <span className={`text-xs px-2 py-1 rounded font-medium ${PRIORITY_COLORS[issue.priority]}`}>
-            {issue.priority}
-          </span>
+        <div className="flex gap-3 items-center">
+          <select
+            className={`text-xs px-2 py-1 rounded font-medium border-none cursor-pointer ${PRIORITY_COLORS[issue.priority]}`}
+            value={issue.priority}
+            onChange={async (e) => {
+              const newPriority = e.target.value;
+              await api.updateIssue(issueId, { priority: newPriority });
+              const updated = await api.getIssue(issueId);
+              setDetail(updated);
+            }}
+          >
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="critical">critical</option>
+          </select>
           <span className="text-xs px-2 py-1 rounded font-medium bg-gray-100 text-gray-700 capitalize">
             {issue.column.replace('_', ' ')}
           </span>
         </div>
 
         {/* Description */}
-        {issue.description && (
-          <div>
-            <h3 className="text-sm font-medium text-gray-700 mb-1">Description</h3>
-            <p className="text-sm text-gray-600 whitespace-pre-wrap">{issue.description}</p>
-          </div>
-        )}
+        <div>
+          <h3 className="text-sm font-medium text-gray-700 mb-1">Description</h3>
+          {editingDescription ? (
+            <textarea
+              autoFocus
+              className="w-full text-sm text-gray-600 border border-blue-400 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-blue-300 min-h-[80px] resize-y"
+              value={descriptionDraft}
+              onChange={(e) => setDescriptionDraft(e.target.value)}
+              onKeyDown={async (e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                  e.preventDefault();
+                  const trimmed = descriptionDraft.trim();
+                  if (trimmed !== (issue.description || '')) {
+                    await api.updateIssue(issueId, { description: trimmed });
+                    const updated = await api.getIssue(issueId);
+                    setDetail(updated);
+                  }
+                  setEditingDescription(false);
+                } else if (e.key === 'Escape') {
+                  setEditingDescription(false);
+                }
+              }}
+              onBlur={async () => {
+                const trimmed = descriptionDraft.trim();
+                if (trimmed !== (issue.description || '')) {
+                  await api.updateIssue(issueId, { description: trimmed });
+                  const updated = await api.getIssue(issueId);
+                  setDetail(updated);
+                }
+                setEditingDescription(false);
+              }}
+            />
+          ) : (
+            <p
+              className="text-sm text-gray-600 whitespace-pre-wrap cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5 min-h-[24px]"
+              onClick={() => {
+                setDescriptionDraft(issue.description || '');
+                setEditingDescription(true);
+              }}
+            >
+              {issue.description || <span className="text-gray-400 italic">Click to edit</span>}
+            </p>
+          )}
+        </div>
 
         {/* Labels */}
-        {issue.labels.length > 0 && (
-          <div>
-            <h3 className="text-sm font-medium text-gray-700 mb-1">Labels</h3>
-            <div className="flex flex-wrap gap-1">
-              {issue.labels.map((label) => (
-                <span key={label} className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">
-                  {label}
-                </span>
-              ))}
-            </div>
+        <div>
+          <h3 className="text-sm font-medium text-gray-700 mb-1">Labels</h3>
+          <div className="flex flex-wrap gap-1 items-center">
+            {issue.labels.map((label) => (
+              <span key={label} className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded inline-flex items-center gap-1">
+                {label}
+                <button
+                  className="text-gray-400 hover:text-red-500 leading-none"
+                  onClick={async () => {
+                    const updated_labels = issue.labels.filter(l => l !== label);
+                    await api.updateIssue(issueId, { labels: updated_labels });
+                    const updated = await api.getIssue(issueId);
+                    setDetail(updated);
+                  }}
+                >&times;</button>
+              </span>
+            ))}
+            <input
+              className="text-xs border border-gray-200 rounded px-1.5 py-0.5 w-20 outline-none focus:border-blue-400"
+              placeholder="Add label"
+              value={newLabel}
+              onChange={(e) => setNewLabel(e.target.value)}
+              onKeyDown={async (e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  const trimmed = newLabel.trim();
+                  if (trimmed && !issue.labels.includes(trimmed)) {
+                    const updated_labels = [...issue.labels, trimmed];
+                    await api.updateIssue(issueId, { labels: updated_labels });
+                    const updated = await api.getIssue(issueId);
+                    setDetail(updated);
+                    setNewLabel('');
+                  }
+                }
+              }}
+            />
           </div>
-        )}
+        </div>
 
         {/* Pipeline Runs */}
         <div>
@@ -195,11 +274,13 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
         {hasActiveRun && (
           <button
             onClick={async () => {
-              const activeRun = runs.find(r => r.status === 'queued' || r.status === 'running');
-              if (activeRun) {
-                await api.cancelPipelineRun(activeRun.id);
-                const updated = await api.getIssue(issueId);
-                setDetail(updated);
+              if (window.confirm('Cancel this pipeline run? Running agents will be killed and in-progress work will be lost.')) {
+                const activeRun = runs.find(r => r.status === 'queued' || r.status === 'running');
+                if (activeRun) {
+                  await api.cancelPipelineRun(activeRun.id);
+                  const updated = await api.getIssue(issueId);
+                  setDetail(updated);
+                }
               }
             }}
             className="px-3 py-2 text-sm font-medium text-orange-600 bg-orange-50 rounded-md hover:bg-orange-100 transition-colors"

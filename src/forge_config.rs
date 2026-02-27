@@ -68,7 +68,7 @@ use std::path::{Path, PathBuf};
 /// `Standard` is the default. The `auto_approve_threshold` field in
 /// `[defaults]` (or a phase override) sets the file-count ceiling for
 /// Standard mode's automatic approval.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionMode {
     /// Approve phase start, auto-continue iterations (default)

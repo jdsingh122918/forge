@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterEach, afterAll } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { IssueDetail } from '../components/IssueDetail'
 import { http, HttpResponse } from 'msw'
@@ -52,6 +52,7 @@ describe('IssueDetail', () => {
   })
 
   it('calls cancelPipelineRun when cancel button is clicked', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const onTrigger = vi.fn()
     const onDelete = vi.fn()
     render(
@@ -66,6 +67,7 @@ describe('IssueDetail', () => {
     await waitFor(() => {
       expect(screen.queryByText('Cancel')).not.toBeInTheDocument()
     })
+    confirmSpy.mockRestore()
   })
 
   it('does not show cancel button when no active run', async () => {

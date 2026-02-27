@@ -39,10 +39,13 @@ export const api = {
       body: JSON.stringify({ title, description, column }),
     }),
   getIssue: (id: number) => request<import('../types').IssueDetail>(`/issues/${id}`),
-  updateIssue: (id: number, data: { title?: string; description?: string }) =>
+  updateIssue: (id: number, data: { title?: string; description?: string; priority?: string; labels?: string[] }) =>
     request<import('../types').Issue>(`/issues/${id}`, {
       method: 'PATCH',
-      body: JSON.stringify(data),
+      body: JSON.stringify({
+        ...data,
+        labels: data.labels ? JSON.stringify(data.labels) : undefined,
+      }),
     }),
   moveIssue: (id: number, column: string, position: number) =>
     request<import('../types').Issue>(`/issues/${id}/move`, {
@@ -70,7 +73,7 @@ export const api = {
   githubStatus: () => request<import('../types').GitHubAuthStatus>('/github/status'),
   githubDeviceCode: () => request<import('../types').GitHubDeviceCode>('/github/device-code', { method: 'POST' }),
   githubPollToken: (deviceCode: string) =>
-    request<{ status: 'pending' | 'complete' }>('/github/poll', {
+    request<{ status: 'pending' | 'complete'; access_token?: string }>('/github/poll', {
       method: 'POST',
       body: JSON.stringify({ device_code: deviceCode }),
     }),

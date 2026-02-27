@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { AgentTeam, AgentTask, AgentEvent, AgentTeamDetail, AgentRole, AgentEventType, ExecutionStrategy, IsolationStrategy, SignalType, VerificationType, WsMessage, Issue, PipelineRun } from '../types'
+import type { AgentTeam, AgentTask, AgentEvent, AgentTeamDetail, WsMessage, Issue, PipelineRun } from '../types'
 import { makeAgentTeam, makeAgentTask, makeAgentEvent, makeAgentTeamDetail, makeIssue, makePipelineRun } from './fixtures'
 
 describe('TypeScript types', () => {
