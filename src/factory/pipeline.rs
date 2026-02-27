@@ -1999,21 +1999,26 @@ mod tests {
     #[tokio::test]
     async fn test_pipeline_cancel_kills_process() {
         let _lock = ENV_MUTEX.lock().await;
+        // Use an isolated temp dir so the planner's `find` doesn't scan all of /tmp
+        // (which causes permission-denied delays on CI runners).
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let tmp_path = tmp_dir.path().to_str().unwrap();
         // Create a script that:
-        // - Exits with error immediately when called with --system (planner call) so it falls back fast
-        // - Sleeps for 60s otherwise (pipeline execution) so we can cancel it
-        let script_path = "/tmp/forge_test_sleep_cancel.sh";
+        // - Exits with error when called with --output-format (planner call) so it falls back fast
+        // - Sleeps for 60s otherwise (pipeline execution via `claude --print <prompt>`) so we can cancel it
+        // Note: planner uses `claude --print --output-format text -p ...` while execution uses `claude --print <prompt>`
+        let script_path = tmp_dir.path().join("forge_test_sleep_cancel.sh");
         std::fs::write(
-            script_path,
-            "#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in --system) exit 1;; esac; done\nsleep 60\n",
+            &script_path,
+            "#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in --output-format) exit 1;; esac; done\nsleep 60\n",
         )
         .unwrap();
-        std::fs::set_permissions(script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        unsafe { std::env::set_var("CLAUDE_CMD", script_path) };
+        unsafe { std::env::set_var("CLAUDE_CMD", script_path.to_str().unwrap()) };
 
         let db = FactoryDb::new_in_memory().unwrap();
-        let project = db.create_project("test", "/tmp").unwrap();
+        let project = db.create_project("test", tmp_path).unwrap();
         let issue = db
             .create_issue(project.id, "Cancel test", "", &IssueColumn::Backlog)
             .unwrap();
@@ -2022,7 +2027,7 @@ mod tests {
         let db = DbHandle::new(db);
         let (tx, _rx) = broadcast::channel(16);
 
-        let runner = PipelineRunner::new("/tmp", None);
+        let runner = PipelineRunner::new(tmp_path, None);
         runner
             .start_run(run.id, &issue, db.clone(), tx.clone())
             .await
@@ -2057,26 +2062,28 @@ mod tests {
 
         // Clean up
         unsafe { std::env::remove_var("CLAUDE_CMD") };
-        let _ = std::fs::remove_file(script_path);
     }
 
     #[tokio::test]
     async fn test_pipeline_completed_cleans_up_process() {
         let _lock = ENV_MUTEX.lock().await;
-        // Create a script that exits with error for planner calls (--system arg)
+        // Use an isolated temp dir so the planner's `find` doesn't scan all of /tmp
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let tmp_path = tmp_dir.path().to_str().unwrap();
+        // Create a script that exits with error for planner calls (--output-format arg)
         // and exits immediately for pipeline calls (echo-like behavior)
-        let script_path = "/tmp/forge_test_echo_cleanup.sh";
+        let script_path = tmp_dir.path().join("forge_test_echo_cleanup.sh");
         std::fs::write(
-            script_path,
-            "#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in --system) exit 1;; esac; done\necho done\n",
+            &script_path,
+            "#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in --output-format) exit 1;; esac; done\necho done\n",
         )
         .unwrap();
-        std::fs::set_permissions(script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        unsafe { std::env::set_var("CLAUDE_CMD", script_path) };
+        unsafe { std::env::set_var("CLAUDE_CMD", script_path.to_str().unwrap()) };
 
         let db = FactoryDb::new_in_memory().unwrap();
-        let project = db.create_project("test", "/tmp").unwrap();
+        let project = db.create_project("test", tmp_path).unwrap();
         let issue = db
             .create_issue(project.id, "Cleanup test", "", &IssueColumn::Backlog)
             .unwrap();
@@ -2085,7 +2092,7 @@ mod tests {
         let db = DbHandle::new(db);
         let (tx, _rx) = broadcast::channel(16);
 
-        let runner = PipelineRunner::new("/tmp", None);
+        let runner = PipelineRunner::new(tmp_path, None);
         runner
             .start_run(run.id, &issue, db.clone(), tx)
             .await
@@ -2108,7 +2115,6 @@ mod tests {
 
         // Clean up
         unsafe { std::env::remove_var("CLAUDE_CMD") };
-        let _ = std::fs::remove_file(script_path);
     }
 
     #[tokio::test]
