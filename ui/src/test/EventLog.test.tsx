@@ -83,7 +83,6 @@ describe('EventLog', () => {
       set: scrollTopSetter,
     })
 
-    const originalCreateElement = document.createElement.bind(document)
     // We test auto-scroll by verifying the effect runs:
     // When not collapsed, scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     const entries = [

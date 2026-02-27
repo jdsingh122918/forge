@@ -55,7 +55,7 @@ export default function AgentRunCard({
   agentTeam,
   agentEvents,
   onCancel,
-  viewMode,
+  viewMode: _viewMode,
 }: AgentRunCardProps): React.JSX.Element {
   const { run, issue, project } = card;
   const [expanded, setExpanded] = useState(false);

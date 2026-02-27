@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import AgentRunCard from '../components/AgentRunCard'
 import { makeAgentRunCard, makePipelinePhase, makeAgentTeamDetail, makeAgentEvent } from './fixtures'
-import type { AgentRunCard as AgentRunCardType, PipelinePhase, AgentTeamDetail, AgentEvent } from '../types'
+import type { PipelinePhase, AgentTeamDetail, AgentEvent } from '../types'
 
 function renderCard(
   overrides?: Parameters<typeof makeAgentRunCard>[0],

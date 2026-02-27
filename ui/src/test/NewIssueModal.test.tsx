@@ -16,7 +16,7 @@ function renderModal(overrides: Partial<{
 }> = {}) {
   const props = {
     projects: overrides.projects ?? projects,
-    onSubmit: overrides.onSubmit ?? vi.fn<[number, string, string], Promise<void>>().mockResolvedValue(undefined),
+    onSubmit: overrides.onSubmit ?? vi.fn<(projectId: number, title: string, description: string) => Promise<void>>().mockResolvedValue(undefined),
     onClose: overrides.onClose ?? vi.fn(),
   }
   return { ...render(<NewIssueModal {...props} />), props }
@@ -58,7 +58,7 @@ describe('NewIssueModal', () => {
 
   it('calls onSubmit with (projectId, title, description)', async () => {
     const user = userEvent.setup()
-    const onSubmit = vi.fn<[number, string, string], Promise<void>>().mockResolvedValue(undefined)
+    const onSubmit = vi.fn<(projectId: number, title: string, description: string) => Promise<void>>().mockResolvedValue(undefined)
     renderModal({ onSubmit })
 
     await user.type(screen.getByPlaceholderText('What needs to be done?'), 'Add feature')
@@ -73,7 +73,7 @@ describe('NewIssueModal', () => {
   it('calls onClose after successful submit', async () => {
     const user = userEvent.setup()
     const onClose = vi.fn()
-    const onSubmit = vi.fn<[number, string, string], Promise<void>>().mockResolvedValue(undefined)
+    const onSubmit = vi.fn<(projectId: number, title: string, description: string) => Promise<void>>().mockResolvedValue(undefined)
     renderModal({ onSubmit, onClose })
 
     await user.type(screen.getByPlaceholderText('What needs to be done?'), 'New task')
@@ -86,7 +86,7 @@ describe('NewIssueModal', () => {
 
   it('shows error message on submit failure', async () => {
     const user = userEvent.setup()
-    const onSubmit = vi.fn<[number, string, string], Promise<void>>().mockRejectedValue(new Error('Server error'))
+    const onSubmit = vi.fn<(projectId: number, title: string, description: string) => Promise<void>>().mockRejectedValue(new Error('Server error'))
     renderModal({ onSubmit })
 
     await user.type(screen.getByPlaceholderText('What needs to be done?'), 'Failing task')
@@ -112,8 +112,8 @@ describe('NewIssueModal', () => {
   it('shows "Creating..." while submitting', async () => {
     const user = userEvent.setup()
     let resolveSubmit: () => void
-    const onSubmit = vi.fn<[number, string, string], Promise<void>>().mockImplementation(
-      () => new Promise(resolve => { resolveSubmit = resolve })
+    const onSubmit = vi.fn<(projectId: number, title: string, description: string) => Promise<void>>().mockImplementation(
+      () => new Promise<void>(resolve => { resolveSubmit = resolve })
     )
     renderModal({ onSubmit })
 

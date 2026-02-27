@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from 'vitest'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { setupServer } from 'msw/node'
 import { http, HttpResponse } from 'msw'
 import type { Project, Issue, PipelineRun, BoardView } from '../types'
@@ -8,10 +8,6 @@ import type { Project, Issue, PipelineRun, BoardView } from '../types'
 
 const mockProject: Project = {
   id: 1, name: 'forge', path: '/tmp/forge', github_repo: null, created_at: '2024-01-01',
-}
-
-const mockProject2: Project = {
-  id: 2, name: 'anvil', path: '/tmp/anvil', github_repo: null, created_at: '2024-01-01',
 }
 
 const mockIssue: Issue = {
@@ -90,14 +86,11 @@ const server = setupServer(
 
 // ── Mock WebSocket context ──────────────────────────────────────────
 
-vi.mock('../contexts/WebSocketContext', async () => {
-  const React = await import('react')
-  return {
-    WebSocketProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-    useWsSubscribe: () => {},
-    useWsStatus: () => 'connected' as const,
-  }
-})
+vi.mock('../contexts/WebSocketContext', () => ({
+  WebSocketProvider: ({ children }: { children: unknown }) => children,
+  useWsSubscribe: () => {},
+  useWsStatus: () => 'connected' as const,
+}))
 
 // ── Import App after mocks ──────────────────────────────────────────
 
