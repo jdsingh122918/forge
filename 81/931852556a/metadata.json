@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.4.7",
+  "checkpoint_id": "81931852556a",
+  "strategy": "manual-commit",
+  "branch": "feat/mission-control-ui",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "ui/src/components/NewIssueModal.tsx"
+  ],
+  "sessions": [
+    {
+      "metadata": "/81/931852556a/0/metadata.json",
+      "transcript": "/81/931852556a/0/full.jsonl",
+      "context": "/81/931852556a/0/context.md",
+      "content_hash": "/81/931852556a/0/content_hash.txt",
+      "prompt": "/81/931852556a/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 152,
+    "cache_creation_tokens": 196620,
+    "cache_read_tokens": 8461411,
+    "output_tokens": 50849,
+    "api_call_count": 90
+  }
+}

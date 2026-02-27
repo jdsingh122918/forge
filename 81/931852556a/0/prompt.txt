@@ -1,0 +1,773 @@
+Lets re-imagine the UI/UX - the application is no longer a kanban based but an autonomous coding agent. Use frontend design tool to brainstorm and playgound html tool to mock up various options.
+
+Use agent teams
+
+---
+
+Base directory for this skill: /Users/jdsingh/.claude/plugins/cache/claude-plugins-official/superpowers/4.3.1/skills/brainstorming
+
+# Brainstorming Ideas Into Designs
+
+## Overview
+
+Help turn ideas into fully formed designs and specs through natural collaborative dialogue.
+
+Start by understanding the current project context, then ask questions one at a time to refine the idea. Once you understand what you're building, present the design and get user approval.
+
+<HARD-GATE>
+Do NOT invoke any implementation skill, write any code, scaffold any project, or take any implementation action until you have presented a design and the user has approved it. This applies to EVERY project regardless of perceived simplicity.
+</HARD-GATE>
+
+## Anti-Pattern: "This Is Too Simple To Need A Design"
+
+Every project goes through this process. A todo list, a single-function utility, a config change — all of them. "Simple" projects are where unexamined assumptions cause the most wasted work. The design can be short (a few sentences for truly simple projects), but you MUST present it and get approval.
+
+## Checklist
+
+You MUST create a task for each of these items and complete them in order:
+
+1. **Explore project context** — check files, docs, recent commits
+2. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
+3. **Propose 2-3 approaches** — with trade-offs and your recommendation
+4. **Present design** — in sections scaled to their complexity, get user approval after each section
+5. **Write design doc** — save to `docs/plans/YYYY-MM-DD-<topic>-design.md` and commit
+6. **Transition to implementation** — invoke writing-plans skill to create implementation plan
+
+## Process Flow
+
+```dot
+digraph brainstorming {
+    "Explore project context" [shape=box];
+    "Ask clarifying questions" [shape=box];
+    "Propose 2-3 approaches" [shape=box];
+    "Present design sections" [shape=box];
+    "User approves design?" [shape=diamond];
+    "Write design doc" [shape=box];
+    "Invoke writing-plans skill" [shape=doublecircle];
+
+    "Explore project context" -> "Ask clarifying questions";
+    "Ask clarifying questions" -> "Propose 2-3 approaches";
+    "Propose 2-3 approaches" -> "Present design sections";
+    "Present design sections" -> "User approves design?";
+    "User approves design?" -> "Present design sections" [label="no, revise"];
+    "User approves design?" -> "Write design doc" [label="yes"];
+    "Write design doc" -> "Invoke writing-plans skill";
+}
+```
+
+**The terminal state is invoking writing-plans.** Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skill you invoke after brainstorming is writing-plans.
+
+## The Process
+
+**Understanding the idea:**
+- Check out the current project state first (files, docs, recent commits)
+- Ask questions one at a time to refine the idea
+- Prefer multiple choice questions when possible, but open-ended is fine too
+- Only one question per message - if a topic needs more exploration, break it into multiple questions
+- Focus on understanding: purpose, constraints, success criteria
+
+**Exploring approaches:**
+- Propose 2-3 different approaches with trade-offs
+- Present options conversationally with your recommendation and reasoning
+- Lead with your recommended option and explain why
+
+**Presenting the design:**
+- Once you believe you understand what you're building, present the design
+- Scale each section to its complexity: a few sentences if straightforward, up to 200-300 words if nuanced
+- Ask after each section whether it looks right so far
+- Cover: architecture, components, data flow, error handling, testing
+- Be ready to go back and clarify if something doesn't make sense
+
+## After the Design
+
+**Documentation:**
+- Write the validated design to `docs/plans/YYYY-MM-DD-<topic>-design.md`
+- Use elements-of-style:writing-clearly-and-concisely skill if available
+- Commit the design document to git
+
+**Implementation:**
+- Invoke the writing-plans skill to create a detailed implementation plan
+- Do NOT invoke any other skill. writing-plans is the next step.
+
+## Key Principles
+
+- **One question at a time** - Don't overwhelm with multiple questions
+- **Multiple choice preferred** - Easier to answer than open-ended when possible
+- **YAGNI ruthlessly** - Remove unnecessary features from all designs
+- **Explore alternatives** - Always propose 2-3 approaches before settling
+- **Incremental validation** - Present design, get approval before moving on
+- **Be flexible** - Go back and clarify when something doesn't make sense
+
+
+ARGUMENTS: Re-imagine the Forge UI from a Kanban board to an autonomous coding agent interface
+
+---
+
+<teammate-message teammate_id="mockup-b" color="green" summary="Completed Approach B Stream Dashboard mockup">
+Completed the Approach B: Stream Dashboard mockup.
+
+**File:** `/Users/jdsingh/Projects/AI/forge/ui/mockups/approach-b-stream-dashboard.html`
+
+**What's implemented:**
+
+- **Top bar:** "FORGE" branding with green glow + "mission control" tag, center terminal-style command input (`forge>`), right-side system stats showing running/queued agent counts
+- **Filter bar:** Tabs for All | Running | Queued | Completed | Failed with badge counts and green underline on active tab. Clicking tabs filters the visible cards.
+- **8 agent cards** in a vertical stream (3 running, 1 queued, 2 completed, 1 failed, 1 completing):
+  - Status dots (pulsing green for active, static green for completed, red for failed, yellow pulsing for queued)
+  - Color-coded project badges (FORGE, NEXUS, ATLAS, PULSE, ORBIT)
+  - Mini phase progress dots (filled=done, pulsing=active, red=failed, empty=pending)
+  - Elapsed time counters that increment live for running agents
+  - Agent count badges, expand/cancel/retry action buttons
+- **Expanded state:** Smooth CSS animation expands cards to show split view:
+  - Left: Terminal output pane (green-on-black) with streaming text that auto-appends new lines at staggered intervals per agent
+  - Right: Phase timeline (vertical list with status icons + durations) and file changes list (M/A/D badges)
+- **FAB button:** Bottom-right floating "+" that expands to show New Issue, New Project, Sync GitHub options
+- **Live behavior:** Agent a8 (ORBIT) transitions from "completing" to "completed" after its streaming text finishes, updating badges and status dot dynamically
+
+**Technical notes:**
+- All DOM construction uses safe `createElement`/`textContent` methods (no innerHTML)
+- Single-file vanilla HTML/CSS/JS, JetBrains Mono font
+- Full color palette as specified
+- Responsive breakpoints for smaller screens
+- 1125 lines total
+</teammate-message>
+
+<teammate-message teammate_id="mockup-b" color="green">
+{"type":"idle_notification","from":"mockup-b","timestamp":"2026-02-27T09:38:08.240Z","idleReason":"available"}
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="mockup-a" color="blue" summary="Approach A Grid Command Center mockup complete">
+Completed: Approach A — Grid Command Center mockup.
+
+**File:** `/Users/jdsingh/Projects/AI/forge/ui/mockups/approach-a-grid-command-center.html`
+(1,569 lines, ~45KB single HTML file with all CSS/JS inline)
+
+**What's implemented:**
+
+- **Top bar:** FORGE logo, live system stats (agents, CPU, mem, uptime, projects), `forge>` command input with cyan prompt and blinking focus, Grid/List view toggle buttons
+- **Left sidebar (200px):** Project tree with status dots (green=active, gray=idle), click-to-filter, "All Projects" at top, run count badges
+- **Agent grid (6 cards):** 3 running, 1 queued, 1 completed, 1 failed — each with:
+  - Project name + issue title (truncated with ellipsis)
+  - Status badge with colored dot (pulsing animation for running)
+  - Phase indicator with dot visualization (e.g., "Phase 3/5")
+  - Thin progress bar (green/yellow/blue/red by status)
+  - Live-ticking elapsed time
+  - Animated sparkline activity indicator
+  - Colored left border stripe by status
+- **Expand on click:** Cards expand full-width with tabbed detail view:
+  - **Output tab:** Terminal-style scrolling output with color-coded lines. Running agents get simulated streaming text that auto-scrolls with real timestamps.
+  - **Phases tab:** Timeline with done/current/pending dot indicators
+  - **Files tab:** File change list with A/M/D badges
+- **Bottom panel:** Collapsible event log with timestamped, color-coded entries (agent, phase, review, commit, error, system). New events auto-generate every ~4-6 seconds.
+- **View toggle:** Grid vs list layout modes
+- **Command bar:** Accepts text on Enter, posts to event log, auto-expands bottom panel
+
+**Color palette:** Exact spec (#0d1117 bg, #161b22 cards, #30363d borders, #3fb950 green, #f85149 red, #d29922 yellow, #58a6ff blue, #39d353 cyan)
+
+**Tech:** Vanilla HTML/CSS/JS, JetBrains Mono from Google Fonts, fully responsive (sidebar hides <900px, stats hide on mobile), smooth transitions throughout. All DOM manipulation uses safe methods (createElement/textContent) — no innerHTML with dynamic content.
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="mockup-a" color="blue">
+{"type":"idle_notification","from":"mockup-a","timestamp":"2026-02-27T09:39:13.651Z","idleReason":"available"}
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="mockup-c" color="yellow" summary="Approach C Terminal Matrix mockup complete">
+Approach C: Terminal Matrix mockup is complete.
+
+**File:** `/Users/jdsingh/Projects/AI/forge/ui/mockups/approach-c-terminal-matrix.html`
+
+**What's implemented:**
+- **Top tmux-style status bar** with `forge@mission-ctrl`, live agent stats (4 running, 2 queued, 12 done, 1 failed), and real-time clock
+- **Bottom tmux-style status bar** with keyboard shortcuts (^N, ^P, ^Q, ^L, ?) and active pane indicator
+- **Left pane (30%) - Command & Queue:**
+  - Working `forge>` command prompt that responds to: `status`, `agents`, `queue`, `help`, `version`, `clear`, `run <id>`, `stop <id>`, `logs <id>`
+  - ASCII-art table with full box-drawing characters showing 11 queue items (4 running, 2 queued, 4 done, 1 failed) with color-coded statuses
+  - Queue times update live for running agents
+- **Right pane (70%) - Agent Monitor:**
+  - 4 agent tabs: auth-agent, payment-fix, db-refactor, rate-limit
+  - Click tabs to switch between agents — each has unique content (coder vs debugger types, different phases, realistic output)
+  - Title bar shows agent type, issue, phase, and elapsed time
+  - Color-coded output: thinking (gray), action (cyan/green), output (green), signal (yellow), error (red), review (purple), info (blue)
+  - Streaming simulation: new lines appear every 1.5 seconds across ALL agents (background streaming)
+- **Bottom pane (collapsible) - System Log:**
+  - 19 initial log entries from various sources (forge, agent, review, git, system, error)
+  - New log entries stream in every 2.5 seconds
+  - Auto-scrolls when at bottom
+- **Keyboard shortcuts:**
+  - `?` toggles shortcuts overlay modal
+  - `Tab` cycles through panes
+  - `1-4` switches agent tabs
+  - `/` focuses command prompt
+  - `Ctrl+L` toggles system log pane
+  - `Esc` closes overlay
+- **Pane activation:** clicking a pane highlights it with green border
+
+**Technical:** Single HTML file, 1429 lines, vanilla JS with safe DOM building (no innerHTML/XSS), JetBrains Mono throughout, pure terminal aesthetic with no rounded corners or shadows.
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="mockup-c" color="yellow">
+{"type":"idle_notification","from":"mockup-c","timestamp":"2026-02-27T09:48:44.002Z","idleReason":"available"}
+</teammate-message>
+
+<teammate-message teammate_id="system">
+{"type":"teammate_terminated","message":"mockup-a has shut down."}
+</teammate-message>
+
+<teammate-message teammate_id="system">
+{"type":"teammate_terminated","message":"mockup-b has shut down."}
+</teammate-message>
+
+<teammate-message teammate_id="mockup-a" color="blue">
+{"type":"shutdown_approved","requestId":"shutdown-1772185726707@mockup-a","from":"mockup-a","timestamp":"2026-02-27T09:48:50.818Z","paneId":"in-process","backendType":"in-process"}
+</teammate-message>
+
+<teammate-message teammate_id="mockup-b" color="green">
+{"type":"shutdown_approved","requestId":"shutdown-1772185727275@mockup-b","from":"mockup-b","timestamp":"2026-02-27T09:48:51.057Z","paneId":"in-process","backendType":"in-process"}
+</teammate-message>
+
+<teammate-message teammate_id="system">
+{"type":"teammate_terminated","message":"mockup-c has shut down."}
+</teammate-message>
+
+<teammate-message teammate_id="mockup-c" color="yellow">
+{"type":"shutdown_approved","requestId":"shutdown-1772185727838@mockup-c","from":"mockup-c","timestamp":"2026-02-27T09:48:52.268Z","paneId":"in-process","backendType":"in-process"}
+</teammate-message>
+
+---
+
+looks good
+
+---
+
+Base directory for this skill: /Users/jdsingh/.claude/plugins/cache/claude-plugins-official/superpowers/4.3.1/skills/writing-plans
+
+# Writing Plans
+
+## Overview
+
+Write comprehensive implementation plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
+
+Assume they are a skilled developer, but know almost nothing about our toolset or problem domain. Assume they don't know good test design very well.
+
+**Announce at start:** "I'm using the writing-plans skill to create the implementation plan."
+
+**Context:** This should be run in a dedicated worktree (created by brainstorming skill).
+
+**Save plans to:** `docs/plans/YYYY-MM-DD-<feature-name>.md`
+
+## Bite-Sized Task Granularity
+
+**Each step is one action (2-5 minutes):**
+- "Write the failing test" - step
+- "Run it to make sure it fails" - step
+- "Implement the minimal code to make the test pass" - step
+- "Run the tests and make sure they pass" - step
+- "Commit" - step
+
+## Plan Document Header
+
+**Every plan MUST start with this header:**
+
+```markdown
+# [Feature Name] Implementation Plan
+
+> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+
+**Goal:** [One sentence describing what this builds]
+
+**Architecture:** [2-3 sentences about approach]
+
+**Tech Stack:** [Key technologies/libraries]
+
+---
+```
+
+## Task Structure
+
+````markdown
+### Task N: [Component Name]
+
+**Files:**
+- Create: `exact/path/to/file.py`
+- Modify: `exact/path/to/existing.py:123-145`
+- Test: `tests/exact/path/to/test.py`
+
+**Step 1: Write the failing test**
+
+```python
+def test_specific_behavior():
+    result = function(input)
+    assert result == expected
+```
+
+**Step 2: Run test to verify it fails**
+
+Run: `pytest tests/path/test.py::test_name -v`
+Expected: FAIL with "function not defined"
+
+**Step 3: Write minimal implementation**
+
+```python
+def function(input):
+    return expected
+```
+
+**Step 4: Run test to verify it passes**
+
+Run: `pytest tests/path/test.py::test_name -v`
+Expected: PASS
+
+**Step 5: Commit**
+
+```bash
+git add tests/path/test.py src/path/file.py
+git commit -m "feat: add specific feature"
+```
+````
+
+## Remember
+- Exact file paths always
+- Complete code in plan (not "add validation")
+- Exact commands with expected output
+- Reference relevant skills with @ syntax
+- DRY, YAGNI, TDD, frequent commits
+
+## Execution Handoff
+
+After saving the plan, offer execution choice:
+
+**"Plan complete and saved to `docs/plans/<filename>.md`. Two execution options:**
+
+**1. Subagent-Driven (this session)** - I dispatch fresh subagent per task, review between tasks, fast iteration
+
+**2. Parallel Session (separate)** - Open new session with executing-plans, batch execution with checkpoints
+
+**Which approach?"**
+
+**If Subagent-Driven chosen:**
+- **REQUIRED SUB-SKILL:** Use superpowers:subagent-driven-development
+- Stay in this session
+- Fresh subagent per task + code review
+
+**If Parallel Session chosen:**
+- Guide them to open new session in worktree
+- **REQUIRED SUB-SKILL:** New session uses superpowers:executing-plans
+
+
+ARGUMENTS: Implement the Forge Mission Control UI based on the design at docs/plans/2026-02-27-mission-control-ui-design.md
+
+---
+
+Lets go with approach 2. Ensure that the approach uses agent teams as well as TDD. Also lets try to ensure that the repo at the end of the developmemt is agent native i.e. should take into account the following:
+- fully typed
+- traversable 
+- test coverage
+- feedback loops
+- self documenting
+
+---
+
+<teammate-message teammate_id="foundation-agent" color="blue" summary="Task #1 complete: theme + types done">
+Task #1 (Wave 1: Theme foundation + types) is complete. Here's what was done:
+
+**Part A — Theme Foundation (3 commits: 828ce4a)**
+- Added JetBrains Mono font links to `ui/index.html`
+- Updated title to "Forge Mission Control"
+- Replaced `ui/src/index.css` with full dark terminal theme: CSS custom properties for colors, pulse-dot animation, custom scrollbars
+
+**Part B — Types (2 commits: f679ab7, 5d78f99)**
+- Added to `ui/src/types/index.ts`: `RunStatusFilter`, `AgentRunCard`, `EventLogEntry`, `ViewMode`, `MC_STATUS_COLORS`
+- All types have JSDoc documentation, no `any` types
+- Added fixture factories `makeAgentRunCard()` and `makeEventLogEntry()` to `ui/src/test/fixtures.ts`
+- Created `ui/src/test/mission-control-types.test.ts` with 9 tests — all passing
+- `tsc --noEmit` passes cleanly
+
+Task #2 (Wave 2: useMissionControl hook) is now unblocked.
+</teammate-message>
+
+<teammate-message teammate_id="foundation-agent" color="blue">
+{"type":"idle_notification","from":"foundation-agent","timestamp":"2026-02-27T10:23:56.278Z","idleReason":"available"}
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="foundation-agent" color="blue" summary="Task #1 already done, available for next task">
+Task #1 was already completed before this assignment arrived. It's marked completed in the task list. Three commits on main (828ce4a, f679ab7, 5d78f99) cover theme foundation, types, and tests. Task #2 (useMissionControl hook) is unblocked. I'm available for another task if needed.
+</teammate-message>
+
+<teammate-message teammate_id="foundation-agent" color="blue">
+{"type":"idle_notification","from":"foundation-agent","timestamp":"2026-02-27T10:24:10.611Z","idleReason":"available"}
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="foundation-agent" color="blue" summary="Task #2 complete: hook + 32 tests passing">
+Task #2 (Wave 2: useMissionControl hook with tests) is complete.
+
+**Test commit (262f3cb):** 32 failing tests written first (TDD) covering:
+- Initial loading (loading state, project/run load, error handling, skipping failed boards)
+- WebSocket handling (PipelineStarted/Progress/Completed/Failed, BranchCreated, PrCreated, IssueCreated/Deleted, ReviewStarted/Completed)
+- Filtering (by project, by status, clearing filters)
+- Computed agentRunCards (sorting, fallback issue for orphan runs)
+- statusCounts computation
+- Actions (triggerPipeline, cancelPipeline, createIssue, createProject, refresh)
+- Event log (system entries, error entries, git entries, 500-entry cap)
+- Return shape verification
+
+**Implementation commit (a2b5e21):** `ui/src/hooks/useMissionControl.ts`
+- Full JSDoc on all exports (MissionControlReturn interface documented)
+- No `any` types
+- useMemo for agentRunCards and statusCounts
+- useRef for issues to avoid stale closure in WS handler
+- Handles 16 WsMessage types using actual PascalCase discriminants
+
+**All 80 tests pass** across 9 test files. `tsc --noEmit` clean.
+
+Tasks #3, #4, #5, #6 are now unblocked (they depend on #2).
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="foundation-agent" color="blue">
+{"type":"idle_notification","from":"foundation-agent","timestamp":"2026-02-27T10:28:21.362Z","idleReason":"available"}
+</teammate-message>
+
+<teammate-message teammate_id="foundation-agent" color="blue" summary="Task #2 already done, available for next task">
+Task #2 was already completed before this assignment arrived. It's marked completed in the task list with commits 262f3cb (tests) and a2b5e21 (implementation). 32 tests passing, tsc clean. Tasks #3-#6 are unblocked. I'm available for another task.
+</teammate-message>
+
+<teammate-message teammate_id="foundation-agent" color="blue">
+{"type":"idle_notification","from":"foundation-agent","timestamp":"2026-02-27T10:28:35.105Z","idleReason":"available"}
+</teammate-message>
+
+<teammate-message teammate_id="foundation-agent" color="blue" summary="Task #2 confirmed done, ready for next task">
+Task #2 is already done — I completed it earlier in this session. Both files exist on disk and are committed:
+
+- `262f3cb` test(ui): add failing tests for useMissionControl hook (TDD) — 32 tests
+- `a2b5e21` feat(ui): add useMissionControl hook — unified multi-project agent run state
+
+Just re-verified: 32/32 tests pass, tsc clean. The task is marked completed. I'm available for the next assignment — I see tasks #3, #4, #5, #6 are now being worked on by others. Is there anything else I can pick up?
+</teammate-message>
+
+<teammate-message teammate_id="foundation-agent" color="blue">
+{"type":"idle_notification","from":"foundation-agent","timestamp":"2026-02-27T10:29:02.269Z","idleReason":"available"}
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="sidebar-agent" color="green" summary="Task #4 ProjectSidebar complete — 12 tests passing">
+Task #4 (Wave 3b: ProjectSidebar component) is complete.
+
+**What was done:**
+1. Wrote 12 failing tests in `ui/src/test/ProjectSidebar.test.tsx` covering:
+   - "Projects" header rendering
+   - "All Projects" button rendering  
+   - Each project rendered by name
+   - Green pulsing dot for active projects (pulse-dot CSS class)
+   - Gray dot for idle projects
+   - Running count badge for active projects
+   - No badge for idle projects
+   - Click "All Projects" calls onSelectProject(null)
+   - Click project calls onSelectProject(projectId)
+   - Selected project has highlighted background/border
+   - "All Projects" highlighted when selectedProjectId is null
+   - Empty project list handled gracefully
+
+2. Committed failing tests: `8adaad8`
+
+3. Implemented `ui/src/components/ProjectSidebar.tsx`:
+   - Exported `ProjectSidebarProps` interface with JSDoc
+   - JSDoc on component function
+   - No `any` types, explicit return type
+   - Uses CSS custom properties (var(--color-*)) for all colors
+   - Uses pulse-dot CSS class for active status dots
+   - Run count badge with border-radius styling
+
+4. All 12 tests pass, `tsc --noEmit` clean
+5. Committed implementation: `f01229a`
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="sidebar-agent" color="green">
+{"type":"idle_notification","from":"sidebar-agent","timestamp":"2026-02-27T10:30:46.693Z","idleReason":"available"}
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="foundation-agent" color="blue" summary="Task #3 complete: StatusBar + 21 tests">
+Task #3 (Wave 3a: StatusBar component with tests) is complete.
+
+**Test commit (bd49fae):** 21 tests written first (TDD) covering:
+- Agent counts rendering (running, queued, completed, failed, project count)
+- Command input (Enter submits, clears input, trims whitespace, ignores empty/non-Enter)
+- View mode toggle (grid/list buttons call onViewModeChange)
+- Uptime counter (00:00:00 start, seconds/minutes/hours formatting)
+- WebSocket status indicator
+- FORGE branding
+
+**Implementation commit (7a3a270):** `ui/src/components/StatusBar.tsx`
+- `StatusBarProps` interface exported with JSDoc on all fields
+- Uses `ViewMode` type from shared types
+- formatUptime helper for HH:MM:SS display
+- No `any` types
+
+**All 113 tests pass** across 11 test files. `tsc --noEmit` clean.
+
+I'm available for the next task.
+</teammate-message>
+
+<teammate-message teammate_id="foundation-agent" color="blue">
+{"type":"idle_notification","from":"foundation-agent","timestamp":"2026-02-27T10:30:53.948Z","idleReason":"available"}
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="system">
+{"type":"teammate_terminated","message":"foundation-agent has shut down."}
+</teammate-message>
+
+<teammate-message teammate_id="sidebar-agent" color="green" summary="Task #4 already done, no unblocked tasks available">
+Task #4 was already completed before this assignment arrived. All work is done (12 tests passing, component implemented, two commits made, tsc clean).
+
+I checked the task list — no unblocked pending tasks for me to pick up. Tasks #7 and #8 are blocked by #5 (card-agent) and #6 (widgets-agent). Let me know if there's anything else I can help with.
+</teammate-message>
+
+<teammate-message teammate_id="sidebar-agent" color="green">
+{"type":"idle_notification","from":"sidebar-agent","timestamp":"2026-02-27T10:31:00.103Z","idleReason":"available"}
+</teammate-message>
+
+<teammate-message teammate_id="foundation-agent" color="blue">
+{"type":"shutdown_approved","requestId":"shutdown-1772188174857@foundation-agent","from":"foundation-agent","timestamp":"2026-02-27T10:30:59.878Z","paneId":"in-process","backendType":"in-process"}
+</teammate-message>
+
+<teammate-message teammate_id="system">
+{"type":"teammate_terminated","message":"sidebar-agent has shut down."}
+</teammate-message>
+
+<teammate-message teammate_id="sidebar-agent" color="green">
+{"type":"shutdown_approved","requestId":"shutdown-1772188248933@sidebar-agent","from":"sidebar-agent","timestamp":"2026-02-27T10:31:04.949Z","paneId":"in-process","backendType":"in-process"}
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="statusbar-agent" color="orange" summary="Task #3 StatusBar complete — 21 tests pass, all committed">
+Task #3 (StatusBar component) is fully complete:
+
+- **Tests**: `ui/src/test/StatusBar.test.tsx` — 21 tests, all passing (committed at `bd49fae`)
+- **Component**: `ui/src/components/StatusBar.tsx` — fully implemented (committed at `7a3a270`)
+- **Type check**: Clean (`npx tsc --noEmit` passes)
+
+The component includes:
+- Exported `StatusBarProps` interface with JSDoc on every field
+- JSDoc on the component function
+- Named `formatUptime` helper function (not anonymous)
+- No `any` types
+- CSS custom properties (var(--color-*)) for all colors
+- FORGE branding, agent count stats, project count, command input with Enter handling, grid/list view toggle, uptime counter, WebSocket status indicator
+
+Test coverage includes: agent counts rendering, command input (submit, clear, empty guard, whitespace trim, non-Enter key guard), view mode toggle (grid/list buttons call onViewModeChange), uptime counter (start value, tick at 1s/61s/3661s), WebSocket status indicator, FORGE branding.
+</teammate-message>
+
+<teammate-message teammate_id="statusbar-agent" color="orange">
+{"type":"idle_notification","from":"statusbar-agent","timestamp":"2026-02-27T10:31:13.429Z","idleReason":"available"}
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="statusbar-agent" color="orange" summary="Task #3 already done, idle and ready for new work">
+Task #3 was already completed before this assignment arrived. Just re-verified: all 21 StatusBar tests pass, TypeScript is clean, both files committed. I'm idle and ready for any new work.
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="statusbar-agent" color="orange">
+{"type":"idle_notification","from":"statusbar-agent","timestamp":"2026-02-27T10:31:27.540Z","idleReason":"available"}
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="system">
+{"type":"teammate_terminated","message":"statusbar-agent has shut down."}
+</teammate-message>
+
+<teammate-message teammate_id="statusbar-agent" color="orange">
+{"type":"shutdown_approved","requestId":"shutdown-1772188279332@statusbar-agent","from":"statusbar-agent","timestamp":"2026-02-27T10:31:31.458Z","paneId":"in-process","backendType":"in-process"}
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="card-agent" color="yellow" summary="Task #5 AgentRunCard complete — 30 tests pass">
+Task #5 (Wave 3c: AgentRunCard component) is complete.
+
+**Test file:** `ui/src/test/AgentRunCard.test.tsx` — 30 tests covering:
+- Collapsed view: project badge, issue title, status dot colors, pulsing animation, phase dots, status labels, elapsed time, progress bar
+- Expanded view: click toggle, output/phases/files tabs, agent events with color-coded types, queued message, phase list with iterations/reviews, branch/PR display, cancel button
+- Edge cases: missing phases, empty events, completed run elapsed calculation, null phase_count, no file changes
+
+**Component:** `ui/src/components/AgentRunCard.tsx`
+- Exports: `AgentRunCardProps` interface, `DetailTab` type, `STATUS_DOT_COLORS`, `STATUS_LABELS` constants
+- JSDoc on all exports
+- No `any` types (uses typed `PipelineStatus` and `AgentEventType` record keys)
+- All colors use CSS custom properties
+- `tsc --noEmit` clean
+
+Commits:
+1. `e6b0afc` — failing tests
+2. `573b3a1` — passing implementation
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="card-agent" color="yellow">
+{"type":"idle_notification","from":"card-agent","timestamp":"2026-02-27T10:32:11.006Z","idleReason":"available"}
+</teammate-message>
+
+<teammate-message teammate_id="card-agent" color="yellow" summary="Task #5 already completed, ready for next task">
+Task #5 was already completed before this assignment message arrived. The AgentRunCard component and all 30 tests are committed and passing. See my earlier message for full details. Ready for any follow-up tasks.
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="card-agent" color="yellow">
+{"type":"idle_notification","from":"card-agent","timestamp":"2026-02-27T10:32:20.286Z","idleReason":"available"}
+</teammate-message>
+
+<teammate-message teammate_id="system">
+{"type":"teammate_terminated","message":"card-agent has shut down."}
+</teammate-message>
+
+<teammate-message teammate_id="card-agent" color="yellow">
+{"type":"shutdown_approved","requestId":"shutdown-1772188334852@card-agent","from":"card-agent","timestamp":"2026-02-27T10:32:24.431Z","paneId":"in-process","backendType":"in-process"}
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="widgets-agent" color="purple" summary="Task #6 complete: 3 components, 21 tests passing">
+Task #6 (Wave 3d) is complete. All three components built with TDD:
+
+**EventLog** (`ui/src/components/EventLog.tsx`) - 6 tests
+- Collapsible panel with "Event Log (N)" header
+- Color-coded source tags (agent=accent, phase=info, review=purple, error=red, system=secondary, git=warning)
+- Auto-scroll to bottom, empty state
+
+**FloatingActionButton** (`ui/src/components/FloatingActionButton.tsx`) - 5 tests
+- "+" button that expands to 3 action items (New Issue, New Project, Sync GitHub)
+- Menu closes after action click, "+" rotates 45deg when open
+
+**NewIssueModal** (`ui/src/components/NewIssueModal.tsx`) - 10 tests
+- Project selector, title input, description textarea
+- Submit disabled when empty, "Creating..." loading state, error display
+- Backdrop click closes modal, onClose called after successful submit
+
+All 21 tests passing, `tsc --noEmit` clean, committed as `bf8d75b`. All exports have JSDoc, no `any` types, CSS custom properties for colors, named constants for color maps.
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="widgets-agent" color="purple">
+{"type":"idle_notification","from":"widgets-agent","timestamp":"2026-02-27T10:33:42.369Z","idleReason":"available"}
+</teammate-message>
+
+<teammate-message teammate_id="widgets-agent" color="purple" summary="Task #6 already done, available for next work">
+Task #6 was already completed before this assignment arrived. All Wave 3 tasks (3a-3d, Tasks #3-#6) are done. Task #7 (Wave 4: App.tsx rewrite) is now unblocked and pending. I'm idle and available for assignment if needed.
+</teammate-message>
+
+<teammate-message teammate_id="widgets-agent" color="purple">
+{"type":"idle_notification","from":"widgets-agent","timestamp":"2026-02-27T10:33:54.355Z","idleReason":"available"}
+</teammate-message>
+
+<teammate-message teammate_id="system">
+{"type":"teammate_terminated","message":"widgets-agent has shut down."}
+</teammate-message>
+
+<teammate-message teammate_id="widgets-agent" color="purple">
+{"type":"shutdown_approved","requestId":"shutdown-1772188424122@widgets-agent","from":"widgets-agent","timestamp":"2026-02-27T10:33:57.606Z","paneId":"in-process","backendType":"in-process"}
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="integration-agent" color="pink" summary="Task #7 complete: App.tsx rewritten as Mission Control shell">
+Task #7 (Wave 4: Rewrite App.tsx as Mission Control shell) is complete.
+
+**What was done:**
+1. Wrote 11 integration tests in `ui/src/test/App.test.tsx` (committed as failing first)
+2. Rewrote `ui/src/App.tsx` to replace the Kanban board with the Mission Control dashboard:
+   - `MissionControl` component uses `useMissionControl` hook
+   - Layout: StatusBar (top) -> flex row [ProjectSidebar | Agent Grid] -> EventLog (bottom)
+   - FloatingActionButton with New Issue, New Project, Sync GitHub actions
+   - NewIssueModal creates issue and auto-triggers pipeline
+   - ProjectSetup shown full-screen when no projects, as modal for "New Project"
+   - Loading state with pulsing dot + "Initializing Mission Control..."
+   - Empty runs state: centered "No active agent runs"
+   - Grid/list view toggle via viewMode state
+   - runsByProject computed with useMemo
+
+**Quality checks:**
+- All 175 tests pass (16 test files)
+- TypeScript clean (`tsc --noEmit` — no errors)
+- No `any` types, JSDoc on MissionControl component
+- useCallback for all handlers, useMemo for derived computations
+- Clean separation: App wraps with WebSocketProvider, MissionControl does the work
+
+Two commits: `3e0abdf` (failing tests) and `684ddf2` (implementation).
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="integration-agent" color="pink">
+{"type":"idle_notification","from":"integration-agent","timestamp":"2026-02-27T10:37:22.325Z","idleReason":"available"}
+</teammate-message>
+
+<teammate-message teammate_id="integration-agent" color="pink" summary="Task #7 already completed before assignment">
+I already completed Task #7 before the assignment message arrived. Both commits are on main: `3e0abdf` (failing tests) and `684ddf2` (implementation). All 175 tests pass, TypeScript is clean. The task is marked completed. Let me know if there's anything else to work on.
+</teammate-message>
+
+<teammate-message teammate_id="integration-agent" color="pink">
+{"type":"idle_notification","from":"integration-agent","timestamp":"2026-02-27T10:37:37.320Z","idleReason":"available"}
+</teammate-message>
+
+<teammate-message teammate_id="system">
+{"type":"teammate_terminated","message":"integration-agent has shut down."}
+</teammate-message>
+
+<teammate-message teammate_id="integration-agent" color="pink">
+{"type":"shutdown_approved","requestId":"shutdown-1772188646993@integration-agent","from":"integration-agent","timestamp":"2026-02-27T10:37:41.752Z","paneId":"in-process","backendType":"in-process"}
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="cleanup-agent" color="cyan" summary="Wave 5 cleanup done: 167 tests pass, build succeeds, 16 files deleted">
+Wave 5 cleanup complete. All steps done:
+
+**Results:**
+- 167 tests passing (14 test files, 0 failures)
+- TypeScript: zero errors (tsc -b clean)
+- Production build: succeeds (369ms)
+- Bundle: index.js 237.69 kB (71.73 kB gzip), index.css 20.22 kB (4.72 kB gzip)
+
+**Removed:**
+- 3 @dnd-kit dependencies
+- 12 old components (Board, Column, IssueCard, PlayButton, PipelineStatus, Header, NewIssueForm, IssueDetail, PhaseTimeline, AgentTeamPanel, AgentCard, VerificationPanel)
+- 2 unused hooks (useBoard, useWebSocket)
+- 2 obsolete test files (IssueCard.test, IssueDetail.test)
+- Total: 2,032 lines deleted
+
+**Added:**
+- Barrel exports: ui/src/components/index.ts, ui/src/hooks/index.ts
+- Fixed TypeScript strict-mode errors (unused vars, Vitest 4.x mock generics)
+
+**5 commits made** on main branch. Task #8 marked completed.
+</teammate-message>
+
+<teammate-message teammate_id="cleanup-agent" color="cyan">
+{"type":"idle_notification","from":"cleanup-agent","timestamp":"2026-02-27T10:42:44.273Z","idleReason":"available"}
+</teammate-message>

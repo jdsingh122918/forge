@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.4.7",
+  "checkpoint_id": "81931852556a",
+  "session_id": "4ad163c5-e580-495f-aa94-668b1802c720",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-27T12:22:45.121346Z",
+  "branch": "feat/mission-control-ui",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "ui/src/components/NewIssueModal.tsx"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "b24f3942d869",
+  "token_usage": {
+    "input_tokens": 152,
+    "cache_creation_tokens": 196620,
+    "cache_read_tokens": 8461411,
+    "output_tokens": 50849,
+    "api_call_count": 90
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-27T12:22:44.836005Z",
+    "agent_lines": 4,
+    "human_added": 284,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 288,
+    "agent_percentage": 1.3888888888888888
+  }
+}
