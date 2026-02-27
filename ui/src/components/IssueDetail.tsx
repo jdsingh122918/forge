@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import type { IssueDetail as IssueDetailType } from '../types';
 import { PRIORITY_COLORS } from '../types';
 import { PipelineStatus } from './PipelineStatus';
@@ -20,6 +20,20 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
   const [editingDescription, setEditingDescription] = useState(false);
   const [descriptionDraft, setDescriptionDraft] = useState('');
   const [newLabel, setNewLabel] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const titleSavedByKeyRef = useRef(false);
+  const descSavedByKeyRef = useRef(false);
+
+  const saveAndRefresh = useCallback(async (updateFn: () => Promise<unknown>) => {
+    setError(null);
+    try {
+      await updateFn();
+      const updated = await api.getIssue(issueId);
+      setDetail(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An unexpected error occurred');
+    }
+  }, [issueId]);
 
   useEffect(() => {
     setLoading(true);
@@ -55,23 +69,25 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
             onKeyDown={async (e) => {
               if (e.key === 'Enter') {
                 e.preventDefault();
+                titleSavedByKeyRef.current = true;
                 const trimmed = titleDraft.trim();
                 if (trimmed && trimmed !== issue.title) {
-                  await api.updateIssue(issueId, { title: trimmed });
-                  const updated = await api.getIssue(issueId);
-                  setDetail(updated);
+                  await saveAndRefresh(() => api.updateIssue(issueId, { title: trimmed }));
                 }
                 setEditingTitle(false);
               } else if (e.key === 'Escape') {
+                titleSavedByKeyRef.current = true;
                 setEditingTitle(false);
               }
             }}
             onBlur={async () => {
+              if (titleSavedByKeyRef.current) {
+                titleSavedByKeyRef.current = false;
+                return;
+              }
               const trimmed = titleDraft.trim();
               if (trimmed && trimmed !== issue.title) {
-                await api.updateIssue(issueId, { title: trimmed });
-                const updated = await api.getIssue(issueId);
-                setDetail(updated);
+                await saveAndRefresh(() => api.updateIssue(issueId, { title: trimmed }));
               }
               setEditingTitle(false);
             }}
@@ -91,6 +107,14 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
         <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
       </div>
 
+      {/* Error Banner */}
+      {error && (
+        <div className="mx-6 mt-4 px-3 py-2 bg-red-50 border border-red-200 rounded-md flex items-center justify-between">
+          <p className="text-sm text-red-700">{error}</p>
+          <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 text-lg leading-none">&times;</button>
+        </div>
+      )}
+
       {/* Body */}
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
         {/* Priority & Column */}
@@ -100,9 +124,7 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
             value={issue.priority}
             onChange={async (e) => {
               const newPriority = e.target.value;
-              await api.updateIssue(issueId, { priority: newPriority });
-              const updated = await api.getIssue(issueId);
-              setDetail(updated);
+              await saveAndRefresh(() => api.updateIssue(issueId, { priority: newPriority }));
             }}
           >
             <option value="low">low</option>
@@ -127,23 +149,25 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
               onKeyDown={async (e) => {
                 if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                   e.preventDefault();
+                  descSavedByKeyRef.current = true;
                   const trimmed = descriptionDraft.trim();
                   if (trimmed !== (issue.description || '')) {
-                    await api.updateIssue(issueId, { description: trimmed });
-                    const updated = await api.getIssue(issueId);
-                    setDetail(updated);
+                    await saveAndRefresh(() => api.updateIssue(issueId, { description: trimmed }));
                   }
                   setEditingDescription(false);
                 } else if (e.key === 'Escape') {
+                  descSavedByKeyRef.current = true;
                   setEditingDescription(false);
                 }
               }}
               onBlur={async () => {
+                if (descSavedByKeyRef.current) {
+                  descSavedByKeyRef.current = false;
+                  return;
+                }
                 const trimmed = descriptionDraft.trim();
                 if (trimmed !== (issue.description || '')) {
-                  await api.updateIssue(issueId, { description: trimmed });
-                  const updated = await api.getIssue(issueId);
-                  setDetail(updated);
+                  await saveAndRefresh(() => api.updateIssue(issueId, { description: trimmed }));
                 }
                 setEditingDescription(false);
               }}
@@ -172,9 +196,7 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
                   className="text-gray-400 hover:text-red-500 leading-none"
                   onClick={async () => {
                     const updated_labels = issue.labels.filter(l => l !== label);
-                    await api.updateIssue(issueId, { labels: updated_labels });
-                    const updated = await api.getIssue(issueId);
-                    setDetail(updated);
+                    await saveAndRefresh(() => api.updateIssue(issueId, { labels: updated_labels }));
                   }}
                 >&times;</button>
               </span>
@@ -190,9 +212,7 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
                   const trimmed = newLabel.trim();
                   if (trimmed && !issue.labels.includes(trimmed)) {
                     const updated_labels = [...issue.labels, trimmed];
-                    await api.updateIssue(issueId, { labels: updated_labels });
-                    const updated = await api.getIssue(issueId);
-                    setDetail(updated);
+                    await saveAndRefresh(() => api.updateIssue(issueId, { labels: updated_labels }));
                     setNewLabel('');
                   }
                 }
@@ -277,9 +297,7 @@ export function IssueDetail({ issueId, onClose, onTriggerPipeline, onDelete }: I
               if (window.confirm('Cancel this pipeline run? Running agents will be killed and in-progress work will be lost.')) {
                 const activeRun = runs.find(r => r.status === 'queued' || r.status === 'running');
                 if (activeRun) {
-                  await api.cancelPipelineRun(activeRun.id);
-                  const updated = await api.getIssue(issueId);
-                  setDetail(updated);
+                  await saveAndRefresh(() => api.cancelPipelineRun(activeRun.id));
                 }
               }
             }}

@@ -427,38 +427,48 @@ impl FactoryDb {
         priority: Option<&str>,
         labels: Option<&str>,
     ) -> Result<Issue> {
+        // Validate priority before touching the DB.
+        if let Some(p) = priority {
+            Priority::from_str(p)
+                .map_err(|e| anyhow::anyhow!(e))
+                .context("Invalid priority value")?;
+        }
+
+        // Use unchecked_transaction so all updates are atomic.
+        // Safety: DbHandle's Mutex already guarantees single-threaded access.
+        let tx = self.conn.unchecked_transaction()
+            .context("Failed to begin transaction")?;
+
         if let Some(t) = title {
-            self.conn
-                .execute(
-                    "UPDATE issues SET title = ?1, updated_at = datetime('now') WHERE id = ?2",
-                    params![t, id],
-                )
-                .context("Failed to update issue title")?;
+            tx.execute(
+                "UPDATE issues SET title = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![t, id],
+            )
+            .context("Failed to update issue title")?;
         }
         if let Some(d) = description {
-            self.conn
-                .execute(
-                    "UPDATE issues SET description = ?1, updated_at = datetime('now') WHERE id = ?2",
-                    params![d, id],
-                )
-                .context("Failed to update issue description")?;
+            tx.execute(
+                "UPDATE issues SET description = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![d, id],
+            )
+            .context("Failed to update issue description")?;
         }
         if let Some(p) = priority {
-            self.conn
-                .execute(
-                    "UPDATE issues SET priority = ?1, updated_at = datetime('now') WHERE id = ?2",
-                    params![p, id],
-                )
-                .context("Failed to update issue priority")?;
+            tx.execute(
+                "UPDATE issues SET priority = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![p, id],
+            )
+            .context("Failed to update issue priority")?;
         }
         if let Some(l) = labels {
-            self.conn
-                .execute(
-                    "UPDATE issues SET labels = ?1, updated_at = datetime('now') WHERE id = ?2",
-                    params![l, id],
-                )
-                .context("Failed to update issue labels")?;
+            tx.execute(
+                "UPDATE issues SET labels = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![l, id],
+            )
+            .context("Failed to update issue labels")?;
         }
+
+        tx.commit().context("Failed to commit issue update")?;
         self.get_issue(id)?.context("Issue not found after update")
     }
 
@@ -1482,6 +1492,28 @@ mod tests {
         let updated = db.update_issue(issue.id, Some("Final title"), Some("Final desc"), None, None)?;
         assert_eq!(updated.title, "Final title");
         assert_eq!(updated.description, "Final desc");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_update_issue_rejects_invalid_priority() -> Result<()> {
+        let db = FactoryDb::new_in_memory()?;
+        let project = db.create_project("test", "/tmp/test")?;
+        let issue = db.create_issue(project.id, "Title", "Desc", &IssueColumn::Backlog)?;
+
+        // Invalid priority should be rejected
+        let result = db.update_issue(issue.id, None, None, Some("urgent"), None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid priority"));
+
+        // Issue should remain unchanged
+        let unchanged = db.get_issue(issue.id)?.unwrap();
+        assert_eq!(unchanged.title, "Title");
+
+        // Valid priority should succeed
+        let updated = db.update_issue(issue.id, None, None, Some("high"), None)?;
+        assert_eq!(updated.priority.as_str(), "high");
 
         Ok(())
     }
