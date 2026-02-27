@@ -8,6 +8,7 @@ import AgentRunCard from './components/AgentRunCard';
 import EventLog from './components/EventLog';
 import FloatingActionButton from './components/FloatingActionButton';
 import NewIssueModal from './components/NewIssueModal';
+import ConfirmDialog from './components/ConfirmDialog';
 import { ProjectSetup } from './components/ProjectSetup';
 import { api } from './api/client';
 
@@ -40,6 +41,7 @@ function MissionControl() {
   const [showNewIssueModal, setShowNewIssueModal] = useState(false);
   const [newIssueProjectId, setNewIssueProjectId] = useState<number | null>(null);
   const [showProjectSetup, setShowProjectSetup] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<{ id: number; name: string } | null>(null);
 
   /** Compute run counts by project for the sidebar */
   const runsByProject = useMemo(() => {
@@ -179,7 +181,7 @@ function MissionControl() {
           projects={projects}
           selectedProjectId={selectedProjectId}
           onSelectProject={setSelectedProjectId}
-          onDeleteProject={handleDeleteProject}
+          onDeleteProject={(id, name) => setDeleteConfirm({ id, name })}
           runsByProject={runsByProject}
         />
 
@@ -273,6 +275,34 @@ function MissionControl() {
                       >
                         + Issue
                       </button>
+
+                      {/* Delete project button */}
+                      <button
+                        onClick={() => setDeleteConfirm({ id: project.id, name: project.name })}
+                        style={{
+                          padding: '4px 8px',
+                          fontSize: '11px',
+                          fontFamily: 'inherit',
+                          background: 'transparent',
+                          border: '1px solid var(--color-border)',
+                          color: 'var(--color-text-secondary)',
+                          cursor: 'pointer',
+                          flexShrink: 0,
+                        }}
+                        onMouseEnter={e => {
+                          e.currentTarget.style.backgroundColor = 'var(--color-bg-card-hover)';
+                          e.currentTarget.style.color = 'var(--color-error)';
+                          e.currentTarget.style.borderColor = 'var(--color-error)';
+                        }}
+                        onMouseLeave={e => {
+                          e.currentTarget.style.backgroundColor = 'transparent';
+                          e.currentTarget.style.color = 'var(--color-text-secondary)';
+                          e.currentTarget.style.borderColor = 'var(--color-border)';
+                        }}
+                        title="Delete project"
+                      >
+                        ✕
+                      </button>
                     </div>
                   </div>
                 );
@@ -318,6 +348,20 @@ function MissionControl() {
           defaultProjectId={newIssueProjectId}
           onSubmit={handleIssueSubmit}
           onClose={() => { setShowNewIssueModal(false); setNewIssueProjectId(null); }}
+        />
+      )}
+
+      {/* Delete Confirmation Dialog */}
+      {deleteConfirm && (
+        <ConfirmDialog
+          title="Delete project"
+          message={`Delete "${deleteConfirm.name}"? This will remove all its issues and pipeline runs.`}
+          confirmLabel="Delete"
+          onConfirm={() => {
+            handleDeleteProject(deleteConfirm.id);
+            setDeleteConfirm(null);
+          }}
+          onCancel={() => setDeleteConfirm(null)}
         />
       )}
 

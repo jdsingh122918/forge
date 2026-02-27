@@ -5,4 +5,5 @@ export { default as AgentRunCard } from './AgentRunCard';
 export { default as EventLog } from './EventLog';
 export { default as FloatingActionButton } from './FloatingActionButton';
 export { default as NewIssueModal } from './NewIssueModal';
+export { default as ConfirmDialog } from './ConfirmDialog';
 export { ProjectSetup } from './ProjectSetup';

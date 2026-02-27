@@ -330,6 +330,51 @@ impl FactoryDb {
     }
 
     pub fn delete_project(&self, id: i64) -> Result<bool> {
+        // Manually clean up agent tables that lack ON DELETE CASCADE.
+        // Chain: project -> issues -> pipeline_runs -> agent_teams -> agent_tasks -> agent_events
+        self.conn
+            .execute(
+                "DELETE FROM agent_events WHERE task_id IN (
+                    SELECT t.id FROM agent_tasks t
+                    JOIN agent_teams at ON t.team_id = at.id
+                    JOIN pipeline_runs r ON at.run_id = r.id
+                    JOIN issues i ON r.issue_id = i.id
+                    WHERE i.project_id = ?1
+                )",
+                params![id],
+            )
+            .context("Failed to delete agent events for project")?;
+        self.conn
+            .execute(
+                "DELETE FROM agent_tasks WHERE team_id IN (
+                    SELECT at.id FROM agent_teams at
+                    JOIN pipeline_runs r ON at.run_id = r.id
+                    JOIN issues i ON r.issue_id = i.id
+                    WHERE i.project_id = ?1
+                )",
+                params![id],
+            )
+            .context("Failed to delete agent tasks for project")?;
+        // Null out the back-reference from pipeline_runs.team_id before removing teams
+        self.conn
+            .execute(
+                "UPDATE pipeline_runs SET team_id = NULL WHERE issue_id IN (
+                    SELECT i.id FROM issues i WHERE i.project_id = ?1
+                )",
+                params![id],
+            )
+            .context("Failed to clear team_id on pipeline runs")?;
+        self.conn
+            .execute(
+                "DELETE FROM agent_teams WHERE run_id IN (
+                    SELECT r.id FROM pipeline_runs r
+                    JOIN issues i ON r.issue_id = i.id
+                    WHERE i.project_id = ?1
+                )",
+                params![id],
+            )
+            .context("Failed to delete agent teams for project")?;
+
         let count = self
             .conn
             .execute("DELETE FROM projects WHERE id = ?1", params![id])

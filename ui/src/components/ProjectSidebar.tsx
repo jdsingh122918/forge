@@ -13,7 +13,7 @@ export interface ProjectSidebarProps {
   projects: Project[];
   selectedProjectId: number | null;
   onSelectProject: (projectId: number | null) => void;
-  onDeleteProject: (projectId: number) => void;
+  onDeleteProject: (projectId: number, projectName: string) => void;
   runsByProject: Map<number, { running: number; total: number }>;
 }
 
@@ -143,9 +143,7 @@ export default function ProjectSidebar({
                 className="project-delete-btn"
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (window.confirm(`Delete project "${project.name}"? This will remove all its issues and pipeline runs.`)) {
-                    onDeleteProject(project.id);
-                  }
+                  onDeleteProject(project.id, project.name);
                 }}
                 style={{
                   position: 'absolute',
