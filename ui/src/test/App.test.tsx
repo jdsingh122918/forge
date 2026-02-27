@@ -146,7 +146,8 @@ describe('App — Mission Control shell', () => {
     await waitFor(() => {
       expect(screen.getByText('Projects')).toBeInTheDocument()
     })
-    expect(screen.getByText('forge')).toBeInTheDocument()
+    // Project name appears in sidebar (and may appear in agent cards too)
+    expect(screen.getAllByText('forge').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText('All Projects')).toBeInTheDocument()
   })
 

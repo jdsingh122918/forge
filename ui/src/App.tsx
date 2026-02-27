@@ -1,300 +1,253 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import type { Project, IssueColumn } from './types';
-import { useBoard } from './hooks/useBoard';
-import { useAgentTeam } from './hooks/useAgentTeam';
-import { WebSocketProvider, useWsStatus, useWsSubscribe } from './contexts/WebSocketContext';
-import { api } from './api/client';
-import { Header } from './components/Header';
-import { Board } from './components/Board';
-import { IssueDetail } from './components/IssueDetail';
-import { NewIssueForm } from './components/NewIssueForm';
+import { useState, useCallback, useMemo } from 'react';
+import type { ViewMode, Project } from './types';
+import useMissionControl from './hooks/useMissionControl';
+import { WebSocketProvider } from './contexts/WebSocketContext';
+import StatusBar from './components/StatusBar';
+import ProjectSidebar from './components/ProjectSidebar';
+import AgentRunCard from './components/AgentRunCard';
+import EventLog from './components/EventLog';
+import FloatingActionButton from './components/FloatingActionButton';
+import NewIssueModal from './components/NewIssueModal';
 import { ProjectSetup } from './components/ProjectSetup';
+import { api } from './api/client';
 
-function GitHubConnectDialog({ onConnected, onClose }: { onConnected: () => void; onClose: () => void }) {
-  const [token, setToken] = useState('');
-  const [connecting, setConnecting] = useState(false);
-  const [error, setError] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
+/**
+ * Mission Control dashboard — the main application shell.
+ * Aggregates all projects and agent runs into a unified monitoring view.
+ * Layout: StatusBar (top) -> flex row [ProjectSidebar | Agent Grid] -> EventLog (bottom).
+ */
+function MissionControl() {
+  const {
+    projects,
+    agentRunCards,
+    statusCounts,
+    eventLog,
+    phases,
+    agentTeams,
+    agentEvents,
+    loading,
+    selectedProjectId,
+    setSelectedProjectId,
+    triggerPipeline,
+    cancelPipeline,
+    createIssue,
+    createProject,
+  } = useMissionControl();
 
-  useEffect(() => { inputRef.current?.focus(); }, []);
+  const [viewMode, setViewMode] = useState<ViewMode>('grid');
+  const [showNewIssueModal, setShowNewIssueModal] = useState(false);
+  const [showProjectSetup, setShowProjectSetup] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!token.trim()) return;
-    setError('');
-    setConnecting(true);
-    try {
-      await api.githubConnectToken(token.trim());
-      onConnected();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to connect');
-    } finally {
-      setConnecting(false);
+  /** Compute run counts by project for the sidebar */
+  const runsByProject = useMemo(() => {
+    const map = new Map<number, { running: number; total: number }>();
+    for (const card of agentRunCards) {
+      const pid = card.project.id;
+      const existing = map.get(pid) ?? { running: 0, total: 0 };
+      existing.total++;
+      if (card.run.status === 'running') existing.running++;
+      map.set(pid, existing);
     }
-  };
+    return map;
+  }, [agentRunCards]);
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-sm p-6" onClick={(e) => e.stopPropagation()}>
-        <h3 className="text-sm font-semibold text-gray-900 mb-1">Connect GitHub</h3>
-        <p className="text-xs text-gray-500 mb-4">A personal access token is required to sync issues.</p>
-        {error && <p className="text-sm text-red-600 bg-red-50 rounded-md px-3 py-2 mb-3">{error}</p>}
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <input
-            ref={inputRef}
-            type="password"
-            placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          />
-          <p className="text-xs text-gray-400">
-            Create a token at{' '}
-            <a href="https://github.com/settings/tokens/new?scopes=repo&description=Forge+Factory" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
-              github.com/settings/tokens
-            </a>
-            {' '}with <code className="text-xs bg-gray-100 px-1 rounded">repo</code> scope.
-          </p>
-          <div className="flex gap-2">
-            <button type="button" onClick={onClose} className="flex-1 px-3 py-2 text-sm text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
-              Cancel
-            </button>
-            <button type="submit" disabled={!token.trim() || connecting} className="flex-1 px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-md hover:bg-gray-800 disabled:opacity-50 transition-colors">
-              {connecting ? 'Connecting...' : 'Connect & Sync'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-function AppContent() {
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
-  const [selectedIssueId, setSelectedIssueId] = useState<number | null>(null);
-  const [showNewIssue, setShowNewIssue] = useState(false);
-  const [projectsLoading, setProjectsLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
-  const [showGithubConnect, setShowGithubConnect] = useState(false);
-
-  const { board, loading, error, moveIssue, createIssue, deleteIssue, triggerPipeline, refresh } =
-    useBoard(selectedProject?.id ?? null);
-  const wsStatus = useWsStatus();
-
-  // Derive activeRunId from board's in-progress issues
-  const activeRunId = board?.columns
-    .flatMap(col => col.issues)
-    .find(item => item.active_run?.status === 'running' || item.active_run?.status === 'queued')
-    ?.active_run?.id ?? null;
-
-  const { agentTeam, agentEvents, mergeStatus, verificationResults } = useAgentTeam(activeRunId);
-
-  // Build agentTeams map for Board component (keyed by run_id)
-  const agentTeams = agentTeam && activeRunId
-    ? new Map([[activeRunId, agentTeam]])
-    : undefined;
-
-  // Load projects on mount
-  useEffect(() => {
-    api.listProjects().then((ps) => {
-      setProjects(ps);
-      if (ps.length > 0) setSelectedProject(ps[0]);
-    }).catch(console.error).finally(() => setProjectsLoading(false));
+  const handleNewIssue = useCallback(() => {
+    setShowNewIssueModal(true);
   }, []);
 
-  // Handle ProjectCreated WebSocket messages
-  const handleProjectCreated = useCallback((msg: import('./types').WsMessage) => {
-    if (msg.type === 'ProjectCreated') {
-      setProjects(prev => {
-        if (prev.some(p => p.id === msg.data.project.id)) return prev;
-        return [...prev, msg.data.project];
-      });
+  const handleNewProject = useCallback(() => {
+    setShowProjectSetup(true);
+  }, []);
+
+  const handleSyncGithub = useCallback(async () => {
+    const project = projects.find(p =>
+      selectedProjectId === null ? true : p.id === selectedProjectId
+    );
+    if (project) {
+      try {
+        await api.syncGithub(project.id);
+      } catch (err) {
+        console.error('Sync failed:', err);
+      }
     }
-  }, []);
-  useWsSubscribe(handleProjectCreated);
+  }, [projects, selectedProjectId]);
 
-  const handleSelectProject = useCallback((project: Project) => {
-    setSelectedProject(project);
-    setSelectedIssueId(null);
-    setShowNewIssue(false);
-  }, []);
+  const handleIssueSubmit = useCallback(async (projectId: number, title: string, description: string) => {
+    const issue = await createIssue(projectId, title, description);
+    await triggerPipeline(issue.id);
+  }, [createIssue, triggerPipeline]);
 
-  const handleCreateProject = useCallback(async (name: string, path: string) => {
-    const project = await api.createProject(name, path);
-    setProjects((prev) => [...prev, project]);
-    setSelectedProject(project);
-  }, []);
+  const handleProjectSelect = useCallback((project: Project) => {
+    setSelectedProjectId(project.id);
+    setShowProjectSetup(false);
+  }, [setSelectedProjectId]);
+
+  const handleProjectCreate = useCallback((name: string, path: string) => {
+    createProject(name, path).then(() => {
+      setShowProjectSetup(false);
+    }).catch(console.error);
+  }, [createProject]);
 
   const handleCloneProject = useCallback(async (repoUrl: string) => {
     const project = await api.cloneProject(repoUrl);
-    setProjects((prev) => [...prev, project]);
-    setSelectedProject(project);
-  }, []);
+    setShowProjectSetup(false);
+    setSelectedProjectId(project.id);
+  }, [setSelectedProjectId]);
 
-  const handleDisconnect = useCallback(() => {
-    setSelectedProject(null);
-    setSelectedIssueId(null);
-    setShowNewIssue(false);
-  }, []);
+  // Loading state
+  if (loading) {
+    return (
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: '100vh',
+        backgroundColor: 'var(--color-bg-primary)',
+        color: 'var(--color-text-primary)',
+        gap: '12px',
+        fontSize: '14px',
+      }}>
+        <span className="pulse-dot" style={{
+          width: '8px',
+          height: '8px',
+          borderRadius: '50%',
+          backgroundColor: 'var(--color-success)',
+        }} />
+        Initializing Mission Control...
+      </div>
+    );
+  }
 
-  const handleMoveIssue = useCallback(
-    (issueId: number, column: IssueColumn, position: number) => {
-      moveIssue(issueId, column, position);
-    },
-    [moveIssue]
-  );
-
-  const handleCreateIssue = useCallback(
-    async (title: string, description: string) => {
-      await createIssue(title, description);
-      setShowNewIssue(false);
-      refresh();
-    },
-    [createIssue, refresh]
-  );
-
-  const handleDeleteIssue = useCallback(
-    async (issueId: number) => {
-      await deleteIssue(issueId);
-      setSelectedIssueId(null);
-      refresh();
-    },
-    [deleteIssue, refresh]
-  );
-
-  const handleTriggerPipeline = useCallback(
-    async (issueId: number) => {
-      await triggerPipeline(issueId);
-      refresh();
-    },
-    [triggerPipeline, refresh]
-  );
-
-  const doSync = useCallback(async () => {
-    if (!selectedProject) return;
-    setSyncing(true);
-    try {
-      await api.syncGithub(selectedProject.id);
-      refresh();
-      const ps = await api.listProjects();
-      setProjects(ps);
-      const updated = ps.find((p) => p.id === selectedProject.id);
-      if (updated) setSelectedProject(updated);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Sync failed';
-      console.error('Sync failed:', msg);
-      alert(`GitHub sync failed: ${msg}`);
-    } finally {
-      setSyncing(false);
-    }
-  }, [selectedProject, refresh]);
-
-  const handleSyncGithub = useCallback(async () => {
-    if (!selectedProject) return;
-    try {
-      const status = await api.githubStatus();
-      if (!status.connected) {
-        setShowGithubConnect(true);
-        return;
-      }
-      await doSync();
-    } catch {
-      setShowGithubConnect(true);
-    }
-  }, [selectedProject, doSync]);
-
-  const handleGithubConnected = useCallback(async () => {
-    setShowGithubConnect(false);
-    await doSync();
-  }, [doSync]);
+  // No projects — show ProjectSetup full-screen
+  if (projects.length === 0) {
+    return (
+      <div style={{
+        height: '100vh',
+        backgroundColor: 'var(--color-bg-primary)',
+      }}>
+        <ProjectSetup
+          projects={[]}
+          onSelect={handleProjectSelect}
+          onCreate={handleProjectCreate}
+          onClone={handleCloneProject}
+        />
+      </div>
+    );
+  }
 
   return (
-    <div className="h-screen flex flex-col bg-gray-100">
-      <Header
-        project={selectedProject}
-        projects={projects}
-        wsStatus={wsStatus}
-        onNewIssue={() => setShowNewIssue(true)}
-        onSelectProject={handleSelectProject}
-        onDisconnect={handleDisconnect}
-        onSyncGithub={handleSyncGithub}
-        syncing={syncing}
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      height: '100vh',
+      backgroundColor: 'var(--color-bg-primary)',
+      color: 'var(--color-text-primary)',
+    }}>
+      {/* Top bar */}
+      <StatusBar
+        agentCounts={{
+          running: statusCounts.running,
+          queued: statusCounts.queued,
+          completed: statusCounts.completed,
+          failed: statusCounts.failed,
+        }}
+        projectCount={projects.length}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
       />
 
-      <main className="flex-1 overflow-hidden">
-        {projectsLoading && (
-          <div className="flex items-center justify-center h-full">
-            <p className="text-gray-500">Loading...</p>
-          </div>
-        )}
-        {!projectsLoading && !selectedProject && (
-          <ProjectSetup
-            projects={projects}
-            onSelect={handleSelectProject}
-            onCreate={handleCreateProject}
-            onClone={handleCloneProject}
-          />
-        )}
-        {selectedProject && loading && (
-          <div className="flex items-center justify-center h-full">
-            <p className="text-gray-500">Loading board...</p>
-          </div>
-        )}
-        {selectedProject && error && (
-          <div className="p-6">
-            <p className="text-red-500 bg-red-50 rounded-md p-4">{error}</p>
-          </div>
-        )}
-        {selectedProject && board && (
-          <Board
-            board={board}
-            agentTeams={agentTeams}
-            agentEvents={agentEvents}
-            mergeStatus={mergeStatus}
-            verificationResults={verificationResults}
-            onMoveIssue={handleMoveIssue}
-            onIssueClick={setSelectedIssueId}
-            onTriggerPipeline={handleTriggerPipeline}
-            backlogHeaderAction={
-              !showNewIssue ? (
-                <button
-                  onClick={() => setShowNewIssue(true)}
-                  className="text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded p-0.5 transition-colors"
-                  title="New Issue"
-                >
-                  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
-                  </svg>
-                </button>
-              ) : undefined
-            }
-            backlogTopSlot={
-              showNewIssue ? (
-                <NewIssueForm
-                  onSubmit={handleCreateIssue}
-                  onCancel={() => setShowNewIssue(false)}
-                />
-              ) : undefined
-            }
-          />
-        )}
-      </main>
+      {/* Main content: sidebar + agent grid */}
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+        <ProjectSidebar
+          projects={projects}
+          selectedProjectId={selectedProjectId}
+          onSelectProject={setSelectedProjectId}
+          runsByProject={runsByProject}
+        />
 
-      {selectedIssueId && (
-        <IssueDetail
-          issueId={selectedIssueId}
-          onClose={() => setSelectedIssueId(null)}
-          onTriggerPipeline={handleTriggerPipeline}
-          onDelete={handleDeleteIssue}
+        {/* Agent run grid */}
+        <div style={{
+          flex: 1,
+          overflowY: 'auto',
+          padding: '16px',
+        }}>
+          {agentRunCards.length === 0 ? (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              height: '100%',
+              color: 'var(--color-text-secondary)',
+              fontSize: '14px',
+            }}>
+              No active agent runs
+            </div>
+          ) : (
+            <div style={{
+              display: viewMode === 'grid' ? 'grid' : 'flex',
+              gridTemplateColumns: viewMode === 'grid' ? 'repeat(auto-fill, minmax(400px, 1fr))' : undefined,
+              flexDirection: viewMode === 'list' ? 'column' : undefined,
+              gap: '12px',
+            }}>
+              {agentRunCards.map(card => (
+                <AgentRunCard
+                  key={card.run.id}
+                  card={card}
+                  phases={phases.get(card.run.id)}
+                  agentTeam={agentTeams.get(card.run.id)}
+                  agentEvents={agentEvents}
+                  onCancel={cancelPipeline}
+                  viewMode={viewMode}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Bottom event log */}
+      <EventLog entries={eventLog} />
+
+      {/* Floating action button */}
+      <FloatingActionButton
+        onNewIssue={handleNewIssue}
+        onNewProject={handleNewProject}
+        onSyncGithub={handleSyncGithub}
+      />
+
+      {/* New Issue Modal */}
+      {showNewIssueModal && (
+        <NewIssueModal
+          projects={projects}
+          onSubmit={handleIssueSubmit}
+          onClose={() => setShowNewIssueModal(false)}
         />
       )}
 
-      {showGithubConnect && (
-        <GitHubConnectDialog
-          onConnected={handleGithubConnected}
-          onClose={() => setShowGithubConnect(false)}
-        />
+      {/* Project Setup Modal */}
+      {showProjectSetup && (
+        <div
+          data-testid="project-setup-modal"
+          onClick={() => setShowProjectSetup(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0,0,0,0.7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 100,
+          }}
+        >
+          <div onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: '500px' }}>
+            <ProjectSetup
+              projects={projects}
+              onSelect={handleProjectSelect}
+              onCreate={handleProjectCreate}
+              onClone={handleCloneProject}
+            />
+          </div>
+        </div>
       )}
     </div>
   );
@@ -304,7 +257,7 @@ function App() {
   const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
   return (
     <WebSocketProvider url={wsUrl}>
-      <AppContent />
+      <MissionControl />
     </WebSocketProvider>
   );
 }
