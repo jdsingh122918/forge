@@ -119,7 +119,7 @@ export interface AgentEvent {
   task_id: number;
   event_type: AgentEventType;
   content: string;
-  metadata: any | null;
+  metadata: Record<string, unknown> | null;
   created_at: string;
 }
 
@@ -150,13 +150,13 @@ export type WsMessage =
   | { type: 'AgentTaskCompleted'; data: { run_id: number; task_id: number; success: boolean } }
   | { type: 'AgentTaskFailed'; data: { run_id: number; task_id: number; error: string } }
   | { type: 'AgentThinking'; data: { run_id: number; task_id: number; content: string } }
-  | { type: 'AgentAction'; data: { run_id: number; task_id: number; action_type: string; summary: string; metadata: any } }
+  | { type: 'AgentAction'; data: { run_id: number; task_id: number; action_type: string; summary: string; metadata: Record<string, unknown> } }
   | { type: 'AgentOutput'; data: { run_id: number; task_id: number; content: string } }
   | { type: 'AgentSignal'; data: { run_id: number; task_id: number; signal_type: SignalType; content: string } }
   | { type: 'MergeStarted'; data: { run_id: number; wave: number } }
   | { type: 'MergeCompleted'; data: { run_id: number; wave: number; conflicts: boolean } }
   | { type: 'MergeConflict'; data: { run_id: number; wave: number; files: string[] } }
-  | { type: 'VerificationResult'; data: { run_id: number; task_id: number; verification_type: VerificationType; passed: boolean; summary: string; screenshots: string[]; details: any } }
+  | { type: 'VerificationResult'; data: { run_id: number; task_id: number; verification_type: VerificationType; passed: boolean; summary: string; screenshots: string[]; details: Record<string, unknown> } }
   | { type: 'PipelineError'; data: { run_id: number; message: string } }
   | { type: 'ProjectCreated'; data: { project: Project } }
   | { type: 'ProjectDeleted'; data: { project_id: number } };

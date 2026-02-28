@@ -254,7 +254,7 @@ async fn run_socket_loop(
                     // Connection is dead — no pong received in time
                     break;
                 }
-                if sender.send(Message::Ping(vec![])).await.is_err() {
+                if sender.send(Message::Ping(vec![].into())).await.is_err() {
                     break;
                 }
                 awaiting_pong = true;
@@ -264,7 +264,7 @@ async fn run_socket_loop(
             result = rx.recv() => {
                 match result {
                     Ok(msg) => {
-                        if sender.send(Message::Text(msg)).await.is_err() {
+                        if sender.send(Message::Text(msg.into())).await.is_err() {
                             break;
                         }
                     }

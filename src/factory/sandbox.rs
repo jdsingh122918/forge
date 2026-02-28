@@ -3,12 +3,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use bollard::Docker;
-use bollard::container::{
-    Config, CreateContainerOptions, LogsOptions, RemoveContainerOptions, StartContainerOptions,
+use bollard::models::{ContainerCreateBody, ContainerInspectResponse, HostConfig, Mount, MountTypeEnum};
+use bollard::query_parameters::{
+    CreateContainerOptions, CreateImageOptions, LogsOptions, RemoveContainerOptions,
     StopContainerOptions, WaitContainerOptions,
 };
-use bollard::image::CreateImageOptions;
-use bollard::models::{ContainerInspectResponse, HostConfig, Mount, MountTypeEnum};
 use futures_util::StreamExt;
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -188,7 +187,7 @@ impl DockerSandbox {
         labels.insert("forge.run-id".to_string(), run_id.to_string());
         labels.insert("forge.project".to_string(), project_name.to_string());
 
-        let container_config = Config {
+        let container_config = ContainerCreateBody {
             image: Some(image.clone()),
             cmd: Some(command),
             env: Some(all_env),
@@ -200,8 +199,8 @@ impl DockerSandbox {
 
         let container_name = format!("forge-pipeline-{}", run_id);
         let create_opts = CreateContainerOptions {
-            name: &container_name,
-            platform: None,
+            name: Some(container_name.clone()),
+            ..Default::default()
         };
 
         let response = self
@@ -214,7 +213,7 @@ impl DockerSandbox {
 
         // Start the container
         self.docker
-            .start_container(&container_id, None::<StartContainerOptions<String>>)
+            .start_container(&container_id, None::<bollard::query_parameters::StartContainerOptions>)
             .await
             .context("Failed to start pipeline container")?;
 
@@ -224,7 +223,7 @@ impl DockerSandbox {
         let cid = container_id.clone();
 
         tokio::spawn(async move {
-            let opts = LogsOptions::<String> {
+            let opts = LogsOptions {
                 follow: true,
                 stdout: true,
                 stderr: true,
@@ -247,7 +246,7 @@ impl DockerSandbox {
     /// Stop and remove a container.
     pub async fn stop(&self, container_id: &str) -> Result<()> {
         // Stop with 10s grace period
-        let stop_opts = StopContainerOptions { t: 10 };
+        let stop_opts = StopContainerOptions { t: Some(10), ..Default::default() };
         let _ = self
             .docker
             .stop_container(container_id, Some(stop_opts))
@@ -278,7 +277,7 @@ impl DockerSandbox {
     pub async fn wait(&self, container_id: &str) -> Result<i64> {
         let mut stream = self
             .docker
-            .wait_container(container_id, None::<WaitContainerOptions<String>>);
+            .wait_container(container_id, None::<WaitContainerOptions>);
 
         if let Some(result) = stream.next().await {
             let response = result.context("Error waiting for container")?;
@@ -297,13 +296,13 @@ impl DockerSandbox {
 
         // Pull the image
         let opts = CreateImageOptions {
-            from_image: image,
+            from_image: Some(image.to_string()),
             ..Default::default()
         };
 
         let mut stream = self.docker.create_image(Some(opts), None, None);
         while let Some(result) = stream.next().await {
-            result.context("Failed to pull image")?;
+            let _info: bollard::models::CreateImageInfo = result.context("Failed to pull image")?;
         }
 
         Ok(())
@@ -311,14 +310,14 @@ impl DockerSandbox {
 
     /// Prune stale pipeline containers (older than max_age_secs).
     pub async fn prune_stale_containers(&self, max_age_secs: i64) -> Result<usize> {
-        use bollard::container::ListContainersOptions;
+        use bollard::query_parameters::ListContainersOptions;
 
         let mut filters = HashMap::new();
         filters.insert("label".to_string(), vec!["forge.pipeline=true".to_string()]);
 
         let opts = ListContainersOptions {
             all: true,
-            filters,
+            filters: Some(filters),
             ..Default::default()
         };
 
