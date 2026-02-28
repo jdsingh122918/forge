@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.4.8",
+  "checkpoint_id": "50057abfa7ff",
+  "strategy": "manual-commit",
+  "branch": "chore/dependency-upgrades",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "Cargo.lock",
+    "Cargo.toml",
+    "rust-toolchain.toml",
+    "src/factory/api.rs",
+    "src/factory/sandbox.rs",
+    "src/factory/ws.rs",
+    "ui/eslint.config.js",
+    "ui/package-lock.json",
+    "ui/package.json",
+    "ui/src/contexts/WebSocketContext.tsx",
+    "ui/src/hooks/useAgentTeam.ts",
+    "ui/src/test/App.test.tsx",
+    "ui/src/test/ProjectSidebar.test.tsx",
+    "ui/src/test/handlers.ts",
+    "ui/src/types/index.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/50/057abfa7ff/0/metadata.json",
+      "transcript": "/50/057abfa7ff/0/full.jsonl",
+      "context": "/50/057abfa7ff/0/context.md",
+      "content_hash": "/50/057abfa7ff/0/content_hash.txt",
+      "prompt": "/50/057abfa7ff/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 146,
+    "cache_creation_tokens": 69656,
+    "cache_read_tokens": 11016987,
+    "output_tokens": 24560,
+    "api_call_count": 137
+  }
+}

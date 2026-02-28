@@ -1,0 +1,44 @@
+{
+  "cli_version": "0.4.8",
+  "checkpoint_id": "50057abfa7ff",
+  "session_id": "071c7e91-c07f-45cb-951c-43b4bcedbe74",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-28T03:01:24.950919Z",
+  "branch": "chore/dependency-upgrades",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "Cargo.lock",
+    "Cargo.toml",
+    "rust-toolchain.toml",
+    "src/factory/api.rs",
+    "src/factory/sandbox.rs",
+    "src/factory/ws.rs",
+    "ui/eslint.config.js",
+    "ui/package-lock.json",
+    "ui/package.json",
+    "ui/src/contexts/WebSocketContext.tsx",
+    "ui/src/hooks/useAgentTeam.ts",
+    "ui/src/test/App.test.tsx",
+    "ui/src/test/ProjectSidebar.test.tsx",
+    "ui/src/test/handlers.ts",
+    "ui/src/types/index.ts"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "d11225b05dbd",
+  "token_usage": {
+    "input_tokens": 146,
+    "cache_creation_tokens": 69656,
+    "cache_read_tokens": 11016987,
+    "output_tokens": 24560,
+    "api_call_count": 137
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-28T03:01:24.811977Z",
+    "agent_lines": 267,
+    "human_added": 49,
+    "human_modified": 133,
+    "human_removed": 0,
+    "total_committed": 449,
+    "agent_percentage": 59.46547884187082
+  }
+}

@@ -1,0 +1,540 @@
+Implement the following plan:
+
+# Dependency Upgrade Implementation Plan
+
+## Context
+
+The Forge project has 8 Rust crates with major updates available, an ESLint ecosystem upgrade pending on the frontend, and is running Rust nightly unnecessarily. This plan organizes upgrades into 6 parallelizable phases by risk level and dependency relationships, designed for execution via subagent-driven development.
+
+## Phase 1: Rust Stable Switch (no code changes)
+
+**Risk: None | Files: 1 new file**
+
+Create `rust-toolchain.toml` in project root:
+```toml
+[toolchain]
+channel = "stable"
+```
+
+No code changes — no `#![feature(...)]` attributes exist anywhere in the codebase.
+
+**Verify:** `cargo build --release && cargo test`
+
+---
+
+## Phase 2: Low-Risk Rust Upgrades (4 parallel subagents)
+
+All of these are independent and can run in parallel.
+
+### 2A: thiserror 1 → 2
+**Risk: Low | File: `Cargo.toml`**
+- Change `thiserror = "1"` → `thiserror = "2"`
+- No code changes needed — `src/errors.rs` uses only named field interpolation (`{path}`, `{source}`), `#[from]`, and `#[source]`. No positional args or raw identifiers.
+- **Verify:** `cargo build && cargo test`
+
+### 2B: dirs 5 → 6
+**Risk: Low | Files: `Cargo.toml`**
+- Change `dirs = "5"` → `dirs = "6"`
+- Only usage is `dirs::home_dir()` in `src/patterns/learning.rs:353` — this function is unchanged in v6.
+- Note: `config_dir()` changed on macOS in v6, but we don't use it.
+- **Verify:** `cargo build && cargo test`
+
+### 2C: console-rs trio (dialoguer, console, indicatif)
+**Risk: Low | File: `Cargo.toml`**
+- Change `dialoguer = "0.11"` → `dialoguer = "0.12"`
+- Change `console = "0.15"` → `console = "0.16"`
+- Change `indicatif = "0.17"` → `indicatif = "0.18"`
+- Must upgrade together (shared ecosystem). Usage spans:
+  - `src/ui/progress.rs`, `src/ui/dag_progress.rs` — MultiProgress, ProgressBar, ProgressStyle
+  - `src/gates/mod.rs` — Select with ColorfulTheme
+  - `src/cmd/run.rs`, `src/cmd/phase.rs`, `src/cmd/skills.rs`, `src/cmd/patterns.rs` — Confirm, Input
+  - `src/generate/mod.rs`, `src/implement/mod.rs` — Input
+  - `src/ui/icons.rs` — console::Emoji
+- If any API signatures changed, fix compilation errors (typically minor renames).
+- **Verify:** `cargo build && cargo test`
+
+### 2D: reqwest 0.12 → 0.13
+**Risk: Low | Files: `Cargo.toml`, possibly `src/factory/github.rs`**
+- Change `reqwest = { version = "0.12", features = ["json"] }` → `reqwest = { version = "0.13", features = ["json"] }`
+- Usage in `src/factory/github.rs`: `Client::new()`, `.post()`, `.form()`, `.header()`, `.send()`, `.json()` — all stable APIs.
+- Main change: default TLS backend switched to rustls. If native-tls is needed, add `features = ["native-tls"]`.
+- **Verify:** `cargo build && cargo test`
+
+---
+
+## Phase 3: Medium-Risk Rust Upgrades (3 parallel subagents)
+
+### 3A: toml 0.8 → 1.0
+**Risk: Medium | Files: `Cargo.toml`, possibly config files**
+- Change `toml = "0.8"` → `toml = "1"`
+- Usage sites to check:
+  - `src/forge_config.rs:635` — `toml::from_str()` into serde structs (should be fine)
+  - `src/forge_config.rs:651` — `toml::to_string_pretty()` (should be fine)
+  - `src/forge_config.rs:1667` — `toml::Value` with `.get()` and `from_str()` — **check this**: in v1.0, `FromStr for Value` parses TOML values, not documents. If this line parses a full TOML document string into Value, use `toml::from_str::<toml::Table>()` instead.
+  - `src/hooks/config.rs:272` — `toml::from_str()` into serde struct (should be fine)
+  - `src/factory/sandbox.rs:68` — `toml::from_str()` into serde struct (should be fine)
+- **Verify:** `cargo build && cargo test` — specifically test config parsing paths
+
+### 3B: rusqlite 0.32 → 0.38
+**Risk: Medium (version gap) | Files: `Cargo.toml`, possibly `src/factory/db.rs`**
+- Change `rusqlite = { version = "0.32", features = ["bundled"] }` → `rusqlite = { version = "0.38", features = ["bundled"] }`
+- Usage in `src/factory/db.rs`: `Connection::open()`, `execute_batch()`, `execute()`, `prepare()`, `query_map()`, `params![]`, `row.get()`, `last_insert_rowid()` — all core APIs.
+- No custom `ToSql`/`FromSql` implementations. Only uses `i64` (not `u64`/`usize`).
+- No statement caching usage. No transaction usage.
+- Should compile cleanly but has 6 intermediate versions — fix any compilation errors.
+- **Verify:** `cargo build && cargo test` — specifically test database operations
+
+### 3C: bollard 0.18 → 0.20
+**Risk: Medium (version gap) | Files: `Cargo.toml`, possibly `src/factory/sandbox.rs`**
+- Change `bollard = "0.18"` → `bollard = "0.20"`
+- Usage in `src/factory/sandbox.rs`: `Docker::connect_with_socket_defaults()`, `create_container()`, `start_container()`, `logs()`, `wait_container()`, `stop_container()`, `remove_container()`, `create_image()`, `Config`, `HostConfig`, `Mount`, `CreateContainerOptions`, `LogsOptions`, `StopContainerOptions`.
+- Core Docker API operations — generally stable across versions.
+- **Verify:** `cargo build && cargo test`
+
+---
+
+## Phase 4: axum 0.7 → 0.8 (single focused subagent)
+
+**Risk: Medium-High | Files: `Cargo.toml`, `src/factory/api.rs`, `src/factory/ws.rs`, `src/factory/server.rs`**
+
+This is the most involved upgrade. Key changes:
+
+1. **Route parameter syntax** — Change all `:param` to `{param}` in route definitions:
+   - `src/factory/api.rs:169-195` — ~11 routes use `:id` patterns like `/api/projects/:id`
+   - Change to `/api/projects/{id}`
+
+2. **WebSocket API** — In `src/factory/ws.rs`:
+   - `Message` now uses `Bytes` instead of `Vec<u8>` and `Utf8Bytes` instead of `String`
+   - Update `ws_handler()` and `ws_handler_with_sender()` functions
+   - Update `socket.split()` usage and message construction
+
+3. **Extractors** — In `src/factory/api.rs`:
+   - `State<SharedState>`, `Path<T>`, `Json<T>`, `Query<T>` — check for any `Option<T>` wrapper usage (requires `OptionalFromRequestParts` in 0.8)
+   - Handler type parameters may have been reordered
+
+4. **Router** — Check `Router::merge` usage and fallback configuration in `src/factory/server.rs`
+
+- **Verify:** `cargo build && cargo test` — then manually test Factory UI WebSocket connectivity
+
+---
+
+## Phase 5: ESLint v10 Ecosystem Upgrade (single subagent)
+
+**Risk: Medium | Files: `ui/package.json`, `ui/eslint.config.js`**
+
+The project already uses flat config (`ui/eslint.config.js` with `defineConfig()` and `globalIgnores()`), which is the v10 requirement. This simplifies the upgrade significantly.
+
+Upgrade these packages together in `ui/package.json`:
+```
+eslint: ^9.39.1 → ^10.0.2
+@eslint/js: ^9.39.1 → ^10.0.1
+eslint-plugin-react-refresh: ^0.4.24 → ^0.5.2
+globals: ^16.5.0 → ^17.3.0
+```
+
+Code changes in `ui/eslint.config.js`:
+- `eslint-plugin-react-refresh` v0.5 changes its export format — update import if needed (uses `reactRefresh` named export instead of default)
+- `globals` v17 removes some globals — verify `globals.browser` still works
+- `@eslint/js` v10 API should be compatible with current `js.configs.recommended` usage
+- Verify `typescript-eslint` ^8.48.0 works with ESLint v10 (v8.56+ adds ESLint v10 support, and ^8.48 should auto-resolve to 8.56+)
+
+Run: `cd ui && npm install && npm run lint && npm run build && npm test`
+
+---
+
+## Phase 6: Optional — Node.js LTS Consideration
+
+**No code changes.** Decision point for the team:
+- Current: Node.js 25.6.1 (Current, EOL Apr 2026)
+- Recommended: Node.js 24.14.0 LTS (supported through Apr 2028)
+- If switching, add `.node-version` file with `24` and test `cd ui && npm install && npm run build`
+
+---
+
+## Execution Strategy
+
+Use **subagent-driven development** with parallel agents per phase:
+
+| Phase | Agents | Can Parallelize With |
+|-------|--------|---------------------|
+| 1 | 1 agent | Nothing (do first) |
+| 2 | 4 agents (2A, 2B, 2C, 2D) | All parallel within phase |
+| 3 | 3 agents (3A, 3B, 3C) | All parallel within phase |
+| 4 | 1 agent | Phase 5 |
+| 5 | 1 agent | Phase 4 |
+| 6 | Manual decision | After all phases |
+
+Phases 2-3 must come after Phase 1 (need stable Rust).
+Phases 4-5 can run in parallel (backend vs frontend).
+
+## Verification
+
+After all phases complete:
+1. `cargo build --release` — full backend build
+2. `cargo test` — all backend tests (unit + integration)
+3. `cd ui && npm run lint` — frontend linting
+4. `cd ui && npm run build` — frontend build
+5. `cd ui && npm test` — frontend tests
+6. Manual: start `forge factory` and verify WebSocket connectivity in browser
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/jdsingh/.claude/projects/-Users-jdsingh-Projects-AI-forge/9f3c361c-5e7f-47c0-9cd9-c948243582e5.jsonl
+
+If this plan can be broken down into multiple independent tasks, consider using the TeamCreate tool to create a team and parallelize the work.
+
+---
+
+Base directory for this skill: /Users/jdsingh/.claude/plugins/cache/claude-plugins-official/superpowers/4.3.1/skills/subagent-driven-development
+
+# Subagent-Driven Development
+
+Execute plan by dispatching fresh subagent per task, with two-stage review after each: spec compliance review first, then code quality review.
+
+**Core principle:** Fresh subagent per task + two-stage review (spec then quality) = high quality, fast iteration
+
+## When to Use
+
+```dot
+digraph when_to_use {
+    "Have implementation plan?" [shape=diamond];
+    "Tasks mostly independent?" [shape=diamond];
+    "Stay in this session?" [shape=diamond];
+    "subagent-driven-development" [shape=box];
+    "executing-plans" [shape=box];
+    "Manual execution or brainstorm first" [shape=box];
+
+    "Have implementation plan?" -> "Tasks mostly independent?" [label="yes"];
+    "Have implementation plan?" -> "Manual execution or brainstorm first" [label="no"];
+    "Tasks mostly independent?" -> "Stay in this session?" [label="yes"];
+    "Tasks mostly independent?" -> "Manual execution or brainstorm first" [label="no - tightly coupled"];
+    "Stay in this session?" -> "subagent-driven-development" [label="yes"];
+    "Stay in this session?" -> "executing-plans" [label="no - parallel session"];
+}
+```
+
+**vs. Executing Plans (parallel session):**
+- Same session (no context switch)
+- Fresh subagent per task (no context pollution)
+- Two-stage review after each task: spec compliance first, then code quality
+- Faster iteration (no human-in-loop between tasks)
+
+## The Process
+
+```dot
+digraph process {
+    rankdir=TB;
+
+    subgraph cluster_per_task {
+        label="Per Task";
+        "Dispatch implementer subagent (./implementer-prompt.md)" [shape=box];
+        "Implementer subagent asks questions?" [shape=diamond];
+        "Answer questions, provide context" [shape=box];
+        "Implementer subagent implements, tests, commits, self-reviews" [shape=box];
+        "Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)" [shape=box];
+        "Spec reviewer subagent confirms code matches spec?" [shape=diamond];
+        "Implementer subagent fixes spec gaps" [shape=box];
+        "Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)" [shape=box];
+        "Code quality reviewer subagent approves?" [shape=diamond];
+        "Implementer subagent fixes quality issues" [shape=box];
+        "Mark task complete in TodoWrite" [shape=box];
+    }
+
+    "Read plan, extract all tasks with full text, note context, create TodoWrite" [shape=box];
+    "More tasks remain?" [shape=diamond];
+    "Dispatch final code reviewer subagent for entire implementation" [shape=box];
+    "Use superpowers:finishing-a-development-branch" [shape=box style=filled fillcolor=lightgreen];
+
+    "Read plan, extract all tasks with full text, note context, create TodoWrite" -> "Dispatch implementer subagent (./implementer-prompt.md)";
+    "Dispatch implementer subagent (./implementer-prompt.md)" -> "Implementer subagent asks questions?";
+    "Implementer subagent asks questions?" -> "Answer questions, provide context" [label="yes"];
+    "Answer questions, provide context" -> "Dispatch implementer subagent (./implementer-prompt.md)";
+    "Implementer subagent asks questions?" -> "Implementer subagent implements, tests, commits, self-reviews" [label="no"];
+    "Implementer subagent implements, tests, commits, self-reviews" -> "Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)";
+    "Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)" -> "Spec reviewer subagent confirms code matches spec?";
+    "Spec reviewer subagent confirms code matches spec?" -> "Implementer subagent fixes spec gaps" [label="no"];
+    "Implementer subagent fixes spec gaps" -> "Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)" [label="re-review"];
+    "Spec reviewer subagent confirms code matches spec?" -> "Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)" [label="yes"];
+    "Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)" -> "Code quality reviewer subagent approves?";
+    "Code quality reviewer subagent approves?" -> "Implementer subagent fixes quality issues" [label="no"];
+    "Implementer subagent fixes quality issues" -> "Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)" [label="re-review"];
+    "Code quality reviewer subagent approves?" -> "Mark task complete in TodoWrite" [label="yes"];
+    "Mark task complete in TodoWrite" -> "More tasks remain?";
+    "More tasks remain?" -> "Dispatch implementer subagent (./implementer-prompt.md)" [label="yes"];
+    "More tasks remain?" -> "Dispatch final code reviewer subagent for entire implementation" [label="no"];
+    "Dispatch final code reviewer subagent for entire implementation" -> "Use superpowers:finishing-a-development-branch";
+}
+```
+
+## Prompt Templates
+
+- `./implementer-prompt.md` - Dispatch implementer subagent
+- `./spec-reviewer-prompt.md` - Dispatch spec compliance reviewer subagent
+- `./code-quality-reviewer-prompt.md` - Dispatch code quality reviewer subagent
+
+## Example Workflow
+
+```
+You: I'm using Subagent-Driven Development to execute this plan.
+
+[Read plan file once: docs/plans/feature-plan.md]
+[Extract all 5 tasks with full text and context]
+[Create TodoWrite with all tasks]
+
+Task 1: Hook installation script
+
+[Get Task 1 text and context (already extracted)]
+[Dispatch implementation subagent with full task text + context]
+
+Implementer: "Before I begin - should the hook be installed at user or system level?"
+
+You: "User level (~/.config/superpowers/hooks/)"
+
+Implementer: "Got it. Implementing now..."
+[Later] Implementer:
+  - Implemented install-hook command
+  - Added tests, 5/5 passing
+  - Self-review: Found I missed --force flag, added it
+  - Committed
+
+[Dispatch spec compliance reviewer]
+Spec reviewer: ✅ Spec compliant - all requirements met, nothing extra
+
+[Get git SHAs, dispatch code quality reviewer]
+Code reviewer: Strengths: Good test coverage, clean. Issues: None. Approved.
+
+[Mark Task 1 complete]
+
+Task 2: Recovery modes
+
+[Get Task 2 text and context (already extracted)]
+[Dispatch implementation subagent with full task text + context]
+
+Implementer: [No questions, proceeds]
+Implementer:
+  - Added verify/repair modes
+  - 8/8 tests passing
+  - Self-review: All good
+  - Committed
+
+[Dispatch spec compliance reviewer]
+Spec reviewer: ❌ Issues:
+  - Missing: Progress reporting (spec says "report every 100 items")
+  - Extra: Added --json flag (not requested)
+
+[Implementer fixes issues]
+Implementer: Removed --json flag, added progress reporting
+
+[Spec reviewer reviews again]
+Spec reviewer: ✅ Spec compliant now
+
+[Dispatch code quality reviewer]
+Code reviewer: Strengths: Solid. Issues (Important): Magic number (100)
+
+[Implementer fixes]
+Implementer: Extracted PROGRESS_INTERVAL constant
+
+[Code reviewer reviews again]
+Code reviewer: ✅ Approved
+
+[Mark Task 2 complete]
+
+...
+
+[After all tasks]
+[Dispatch final code-reviewer]
+Final reviewer: All requirements met, ready to merge
+
+Done!
+```
+
+## Advantages
+
+**vs. Manual execution:**
+- Subagents follow TDD naturally
+- Fresh context per task (no confusion)
+- Parallel-safe (subagents don't interfere)
+- Subagent can ask questions (before AND during work)
+
+**vs. Executing Plans:**
+- Same session (no handoff)
+- Continuous progress (no waiting)
+- Review checkpoints automatic
+
+**Efficiency gains:**
+- No file reading overhead (controller provides full text)
+- Controller curates exactly what context is needed
+- Subagent gets complete information upfront
+- Questions surfaced before work begins (not after)
+
+**Quality gates:**
+- Self-review catches issues before handoff
+- Two-stage review: spec compliance, then code quality
+- Review loops ensure fixes actually work
+- Spec compliance prevents over/under-building
+- Code quality ensures implementation is well-built
+
+**Cost:**
+- More subagent invocations (implementer + 2 reviewers per task)
+- Controller does more prep work (extracting all tasks upfront)
+- Review loops add iterations
+- But catches issues early (cheaper than debugging later)
+
+## Red Flags
+
+**Never:**
+- Start implementation on main/master branch without explicit user consent
+- Skip reviews (spec compliance OR code quality)
+- Proceed with unfixed issues
+- Dispatch multiple implementation subagents in parallel (conflicts)
+- Make subagent read plan file (provide full text instead)
+- Skip scene-setting context (subagent needs to understand where task fits)
+- Ignore subagent questions (answer before letting them proceed)
+- Accept "close enough" on spec compliance (spec reviewer found issues = not done)
+- Skip review loops (reviewer found issues = implementer fixes = review again)
+- Let implementer self-review replace actual review (both are needed)
+- **Start code quality review before spec compliance is ✅** (wrong order)
+- Move to next task while either review has open issues
+
+**If subagent asks questions:**
+- Answer clearly and completely
+- Provide additional context if needed
+- Don't rush them into implementation
+
+**If reviewer finds issues:**
+- Implementer (same subagent) fixes them
+- Reviewer reviews again
+- Repeat until approved
+- Don't skip the re-review
+
+**If subagent fails task:**
+- Dispatch fix subagent with specific instructions
+- Don't try to fix manually (context pollution)
+
+## Integration
+
+**Required workflow skills:**
+- **superpowers:using-git-worktrees** - REQUIRED: Set up isolated workspace before starting
+- **superpowers:writing-plans** - Creates the plan this skill executes
+- **superpowers:requesting-code-review** - Code review template for reviewer subagents
+- **superpowers:finishing-a-development-branch** - Complete development after all tasks
+
+**Subagents should use:**
+- **superpowers:test-driven-development** - Subagents follow TDD for each task
+
+**Alternative workflow:**
+- **superpowers:executing-plans** - Use for parallel session instead of same-session execution
+
+---
+
+<task-notification>
+<task-id>a460cbfa21bdf6aa8</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<status>completed</status>
+<summary>Agent "Upgrade axum 0.7 to 0.8" completed</summary>
+<result>All 1229 tests pass with 0 failures.
+
+---
+
+Here is a summary of all changes made to upgrade axum from 0.7 to 0.8:
+
+### 1. `/Users/jdsingh/Projects/AI/forge/Cargo.toml`
+Changed the axum version from `0.7` to `0.8`:
+```toml
+axum = { version = "0.8", features = ["ws"] }
+```
+The `tower-http` dependency at version `0.6` remained compatible and did not need updating.
+
+### 2. `/Users/jdsingh/Projects/AI/forge/src/factory/api.rs` -- Route parameter syntax
+Changed all route parameter syntax from `:param` to `{param}` (axum 0.8 uses `matchit` v0.8 which uses brace syntax):
+
+| Old (axum 0.7) | New (axum 0.8) |
+|---|---|
+| `/api/projects/:id` | `/api/projects/{id}` |
+| `/api/projects/:id/board` | `/api/projects/{id}/board` |
+| `/api/projects/:id/sync-github` | `/api/projects/{id}/sync-github` |
+| `/api/projects/:id/issues` | `/api/projects/{id}/issues` |
+| `/api/issues/:id` | `/api/issues/{id}` |
+| `/api/issues/:id/move` | `/api/issues/{id}/move` |
+| `/api/issues/:id/run` | `/api/issues/{id}/run` |
+| `/api/runs/:id` | `/api/runs/{id}` |
+| `/api/runs/:id/cancel` | `/api/runs/{id}/cancel` |
+| `/api/runs/:id/team` | `/api/runs/{id}/team` |
+| `/api/tasks/:id/events` | `/api/tasks/{id}/events` |
+| `/api/screenshots/*path` | `/api/screenshots/{*path}` |
+
+### 3. `/Users/jdsingh/Projects/AI/forge/src/factory/ws.rs` -- WebSocket message types
+In axum 0.8, `Message::Text` now takes `Utf8Bytes` instead of `String`, and `Message::Ping` takes `Bytes` instead of `Vec<u8>`:
+
+- **Line 257:** `Message::Ping(vec![])` changed to `Message::Ping(vec![].into())`
+- **Line 267:** `Message::Text(msg)` changed to `Message::Text(msg.into())`
+
+### Verification
+- `cargo build` compiles successfully
+- `cargo test --lib` passes all 1229 tests with 0 failures</result>
+<usage><total_tokens>47897</total_tokens><tool_uses>18</tool_uses><duration_ms>148880</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-Projects-AI-forge/tasks/a460cbfa21bdf6aa8.output
+
+---
+
+<task-notification>
+<task-id>af2329321f3970128</task-id>
+<tool-use-id>toolu_014htDNGpmFcRw4z3mGEJwFX</tool-use-id>
+<status>completed</status>
+<summary>Agent "Upgrade ESLint v10 ecosystem" completed</summary>
+<result>Everything is in order. Here is a summary of all changes made.
+
+---
+
+## Summary of Changes
+
+### Package version upgrades in `/Users/jdsingh/Projects/AI/forge/ui/package.json`
+
+| Package | Previous | Updated |
+|---------|----------|---------|
+| `eslint` | `^9.39.1` | `^10.0.2` |
+| `@eslint/js` | `^9.39.1` | `^10.0.1` |
+| `eslint-plugin-react-refresh` | `^0.4.24` | `^0.5.2` |
+| `globals` | `^16.5.0` | `^17.3.0` |
+
+Additionally, `@testing-library/dom@^10.4.1` was added as an explicit devDependency because `--legacy-peer-deps` (needed due to `eslint-plugin-react-hooks@7.0.1` not yet declaring ESLint 10 in its peer dependency range) prevented automatic peer dependency resolution.
+
+### ESLint config changes in `/Users/jdsingh/Projects/AI/forge/ui/eslint.config.js`
+
+1. **Added `.vite` to `globalIgnores`** -- Vite's cached dependency bundles in `.vite/deps/` contain inline `eslint-disable` comments referencing rules not registered for `.js` files, causing "Definition for rule not found" errors.
+
+2. **Added rule overrides**:
+   - `@typescript-eslint/no-unused-vars` -- configured to allow underscore-prefixed variables (`argsIgnorePattern: '^_'`, `varsIgnorePattern: '^_'`), a standard convention for intentionally unused variables
+   - `react-hooks/set-state-in-effect: 'off'` -- new rule in `eslint-plugin-react-hooks` v7 that flags `setState` calls inside effects. Disabled because it produces false positives for valid patterns like interval callbacks and state resets on dependency changes
+   - `react-refresh/only-export-components` -- downgraded from `error` to `warn` with `allowConstantExport: true`, since several files legitimately export hooks alongside components (e.g., context files that export both a Provider component and custom hooks)
+
+### Source code fixes
+
+**`/Users/jdsingh/Projects/AI/forge/ui/src/types/index.ts`** -- Replaced 3 instances of `any` with `Record<string, unknown>`:
+- `AgentEvent.metadata: any | null` -> `Record<string, unknown> | null`
+- `AgentAction` metadata in `WsMessage` union type
+- `VerificationResult` details in `WsMessage` union type
+
+**`/Users/jdsingh/Projects/AI/forge/ui/src/contexts/WebSocketContext.tsx`** -- Refactored the WebSocket provider to satisfy new `react-hooks` v7 rules:
+- Removed `as any` cast (replaced with proper type access via `message.type`)
+- Eliminated the self-referencing `useCallback` pattern that triggered `react-hooks/immutability` (the `connect` function referenced itself via closure for reconnection). Replaced with a single `useEffect` containing a plain `connect()` function that naturally self-references within the effect scope. This is a cleaner pattern that also removes the need for `connectRef`, `wsRef`, `reconnectTimeoutRef`, and `reconnectAttemptRef` as separate refs.
+
+**`/Users/jdsingh/Projects/AI/forge/ui/src/hooks/useAgentTeam.ts`** -- Replaced `details: any` with `details: Record<string, unknown>` in the `VerificationResult` interface.
+
+**`/Users/jdsingh/Projects/AI/forge/ui/src/test/handlers.ts`** -- Replaced 2 instances of `as any` with `as Record<string, unknown>` in MSW request body parsing.
+
+**`/Users/jdsingh/Projects/AI/forge/ui/src/test/App.test.tsx`** -- Fixed a pre-existing test failure where the test expected "No active agent runs" empty state text, but the UI now shows project cards with "IDLE" status when no runs are active. Updated the test to match current UI behavior.
+
+### Verification
+
+All three commands pass:
+- `npm run lint` -- 0 errors, 4 warnings
+- `npm run build` -- TypeScript + Vite build succeeds
+- `npm test` -- 14 test files, 171 tests, all passing</result>
+<usage><total_tokens>89512</total_tokens><tool_uses>97</tool_uses><duration_ms>882382</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-Projects-AI-forge/tasks/af2329321f3970128.output
+
+---
+
+lets commit all the changes to a branch
