@@ -32,3 +32,4 @@
 .forge-logs/
 .forge-audit/
 .forge-state
+.vercel
