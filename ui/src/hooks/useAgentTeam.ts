@@ -17,7 +17,7 @@ interface VerificationResult {
   passed: boolean
   summary: string
   screenshots: string[]
-  details: any
+  details: Record<string, unknown>
 }
 
 interface AgentTeamState {

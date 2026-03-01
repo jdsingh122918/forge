@@ -154,15 +154,15 @@ describe('App — Mission Control shell', () => {
     expect(screen.getByText('All Projects')).toBeInTheDocument()
   })
 
-  // ── Empty state — no active runs ──────────────────────────────────
+  // ── Idle state — no active runs shows project card with IDLE status ──
 
-  it('shows empty state "No active agent runs" when no runs', async () => {
+  it('shows project card with IDLE status when no runs', async () => {
     boardsResponse = {
       1: makeBoard(mockProject, []),
     }
     render(<App />)
     await waitFor(() => {
-      expect(screen.getByText('No active agent runs')).toBeInTheDocument()
+      expect(screen.getByText('IDLE')).toBeInTheDocument()
     })
   })
 

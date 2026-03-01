@@ -7,9 +7,9 @@ description = "AI-powered development orchestrator - execute specs through seque
 [dependencies]
 # CLI
 clap = { version = "4", features = ["derive"] }
-dialoguer = "0.11"
-console = "0.15"
-indicatif = "0.17"
+dialoguer = "0.12"
+console = "0.16"
+indicatif = "0.18"
 
 # Async
 tokio = { version = "1", features = ["full", "process"] }
@@ -17,10 +17,10 @@ futures = "0.3"
 futures-util = "0.3"
 
 # HTTP Server (for swarm callback server)
-axum = { version = "0.7", features = ["ws"] }
+axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors"] }
 open = "5"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json", "form", "query"] }
 
 # Git
 git2 = "0.20.4"
@@ -31,21 +31,21 @@ serde_json = "1"
 
 # Utilities
 anyhow = "1"
-thiserror = "1"
+thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.10"
 walkdir = "2"
 glob = "0.3"
-dirs = "5"
-toml = "0.8"
+dirs = "6"
+toml = "1"
 regex = "1"
 textwrap = "0.16"
 terminal_size = "0.4"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.38", features = ["bundled"] }
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 mime_guess = "2"
-bollard = "0.18"
+bollard = "0.20"
 async-trait = "0.1"
 
 [dev-dependencies]

@@ -3,12 +3,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use bollard::Docker;
-use bollard::container::{
-    Config, CreateContainerOptions, LogsOptions, RemoveContainerOptions, StartContainerOptions,
+use bollard::models::{ContainerCreateBody, ContainerInspectResponse, HostConfig, Mount, MountTypeEnum};
+use bollard::query_parameters::{
+    CreateContainerOptions, CreateImageOptions, LogsOptions, RemoveContainerOptions,
     StopContainerOptions, WaitContainerOptions,
 };
-use bollard::image::CreateImageOptions;
-use bollard::models::{ContainerInspectResponse, HostConfig, Mount, MountTypeEnum};
 use futures_util::StreamExt;
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -104,9 +103,15 @@ impl DockerSandbox {
     /// Connect to the Docker daemon via the unix socket.
     /// Returns None if Docker is not available.
     pub async fn new(default_image: String) -> Option<Self> {
-        let docker = Docker::connect_with_socket_defaults().ok()?;
-        // Verify connectivity
-        if docker.ping().await.is_err() {
+        let docker = match Docker::connect_with_socket_defaults() {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("[sandbox] Docker connection failed: {}", e);
+                return None;
+            }
+        };
+        if let Err(e) = docker.ping().await {
+            eprintln!("[sandbox] Docker ping failed (daemon may not be running): {}", e);
             return None;
         }
         Some(Self {
@@ -188,7 +193,7 @@ impl DockerSandbox {
         labels.insert("forge.run-id".to_string(), run_id.to_string());
         labels.insert("forge.project".to_string(), project_name.to_string());
 
-        let container_config = Config {
+        let container_config = ContainerCreateBody {
             image: Some(image.clone()),
             cmd: Some(command),
             env: Some(all_env),
@@ -200,8 +205,8 @@ impl DockerSandbox {
 
         let container_name = format!("forge-pipeline-{}", run_id);
         let create_opts = CreateContainerOptions {
-            name: &container_name,
-            platform: None,
+            name: Some(container_name.clone()),
+            ..Default::default()
         };
 
         let response = self
@@ -214,7 +219,7 @@ impl DockerSandbox {
 
         // Start the container
         self.docker
-            .start_container(&container_id, None::<StartContainerOptions<String>>)
+            .start_container(&container_id, None::<bollard::query_parameters::StartContainerOptions>)
             .await
             .context("Failed to start pipeline container")?;
 
@@ -224,17 +229,26 @@ impl DockerSandbox {
         let cid = container_id.clone();
 
         tokio::spawn(async move {
-            let opts = LogsOptions::<String> {
+            let opts = LogsOptions {
                 follow: true,
                 stdout: true,
                 stderr: true,
                 ..Default::default()
             };
             let mut stream = docker.logs(&cid, Some(opts));
-            while let Some(Ok(output)) = stream.next().await {
-                let text = output.to_string();
-                for line in text.lines() {
-                    if line_tx.send(line.to_string()).await.is_err() {
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(output) => {
+                        let text = output.to_string();
+                        for line in text.lines() {
+                            if line_tx.send(line.to_string()).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[sandbox] Log stream error for container {}: {}", cid, e);
+                        let _ = line_tx.send(format!("[forge] Log stream error: {}", e)).await;
                         break;
                     }
                 }
@@ -247,21 +261,19 @@ impl DockerSandbox {
     /// Stop and remove a container.
     pub async fn stop(&self, container_id: &str) -> Result<()> {
         // Stop with 10s grace period
-        let stop_opts = StopContainerOptions { t: 10 };
-        let _ = self
-            .docker
-            .stop_container(container_id, Some(stop_opts))
-            .await;
+        let stop_opts = StopContainerOptions { t: Some(10), ..Default::default() };
+        if let Err(e) = self.docker.stop_container(container_id, Some(stop_opts)).await {
+            eprintln!("[sandbox] Warning: stop_container {} failed (may already be stopped): {}", container_id, e);
+        }
 
         // Remove the container
         let remove_opts = RemoveContainerOptions {
             force: true,
             ..Default::default()
         };
-        let _ = self
-            .docker
-            .remove_container(container_id, Some(remove_opts))
-            .await;
+        if let Err(e) = self.docker.remove_container(container_id, Some(remove_opts)).await {
+            eprintln!("[sandbox] Warning: remove_container {} failed: {}", container_id, e);
+        }
 
         Ok(())
     }
@@ -278,7 +290,7 @@ impl DockerSandbox {
     pub async fn wait(&self, container_id: &str) -> Result<i64> {
         let mut stream = self
             .docker
-            .wait_container(container_id, None::<WaitContainerOptions<String>>);
+            .wait_container(container_id, None::<WaitContainerOptions>);
 
         if let Some(result) = stream.next().await {
             let response = result.context("Error waiting for container")?;
@@ -297,13 +309,13 @@ impl DockerSandbox {
 
         // Pull the image
         let opts = CreateImageOptions {
-            from_image: image,
+            from_image: Some(image.to_string()),
             ..Default::default()
         };
 
         let mut stream = self.docker.create_image(Some(opts), None, None);
         while let Some(result) = stream.next().await {
-            result.context("Failed to pull image")?;
+            let _info: bollard::models::CreateImageInfo = result.context("Failed to pull image")?;
         }
 
         Ok(())
@@ -311,14 +323,14 @@ impl DockerSandbox {
 
     /// Prune stale pipeline containers (older than max_age_secs).
     pub async fn prune_stale_containers(&self, max_age_secs: i64) -> Result<usize> {
-        use bollard::container::ListContainersOptions;
+        use bollard::query_parameters::ListContainersOptions;
 
         let mut filters = HashMap::new();
         filters.insert("label".to_string(), vec!["forge.pipeline=true".to_string()]);
 
         let opts = ListContainersOptions {
             all: true,
-            filters,
+            filters: Some(filters),
             ..Default::default()
         };
 

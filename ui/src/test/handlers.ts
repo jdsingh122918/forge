@@ -12,14 +12,14 @@ export const handlers = [
     return HttpResponse.json({ issue: { id: 1, project_id: 1, title: 'Test', description: '', column: 'backlog', position: 0, priority: 'medium', labels: [], github_issue_number: null, created_at: '2024-01-01', updated_at: '2024-01-01' }, runs: [] })
   }),
   http.post('/api/projects/:id/issues', async ({ request }) => {
-    const body = await request.json() as any
+    const body = await request.json() as Record<string, unknown>
     return HttpResponse.json({ id: 99, project_id: 1, title: body.title, description: body.description || '', column: body.column || 'backlog', position: 0, priority: 'medium', labels: [], github_issue_number: null, created_at: '2024-01-01', updated_at: '2024-01-01' }, { status: 201 })
   }),
   http.patch('/api/issues/:id/move', () => {
     return HttpResponse.json({ id: 1 })
   }),
   http.patch('/api/issues/:id', async ({ request }) => {
-    const body = await request.json() as any
+    const body = await request.json() as Record<string, unknown>
     return HttpResponse.json({ id: 1, ...body })
   }),
   http.delete('/api/issues/:id', () => {

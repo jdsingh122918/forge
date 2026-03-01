@@ -13,6 +13,7 @@ function renderSidebar(overrides: Partial<ProjectSidebarProps> = {}) {
     ],
     selectedProjectId: null,
     onSelectProject: vi.fn(),
+    onDeleteProject: vi.fn(),
     runsByProject: new Map(),
     ...overrides,
   }
