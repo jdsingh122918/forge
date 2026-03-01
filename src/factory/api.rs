@@ -170,7 +170,10 @@ pub fn api_router() -> Router<SharedState> {
     Router::new()
         .route("/api/projects", get(list_projects).post(create_project))
         .route("/api/projects/clone", post(clone_project))
-        .route("/api/projects/{id}", get(get_project).delete(delete_project))
+        .route(
+            "/api/projects/{id}",
+            get(get_project).delete(delete_project),
+        )
         .route("/api/projects/{id}/board", get(get_board))
         .route("/api/projects/{id}/sync-github", post(sync_github_issues))
         .route("/api/projects/{id}/issues", post(create_issue))

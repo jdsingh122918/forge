@@ -3,7 +3,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use bollard::Docker;
-use bollard::models::{ContainerCreateBody, ContainerInspectResponse, HostConfig, Mount, MountTypeEnum};
+use bollard::models::{
+    ContainerCreateBody, ContainerInspectResponse, HostConfig, Mount, MountTypeEnum,
+};
 use bollard::query_parameters::{
     CreateContainerOptions, CreateImageOptions, LogsOptions, RemoveContainerOptions,
     StopContainerOptions, WaitContainerOptions,
@@ -111,7 +113,10 @@ impl DockerSandbox {
             }
         };
         if let Err(e) = docker.ping().await {
-            eprintln!("[sandbox] Docker ping failed (daemon may not be running): {}", e);
+            eprintln!(
+                "[sandbox] Docker ping failed (daemon may not be running): {}",
+                e
+            );
             return None;
         }
         Some(Self {
@@ -219,7 +224,10 @@ impl DockerSandbox {
 
         // Start the container
         self.docker
-            .start_container(&container_id, None::<bollard::query_parameters::StartContainerOptions>)
+            .start_container(
+                &container_id,
+                None::<bollard::query_parameters::StartContainerOptions>,
+            )
             .await
             .context("Failed to start pipeline container")?;
 
@@ -248,7 +256,9 @@ impl DockerSandbox {
                     }
                     Err(e) => {
                         eprintln!("[sandbox] Log stream error for container {}: {}", cid, e);
-                        let _ = line_tx.send(format!("[forge] Log stream error: {}", e)).await;
+                        let _ = line_tx
+                            .send(format!("[forge] Log stream error: {}", e))
+                            .await;
                         break;
                     }
                 }
@@ -261,9 +271,19 @@ impl DockerSandbox {
     /// Stop and remove a container.
     pub async fn stop(&self, container_id: &str) -> Result<()> {
         // Stop with 10s grace period
-        let stop_opts = StopContainerOptions { t: Some(10), ..Default::default() };
-        if let Err(e) = self.docker.stop_container(container_id, Some(stop_opts)).await {
-            eprintln!("[sandbox] Warning: stop_container {} failed (may already be stopped): {}", container_id, e);
+        let stop_opts = StopContainerOptions {
+            t: Some(10),
+            ..Default::default()
+        };
+        if let Err(e) = self
+            .docker
+            .stop_container(container_id, Some(stop_opts))
+            .await
+        {
+            eprintln!(
+                "[sandbox] Warning: stop_container {} failed (may already be stopped): {}",
+                container_id, e
+            );
         }
 
         // Remove the container
@@ -271,8 +291,15 @@ impl DockerSandbox {
             force: true,
             ..Default::default()
         };
-        if let Err(e) = self.docker.remove_container(container_id, Some(remove_opts)).await {
-            eprintln!("[sandbox] Warning: remove_container {} failed: {}", container_id, e);
+        if let Err(e) = self
+            .docker
+            .remove_container(container_id, Some(remove_opts))
+            .await
+        {
+            eprintln!(
+                "[sandbox] Warning: remove_container {} failed: {}",
+                container_id, e
+            );
         }
 
         Ok(())
