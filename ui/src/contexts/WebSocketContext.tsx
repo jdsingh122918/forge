@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState, useCallback } f
 import type { ReactNode } from 'react'
 import type { WsMessage } from '../types'
 
-export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected'
+export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'failed'
 type Subscriber = (msg: WsMessage) => void
 
 interface WsContextValue {
@@ -11,6 +11,8 @@ interface WsContextValue {
 }
 
 const WsContext = createContext<WsContextValue | null>(null)
+
+const MAX_RECONNECT_ATTEMPTS = 20
 
 export function WebSocketProvider({ url, children }: { url: string; children: ReactNode }) {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected')
@@ -37,7 +39,8 @@ export function WebSocketProvider({ url, children }: { url: string; children: Re
           let message: WsMessage
           try {
             message = JSON.parse(event.data)
-          } catch {
+          } catch (err) {
+            console.warn('[ws] Failed to parse WebSocket message:', err, 'Raw:', typeof event.data === 'string' ? event.data.substring(0, 200) : typeof event.data)
             return
           }
           subscribersRef.current.forEach(fn => {
@@ -50,8 +53,13 @@ export function WebSocketProvider({ url, children }: { url: string; children: Re
         }
 
         ws.onclose = () => {
-          setStatus('disconnected')
           ws = null
+          if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+            console.error('[ws] Max reconnection attempts reached — giving up')
+            setStatus('failed')
+            return
+          }
+          setStatus('disconnected')
           const delay = Math.min(1000 * Math.pow(2, reconnectAttempt), 30000)
           reconnectAttempt += 1
           reconnectTimeout = window.setTimeout(connect, delay)
@@ -63,6 +71,11 @@ export function WebSocketProvider({ url, children }: { url: string; children: Re
         }
       } catch (err) {
         console.error('[ws] Failed to create WebSocket connection:', err)
+        if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+          console.error('[ws] Max reconnection attempts reached — giving up')
+          setStatus('failed')
+          return
+        }
         setStatus('disconnected')
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempt), 30000)
         reconnectAttempt += 1
@@ -94,12 +107,18 @@ export function WebSocketProvider({ url, children }: { url: string; children: Re
 export function useWsSubscribe(callback: Subscriber) {
   const ctx = useContext(WsContext)
   useEffect(() => {
-    if (!ctx) return
+    if (!ctx) {
+      console.warn('[ws] useWsSubscribe called outside of WebSocketProvider — messages will not be received')
+      return
+    }
     return ctx.subscribe(callback)
   }, [ctx, callback])
 }
 
 export function useWsStatus(): ConnectionStatus {
   const ctx = useContext(WsContext)
+  if (!ctx) {
+    console.warn('[ws] useWsStatus called outside of WebSocketProvider')
+  }
   return ctx?.status ?? 'disconnected'
 }

@@ -12,7 +12,7 @@ cargo run -- <command>             # Run CLI
 
 ## Tech Stack
 
-Rust (Edition 2024), clap v4, tokio v1, petgraph v0.6, git2 v0.19, axum v0.7, anyhow + thiserror
+Rust (Edition 2024), clap v4, tokio v1, petgraph v0.6, git2 v0.20, axum v0.8, anyhow + thiserror v2
 
 ## Key Concepts
 

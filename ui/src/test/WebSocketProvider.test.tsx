@@ -12,7 +12,7 @@ describe('WebSocketProvider', () => {
   it('useWsStatus returns a connection status', () => {
     const { result } = renderHook(() => useWsStatus(), { wrapper })
     // Initially 'connecting' or 'disconnected' — depends on env
-    expect(['connecting', 'connected', 'disconnected']).toContain(result.current)
+    expect(['connecting', 'connected', 'disconnected', 'failed']).toContain(result.current)
   })
 
   it('useWsSubscribe calls back on messages', () => {
