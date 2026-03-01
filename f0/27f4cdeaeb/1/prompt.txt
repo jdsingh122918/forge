@@ -1,0 +1,13 @@
+the gh pipeline seems to have failures - investigate and fix using subagents
+
+---
+
+yes push and watch the pipeline
+
+---
+
+lets commit and push the changes to main
+
+---
+
+yes commit and push it
