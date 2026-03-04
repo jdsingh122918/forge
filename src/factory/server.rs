@@ -118,6 +118,16 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     let pipeline_runner = PipelineRunner::new(&config.project_path, sandbox);
     let db_handle = DbHandle::new(db);
 
+    // Recover orphaned runs from a previous server instance
+    match db_handle.lock_sync() {
+        Ok(db) => match db.recover_orphaned_runs() {
+            Ok(0) => {}
+            Ok(n) => eprintln!("[factory] Recovered {} orphaned pipeline run(s) from previous session", n),
+            Err(e) => eprintln!("[factory] Warning: failed to recover orphaned runs: {}", e),
+        },
+        Err(e) => eprintln!("[factory] Warning: could not acquire DB lock for orphan recovery: {}", e),
+    }
+
     let persisted_token = db_handle
         .lock_sync()
         .context("Failed to acquire DB lock during startup")?

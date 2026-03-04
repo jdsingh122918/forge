@@ -272,6 +272,7 @@ impl AgentExecutor {
         let mut cmd = Command::new(&claude_cmd);
         cmd.args([
             "--print",
+            "--verbose",
             "--dangerously-skip-permissions",
             "--output-format",
             "stream-json",
@@ -282,9 +283,12 @@ impl AgentExecutor {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-        if use_team {
-            cmd.args(["--team", &format!("forge-run-{}", run_id)]);
-        }
+        // Note: --team flag is not yet supported by Claude CLI.
+        // When it becomes available, we can enable it for better context sharing:
+        // if use_team {
+        //     cmd.args(["--team", &format!("forge-run-{}", run_id)]);
+        // }
+        let _ = use_team; // silence unused warning
 
         let mut child = cmd.spawn().context("Failed to spawn claude process")?;
         let task_id = task.id;

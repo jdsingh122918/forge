@@ -785,6 +785,26 @@ impl FactoryDb {
         self.update_pipeline_run(id, &PipelineStatus::Cancelled, None, None)
     }
 
+    /// Mark all orphaned "running" or "queued" pipeline runs as failed.
+    /// Called on server startup to clean up runs from a previous server instance
+    /// whose subprocesses no longer exist.
+    pub fn recover_orphaned_runs(&self) -> Result<usize> {
+        let count = self.conn.execute(
+            "UPDATE pipeline_runs SET status = 'failed', error = 'Server restarted — pipeline process was lost', completed_at = datetime('now') WHERE status IN ('running', 'queued')",
+            [],
+        ).context("Failed to recover orphaned pipeline runs")?;
+
+        // Also move any in_progress issues (whose runs are now failed) back to ready
+        if count > 0 {
+            self.conn.execute(
+                "UPDATE issues SET column_name = 'ready' WHERE column_name = 'in_progress' AND id IN (SELECT issue_id FROM pipeline_runs WHERE error = 'Server restarted — pipeline process was lost')",
+                [],
+            ).context("Failed to move orphaned issues back to ready")?;
+        }
+
+        Ok(count)
+    }
+
     /// Update the progress fields (phase_count, current_phase, iteration) for a pipeline run.
     pub fn update_pipeline_progress(
         &self,
@@ -1919,6 +1939,42 @@ mod tests {
         let fetched = db.get_pipeline_run(run.id)?.expect("run should exist");
         assert_eq!(fetched.status, PipelineStatus::Cancelled);
         assert!(fetched.completed_at.is_some());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_recover_orphaned_runs() -> Result<()> {
+        let db = FactoryDb::new_in_memory()?;
+        let project = db.create_project("test", "/tmp/test")?;
+        let issue1 = db.create_issue(project.id, "Issue 1", "", &IssueColumn::InProgress)?;
+        let issue2 = db.create_issue(project.id, "Issue 2", "", &IssueColumn::Ready)?;
+        let issue3 = db.create_issue(project.id, "Issue 3", "", &IssueColumn::InProgress)?;
+
+        // Create runs in various states
+        let run1 = db.create_pipeline_run(issue1.id)?; // queued
+        db.update_pipeline_run(run1.id, &PipelineStatus::Running, None, None)?; // → running
+        let run2 = db.create_pipeline_run(issue2.id)?; // queued
+        let run3 = db.create_pipeline_run(issue3.id)?; // queued
+        db.update_pipeline_run(run3.id, &PipelineStatus::Completed, Some("done"), None)?; // → completed
+
+        // Recover orphaned runs (should affect run1=running, run2=queued, but not run3=completed)
+        let count = db.recover_orphaned_runs()?;
+        assert_eq!(count, 2);
+
+        let r1 = db.get_pipeline_run(run1.id)?.unwrap();
+        assert_eq!(r1.status, PipelineStatus::Failed);
+        assert!(r1.error.as_ref().unwrap().contains("Server restarted"));
+
+        let r2 = db.get_pipeline_run(run2.id)?.unwrap();
+        assert_eq!(r2.status, PipelineStatus::Failed);
+
+        let r3 = db.get_pipeline_run(run3.id)?.unwrap();
+        assert_eq!(r3.status, PipelineStatus::Completed);
+
+        // In-progress issues should be moved back to ready
+        let i1 = db.get_issue(issue1.id)?.unwrap();
+        assert_eq!(i1.column, IssueColumn::Ready);
 
         Ok(())
     }

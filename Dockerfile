@@ -48,11 +48,21 @@ RUN apt-get update && apt-get install -y \
     curl \
     nodejs \
     npm \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-watch
 RUN npm install -g @anthropic-ai/claude-code
 ENV CLAUDE_CMD=claude
 ENV FORGE_CMD=forge
-RUN mkdir -p /app/.forge
+RUN useradd -m -u 1000 forge && mkdir -p /app/.forge
+COPY <<'ENTRYPOINT' /usr/local/bin/dev-entrypoint.sh
+#!/bin/sh
+set -e
+# Fix ownership so non-root user can write to mounted volumes
+chown -R forge:forge /app /usr/local/cargo 2>/dev/null || true
+exec gosu forge "$@"
+ENTRYPOINT
+RUN chmod +x /usr/local/bin/dev-entrypoint.sh
+ENTRYPOINT ["dev-entrypoint.sh"]
 EXPOSE 3141 5173
 CMD ["cargo", "watch", "-i", ".forge/", "-x", "run -- factory --dev"]

@@ -881,6 +881,13 @@ impl PipelineRunner {
 
             // Construct real planner and task runner for the agent team
             eprintln!("[pipeline] run_id={}: starting planner for project at {}", run_id, project_path);
+            broadcast_message(
+                &tx,
+                &WsMessage::PipelineOutput {
+                    run_id,
+                    content: "Analyzing codebase and planning tasks...".to_string(),
+                },
+            );
             let planner = Planner::new(&project_path);
             let task_runner: Arc<dyn TaskRunner> =
                 Arc::new(AgentExecutor::new(&project_path, db.clone(), tx.clone()));
@@ -915,6 +922,13 @@ impl PipelineRunner {
                     eprintln!(
                         "[pipeline] run_id={}: single-task plan, using forge pipeline",
                         run_id
+                    );
+                    broadcast_message(
+                        &tx,
+                        &WsMessage::PipelineOutput {
+                            run_id,
+                            content: "Running single-task pipeline...".to_string(),
+                        },
                     );
                     // Expected fallback -- continue to forge pipeline below
                     Self::run_forge_fallback(
@@ -1217,8 +1231,10 @@ fn build_execution_command(
         );
         let mut cmd = tokio::process::Command::new(&claude_cmd);
         cmd.arg("--print")
+            .arg("--verbose")
             .arg("--output-format")
             .arg("stream-json")
+            .arg("--dangerously-skip-permissions")
             .arg(&prompt)
             .env_remove("CLAUDECODE")
             .current_dir(project_path)

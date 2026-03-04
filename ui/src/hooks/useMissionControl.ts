@@ -172,6 +172,28 @@ export default function useMissionControl(): MissionControlReturn {
           }
         }
 
+        // Backfill agent teams and events for active runs
+        const teamMap = new Map<number, AgentTeamDetail>();
+        const eventMap = new Map<number, AgentEvent[]>();
+        for (const [runId, run] of runMap) {
+          if (cancelled) return;
+          if (run.status !== 'running' && run.status !== 'queued') continue;
+          try {
+            const detail = await api.getRunTeam(runId);
+            if (cancelled) return;
+            if (detail) {
+              teamMap.set(runId, detail);
+              for (const task of detail.tasks) {
+                try {
+                  const events = await api.getTaskEvents(task.id, 200);
+                  if (cancelled) return;
+                  if (events.length > 0) eventMap.set(task.id, events);
+                } catch { /* skip */ }
+              }
+            }
+          } catch { /* no team for this run */ }
+        }
+
         if (!cancelled) {
           setState(prev => ({
             ...prev,
@@ -179,6 +201,8 @@ export default function useMissionControl(): MissionControlReturn {
             issues: issueMap,
             runs: runMap,
             phases: phaseMap,
+            agentTeams: teamMap,
+            agentEvents: eventMap,
             loading: false,
           }));
           addLogEntry('system', `Loaded ${projects.length} projects, ${runMap.size} active runs`);
