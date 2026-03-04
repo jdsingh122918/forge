@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.4.8",
+  "checkpoint_id": "a7ced7af9604",
+  "session_id": "e8e273a2-c517-43b1-95e2-e19842ae5b61",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-04T02:44:53.873905Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docker-compose.yml",
+    "src/factory/api.rs",
+    "src/factory/pipeline.rs",
+    "src/factory/ws.rs",
+    "ui/src/App.tsx",
+    "ui/src/components/AgentRunCard.tsx",
+    "ui/src/hooks/useMissionControl.ts",
+    "ui/src/test/App.test.tsx",
+    "ui/src/types/index.ts"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "d8674662e0ed",
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-04T02:44:53.871971Z",
+    "agent_lines": 326,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 1,
+    "total_committed": 326,
+    "agent_percentage": 100
+  }
+}
