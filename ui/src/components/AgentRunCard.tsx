@@ -1,6 +1,6 @@
 /** Expandable agent run card — collapsed summary with status, expanded tabbed detail view. */
 import { useState, useEffect, useRef } from 'react';
-import type { AgentRunCard as AgentRunCardType, PipelinePhase, AgentTeamDetail, AgentEvent, PipelineStatus, AgentEventType } from '../types';
+import type { AgentRunCard as AgentRunCardType, PipelinePhase, AgentTeamDetail, AgentEvent, PipelineStatus, AgentEventType, PipelineOutputEvent, PipelineFileChange } from '../types';
 
 /** Tab options for the expanded detail view. */
 export type DetailTab = 'output' | 'phases' | 'files';
@@ -17,6 +17,10 @@ export interface AgentRunCardProps {
   agentEvents?: Map<number, AgentEvent[]>;
   /** Pipeline-level output events (for forge fallback path). */
   pipelineEvents?: AgentEvent[];
+  /** Rich pipeline output events (for stream-json parsed output). */
+  pipelineOutputEvents?: PipelineOutputEvent[];
+  /** File changes tracked from tool use events. */
+  pipelineFileChanges?: PipelineFileChange[];
   /** Callback when the cancel button is clicked. */
   onCancel?: (runId: number) => void;
   /** Grid or list layout mode. */
@@ -57,6 +61,8 @@ export default function AgentRunCard({
   agentTeam,
   agentEvents,
   pipelineEvents,
+  pipelineOutputEvents,
+  pipelineFileChanges,
   onCancel,
   viewMode: _viewMode,
 }: AgentRunCardProps): React.JSX.Element {
@@ -322,7 +328,50 @@ export default function AgentRunCard({
                   lineHeight: '1.6',
                 }}
               >
-                {allEvents.length === 0 ? (
+                {pipelineOutputEvents && pipelineOutputEvents.length > 0 ? (
+                  pipelineOutputEvents.map((evt, i) => {
+                    if (evt.content_type === 'text') {
+                      return (
+                        <div key={i} style={{ color: 'var(--color-text-primary)', whiteSpace: 'pre-wrap' }}>
+                          {evt.content}
+                        </div>
+                      );
+                    }
+                    if (evt.content_type === 'tool_start') {
+                      return (
+                        <div key={i} style={{ color: '#39d353', padding: '2px 0' }}>
+                          <span style={{
+                            display: 'inline-block',
+                            padding: '1px 6px',
+                            backgroundColor: 'rgba(57, 211, 83, 0.15)',
+                            marginRight: '8px',
+                            fontSize: '11px',
+                          }}>
+                            {evt.content}
+                          </span>
+                          <span style={{ color: 'var(--color-text-secondary)' }}>
+                            {evt.input_summary}
+                          </span>
+                        </div>
+                      );
+                    }
+                    if (evt.content_type === 'thinking') {
+                      return (
+                        <div key={i} style={{
+                          color: 'var(--color-text-secondary)',
+                          fontStyle: 'italic',
+                          borderLeft: '2px solid var(--color-border)',
+                          paddingLeft: '8px',
+                          opacity: 0.7,
+                        }}>
+                          {evt.content}
+                        </div>
+                      );
+                    }
+                    // tool_end — hidden by default
+                    return null;
+                  })
+                ) : allEvents.length === 0 ? (
                   <span style={{ color: 'var(--color-text-secondary)' }}>
                     {run.status === 'queued' ? 'Waiting to start...' : 'No output yet...'}
                   </span>
@@ -396,7 +445,7 @@ export default function AgentRunCard({
                   </div>
                 ) : null}
                 {run.pr_url ? (
-                  <div>
+                  <div style={{ marginBottom: '8px' }}>
                     <span style={{ color: 'var(--color-text-secondary)' }}>PR: </span>
                     <a
                       href={run.pr_url}
@@ -409,9 +458,42 @@ export default function AgentRunCard({
                     </a>
                   </div>
                 ) : null}
-                {!run.branch_name && !run.pr_url && (
+                {pipelineFileChanges && pipelineFileChanges.length > 0 ? (
+                  <div style={{ marginTop: '8px' }}>
+                    {(() => {
+                      // Deduplicate by file path (keep latest action)
+                      const fileMap = new Map<string, PipelineFileChange>();
+                      for (const fc of pipelineFileChanges) {
+                        fileMap.set(fc.file_path, fc);
+                      }
+                      return Array.from(fileMap.values()).map((fc, i) => (
+                        <div key={i} style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          padding: '2px 0',
+                          fontFamily: 'monospace',
+                          fontSize: '12px',
+                        }}>
+                          <span style={{
+                            color: fc.action === 'created' ? '#39d353'
+                              : fc.action === 'modified' ? 'var(--color-warning)'
+                              : 'var(--color-error)',
+                            width: '12px',
+                            textAlign: 'center',
+                          }}>
+                            {fc.action === 'created' ? '+' : fc.action === 'modified' ? '~' : '-'}
+                          </span>
+                          <span style={{ color: 'var(--color-text-primary)' }}>
+                            {fc.file_path}
+                          </span>
+                        </div>
+                      ));
+                    })()}
+                  </div>
+                ) : !run.branch_name && !run.pr_url ? (
                   <span>No file changes yet...</span>
-                )}
+                ) : null}
               </div>
             )}
           </div>

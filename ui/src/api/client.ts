@@ -68,6 +68,8 @@ export const api = {
   // Agent Team
   getRunTeam: (runId: number) =>
     request<import('../types').AgentTeamDetail>(`/runs/${runId}/team`),
+  getRunPhases: (runId: number) =>
+    request<import('../types').PipelinePhase[]>(`/runs/${runId}/phases`),
   getTaskEvents: (taskId: number, limit: number = 100) =>
     request<import('../types').AgentEvent[]>(`/tasks/${taskId}/events?limit=${limit}`),
 

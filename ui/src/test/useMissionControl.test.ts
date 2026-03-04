@@ -73,6 +73,9 @@ const mockCancelPipelineRun = vi.fn()
 const mockCreateIssue = vi.fn()
 const mockCreateProject = vi.fn()
 const mockCloneProject = vi.fn()
+const mockGetRunPhases = vi.fn()
+const mockGetRunTeam = vi.fn()
+const mockGetTaskEvents = vi.fn()
 
 vi.mock('../api/client', () => ({
   api: {
@@ -83,6 +86,9 @@ vi.mock('../api/client', () => ({
     createIssue: (...args: unknown[]) => mockCreateIssue(...args),
     createProject: (...args: unknown[]) => mockCreateProject(...args),
     cloneProject: (...args: unknown[]) => mockCloneProject(...args),
+    getRunPhases: (...args: unknown[]) => mockGetRunPhases(...args),
+    getRunTeam: (...args: unknown[]) => mockGetRunTeam(...args),
+    getTaskEvents: (...args: unknown[]) => mockGetTaskEvents(...args),
   },
 }))
 
@@ -100,6 +106,9 @@ describe('useMissionControl', () => {
     // Default: single project with one running issue
     mockListProjects.mockResolvedValue([mockProject])
     mockGetBoard.mockResolvedValue(mockBoard([{ issue: mockIssue, active_run: mockRun }]))
+    mockGetRunPhases.mockResolvedValue([])
+    mockGetRunTeam.mockRejectedValue(new Error('no team'))
+    mockGetTaskEvents.mockResolvedValue([])
   })
 
   afterEach(() => {
@@ -302,6 +311,76 @@ describe('useMissionControl', () => {
 
       expect(result.current.projects).toHaveLength(2)
       expect(result.current.projects.some(p => p.name === 'ws-project')).toBe(true)
+    })
+
+    it('accumulates PipelineOutputEvent events', async () => {
+      const { result } = renderHook(() => useMissionControl())
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      act(() => {
+        pushWs({ type: 'PipelineOutputEvent', data: { run_id: 100, content_type: 'text', content: 'Hello', tool_id: null, input_summary: null } })
+      })
+
+      const events = result.current.pipelineOutputEvents.get(100)
+      expect(events).toHaveLength(1)
+      expect(events![0].content).toBe('Hello')
+    })
+
+    it('PipelineOutputEvent also pushes to legacy pipelineEvents', async () => {
+      const { result } = renderHook(() => useMissionControl())
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      act(() => {
+        pushWs({ type: 'PipelineOutputEvent', data: { run_id: 100, content_type: 'text', content: 'Hello', tool_id: null, input_summary: null } })
+      })
+
+      const events = result.current.pipelineEvents.get(100)
+      expect(events).toBeDefined()
+      expect(events!.length).toBeGreaterThan(0)
+    })
+
+    it('accumulates PipelineFileChanged events', async () => {
+      const { result } = renderHook(() => useMissionControl())
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      act(() => {
+        pushWs({ type: 'PipelineFileChanged', data: { run_id: 100, file_path: 'src/main.rs', action: 'modified' } })
+      })
+
+      const changes = result.current.pipelineFileChanges.get(100)
+      expect(changes).toHaveLength(1)
+      expect(changes![0].file_path).toBe('src/main.rs')
+    })
+
+    it('deduplicates PipelineFileChanged events by path+action', async () => {
+      const { result } = renderHook(() => useMissionControl())
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      act(() => {
+        pushWs({ type: 'PipelineFileChanged', data: { run_id: 100, file_path: 'src/main.rs', action: 'modified' } })
+        pushWs({ type: 'PipelineFileChanged', data: { run_id: 100, file_path: 'src/main.rs', action: 'modified' } })
+      })
+
+      const changes = result.current.pipelineFileChanges.get(100)
+      expect(changes).toHaveLength(1)
+    })
+
+    it('deduplicates phases from PipelinePhaseStarted after backfill', async () => {
+      mockGetRunPhases.mockResolvedValue([
+        { id: 1, run_id: 100, phase_number: '1', phase_name: 'Setup', status: 'completed', iteration: null, budget: null, started_at: null, completed_at: null, error: null }
+      ])
+      const { result } = renderHook(() => useMissionControl())
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      // WS sends same phase
+      act(() => {
+        pushWs({ type: 'PipelinePhaseStarted', data: { run_id: 100, phase_number: '1', phase_name: 'Setup', wave: 0 } })
+      })
+
+      const phases = result.current.phases.get(100)
+      // Should not duplicate
+      const phase1s = phases?.filter(p => p.phase_number === '1') ?? []
+      expect(phase1s.length).toBeLessThanOrEqual(1)
     })
 
     it('does not duplicate project on ProjectCreated if already in state', async () => {

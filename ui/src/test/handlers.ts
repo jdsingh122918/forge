@@ -34,6 +34,7 @@ export const handlers = [
   http.get('/api/runs/:id/team', () => {
     return new HttpResponse(null, { status: 404 })
   }),
+  http.get('/api/runs/:id/phases', () => HttpResponse.json([])),
   http.get('/api/github/status', () => {
     return HttpResponse.json({ connected: false, client_id_configured: false })
   }),

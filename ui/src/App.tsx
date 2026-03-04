@@ -28,6 +28,8 @@ function MissionControl() {
     agentTeams,
     agentEvents,
     pipelineEvents,
+    pipelineOutputEvents,
+    pipelineFileChanges,
     loading,
     selectedProjectId,
     setSelectedProjectId,
@@ -37,7 +39,7 @@ function MissionControl() {
     createProject,
     cloneProject,
     deleteProject,
-    issuesByProject,
+    issuesByProject: _issuesByProject,
   } = useMissionControl();
 
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
@@ -209,6 +211,8 @@ function MissionControl() {
                 agentTeam={agentTeams.get(card.run.id)}
                 agentEvents={agentEvents}
                 pipelineEvents={pipelineEvents.get(card.run.id)}
+                pipelineOutputEvents={pipelineOutputEvents.get(card.run.id)}
+                pipelineFileChanges={pipelineFileChanges.get(card.run.id)}
                 onCancel={cancelPipeline}
                 viewMode={viewMode}
               />

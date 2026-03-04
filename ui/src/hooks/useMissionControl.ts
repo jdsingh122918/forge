@@ -13,6 +13,8 @@ import type {
   RunStatusFilter,
   AgentTeamDetail,
   AgentEvent,
+  PipelineOutputEvent,
+  PipelineFileChange,
 } from '../types';
 
 /** Internal state shape for the Mission Control hook */
@@ -24,6 +26,8 @@ interface MissionControlState {
   agentTeams: Map<number, AgentTeamDetail>;
   agentEvents: Map<number, AgentEvent[]>;
   pipelineEvents: Map<number, AgentEvent[]>;
+  pipelineOutputEvents: Map<number, PipelineOutputEvent[]>;
+  pipelineFileChanges: Map<number, PipelineFileChange[]>;
   eventLog: EventLogEntry[];
   loading: boolean;
   error: string | null;
@@ -55,6 +59,10 @@ export interface MissionControlReturn {
   agentEvents: Map<number, AgentEvent[]>;
   /** Pipeline-level output events by run ID (for forge fallback path) */
   pipelineEvents: Map<number, AgentEvent[]>;
+  /** Rich pipeline output events by run ID */
+  pipelineOutputEvents: Map<number, PipelineOutputEvent[]>;
+  /** File changes by run ID */
+  pipelineFileChanges: Map<number, PipelineFileChange[]>;
   /** Whether initial data is still loading */
   loading: boolean;
   /** Error message from initial load, or null */
@@ -108,6 +116,8 @@ export default function useMissionControl(): MissionControlReturn {
     agentTeams: new Map(),
     agentEvents: new Map(),
     pipelineEvents: new Map(),
+    pipelineOutputEvents: new Map(),
+    pipelineFileChanges: new Map(),
     eventLog: [],
     loading: true,
     error: null,
@@ -192,6 +202,17 @@ export default function useMissionControl(): MissionControlReturn {
               }
             }
           } catch { /* no team for this run */ }
+        }
+
+        // Backfill phases for active runs
+        for (const [runId, run] of runMap) {
+          if (cancelled) return;
+          if (run.status !== 'running' && run.status !== 'queued') continue;
+          try {
+            const runPhases = await api.getRunPhases(runId);
+            if (cancelled) return;
+            if (runPhases.length > 0) phaseMap.set(runId, runPhases);
+          } catch { /* phases will arrive via WS */ }
         }
 
         if (!cancelled) {
@@ -296,6 +317,48 @@ export default function useMissionControl(): MissionControlReturn {
         break;
       }
 
+      case 'PipelineOutputEvent': {
+        const evt = msg.data;
+        setState(prev => {
+          const newOutputEvents = new Map(prev.pipelineOutputEvents);
+          const existing = newOutputEvents.get(evt.run_id) ?? [];
+          newOutputEvents.set(evt.run_id, [...existing.slice(-499), evt]);
+          return { ...prev, pipelineOutputEvents: newOutputEvents };
+        });
+        // Also push to legacy pipelineEvents for backward compat
+        setState(prev => {
+          const newEvents = new Map(prev.pipelineEvents);
+          const existing = newEvents.get(evt.run_id) ?? [];
+          const event: AgentEvent = {
+            id: existing.length + 1,
+            task_id: 0,
+            event_type: evt.content_type === 'thinking' ? 'thinking' : 'output',
+            content: evt.content_type === 'tool_start'
+              ? `[${evt.content}] ${evt.input_summary ?? ''}`
+              : evt.content,
+            metadata: null,
+            created_at: new Date().toISOString(),
+          };
+          newEvents.set(evt.run_id, [...existing.slice(-199), event]);
+          return { ...prev, pipelineEvents: newEvents };
+        });
+        break;
+      }
+
+      case 'PipelineFileChanged': {
+        const { run_id, file_path, action } = msg.data;
+        setState(prev => {
+          const newFileChanges = new Map(prev.pipelineFileChanges);
+          const existing = newFileChanges.get(run_id) ?? [];
+          // Deduplicate by file_path + action
+          if (!existing.some(f => f.file_path === file_path && f.action === action)) {
+            newFileChanges.set(run_id, [...existing, { run_id, file_path, action }]);
+          }
+          return { ...prev, pipelineFileChanges: newFileChanges };
+        });
+        break;
+      }
+
       case 'PipelinePhaseStarted': {
         const { run_id, phase_number, phase_name } = msg.data;
         setState(prev => {
@@ -313,6 +376,7 @@ export default function useMissionControl(): MissionControlReturn {
             completed_at: null,
             error: null,
           };
+          if (existing.some(p => p.phase_number === phase_number)) return prev;
           newPhases.set(run_id, [...existing, newPhase]);
           return { ...prev, phases: newPhases };
         });
@@ -616,11 +680,20 @@ export default function useMissionControl(): MissionControlReturn {
           }
         } catch { /* skip */ }
       }
+      const phaseMap = new Map<number, PipelinePhase[]>();
+      for (const [runId, run] of runMap) {
+        if (run.status !== 'running' && run.status !== 'queued') continue;
+        try {
+          const runPhases = await api.getRunPhases(runId);
+          if (runPhases.length > 0) phaseMap.set(runId, runPhases);
+        } catch { /* skip */ }
+      }
       setState(prev => ({
         ...prev,
         projects,
         issues: issueMap,
         runs: runMap,
+        phases: phaseMap,
         loading: false,
         error: null,
       }));
@@ -652,6 +725,8 @@ export default function useMissionControl(): MissionControlReturn {
     agentTeams: state.agentTeams,
     agentEvents: state.agentEvents,
     pipelineEvents: state.pipelineEvents,
+    pipelineOutputEvents: state.pipelineOutputEvents,
+    pipelineFileChanges: state.pipelineFileChanges,
     loading: state.loading,
     error: state.error,
     selectedProjectId,

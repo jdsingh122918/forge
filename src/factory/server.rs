@@ -122,10 +122,16 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     match db_handle.lock_sync() {
         Ok(db) => match db.recover_orphaned_runs() {
             Ok(0) => {}
-            Ok(n) => eprintln!("[factory] Recovered {} orphaned pipeline run(s) from previous session", n),
+            Ok(n) => eprintln!(
+                "[factory] Recovered {} orphaned pipeline run(s) from previous session",
+                n
+            ),
             Err(e) => eprintln!("[factory] Warning: failed to recover orphaned runs: {}", e),
         },
-        Err(e) => eprintln!("[factory] Warning: could not acquire DB lock for orphan recovery: {}", e),
+        Err(e) => eprintln!(
+            "[factory] Warning: could not acquire DB lock for orphan recovery: {}",
+            e
+        ),
     }
 
     let persisted_token = db_handle

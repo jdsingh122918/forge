@@ -822,6 +822,14 @@ pub struct AgentTeamDetail {
     pub tasks: Vec<AgentTask>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileAction {
+    Created,
+    Modified,
+    Deleted,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -946,6 +954,36 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<VerificationType>("\"browser\"").unwrap(),
             VerificationType::Browser
+        );
+    }
+
+    #[test]
+    fn test_file_action_serde() {
+        // Serialize
+        assert_eq!(
+            serde_json::to_string(&FileAction::Created).unwrap(),
+            "\"created\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FileAction::Modified).unwrap(),
+            "\"modified\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FileAction::Deleted).unwrap(),
+            "\"deleted\""
+        );
+        // Deserialize roundtrip
+        assert_eq!(
+            serde_json::from_str::<FileAction>("\"created\"").unwrap(),
+            FileAction::Created
+        );
+        assert_eq!(
+            serde_json::from_str::<FileAction>("\"modified\"").unwrap(),
+            FileAction::Modified
+        );
+        assert_eq!(
+            serde_json::from_str::<FileAction>("\"deleted\"").unwrap(),
+            FileAction::Deleted
         );
     }
 

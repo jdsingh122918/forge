@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import AgentRunCard from '../components/AgentRunCard'
 import { makeAgentRunCard, makePipelinePhase, makeAgentTeamDetail, makeAgentEvent } from './fixtures'
-import type { PipelinePhase, AgentTeamDetail, AgentEvent } from '../types'
+import type { PipelinePhase, AgentTeamDetail, AgentEvent, PipelineOutputEvent, PipelineFileChange } from '../types'
 
 function renderCard(
   overrides?: Parameters<typeof makeAgentRunCard>[0],
@@ -10,6 +10,9 @@ function renderCard(
     phases?: PipelinePhase[]
     agentTeam?: AgentTeamDetail
     agentEvents?: Map<number, AgentEvent[]>
+    pipelineEvents?: AgentEvent[]
+    pipelineOutputEvents?: PipelineOutputEvent[]
+    pipelineFileChanges?: PipelineFileChange[]
     onCancel?: (runId: number) => void
     viewMode?: 'grid' | 'list'
   },
@@ -22,6 +25,9 @@ function renderCard(
       phases={props?.phases}
       agentTeam={props?.agentTeam}
       agentEvents={props?.agentEvents}
+      pipelineEvents={props?.pipelineEvents}
+      pipelineOutputEvents={props?.pipelineOutputEvents}
+      pipelineFileChanges={props?.pipelineFileChanges}
       onCancel={props?.onCancel}
     />,
   )
@@ -257,6 +263,70 @@ describe('AgentRunCard', () => {
       fireEvent.click(screen.getByRole('button', { name: /cancel/i }))
 
       expect(onCancel).toHaveBeenCalledWith(42)
+    })
+
+    it('renders rich text events as plain text when pipelineOutputEvents provided', () => {
+      const events: PipelineOutputEvent[] = [
+        { run_id: 1, content_type: 'text', content: 'Hello world', tool_id: null, input_summary: null },
+      ]
+      renderCard({ run: { status: 'running' } }, { pipelineOutputEvents: events })
+      fireEvent.click(screen.getByText('RUNNING').closest('[data-testid="agent-run-card"]')!)
+
+      expect(screen.getByText('Hello world')).toBeInTheDocument()
+    })
+
+    it('renders tool_start events as badges', () => {
+      const events: PipelineOutputEvent[] = [
+        { run_id: 1, content_type: 'tool_start', content: 'Edit', tool_id: 'toolu_1', input_summary: 'src/main.rs' },
+      ]
+      renderCard({ run: { status: 'running' } }, { pipelineOutputEvents: events })
+      fireEvent.click(screen.getByText('RUNNING').closest('[data-testid="agent-run-card"]')!)
+
+      expect(screen.getByText('Edit')).toBeInTheDocument()
+      expect(screen.getByText('src/main.rs')).toBeInTheDocument()
+    })
+
+    it('renders thinking events with dimmed style', () => {
+      const events: PipelineOutputEvent[] = [
+        { run_id: 1, content_type: 'thinking', content: 'Let me think...', tool_id: null, input_summary: null },
+      ]
+      renderCard({ run: { status: 'running' } }, { pipelineOutputEvents: events })
+      fireEvent.click(screen.getByText('RUNNING').closest('[data-testid="agent-run-card"]')!)
+
+      expect(screen.getByText('Let me think...')).toBeInTheDocument()
+    })
+
+    it('files tab shows changed files with action indicators', () => {
+      const changes: PipelineFileChange[] = [
+        { run_id: 1, file_path: 'src/main.rs', action: 'modified' },
+        { run_id: 1, file_path: 'src/new.rs', action: 'created' },
+      ]
+      renderCard(
+        { run: { status: 'running', branch_name: 'feat/test' } },
+        { pipelineFileChanges: changes },
+      )
+      fireEvent.click(screen.getByText('RUNNING').closest('[data-testid="agent-run-card"]')!)
+      fireEvent.click(screen.getByRole('button', { name: /files/i }))
+
+      expect(screen.getByText('src/main.rs')).toBeInTheDocument()
+      expect(screen.getByText('src/new.rs')).toBeInTheDocument()
+      expect(screen.getByText('~')).toBeInTheDocument()
+      expect(screen.getByText('+')).toBeInTheDocument()
+    })
+
+    it('files tab shows branch alongside file changes', () => {
+      const changes: PipelineFileChange[] = [
+        { run_id: 1, file_path: 'src/main.rs', action: 'modified' },
+      ]
+      renderCard(
+        { run: { status: 'running', branch_name: 'feat/login' } },
+        { pipelineFileChanges: changes },
+      )
+      fireEvent.click(screen.getByText('RUNNING').closest('[data-testid="agent-run-card"]')!)
+      fireEvent.click(screen.getByRole('button', { name: /files/i }))
+
+      expect(screen.getByText('feat/login')).toBeInTheDocument()
+      expect(screen.getByText('src/main.rs')).toBeInTheDocument()
     })
 
     it('cancel button does not appear for non-running pipelines', () => {

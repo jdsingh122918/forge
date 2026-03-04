@@ -158,6 +158,7 @@ impl From<FactoryError> for ApiError {
 /// | GET    | `/api/runs/:id`                 | Get pipeline run status   |
 /// | POST   | `/api/runs/:id/cancel`          | Cancel a running pipeline |
 /// | GET    | `/api/runs/:id/team`            | Get agent team for run    |
+/// | GET    | `/api/runs/:id/phases`          | Get pipeline run phases   |
 /// | GET    | `/api/tasks/:id/events`         | Get agent task events     |
 /// | GET    | `/api/github/status`            | GitHub OAuth status       |
 /// | POST   | `/api/github/device-code`       | Initiate device flow      |
@@ -186,6 +187,7 @@ pub fn api_router() -> Router<SharedState> {
         .route("/api/runs/{id}", get(get_pipeline_run))
         .route("/api/runs/{id}/cancel", post(cancel_pipeline_run))
         .route("/api/runs/{id}/team", get(get_run_team))
+        .route("/api/runs/{id}/phases", get(get_run_phases))
         .route("/api/tasks/{id}/events", get(get_task_events))
         .route("/api/github/status", get(github_status))
         .route("/api/github/device-code", post(github_device_code))
@@ -949,6 +951,36 @@ async fn get_run_team(
             run_id
         ))),
     }
+}
+
+/// `GET /api/runs/:id/phases` — list pipeline phases for a run.
+///
+/// **Response:** `200 OK` with a JSON array of `PipelinePhase` objects.
+///
+/// **Errors:**
+/// - `404 Not Found` if the run does not exist.
+async fn get_run_phases(
+    State(state): State<SharedState>,
+    Path(run_id): Path<i64>,
+) -> Result<impl IntoResponse, ApiError> {
+    let phases = state
+        .db
+        .call(move |db| {
+            // Verify run exists first
+            db.get_pipeline_run(run_id)?
+                .ok_or_else(|| anyhow::anyhow!("Run {} not found", run_id))?;
+            db.get_pipeline_phases(run_id)
+        })
+        .await
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("not found") {
+                ApiError::NotFound(msg)
+            } else {
+                ApiError::Internal(msg)
+            }
+        })?;
+    Ok(Json(phases))
 }
 
 /// `GET /api/tasks/:id/events` — list events emitted by an agent task.

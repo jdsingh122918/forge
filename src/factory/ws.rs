@@ -167,6 +167,20 @@ pub enum WsMessage {
         content: String,
     },
 
+    // Structured pipeline output events (parsed from stream-json)
+    PipelineOutputEvent {
+        run_id: i64,
+        content_type: String,
+        content: String,
+        tool_id: Option<String>,
+        input_summary: Option<String>,
+    },
+    PipelineFileChanged {
+        run_id: i64,
+        file_path: String,
+        action: FileAction,
+    },
+
     // Merge events
     MergeStarted {
         run_id: i64,
@@ -768,6 +782,64 @@ mod tests {
                 assert!(message.contains("Failed"));
             }
             _ => panic!("Expected PipelineError"),
+        }
+    }
+
+    #[test]
+    fn test_ws_pipeline_output_event_serde() {
+        let msg = WsMessage::PipelineOutputEvent {
+            run_id: 1,
+            content_type: "tool_start".to_string(),
+            content: "Edit".to_string(),
+            tool_id: Some("toolu_123".to_string()),
+            input_summary: Some("src/main.rs".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"PipelineOutputEvent\""));
+        assert!(json.contains("\"content_type\":\"tool_start\""));
+        assert!(json.contains("\"tool_id\":\"toolu_123\""));
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::PipelineOutputEvent {
+                run_id,
+                content_type,
+                content,
+                tool_id,
+                input_summary,
+            } => {
+                assert_eq!(run_id, 1);
+                assert_eq!(content_type, "tool_start");
+                assert_eq!(content, "Edit");
+                assert_eq!(tool_id, Some("toolu_123".to_string()));
+                assert_eq!(input_summary, Some("src/main.rs".to_string()));
+            }
+            _ => panic!("Expected PipelineOutputEvent"),
+        }
+    }
+
+    #[test]
+    fn test_ws_pipeline_file_changed_serde() {
+        let msg = WsMessage::PipelineFileChanged {
+            run_id: 2,
+            file_path: "src/lib.rs".to_string(),
+            action: FileAction::Modified,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"PipelineFileChanged\""));
+        assert!(json.contains("\"file_path\":\"src/lib.rs\""));
+        assert!(json.contains("\"action\":\"modified\""));
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::PipelineFileChanged {
+                run_id,
+                file_path,
+                action,
+            } => {
+                assert_eq!(run_id, 2);
+                assert_eq!(file_path, "src/lib.rs");
+                assert_eq!(action, FileAction::Modified);
+            }
+            _ => panic!("Expected PipelineFileChanged"),
         }
     }
 

@@ -3,6 +3,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::broadcast;
 
@@ -147,7 +148,11 @@ async fn create_git_branch(project_path: &str, issue_id: i64, issue_title: &str)
 
             if !switch.status.success() {
                 let switch_stderr = String::from_utf8_lossy(&switch.stderr);
-                anyhow::bail!("Failed to switch to existing branch {}: {}", branch_name, switch_stderr.trim());
+                anyhow::bail!(
+                    "Failed to switch to existing branch {}: {}",
+                    branch_name,
+                    switch_stderr.trim()
+                );
             }
         } else {
             anyhow::bail!("Failed to create branch {}: {}", branch_name, stderr.trim());
@@ -880,7 +885,10 @@ impl PipelineRunner {
             };
 
             // Construct real planner and task runner for the agent team
-            eprintln!("[pipeline] run_id={}: starting planner for project at {}", run_id, project_path);
+            eprintln!(
+                "[pipeline] run_id={}: starting planner for project at {}",
+                run_id, project_path
+            );
             broadcast_message(
                 &tx,
                 &WsMessage::PipelineOutput {
@@ -908,11 +916,15 @@ impl PipelineRunner {
             )
             .await;
 
-            eprintln!("[pipeline] run_id={}: planner returned: {}", run_id, match &team_result {
-                Ok(PlanOutcome::TeamExecuted(_)) => "TeamExecuted".to_string(),
-                Ok(PlanOutcome::FallbackToForge) => "FallbackToForge".to_string(),
-                Err(e) => format!("Error: {:#}", e),
-            });
+            eprintln!(
+                "[pipeline] run_id={}: planner returned: {}",
+                run_id,
+                match &team_result {
+                    Ok(PlanOutcome::TeamExecuted(_)) => "TeamExecuted".to_string(),
+                    Ok(PlanOutcome::FallbackToForge) => "FallbackToForge".to_string(),
+                    Err(e) => format!("Error: {:#}", e),
+                }
+            );
             let result = match team_result {
                 Ok(PlanOutcome::TeamExecuted(summary)) => {
                     // Team succeeded, use summary
@@ -1244,6 +1256,195 @@ fn build_execution_command(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "content_type")]
+#[allow(dead_code)]
+enum StreamJsonEvent {
+    Text {
+        text: String,
+    },
+    ToolStart {
+        tool_name: String,
+        tool_id: String,
+        input_summary: String,
+    },
+    ToolEnd {
+        tool_id: String,
+        output_preview: String,
+    },
+    Thinking {
+        text: String,
+    },
+    Skip,
+}
+
+fn parse_stream_json_line(line: &str) -> StreamJsonEvent {
+    // Try to parse as JSON
+    let json: serde_json::Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(_) => {
+            // Not JSON — treat as plain text
+            return StreamJsonEvent::Text {
+                text: line.to_string(),
+            };
+        }
+    };
+
+    // Skip metadata-only messages
+    let msg_type = json.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    match msg_type {
+        "message_start" | "message_stop" | "message_delta" | "content_block_stop" | "result" => {
+            return StreamJsonEvent::Skip;
+        }
+        _ => {}
+    }
+
+    // content_block_delta with text_delta → Text
+    if msg_type == "content_block_delta" {
+        if let Some(delta) = json.get("delta") {
+            if delta.get("type").and_then(|t| t.as_str()) == Some("text_delta") {
+                if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
+                    return StreamJsonEvent::Text {
+                        text: text.to_string(),
+                    };
+                }
+            }
+            if delta.get("type").and_then(|t| t.as_str()) == Some("thinking_delta") {
+                if let Some(text) = delta.get("thinking").and_then(|t| t.as_str()) {
+                    return StreamJsonEvent::Thinking {
+                        text: text.to_string(),
+                    };
+                }
+            }
+        }
+    }
+
+    // content_block_start with tool_use → ToolStart
+    if msg_type == "content_block_start" {
+        if let Some(cb) = json.get("content_block") {
+            if cb.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                let tool_name = cb
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let tool_id = cb
+                    .get("id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let input_summary = extract_tool_input_summary(&tool_name, cb.get("input"));
+                return StreamJsonEvent::ToolStart {
+                    tool_name,
+                    tool_id,
+                    input_summary,
+                };
+            }
+        }
+    }
+
+    // Legacy format: subtype == "tool_use"
+    if json.get("subtype").and_then(|s| s.as_str()) == Some("tool_use") {
+        let tool_name = json
+            .get("tool_name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let tool_id = json
+            .get("tool_use_id")
+            .and_then(|i| i.as_str())
+            .unwrap_or("")
+            .to_string();
+        let input_summary = extract_tool_input_summary(&tool_name, json.get("input"));
+        return StreamJsonEvent::ToolStart {
+            tool_name,
+            tool_id,
+            input_summary,
+        };
+    }
+
+    // Full assistant message with content array containing tool_use
+    if json.get("role").and_then(|r| r.as_str()) == Some("assistant") {
+        if let Some(content) = json.get("content").and_then(|c| c.as_array()) {
+            for block in content {
+                if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                    let tool_name = block
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let tool_id = block
+                        .get("id")
+                        .and_then(|i| i.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let input_summary = extract_tool_input_summary(&tool_name, block.get("input"));
+                    return StreamJsonEvent::ToolStart {
+                        tool_name,
+                        tool_id,
+                        input_summary,
+                    };
+                }
+            }
+        }
+    }
+
+    StreamJsonEvent::Skip
+}
+
+fn extract_tool_input_summary(tool_name: &str, input: Option<&serde_json::Value>) -> String {
+    let input = match input {
+        Some(v) => v,
+        None => return String::new(),
+    };
+
+    match tool_name {
+        "Read" | "read" | "file_read" => input
+            .get("file_path")
+            .and_then(|p| p.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "Write" | "write" | "file_write" => input
+            .get("file_path")
+            .and_then(|p| p.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "Edit" | "edit" | "file_edit" => input
+            .get("file_path")
+            .and_then(|p| p.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "Bash" | "bash" | "execute_command" => {
+            let cmd = input.get("command").and_then(|c| c.as_str()).unwrap_or("");
+            if cmd.len() > 80 {
+                format!("{}...", &cmd[..80])
+            } else {
+                cmd.to_string()
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+fn extract_file_change(
+    tool_name: &str,
+    input: Option<&serde_json::Value>,
+) -> Option<(String, FileAction)> {
+    let input = input?;
+
+    match tool_name {
+        "Write" | "write" | "file_write" => {
+            let path = input.get("file_path").and_then(|p| p.as_str())?;
+            Some((path.to_string(), FileAction::Created))
+        }
+        "Edit" | "edit" | "file_edit" => {
+            let path = input.get("file_path").and_then(|p| p.as_str())?;
+            Some((path.to_string(), FileAction::Modified))
+        }
+        _ => None,
+    }
+}
+
 /// Execute a forge pipeline for the given issue, streaming stdout line by line.
 /// Uses `forge swarm` if phases.json exists, otherwise falls back to `claude --print`.
 /// Monitors output for progress JSON and emits PipelineProgress WS events.
@@ -1327,44 +1528,105 @@ async fn execute_pipeline_streaming(
                     percent,
                 },
             );
-        } else if !line.is_empty()
-            && last_output_broadcast.elapsed() >= std::time::Duration::from_millis(500)
-        {
-            // Try to extract content from stream-json format (claude --output-format stream-json)
-            let content = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-                // Extract text from assistant text events, tool use summaries, etc.
-                if json.get("type").and_then(|t| t.as_str()) == Some("result") {
-                    // Final result — extract the full text from result.content
-                    None
-                } else if let Some(text) = json.get("content_block_delta")
-                    .and_then(|d| d.get("delta"))
-                    .and_then(|d| d.get("text"))
-                    .and_then(|t| t.as_str())
-                {
-                    Some(text.to_string())
-                } else if let Some(text) = json.get("text").and_then(|t| t.as_str()) {
-                    Some(text.to_string())
-                } else if json.get("subtype").and_then(|s| s.as_str()) == Some("tool_use") {
-                    json.get("tool_name")
-                        .and_then(|t| t.as_str())
-                        .map(|name| format!("[tool: {}]", name))
-                } else {
-                    None
+        } else if !line.is_empty() {
+            let event = parse_stream_json_line(&line);
+            match event {
+                StreamJsonEvent::Skip => {}
+                StreamJsonEvent::Text { ref text } | StreamJsonEvent::Thinking { ref text } => {
+                    // Throttle text/thinking events to 200ms
+                    if last_output_broadcast.elapsed() >= std::time::Duration::from_millis(200)
+                        && !text.is_empty()
+                    {
+                        let content_type = match &event {
+                            StreamJsonEvent::Thinking { .. } => "thinking",
+                            _ => "text",
+                        };
+                        broadcast_message(
+                            tx,
+                            &WsMessage::PipelineOutputEvent {
+                                run_id,
+                                content_type: content_type.to_string(),
+                                content: text.clone(),
+                                tool_id: None,
+                                input_summary: None,
+                            },
+                        );
+                        // Also send legacy PipelineOutput for backward compat
+                        broadcast_message(
+                            tx,
+                            &WsMessage::PipelineOutput {
+                                run_id,
+                                content: text.clone(),
+                            },
+                        );
+                        last_output_broadcast = std::time::Instant::now();
+                    }
                 }
-            } else {
-                // Not JSON — use raw line
-                Some(line)
-            };
-            if let Some(content) = content {
-                if !content.is_empty() {
+                StreamJsonEvent::ToolStart {
+                    ref tool_name,
+                    ref tool_id,
+                    ref input_summary,
+                } => {
+                    broadcast_message(
+                        tx,
+                        &WsMessage::PipelineOutputEvent {
+                            run_id,
+                            content_type: "tool_start".to_string(),
+                            content: tool_name.clone(),
+                            tool_id: Some(tool_id.clone()),
+                            input_summary: Some(input_summary.clone()),
+                        },
+                    );
+                    // Also send legacy PipelineOutput
                     broadcast_message(
                         tx,
                         &WsMessage::PipelineOutput {
                             run_id,
-                            content,
+                            content: format!("[{}] {}", tool_name, input_summary),
                         },
                     );
+                    // Check for file changes
+                    let input_json: Option<serde_json::Value> =
+                        serde_json::from_str::<serde_json::Value>(&line)
+                            .ok()
+                            .and_then(|v| {
+                                // Try content_block_start format
+                                if let Some(cb) = v.get("content_block") {
+                                    return cb.get("input").cloned();
+                                }
+                                // Try legacy format
+                                v.get("input").cloned()
+                            });
+                    if let Some(ref input_val) = input_json {
+                        if let Some((file_path, action)) =
+                            extract_file_change(tool_name, Some(input_val))
+                        {
+                            broadcast_message(
+                                tx,
+                                &WsMessage::PipelineFileChanged {
+                                    run_id,
+                                    file_path,
+                                    action,
+                                },
+                            );
+                        }
+                    }
                     last_output_broadcast = std::time::Instant::now();
+                }
+                StreamJsonEvent::ToolEnd {
+                    ref tool_id,
+                    ref output_preview,
+                } => {
+                    broadcast_message(
+                        tx,
+                        &WsMessage::PipelineOutputEvent {
+                            run_id,
+                            content_type: "tool_end".to_string(),
+                            content: output_preview.clone(),
+                            tool_id: Some(tool_id.clone()),
+                            input_summary: None,
+                        },
+                    );
                 }
             }
         }
@@ -2742,6 +3004,174 @@ mod tests {
         .unwrap();
 
         assert!(matches!(result, PlanOutcome::FallbackToForge));
+    }
+
+    #[test]
+    fn test_parse_text_delta() {
+        let line = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello world"}}"#;
+        let result = parse_stream_json_line(line);
+        assert_eq!(
+            result,
+            StreamJsonEvent::Text {
+                text: "Hello world".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_message_start_skipped() {
+        let line = r#"{"type":"message_start","message":{"id":"msg_123"}}"#;
+        assert_eq!(parse_stream_json_line(line), StreamJsonEvent::Skip);
+    }
+
+    #[test]
+    fn test_parse_message_stop_skipped() {
+        let line = r#"{"type":"message_stop"}"#;
+        assert_eq!(parse_stream_json_line(line), StreamJsonEvent::Skip);
+    }
+
+    #[test]
+    fn test_parse_message_delta_usage_skipped() {
+        let line = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":50}}"#;
+        assert_eq!(parse_stream_json_line(line), StreamJsonEvent::Skip);
+    }
+
+    #[test]
+    fn test_parse_content_block_stop_skipped() {
+        let line = r#"{"type":"content_block_stop","index":0}"#;
+        assert_eq!(parse_stream_json_line(line), StreamJsonEvent::Skip);
+    }
+
+    #[test]
+    fn test_parse_result_skipped() {
+        let line = r#"{"type":"result","subtype":"success"}"#;
+        assert_eq!(parse_stream_json_line(line), StreamJsonEvent::Skip);
+    }
+
+    #[test]
+    fn test_parse_tool_use_content_block_start() {
+        let line = r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_123","name":"Edit","input":{"file_path":"src/main.rs"}}}"#;
+        match parse_stream_json_line(line) {
+            StreamJsonEvent::ToolStart {
+                tool_name,
+                tool_id,
+                input_summary,
+            } => {
+                assert_eq!(tool_name, "Edit");
+                assert_eq!(tool_id, "toolu_123");
+                assert_eq!(input_summary, "src/main.rs");
+            }
+            other => panic!("Expected ToolStart, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_thinking_delta() {
+        let line = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me analyze..."}}"#;
+        assert_eq!(
+            parse_stream_json_line(line),
+            StreamJsonEvent::Thinking {
+                text: "Let me analyze...".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_assistant_envelope_with_tool_use() {
+        let line = r#"{"role":"assistant","content":[{"type":"tool_use","id":"toolu_456","name":"Write","input":{"file_path":"src/new.rs","content":"fn main() {}"}}]}"#;
+        match parse_stream_json_line(line) {
+            StreamJsonEvent::ToolStart {
+                tool_name,
+                tool_id,
+                input_summary,
+            } => {
+                assert_eq!(tool_name, "Write");
+                assert_eq!(tool_id, "toolu_456");
+                assert_eq!(input_summary, "src/new.rs");
+            }
+            other => panic!("Expected ToolStart, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_plain_text_fallback() {
+        let line = "This is just plain text output";
+        assert_eq!(
+            parse_stream_json_line(line),
+            StreamJsonEvent::Text {
+                text: "This is just plain text output".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_subtype_tool_use() {
+        let line = r#"{"subtype":"tool_use","tool_name":"Bash","tool_use_id":"tu_789","input":{"command":"cargo test"}}"#;
+        match parse_stream_json_line(line) {
+            StreamJsonEvent::ToolStart {
+                tool_name,
+                tool_id,
+                input_summary,
+            } => {
+                assert_eq!(tool_name, "Bash");
+                assert_eq!(tool_id, "tu_789");
+                assert_eq!(input_summary, "cargo test");
+            }
+            other => panic!("Expected ToolStart, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_extract_tool_input_summary_read() {
+        let input = serde_json::json!({"file_path": "src/lib.rs"});
+        assert_eq!(
+            extract_tool_input_summary("Read", Some(&input)),
+            "src/lib.rs"
+        );
+    }
+
+    #[test]
+    fn test_extract_tool_input_summary_bash() {
+        let long_cmd = "a".repeat(100);
+        let input = serde_json::json!({"command": long_cmd});
+        let result = extract_tool_input_summary("Bash", Some(&input));
+        assert_eq!(result.len(), 83); // 80 + "..."
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_extract_tool_input_summary_unknown() {
+        let input = serde_json::json!({"something": "else"});
+        assert_eq!(extract_tool_input_summary("UnknownTool", Some(&input)), "");
+    }
+
+    #[test]
+    fn test_extract_file_change_write() {
+        let input = serde_json::json!({"file_path": "src/new.rs", "content": "fn main() {}"});
+        assert_eq!(
+            extract_file_change("Write", Some(&input)),
+            Some(("src/new.rs".to_string(), FileAction::Created))
+        );
+    }
+
+    #[test]
+    fn test_extract_file_change_edit() {
+        let input = serde_json::json!({"file_path": "src/lib.rs", "old_string": "foo", "new_string": "bar"});
+        assert_eq!(
+            extract_file_change("Edit", Some(&input)),
+            Some(("src/lib.rs".to_string(), FileAction::Modified))
+        );
+    }
+
+    #[test]
+    fn test_extract_file_change_read_returns_none() {
+        let input = serde_json::json!({"file_path": "src/lib.rs"});
+        assert_eq!(extract_file_change("Read", Some(&input)), None);
+    }
+
+    #[test]
+    fn test_extract_file_change_none_input() {
+        assert_eq!(extract_file_change("Write", None), None);
     }
 
     #[cfg(test)]
