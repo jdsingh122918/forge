@@ -1,0 +1,5 @@
+with the last conversation in context, continue
+
+---
+
+yes, commit them. Then start the dev server using start.sh dev sript in the project root
