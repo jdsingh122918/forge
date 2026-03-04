@@ -161,6 +161,12 @@ pub enum WsMessage {
         content: String,
     },
 
+    // Pipeline stdout streaming (forge fallback path)
+    PipelineOutput {
+        run_id: i64,
+        content: String,
+    },
+
     // Merge events
     MergeStarted {
         run_id: i64,

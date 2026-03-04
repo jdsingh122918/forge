@@ -23,9 +23,16 @@ interface MissionControlState {
   phases: Map<number, PipelinePhase[]>;
   agentTeams: Map<number, AgentTeamDetail>;
   agentEvents: Map<number, AgentEvent[]>;
+  pipelineEvents: Map<number, AgentEvent[]>;
   eventLog: EventLogEntry[];
   loading: boolean;
   error: string | null;
+}
+
+/** An idle issue card — issue without an active pipeline run */
+export interface IdleIssueCard {
+  issue: Issue;
+  project: Project;
 }
 
 /** Return type of the useMissionControl hook */
@@ -34,6 +41,8 @@ export interface MissionControlReturn {
   projects: Project[];
   /** Filtered and sorted agent run cards for the grid */
   agentRunCards: AgentRunCard[];
+  /** Issues without active pipeline runs, available to start */
+  idleIssueCards: IdleIssueCard[];
   /** Run counts by status */
   statusCounts: Record<RunStatusFilter, number>;
   /** Chronological event log entries */
@@ -44,6 +53,8 @@ export interface MissionControlReturn {
   agentTeams: Map<number, AgentTeamDetail>;
   /** Agent events by task ID */
   agentEvents: Map<number, AgentEvent[]>;
+  /** Pipeline-level output events by run ID (for forge fallback path) */
+  pipelineEvents: Map<number, AgentEvent[]>;
   /** Whether initial data is still loading */
   loading: boolean;
   /** Error message from initial load, or null */
@@ -96,6 +107,7 @@ export default function useMissionControl(): MissionControlReturn {
     phases: new Map(),
     agentTeams: new Map(),
     agentEvents: new Map(),
+    pipelineEvents: new Map(),
     eventLog: [],
     loading: true,
     error: null,
@@ -238,6 +250,25 @@ export default function useMissionControl(): MissionControlReturn {
           return { ...prev, runs: newRuns };
         });
         addLogEntry('error', `Pipeline failed: ${run.error ?? 'unknown error'}`, undefined, run.id);
+        break;
+      }
+
+      case 'PipelineOutput': {
+        const { run_id, content } = msg.data;
+        setState(prev => {
+          const newEvents = new Map(prev.pipelineEvents);
+          const existing = newEvents.get(run_id) ?? [];
+          const event: AgentEvent = {
+            id: existing.length + 1,
+            task_id: 0,
+            event_type: 'output',
+            content,
+            metadata: null,
+            created_at: new Date().toISOString(),
+          };
+          newEvents.set(run_id, [...existing.slice(-199), event]);
+          return { ...prev, pipelineEvents: newEvents };
+        });
         break;
       }
 
@@ -456,6 +487,24 @@ export default function useMissionControl(): MissionControlReturn {
       }));
   }, [state.runs, state.issues, state.projects, selectedProjectId, statusFilter]);
 
+  // Compute idle issue cards — issues without any active pipeline run
+  const idleIssueCards: IdleIssueCard[] = useMemo(() => {
+    const issueIdsWithRuns = new Set(
+      Array.from(state.runs.values()).map(r => r.issue_id)
+    );
+    return Array.from(state.issues.values())
+      .filter(issue => {
+        if (issueIdsWithRuns.has(issue.id)) return false;
+        if (selectedProjectId !== null && issue.project_id !== selectedProjectId) return false;
+        return true;
+      })
+      .map(issue => ({
+        issue,
+        project: state.projects.find(p => p.id === issue.project_id)
+          ?? { id: 0, name: 'Unknown', path: '', github_repo: null, created_at: '' },
+      }));
+  }, [state.issues, state.runs, state.projects, selectedProjectId]);
+
   // Compute status counts (unfiltered — always reflect total state)
   const statusCounts: Record<RunStatusFilter, number> = useMemo(() => {
     const runs = Array.from(state.runs.values());
@@ -572,11 +621,13 @@ export default function useMissionControl(): MissionControlReturn {
   return {
     projects: state.projects,
     agentRunCards,
+    idleIssueCards,
     statusCounts,
     eventLog: state.eventLog,
     phases: state.phases,
     agentTeams: state.agentTeams,
     agentEvents: state.agentEvents,
+    pipelineEvents: state.pipelineEvents,
     loading: state.loading,
     error: state.error,
     selectedProjectId,

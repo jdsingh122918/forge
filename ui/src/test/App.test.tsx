@@ -154,15 +154,15 @@ describe('App — Mission Control shell', () => {
     expect(screen.getByText('All Projects')).toBeInTheDocument()
   })
 
-  // ── Idle state — no active runs shows project card with IDLE status ──
+  // ── Idle state — no issues shows empty project card ──
 
-  it('shows project card with IDLE status when no runs', async () => {
+  it('shows empty project card when no issues or runs', async () => {
     boardsResponse = {
       1: makeBoard(mockProject, []),
     }
     render(<App />)
     await waitFor(() => {
-      expect(screen.getByText('IDLE')).toBeInTheDocument()
+      expect(screen.getByText('No issues yet')).toBeInTheDocument()
     })
   })
 

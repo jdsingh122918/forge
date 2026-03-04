@@ -157,6 +157,7 @@ export type WsMessage =
   | { type: 'MergeCompleted'; data: { run_id: number; wave: number; conflicts: boolean } }
   | { type: 'MergeConflict'; data: { run_id: number; wave: number; files: string[] } }
   | { type: 'VerificationResult'; data: { run_id: number; task_id: number; verification_type: VerificationType; passed: boolean; summary: string; screenshots: string[]; details: Record<string, unknown> } }
+  | { type: 'PipelineOutput'; data: { run_id: number; content: string } }
   | { type: 'PipelineError'; data: { run_id: number; message: string } }
   | { type: 'ProjectCreated'; data: { project: Project } }
   | { type: 'ProjectDeleted'; data: { project_id: number } };

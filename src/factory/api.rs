@@ -855,13 +855,24 @@ async fn trigger_pipeline(
         })?;
 
     // Start pipeline execution in a background task
+    let run_id = run.id;
     state
         .pipeline_runner
-        .start_run(run.id, &issue, state.db.clone(), state.ws_tx.clone())
+        .start_run(run_id, &issue, state.db.clone(), state.ws_tx.clone())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    Ok((StatusCode::CREATED, Json(run)))
+    // Re-fetch the run after start_run (which updates status to Running)
+    let updated_run = state
+        .db
+        .call(move |db| {
+            db.get_pipeline_run(run_id)?
+                .ok_or_else(|| anyhow::anyhow!("Pipeline run {} not found", run_id))
+        })
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok((StatusCode::CREATED, Json(updated_run)))
 }
 
 /// `GET /api/runs/:id` — get the status and details of a pipeline run.

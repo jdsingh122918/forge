@@ -121,17 +121,37 @@ async fn create_git_branch(project_path: &str, issue_id: i64, issue_title: &str)
     let slug = slugify(issue_title, 40);
     let branch_name = format!("forge/issue-{}-{}", issue_id, slug);
 
-    let status = tokio::process::Command::new("git")
+    // Try creating a new branch
+    let output = tokio::process::Command::new("git")
         .args(["checkout", "-b", &branch_name])
         .current_dir(project_path)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .status()
+        .output()
         .await
         .context("Failed to run git checkout -b")?;
 
-    if !status.success() {
-        anyhow::bail!("Failed to create branch: {}", branch_name);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // Branch already exists — switch to it instead
+        if stderr.contains("already exists") {
+            let switch = tokio::process::Command::new("git")
+                .args(["checkout", &branch_name])
+                .current_dir(project_path)
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+                .context("Failed to run git checkout")?;
+
+            if !switch.status.success() {
+                let switch_stderr = String::from_utf8_lossy(&switch.stderr);
+                anyhow::bail!("Failed to switch to existing branch {}: {}", branch_name, switch_stderr.trim());
+            }
+        } else {
+            anyhow::bail!("Failed to create branch {}: {}", branch_name, stderr.trim());
+        }
     }
 
     Ok(branch_name)
@@ -860,6 +880,7 @@ impl PipelineRunner {
             };
 
             // Construct real planner and task runner for the agent team
+            eprintln!("[pipeline] run_id={}: starting planner for project at {}", run_id, project_path);
             let planner = Planner::new(&project_path);
             let task_runner: Arc<dyn TaskRunner> =
                 Arc::new(AgentExecutor::new(&project_path, db.clone(), tx.clone()));
@@ -880,6 +901,11 @@ impl PipelineRunner {
             )
             .await;
 
+            eprintln!("[pipeline] run_id={}: planner returned: {}", run_id, match &team_result {
+                Ok(PlanOutcome::TeamExecuted(_)) => "TeamExecuted".to_string(),
+                Ok(PlanOutcome::FallbackToForge) => "FallbackToForge".to_string(),
+                Err(e) => format!("Error: {:#}", e),
+            });
             let result = match team_result {
                 Ok(PlanOutcome::TeamExecuted(summary)) => {
                     // Team succeeded, use summary
@@ -1183,6 +1209,7 @@ fn build_execution_command(
         cmd
     } else {
         // Fallback: direct Claude invocation for simple issues without phases
+        // Uses stream-json output format for realtime output streaming to the UI
         let claude_cmd = std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".to_string());
         let prompt = format!(
             "Implement the following issue:\n\nTitle: {}\n\nDescription: {}\n",
@@ -1190,6 +1217,8 @@ fn build_execution_command(
         );
         let mut cmd = tokio::process::Command::new(&claude_cmd);
         cmd.arg("--print")
+            .arg("--output-format")
+            .arg("stream-json")
             .arg(&prompt)
             .env_remove("CLAUDECODE")
             .current_dir(project_path)
@@ -1230,6 +1259,7 @@ async fn execute_pipeline_streaming(
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
     let mut all_output = String::new();
+    let mut last_output_broadcast = std::time::Instant::now() - std::time::Duration::from_secs(1);
 
     while let Some(line) = lines
         .next_line()
@@ -1281,6 +1311,46 @@ async fn execute_pipeline_streaming(
                     percent,
                 },
             );
+        } else if !line.is_empty()
+            && last_output_broadcast.elapsed() >= std::time::Duration::from_millis(500)
+        {
+            // Try to extract content from stream-json format (claude --output-format stream-json)
+            let content = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+                // Extract text from assistant text events, tool use summaries, etc.
+                if json.get("type").and_then(|t| t.as_str()) == Some("result") {
+                    // Final result — extract the full text from result.content
+                    None
+                } else if let Some(text) = json.get("content_block_delta")
+                    .and_then(|d| d.get("delta"))
+                    .and_then(|d| d.get("text"))
+                    .and_then(|t| t.as_str())
+                {
+                    Some(text.to_string())
+                } else if let Some(text) = json.get("text").and_then(|t| t.as_str()) {
+                    Some(text.to_string())
+                } else if json.get("subtype").and_then(|s| s.as_str()) == Some("tool_use") {
+                    json.get("tool_name")
+                        .and_then(|t| t.as_str())
+                        .map(|name| format!("[tool: {}]", name))
+                } else {
+                    None
+                }
+            } else {
+                // Not JSON — use raw line
+                Some(line)
+            };
+            if let Some(content) = content {
+                if !content.is_empty() {
+                    broadcast_message(
+                        tx,
+                        &WsMessage::PipelineOutput {
+                            run_id,
+                            content,
+                        },
+                    );
+                    last_output_broadcast = std::time::Instant::now();
+                }
+            }
         }
     }
 
@@ -2004,13 +2074,12 @@ mod tests {
         let tmp_dir = tempfile::tempdir().unwrap();
         let tmp_path = tmp_dir.path().to_str().unwrap();
         // Create a script that:
-        // - Exits with error when called with --output-format (planner call) so it falls back fast
-        // - Sleeps for 60s otherwise (pipeline execution via `claude --print <prompt>`) so we can cancel it
-        // Note: planner uses `claude --print --output-format text -p ...` while execution uses `claude --print <prompt>`
+        // - Exits with error when called with -p (planner call uses `-p` flag) so it falls back fast
+        // - Sleeps for 60s otherwise (pipeline execution via `claude --print --output-format stream-json <prompt>`) so we can cancel it
         let script_path = tmp_dir.path().join("forge_test_sleep_cancel.sh");
         std::fs::write(
             &script_path,
-            "#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in --output-format) exit 1;; esac; done\nsleep 60\n",
+            "#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in -p) exit 1;; esac; done\nsleep 60\n",
         )
         .unwrap();
         std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -2070,12 +2139,12 @@ mod tests {
         // Use an isolated temp dir so the planner's `find` doesn't scan all of /tmp
         let tmp_dir = tempfile::tempdir().unwrap();
         let tmp_path = tmp_dir.path().to_str().unwrap();
-        // Create a script that exits with error for planner calls (--output-format arg)
+        // Create a script that exits with error for planner calls (-p flag)
         // and exits immediately for pipeline calls (echo-like behavior)
         let script_path = tmp_dir.path().join("forge_test_echo_cleanup.sh");
         std::fs::write(
             &script_path,
-            "#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in --output-format) exit 1;; esac; done\necho done\n",
+            "#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in -p) exit 1;; esac; done\necho done\n",
         )
         .unwrap();
         std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();

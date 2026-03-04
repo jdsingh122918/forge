@@ -21,11 +21,13 @@ function MissionControl() {
   const {
     projects,
     agentRunCards,
+    idleIssueCards,
     statusCounts,
     eventLog,
     phases,
     agentTeams,
     agentEvents,
+    pipelineEvents,
     loading,
     selectedProjectId,
     setSelectedProjectId,
@@ -192,143 +194,179 @@ function MissionControl() {
           overflowY: 'auto',
           padding: '16px',
         }}>
-          {agentRunCards.length === 0 ? (
-            <div style={{
-              display: viewMode === 'grid' ? 'grid' : 'flex',
-              gridTemplateColumns: viewMode === 'grid' ? 'repeat(auto-fill, minmax(400px, 1fr))' : undefined,
-              flexDirection: viewMode === 'list' ? 'column' : undefined,
-              gap: '12px',
-            }}>
-              {displayedProjects.map(project => {
-                const issueCount = issuesByProject.get(project.id) ?? 0;
-                return (
-                  <div
-                    key={project.id}
-                    style={{
-                      backgroundColor: 'var(--color-bg-card)',
-                      border: '1px solid var(--color-border)',
-                      borderLeft: '3px solid var(--color-text-secondary)',
-                    }}
-                  >
-                    <div style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      padding: '12px',
-                      gap: '12px',
-                    }}>
-                      {/* Idle dot */}
-                      <span style={{
-                        width: '8px',
-                        height: '8px',
-                        borderRadius: '50%',
-                        backgroundColor: 'var(--color-text-secondary)',
-                        flexShrink: 0,
-                      }} />
+          <div style={{
+            display: viewMode === 'grid' ? 'grid' : 'flex',
+            gridTemplateColumns: viewMode === 'grid' ? 'repeat(auto-fill, minmax(400px, 1fr))' : undefined,
+            flexDirection: viewMode === 'list' ? 'column' : undefined,
+            gap: '12px',
+          }}>
+            {/* Active pipeline run cards */}
+            {agentRunCards.map(card => (
+              <AgentRunCard
+                key={`run-${card.run.id}`}
+                card={card}
+                phases={phases.get(card.run.id)}
+                agentTeam={agentTeams.get(card.run.id)}
+                agentEvents={agentEvents}
+                pipelineEvents={pipelineEvents.get(card.run.id)}
+                onCancel={cancelPipeline}
+                viewMode={viewMode}
+              />
+            ))}
 
-                      {/* Project name */}
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{
-                          fontSize: '13px',
-                          fontWeight: 600,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}>
-                          {project.name}
-                        </div>
-                        <div style={{
-                          fontSize: '11px',
-                          color: 'var(--color-text-secondary)',
-                          marginTop: '2px',
-                        }}>
-                          {issueCount} {issueCount === 1 ? 'issue' : 'issues'}
-                        </div>
-                      </div>
+            {/* Idle issue cards — issues without active pipeline runs */}
+            {idleIssueCards.map(({ issue, project }) => (
+              <div
+                key={`idle-${issue.id}`}
+                style={{
+                  backgroundColor: 'var(--color-bg-card)',
+                  border: '1px solid var(--color-border)',
+                  borderLeft: '3px solid var(--color-text-secondary)',
+                  transition: 'background-color 0.15s',
+                }}
+                onMouseEnter={e => (e.currentTarget.style.backgroundColor = 'var(--color-bg-card-hover)')}
+                onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'var(--color-bg-card)')}
+              >
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  padding: '12px',
+                  gap: '12px',
+                }}>
+                  {/* Idle dot */}
+                  <span style={{
+                    width: '8px',
+                    height: '8px',
+                    borderRadius: '50%',
+                    backgroundColor: 'var(--color-text-secondary)',
+                    flexShrink: 0,
+                  }} />
 
-                      {/* Status label */}
+                  {/* Project badge + issue title */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <span style={{
-                        fontSize: '11px',
+                        fontSize: '10px',
+                        padding: '1px 6px',
+                        backgroundColor: 'var(--color-border)',
                         color: 'var(--color-text-secondary)',
-                        fontWeight: 600,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.5px',
                         flexShrink: 0,
                       }}>
-                        IDLE
+                        {project.name}
                       </span>
-
-                      {/* Create Issue button */}
-                      <button
-                        onClick={() => {
-                          setNewIssueProjectId(project.id);
-                          setShowNewIssueModal(true);
-                        }}
-                        style={{
-                          padding: '4px 10px',
-                          fontSize: '11px',
-                          fontFamily: 'inherit',
-                          background: 'transparent',
-                          border: '1px solid var(--color-border)',
-                          color: 'var(--color-success)',
-                          cursor: 'pointer',
-                          flexShrink: 0,
-                        }}
-                        onMouseEnter={e => (e.currentTarget.style.backgroundColor = 'var(--color-bg-card-hover)')}
-                        onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
-                      >
-                        + Issue
-                      </button>
-
-                      {/* Delete project button */}
-                      <button
-                        onClick={() => setDeleteConfirm({ id: project.id, name: project.name })}
-                        style={{
-                          padding: '4px 8px',
-                          fontSize: '11px',
-                          fontFamily: 'inherit',
-                          background: 'transparent',
-                          border: '1px solid var(--color-border)',
-                          color: 'var(--color-text-secondary)',
-                          cursor: 'pointer',
-                          flexShrink: 0,
-                        }}
-                        onMouseEnter={e => {
-                          e.currentTarget.style.backgroundColor = 'var(--color-bg-card-hover)';
-                          e.currentTarget.style.color = 'var(--color-error)';
-                          e.currentTarget.style.borderColor = 'var(--color-error)';
-                        }}
-                        onMouseLeave={e => {
-                          e.currentTarget.style.backgroundColor = 'transparent';
-                          e.currentTarget.style.color = 'var(--color-text-secondary)';
-                          e.currentTarget.style.borderColor = 'var(--color-border)';
-                        }}
-                        title="Delete project"
-                      >
-                        ✕
-                      </button>
+                      <span style={{
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        fontSize: '13px',
+                      }}>
+                        {issue.title}
+                      </span>
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div style={{
-              display: viewMode === 'grid' ? 'grid' : 'flex',
-              gridTemplateColumns: viewMode === 'grid' ? 'repeat(auto-fill, minmax(400px, 1fr))' : undefined,
-              flexDirection: viewMode === 'list' ? 'column' : undefined,
-              gap: '12px',
-            }}>
-              {agentRunCards.map(card => (
-                <AgentRunCard
-                  key={card.run.id}
-                  card={card}
-                  phases={phases.get(card.run.id)}
-                  agentTeam={agentTeams.get(card.run.id)}
-                  agentEvents={agentEvents}
-                  onCancel={cancelPipeline}
-                  viewMode={viewMode}
-                />
-              ))}
-            </div>
-          )}
+
+                  {/* Status label */}
+                  <span style={{
+                    fontSize: '11px',
+                    color: 'var(--color-text-secondary)',
+                    fontWeight: 600,
+                    flexShrink: 0,
+                  }}>
+                    IDLE
+                  </span>
+
+                  {/* Run button */}
+                  <button
+                    onClick={() => triggerPipeline(issue.id)}
+                    style={{
+                      padding: '4px 12px',
+                      fontSize: '11px',
+                      fontFamily: 'inherit',
+                      background: 'transparent',
+                      border: '1px solid var(--color-success)',
+                      color: 'var(--color-success)',
+                      cursor: 'pointer',
+                      flexShrink: 0,
+                    }}
+                    onMouseEnter={e => {
+                      e.currentTarget.style.backgroundColor = 'var(--color-success)';
+                      e.currentTarget.style.color = '#000';
+                    }}
+                    onMouseLeave={e => {
+                      e.currentTarget.style.backgroundColor = 'transparent';
+                      e.currentTarget.style.color = 'var(--color-success)';
+                    }}
+                  >
+                    Run
+                  </button>
+                </div>
+              </div>
+            ))}
+
+            {/* Empty state — no issues at all */}
+            {agentRunCards.length === 0 && idleIssueCards.length === 0 && displayedProjects.map(project => (
+              <div
+                key={`empty-${project.id}`}
+                style={{
+                  backgroundColor: 'var(--color-bg-card)',
+                  border: '1px solid var(--color-border)',
+                  borderLeft: '3px solid var(--color-text-secondary)',
+                }}
+              >
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  padding: '12px',
+                  gap: '12px',
+                }}>
+                  <span style={{
+                    width: '8px',
+                    height: '8px',
+                    borderRadius: '50%',
+                    backgroundColor: 'var(--color-text-secondary)',
+                    flexShrink: 0,
+                  }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{
+                      fontSize: '13px',
+                      fontWeight: 600,
+                    }}>
+                      {project.name}
+                    </div>
+                    <div style={{
+                      fontSize: '11px',
+                      color: 'var(--color-text-secondary)',
+                      marginTop: '2px',
+                    }}>
+                      No issues yet
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setNewIssueProjectId(project.id);
+                      setShowNewIssueModal(true);
+                    }}
+                    style={{
+                      padding: '4px 10px',
+                      fontSize: '11px',
+                      fontFamily: 'inherit',
+                      background: 'transparent',
+                      border: '1px solid var(--color-border)',
+                      color: 'var(--color-success)',
+                      cursor: 'pointer',
+                      flexShrink: 0,
+                    }}
+                    onMouseEnter={e => (e.currentTarget.style.backgroundColor = 'var(--color-bg-card-hover)')}
+                    onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
+                  >
+                    + Issue
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 

@@ -15,6 +15,8 @@ export interface AgentRunCardProps {
   agentTeam?: AgentTeamDetail;
   /** Agent events keyed by task ID. */
   agentEvents?: Map<number, AgentEvent[]>;
+  /** Pipeline-level output events (for forge fallback path). */
+  pipelineEvents?: AgentEvent[];
   /** Callback when the cancel button is clicked. */
   onCancel?: (runId: number) => void;
   /** Grid or list layout mode. */
@@ -54,6 +56,7 @@ export default function AgentRunCard({
   phases,
   agentTeam,
   agentEvents,
+  pipelineEvents,
   onCancel,
   viewMode: _viewMode,
 }: AgentRunCardProps): React.JSX.Element {
@@ -94,13 +97,18 @@ export default function AgentRunCard({
     }
   });
 
-  // Collect all events for this run's agent team
+  // Collect all events for this run — from agent team tasks and/or pipeline-level output
   const allEvents: AgentEvent[] = [];
   if (agentTeam && agentEvents) {
     for (const task of agentTeam.tasks) {
       const events = agentEvents.get(task.id) ?? [];
       allEvents.push(...events);
     }
+  }
+  if (pipelineEvents && pipelineEvents.length > 0) {
+    allEvents.push(...pipelineEvents);
+  }
+  if (allEvents.length > 1) {
     allEvents.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   }
 
