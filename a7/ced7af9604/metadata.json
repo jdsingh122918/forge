@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.4.8",
+  "checkpoint_id": "a7ced7af9604",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 7,
+  "files_touched": [
+    "docker-compose.yml",
+    "src/factory/api.rs",
+    "src/factory/pipeline.rs",
+    "src/factory/ws.rs",
+    "ui/src/App.tsx",
+    "ui/src/components/AgentRunCard.tsx",
+    "ui/src/hooks/useMissionControl.ts",
+    "ui/src/test/App.test.tsx",
+    "ui/src/types/index.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a7/ced7af9604/0/metadata.json",
+      "transcript": "/a7/ced7af9604/0/full.jsonl",
+      "context": "/a7/ced7af9604/0/context.md",
+      "content_hash": "/a7/ced7af9604/0/content_hash.txt",
+      "prompt": "/a7/ced7af9604/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 258,
+    "cache_creation_tokens": 149095,
+    "cache_read_tokens": 27816657,
+    "output_tokens": 44405,
+    "api_call_count": 224
+  }
+}
