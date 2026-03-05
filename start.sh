@@ -46,12 +46,29 @@ usage() {
     echo "Usage: ./start.sh [command]"
     echo ""
     echo "Commands:"
-    echo "  (none)    Start Forge in production mode (build + run)"
-    echo "  prod      Same as above"
-    echo "  dev       Start in development mode (hot-reload)"
-    echo "  build     Build production image without starting"
-    echo "  down      Stop and remove all containers"
+    echo "  (none)         Start Forge in production mode (Docker)"
+    echo "  prod           Same as above"
+    echo "  dev            Start in dev mode (Docker: cargo watch + vite HMR)"
+    echo "  dev-local      Start in dev mode (local: cargo watch + vite HMR)"
+    echo "  release-local  Start in release mode (local: optimized binary + vite)"
+    echo "  build          Build production Docker image"
+    echo "  down           Stop all (Docker containers + local processes)"
+    echo "  reset          Stop all + wipe database + clean worktrees/branches"
     echo ""
+}
+
+# Stop local processes on factory ports
+stop_local() {
+    lsof -ti:3141 | xargs kill -9 2>/dev/null || true
+    lsof -ti:5173 | xargs kill -9 2>/dev/null || true
+}
+
+# Ensure frontend dependencies are installed
+ensure_ui_deps() {
+    if [ ! -d ui/node_modules ]; then
+        echo "Installing frontend dependencies..."
+        (cd ui && npm ci)
+    fi
 }
 
 case "${1:-prod}" in
@@ -60,18 +77,86 @@ case "${1:-prod}" in
         docker compose --profile prod up --build
         ;;
     dev)
-        echo "Starting Forge (dev mode)..."
+        echo "Starting Forge (dev mode — Docker)..."
         echo "  Backend (cargo watch): http://localhost:3141"
         echo "  Frontend (vite HMR):   http://localhost:5173"
         docker compose --profile dev up --build
+        ;;
+    dev-local)
+        stop_local
+        ensure_ui_deps
+        export FORGE_CMD="${FORGE_CMD:-$SCRIPT_DIR/target/debug/forge}"
+        echo "Starting Forge (dev mode — local)..."
+        echo "  Backend (cargo watch): http://localhost:3141"
+        echo "  Frontend (vite HMR):   http://localhost:5173"
+        echo "  FORGE_CMD=$FORGE_CMD"
+        echo ""
+
+        # Start frontend in background
+        (cd ui && npm run dev) &
+        UI_PID=$!
+
+        # Start backend with cargo watch (rebuilds on change)
+        cargo watch \
+            -i ".forge/" -i "ui/" -i ".claude/" -i ".entire/" -i ".git/" \
+            -x "run -- factory --dev" &
+        BACKEND_PID=$!
+
+        # Wait for either to exit, then clean up
+        trap "kill $UI_PID $BACKEND_PID 2>/dev/null; exit" INT TERM
+        wait -n $UI_PID $BACKEND_PID 2>/dev/null
+        kill $UI_PID $BACKEND_PID 2>/dev/null
+        ;;
+    release-local)
+        stop_local
+        ensure_ui_deps
+        echo "Building release binary..."
+        cargo build --release
+        export FORGE_CMD="${FORGE_CMD:-$SCRIPT_DIR/target/release/forge}"
+        echo ""
+        echo "Starting Forge (release mode — local)..."
+        echo "  Backend: http://localhost:3141"
+        echo "  Frontend (vite HMR): http://localhost:5173"
+        echo "  FORGE_CMD=$FORGE_CMD"
+        echo ""
+
+        # Start frontend in background
+        (cd ui && npm run dev) &
+        UI_PID=$!
+
+        # Start backend with release binary
+        ./target/release/forge factory --dev &
+        BACKEND_PID=$!
+
+        trap "kill $UI_PID $BACKEND_PID 2>/dev/null; exit" INT TERM
+        wait -n $UI_PID $BACKEND_PID 2>/dev/null
+        kill $UI_PID $BACKEND_PID 2>/dev/null
         ;;
     build)
         echo "Building production image..."
         docker compose --profile prod build
         ;;
     down)
-        docker compose --profile prod --profile dev down
-        echo "All containers stopped."
+        echo "Stopping all processes..."
+        stop_local
+        docker compose --profile prod --profile dev down 2>/dev/null || true
+        echo "All processes stopped."
+        ;;
+    reset)
+        echo "Stopping all processes..."
+        stop_local
+        docker compose --profile prod --profile dev down 2>/dev/null || true
+
+        echo "Resetting factory database..."
+        rm -f .forge/factory.db .forge/factory.db-journal .forge/factory.db-wal .forge/factory.db-shm
+
+        echo "Cleaning up worktrees..."
+        find .forge/repos -name ".worktrees" -type d -exec rm -rf {} + 2>/dev/null || true
+
+        echo "Removing forge/* branches..."
+        git branch 2>/dev/null | grep "forge/" | xargs git branch -D 2>/dev/null || true
+
+        echo "Factory reset complete."
         ;;
     -h|--help|help)
         usage
