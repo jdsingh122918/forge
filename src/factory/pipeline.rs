@@ -1259,7 +1259,7 @@ fn build_execution_command(
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "content_type")]
 #[allow(dead_code)]
-enum StreamJsonEvent {
+pub enum StreamJsonEvent {
     Text {
         text: String,
     },
@@ -1278,7 +1278,7 @@ enum StreamJsonEvent {
     Skip,
 }
 
-fn parse_stream_json_line(line: &str) -> StreamJsonEvent {
+pub fn parse_stream_json_line(line: &str) -> StreamJsonEvent {
     // Try to parse as JSON
     let json: serde_json::Value = match serde_json::from_str(line) {
         Ok(v) => v,
@@ -1392,7 +1392,7 @@ fn parse_stream_json_line(line: &str) -> StreamJsonEvent {
     StreamJsonEvent::Skip
 }
 
-fn extract_tool_input_summary(tool_name: &str, input: Option<&serde_json::Value>) -> String {
+pub fn extract_tool_input_summary(tool_name: &str, input: Option<&serde_json::Value>) -> String {
     let input = match input {
         Some(v) => v,
         None => return String::new(),
@@ -1426,7 +1426,7 @@ fn extract_tool_input_summary(tool_name: &str, input: Option<&serde_json::Value>
     }
 }
 
-fn extract_file_change(
+pub fn extract_file_change(
     tool_name: &str,
     input: Option<&serde_json::Value>,
 ) -> Option<(String, FileAction)> {

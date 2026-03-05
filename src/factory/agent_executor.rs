@@ -9,7 +9,8 @@ use tokio::process::Command;
 use tokio::sync::{Mutex, broadcast};
 
 use crate::factory::db::DbHandle;
-use crate::factory::models::{AgentEventType, AgentTask, AgentTaskStatus, SignalType};
+use crate::factory::models::{AgentEventType, AgentTask, AgentTaskStatus, FileAction, SignalType};
+use crate::factory::pipeline::{StreamJsonEvent, extract_file_change, parse_stream_json_line};
 use crate::factory::ws::{WsMessage, broadcast_message};
 
 /// Abstraction over agent task execution for testability.
@@ -99,49 +100,74 @@ impl OutputParser {
             }
         }
 
-        // Try to parse as JSON (tool use or structured output)
-        if trimmed.starts_with('{')
-            && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed)
-            && let Some(msg_type) = parsed.get("type").and_then(|t| t.as_str())
-        {
-            return match msg_type {
-                "thinking" => ParsedEvent {
-                    event_type: AgentEventType::Thinking,
-                    content: parsed
-                        .get("content")
-                        .and_then(|c| c.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    metadata: None,
-                },
-                "tool_use" | "tool_result" => {
-                    let summary = format!(
-                        "{} {}",
-                        parsed
-                            .get("tool")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("unknown"),
-                        parsed.get("file").and_then(|f| f.as_str()).unwrap_or("")
-                    );
-                    ParsedEvent {
-                        event_type: AgentEventType::Action,
-                        content: summary.trim().to_string(),
-                        metadata: Some(parsed),
-                    }
+        // Use the stream-json parser to classify the event
+        match parse_stream_json_line(trimmed) {
+            StreamJsonEvent::Skip => ParsedEvent {
+                event_type: AgentEventType::Output,
+                content: String::new(),
+                metadata: None,
+            },
+            StreamJsonEvent::Text { text } => ParsedEvent {
+                event_type: AgentEventType::Output,
+                content: text,
+                metadata: None,
+            },
+            StreamJsonEvent::Thinking { text } => ParsedEvent {
+                event_type: AgentEventType::Thinking,
+                content: text,
+                metadata: None,
+            },
+            StreamJsonEvent::ToolStart {
+                tool_name,
+                tool_id,
+                input_summary,
+            } => {
+                let summary = if input_summary.is_empty() {
+                    tool_name.clone()
+                } else {
+                    format!("{} {}", tool_name, input_summary)
+                };
+                // Try to extract file change metadata from the original JSON
+                let metadata = if let Ok(json) = serde_json::from_str::<serde_json::Value>(trimmed)
+                {
+                    let input = json
+                        .get("content_block")
+                        .and_then(|cb| cb.get("input"))
+                        .or_else(|| json.get("input"))
+                        .or_else(|| {
+                            json.get("content")
+                                .and_then(|c| c.as_array())
+                                .and_then(|arr| arr.iter().find(|b| {
+                                    b.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                                }))
+                                .and_then(|b| b.get("input"))
+                        });
+                    let file_change = extract_file_change(&tool_name, input);
+                    Some(serde_json::json!({
+                        "tool": tool_name,
+                        "tool_id": tool_id,
+                        "input_summary": input_summary,
+                        "file_change": file_change.as_ref().map(|(path, action)| {
+                            serde_json::json!({"path": path, "action": action})
+                        }),
+                    }))
+                } else {
+                    Some(serde_json::json!({"tool": tool_name, "tool_id": tool_id}))
+                };
+                ParsedEvent {
+                    event_type: AgentEventType::Action,
+                    content: summary,
+                    metadata,
                 }
-                _ => ParsedEvent {
-                    event_type: AgentEventType::Output,
-                    content: trimmed.to_string(),
-                    metadata: Some(parsed),
-                },
-            };
-        }
-
-        // Default: plain output
-        ParsedEvent {
-            event_type: AgentEventType::Output,
-            content: trimmed.to_string(),
-            metadata: None,
+            }
+            StreamJsonEvent::ToolEnd {
+                tool_id,
+                output_preview,
+            } => ParsedEvent {
+                event_type: AgentEventType::Output,
+                content: output_preview,
+                metadata: Some(serde_json::json!({"tool_id": tool_id})),
+            },
         }
     }
 }
@@ -424,6 +450,30 @@ impl AgentExecutor {
                         }
                     }
                     AgentEventType::Action => {
+                        // Emit file change event if this tool modified a file
+                        if let Some(ref meta) = parsed.metadata {
+                            if let Some(fc) = meta.get("file_change").and_then(|fc| fc.as_object()) {
+                                if let (Some(path), Some(action_str)) = (
+                                    fc.get("path").and_then(|p| p.as_str()),
+                                    fc.get("action").and_then(|a| a.as_str()),
+                                ) {
+                                    let action = match action_str {
+                                        "created" => FileAction::Created,
+                                        "modified" => FileAction::Modified,
+                                        "deleted" => FileAction::Deleted,
+                                        _ => FileAction::Modified,
+                                    };
+                                    broadcast_message(
+                                        &self.tx,
+                                        &WsMessage::PipelineFileChanged {
+                                            run_id,
+                                            file_path: path.to_string(),
+                                            action,
+                                        },
+                                    );
+                                }
+                            }
+                        }
                         broadcast_message(
                             &self.tx,
                             &WsMessage::AgentAction {
@@ -457,7 +507,10 @@ impl AgentExecutor {
                         );
                     }
                     _ => {
-                        if last_broadcast.elapsed() >= std::time::Duration::from_millis(500) {
+                        if !parsed.content.is_empty()
+                            && last_broadcast.elapsed()
+                                >= std::time::Duration::from_millis(500)
+                        {
                             broadcast_message(
                                 &self.tx,
                                 &WsMessage::AgentOutput {
@@ -767,9 +820,20 @@ mod tests {
 
     #[test]
     fn test_parse_output_line_tool_use() {
-        let line = r#"{"type":"tool_use","tool":"Edit","file":"src/main.rs","line":42}"#;
+        // Claude CLI stream-json format: content_block_start with tool_use
+        let line = r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_abc","name":"Edit","input":{"file_path":"src/main.rs"}}}"#;
         let event = OutputParser::parse_line(line);
         assert_eq!(event.event_type, AgentEventType::Action);
+        assert!(event.content.contains("Edit"));
+    }
+
+    #[test]
+    fn test_parse_output_line_tool_use_legacy_subtype() {
+        // Legacy subtype format
+        let line = r#"{"subtype":"tool_use","tool_name":"Edit","input":{"file_path":"src/main.rs"}}"#;
+        let event = OutputParser::parse_line(line);
+        assert_eq!(event.event_type, AgentEventType::Action);
+        assert!(event.content.contains("Edit"));
     }
 
     #[test]
@@ -782,9 +846,11 @@ mod tests {
 
     #[test]
     fn test_parse_output_line_thinking() {
-        let line = r#"{"type":"thinking","content":"Let me analyze this..."}"#;
+        // Claude CLI stream-json format: content_block_delta with thinking_delta
+        let line = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me analyze this..."}}"#;
         let event = OutputParser::parse_line(line);
         assert_eq!(event.event_type, AgentEventType::Thinking);
+        assert!(event.content.contains("Let me analyze"));
     }
 
     #[test]
@@ -798,10 +864,39 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_output_line_unknown_json() {
+    fn test_parse_output_line_unknown_json_skipped() {
+        // Unknown JSON types are skipped (metadata noise)
         let line = r#"{"type":"unknown_type","data":"something"}"#;
         let event = OutputParser::parse_line(line);
         assert_eq!(event.event_type, AgentEventType::Output);
+        assert!(event.content.is_empty());
+    }
+
+    #[test]
+    fn test_parse_output_line_message_start_skipped() {
+        let line = r#"{"type":"message_start","message":{"id":"msg_123","model":"claude-sonnet-4-6"}}"#;
+        let event = OutputParser::parse_line(line);
+        assert!(event.content.is_empty(), "metadata events should produce empty content");
+    }
+
+    #[test]
+    fn test_parse_output_line_text_delta() {
+        let line = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello world"}}"#;
+        let event = OutputParser::parse_line(line);
+        assert_eq!(event.event_type, AgentEventType::Output);
+        assert_eq!(event.content, "Hello world");
+    }
+
+    #[test]
+    fn test_parse_output_line_file_change_detected() {
+        let line = r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_xyz","name":"Write","input":{"file_path":"src/new.rs"}}}"#;
+        let event = OutputParser::parse_line(line);
+        assert_eq!(event.event_type, AgentEventType::Action);
+        let metadata = event.metadata.unwrap();
+        assert!(metadata.get("file_change").is_some());
+        let fc = metadata["file_change"].as_object().unwrap();
+        assert_eq!(fc["path"].as_str().unwrap(), "src/new.rs");
+        assert_eq!(fc["action"].as_str().unwrap(), "created");
     }
 
     #[test]
