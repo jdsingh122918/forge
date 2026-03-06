@@ -292,21 +292,18 @@ impl PipelineRunner {
         }
 
         // Update DB status to Cancelled and move issue back to Ready
-        let run = db.call(move |db| db.cancel_pipeline_run(run_id)).await?;
+        let run = db.cancel_pipeline_run(run_id).await?;
         broadcast_message(tx, &WsMessage::PipelineFailed { run: run.clone() });
 
         // Auto-move issue back to Ready
         let issue_id = run.issue_id;
         let should_move = db
-            .call(move |db| {
-                Ok(db
-                    .get_issue(issue_id)?
-                    .is_some_and(|issue| issue.column == IssueColumn::InProgress))
-            })
-            .await?;
+            .get_issue(issue_id)
+            .await?
+            .is_some_and(|issue| issue.column == IssueColumn::InProgress);
         if should_move {
             if let Err(e) = db
-                .call(move |db| db.move_issue(issue_id, &IssueColumn::Ready, 0))
+                .move_issue(issue_id, &IssueColumn::Ready, 0)
                 .await
             {
                 eprintln!(
@@ -453,30 +450,25 @@ impl PipelineRunner {
             ));
         }
         let reasoning = plan.reasoning.clone();
-        let (team, db_tasks) = db
-            .call(move |db| {
-                let team = db.create_agent_team(run_id, &strategy, &isolation, &reasoning)?;
+        let team = db.create_agent_team(run_id, &strategy, &isolation, &reasoning).await?;
 
-                let mut db_tasks = Vec::new();
-                for (name, description, role, wave, depends_on, task_isolation) in &parsed_tasks {
-                    let depends: Vec<i64> = depends_on
-                        .iter()
-                        .filter_map(|&idx| db_tasks.get(idx as usize).map(|t: &AgentTask| t.id))
-                        .collect();
-                    let task = db.create_agent_task(
-                        team.id,
-                        name,
-                        description,
-                        role,
-                        *wave,
-                        &depends,
-                        task_isolation,
-                    )?;
-                    db_tasks.push(task);
-                }
-                Ok((team, db_tasks))
-            })
-            .await?;
+        let mut db_tasks = Vec::new();
+        for (name, description, role, wave, depends_on, task_isolation) in &parsed_tasks {
+            let depends: Vec<i64> = depends_on
+                .iter()
+                .filter_map(|&idx| db_tasks.get(idx as usize).map(|t: &AgentTask| t.id))
+                .collect();
+            let task = db.create_agent_task(
+                team.id,
+                name,
+                description,
+                role,
+                *wave,
+                &depends,
+                task_isolation,
+            ).await?;
+            db_tasks.push(task);
+        }
 
         // Step 3: Broadcast TeamCreated
         broadcast_message(
@@ -776,15 +768,13 @@ impl PipelineRunner {
     ) -> Result<()> {
         // Look up the project path from the DB (per-project, not the global default)
         let project_id = issue.project_id;
-        let project_path = db
-            .call(move |db| match db.get_project(project_id) {
-                Ok(Some(project)) => Ok(project.path),
-                Ok(None) => {
-                    anyhow::bail!("Project {} not found in DB", project_id);
-                }
-                Err(e) => Err(e.context(format!("Failed to look up project {}", project_id))),
-            })
-            .await?;
+        let project_path = match db.get_project(project_id).await {
+            Ok(Some(project)) => Ok(project.path),
+            Ok(None) => {
+                anyhow::bail!("Project {} not found in DB", project_id);
+            }
+            Err(e) => Err(e.context(format!("Failed to look up project {}", project_id))),
+        }?;
         let project_path = translate_host_path_to_container(&project_path);
         let issue_id = issue.id;
         let issue_title = issue.title.clone();
@@ -800,20 +790,16 @@ impl PipelineRunner {
         {
             let need_move = issue.column != IssueColumn::InProgress;
             let run = db
-                .call(move |db| {
-                    let run =
-                        db.update_pipeline_run(run_id, &PipelineStatus::Running, None, None)?;
-                    if need_move
-                        && let Err(e) = db.move_issue(issue_id, &IssueColumn::InProgress, 0)
-                    {
-                        eprintln!(
-                            "[pipeline] run_id={}: failed to move issue to InProgress: {:#}",
-                            run_id, e
-                        );
-                    }
-                    Ok(run)
-                })
+                .update_pipeline_run(run_id, &PipelineStatus::Running, None, None)
                 .await?;
+            if need_move
+                && let Err(e) = db.move_issue(issue_id, &IssueColumn::InProgress, 0).await
+            {
+                eprintln!(
+                    "[pipeline] run_id={}: failed to move issue to InProgress: {:#}",
+                    run_id, e
+                );
+            }
             broadcast_message(&tx, &WsMessage::PipelineStarted { run });
             if issue.column != IssueColumn::InProgress {
                 broadcast_message(
@@ -841,17 +827,14 @@ impl PipelineRunner {
                 match git_result {
                     Ok(name) => {
                         // Store branch name in DB and broadcast
+                        if let Err(e) = db
+                            .update_pipeline_branch(run_id, &name)
+                            .await
                         {
-                            let name_clone = name.clone();
-                            if let Err(e) = db
-                                .call(move |db| db.update_pipeline_branch(run_id, &name_clone))
-                                .await
-                            {
-                                eprintln!(
-                                    "[pipeline] run_id={}: failed to update pipeline branch: {:#}",
-                                    run_id, e
-                                );
-                            }
+                            eprintln!(
+                                "[pipeline] run_id={}: failed to update pipeline branch: {:#}",
+                                run_id, e
+                            );
                         }
                         broadcast_message(
                             &tx,
@@ -996,12 +979,9 @@ impl PipelineRunner {
             // Check if already cancelled (e.g., by cancel() call)
             {
                 let is_cancelled = match db
-                    .call(move |db| {
-                        Ok(db
-                            .get_pipeline_run(run_id)?
-                            .is_some_and(|r| r.status == PipelineStatus::Cancelled))
-                    })
+                    .get_pipeline_run(run_id)
                     .await
+                    .map(|r| r.is_some_and(|r| r.status == PipelineStatus::Cancelled))
                 {
                     Ok(cancelled) => cancelled,
                     Err(e) => {
@@ -1035,11 +1015,8 @@ impl PipelineRunner {
                         // git lock released — now safe to acquire DB lock
                         match pr_result {
                             Ok(pr_url) => {
-                                let pr_url_clone = pr_url.clone();
                                 if let Err(e) = db
-                                    .call(move |db| {
-                                        db.update_pipeline_pr_url(run_id, &pr_url_clone)
-                                    })
+                                    .update_pipeline_pr_url(run_id, &pr_url)
                                     .await
                                 {
                                     eprintln!(
@@ -1061,21 +1038,15 @@ impl PipelineRunner {
                         }
                     }
 
-                    match db.call({
-                        let summary = summary.clone();
-                        move |db| {
-                            let run = db.update_pipeline_run(
-                                run_id,
-                                &PipelineStatus::Completed,
-                                Some(&summary),
-                                None,
-                            )?;
-                            if let Err(e) = db.move_issue(issue_id, &IssueColumn::InReview, 0) {
-                                eprintln!("[pipeline] run_id={}: failed to move issue to InReview: {:#}", run_id, e);
-                            }
-                            Ok(run)
-                        }
-                    }).await {
+                    if let Err(e) = db.move_issue(issue_id, &IssueColumn::InReview, 0).await {
+                        eprintln!("[pipeline] run_id={}: failed to move issue to InReview: {:#}", run_id, e);
+                    }
+                    match db.update_pipeline_run(
+                        run_id,
+                        &PipelineStatus::Completed,
+                        Some(&summary),
+                        None,
+                    ).await {
                         Ok(run) => broadcast_message(&tx, &WsMessage::PipelineCompleted { run }),
                         Err(e) => {
                             eprintln!(
@@ -1104,17 +1075,12 @@ impl PipelineRunner {
                 Err(e) => {
                     let error_msg = format!("{:#}", e);
                     match db
-                        .call({
-                            let error_msg = error_msg.clone();
-                            move |db| {
-                                db.update_pipeline_run(
-                                    run_id,
-                                    &PipelineStatus::Failed,
-                                    None,
-                                    Some(&error_msg),
-                                )
-                            }
-                        })
+                        .update_pipeline_run(
+                            run_id,
+                            &PipelineStatus::Failed,
+                            None,
+                            Some(&error_msg),
+                        )
                         .await
                     {
                         Ok(run) => broadcast_message(&tx, &WsMessage::PipelineFailed { run }),
@@ -1494,24 +1460,17 @@ async fn execute_pipeline_streaming(
         // Fall back to simple progress JSON (from claude --print)
         if let Some(progress) = try_parse_progress(&line) {
             // Update DB with progress
+            if let Err(e) = db
+                .update_pipeline_progress(run_id, progress.phase_count, progress.phase, progress.iteration)
+                .await
             {
-                let phase_count = progress.phase_count;
-                let phase = progress.phase;
-                let iteration = progress.iteration;
-                if let Err(e) = db
-                    .call(move |db| {
-                        db.update_pipeline_progress(run_id, phase_count, phase, iteration)
-                    })
-                    .await
-                {
-                    broadcast_message(
-                        tx,
-                        &WsMessage::PipelineError {
-                            run_id,
-                            message: format!("Failed to update pipeline progress: {:#}", e),
-                        },
-                    );
-                }
+                broadcast_message(
+                    tx,
+                    &WsMessage::PipelineError {
+                        run_id,
+                        message: format!("Failed to update pipeline progress: {:#}", e),
+                    },
+                );
             }
 
             // Compute a rough percentage
@@ -1754,13 +1713,8 @@ async fn execute_pipeline_docker(
                 continue;
             }
             if let Some(progress) = try_parse_progress(&line) {
-                let phase_count = progress.phase_count;
-                let phase = progress.phase;
-                let iteration = progress.iteration;
                 if let Err(e) = db
-                    .call(move |db| {
-                        db.update_pipeline_progress(run_id, phase_count, phase, iteration)
-                    })
+                    .update_pipeline_progress(run_id, progress.phase_count, progress.phase, progress.iteration)
                     .await
                 {
                     broadcast_message(
@@ -1938,18 +1892,15 @@ async fn process_phase_event(
 ) {
     match event {
         PhaseEventJson::Started { phase, wave } => {
-            let phase_owned = phase.clone();
             if let Err(e) = db
-                .call(move |db| {
-                    db.upsert_pipeline_phase(
-                        run_id,
-                        &phase_owned,
-                        &phase_owned,
-                        "running",
-                        None,
-                        None,
-                    )
-                })
+                .upsert_pipeline_phase(
+                    run_id,
+                    phase,
+                    phase,
+                    "running",
+                    None,
+                    None,
+                )
                 .await
             {
                 broadcast_message(
@@ -1976,20 +1927,15 @@ async fn process_phase_event(
             budget,
             percent,
         } => {
-            let phase_owned = phase.clone();
-            let iteration_val = *iteration as i32;
-            let budget_val = *budget as i32;
             if let Err(e) = db
-                .call(move |db| {
-                    db.upsert_pipeline_phase(
-                        run_id,
-                        &phase_owned,
-                        &phase_owned,
-                        "running",
-                        Some(iteration_val),
-                        Some(budget_val),
-                    )
-                })
+                .upsert_pipeline_phase(
+                    run_id,
+                    phase,
+                    phase,
+                    "running",
+                    Some(*iteration as i32),
+                    Some(*budget as i32),
+                )
                 .await
             {
                 broadcast_message(
@@ -2016,19 +1962,15 @@ async fn process_phase_event(
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
             let status_str = if success { "completed" } else { "failed" };
-            let phase_owned = phase.clone();
-            let status_owned = status_str.to_string();
             if let Err(e) = db
-                .call(move |db| {
-                    db.upsert_pipeline_phase(
-                        run_id,
-                        &phase_owned,
-                        &phase_owned,
-                        &status_owned,
-                        None,
-                        None,
-                    )
-                })
+                .upsert_pipeline_phase(
+                    run_id,
+                    phase,
+                    phase,
+                    status_str,
+                    None,
+                    None,
+                )
                 .await
             {
                 broadcast_message(
@@ -2107,7 +2049,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::super::agent_executor::TaskRunner;
-    use super::super::db::{DbHandle, FactoryDb};
+    use super::super::db::DbHandle;
     use super::super::planner::{PlanProvider, PlanResponse, PlanTask};
 
     /// Mutex to serialize tests that mutate environment variables.
@@ -2274,14 +2216,14 @@ mod tests {
         // Use a command that will fail
         unsafe { std::env::set_var("CLAUDE_CMD", "false") };
 
-        let db = FactoryDb::new_in_memory().unwrap();
-        let project = db.create_project("test", "/tmp/nonexistent").unwrap();
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let project = db.create_project("test", "/tmp/nonexistent").await.unwrap();
         let issue = db
             .create_issue(project.id, "Test issue", "Test desc", &IssueColumn::Backlog)
+            .await
             .unwrap();
-        let run = db.create_pipeline_run(issue.id).unwrap();
+        let run = db.create_pipeline_run(issue.id).await.unwrap();
 
-        let db = DbHandle::new(db);
         let (tx, _rx) = broadcast::channel(16);
 
         let runner = PipelineRunner::new("/tmp/nonexistent", None);
@@ -2293,8 +2235,7 @@ mod tests {
         // Give the background task time to complete
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-        let db = db.lock_sync().unwrap();
-        let updated_run = db.get_pipeline_run(run.id).unwrap().unwrap();
+        let updated_run = db.get_pipeline_run(run.id).await.unwrap().unwrap();
         // Should be either Running (if claude not found) or Failed
         assert!(
             updated_run.status == PipelineStatus::Failed
@@ -2312,14 +2253,13 @@ mod tests {
         let _lock = ENV_MUTEX.lock().await;
         unsafe { std::env::set_var("CLAUDE_CMD", "echo") };
 
-        let db = FactoryDb::new_in_memory().unwrap();
-        let project = db.create_project("test", "/tmp/test").unwrap();
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let project = db.create_project("test", "/tmp/test").await.unwrap();
         let issue = db
             .create_issue(project.id, "Broadcast test", "", &IssueColumn::Backlog)
+            .await
             .unwrap();
-        let run = db.create_pipeline_run(issue.id).unwrap();
-
-        let db = DbHandle::new(db);
+        let run = db.create_pipeline_run(issue.id).await.unwrap();
         let (tx, mut rx) = broadcast::channel(16);
 
         let runner = PipelineRunner::new("/tmp", None);
@@ -2362,14 +2302,13 @@ mod tests {
 
         unsafe { std::env::set_var("CLAUDE_CMD", script_path.to_str().unwrap()) };
 
-        let db = FactoryDb::new_in_memory().unwrap();
-        let project = db.create_project("test", tmp_path).unwrap();
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let project = db.create_project("test", tmp_path).await.unwrap();
         let issue = db
             .create_issue(project.id, "Cancel test", "", &IssueColumn::Backlog)
+            .await
             .unwrap();
-        let run = db.create_pipeline_run(issue.id).unwrap();
-
-        let db = DbHandle::new(db);
+        let run = db.create_pipeline_run(issue.id).await.unwrap();
         let (tx, _rx) = broadcast::channel(16);
 
         let runner = PipelineRunner::new(tmp_path, None);
@@ -2427,14 +2366,13 @@ mod tests {
 
         unsafe { std::env::set_var("CLAUDE_CMD", script_path.to_str().unwrap()) };
 
-        let db = FactoryDb::new_in_memory().unwrap();
-        let project = db.create_project("test", tmp_path).unwrap();
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let project = db.create_project("test", tmp_path).await.unwrap();
         let issue = db
             .create_issue(project.id, "Cleanup test", "", &IssueColumn::Backlog)
+            .await
             .unwrap();
-        let run = db.create_pipeline_run(issue.id).unwrap();
-
-        let db = DbHandle::new(db);
+        let run = db.create_pipeline_run(issue.id).await.unwrap();
         let (tx, _rx) = broadcast::channel(16);
 
         let runner = PipelineRunner::new(tmp_path, None);
@@ -2527,12 +2465,13 @@ mod tests {
     #[tokio::test]
     async fn test_failed_wave_leaves_subsequent_tasks_pending() -> Result<()> {
         // Set up DB with a team that has tasks in wave 0 and wave 1
-        let db = FactoryDb::new_in_memory().unwrap();
-        let project = db.create_project("test", "/tmp/test-wave").unwrap();
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let project = db.create_project("test", "/tmp/test-wave").await.unwrap();
         let issue = db
             .create_issue(project.id, "Wave test", "desc", &IssueColumn::Backlog)
+            .await
             .unwrap();
-        let run = db.create_pipeline_run(issue.id).unwrap();
+        let run = db.create_pipeline_run(issue.id).await.unwrap();
         let team = db
             .create_agent_team(
                 run.id,
@@ -2540,6 +2479,7 @@ mod tests {
                 &IsolationStrategy::Worktree,
                 "test reasoning",
             )
+            .await
             .unwrap();
 
         // Create two tasks: wave 0 and wave 1
@@ -2553,6 +2493,7 @@ mod tests {
                 &[],
                 &IsolationStrategy::Shared,
             )
+            .await
             .unwrap();
         let task_w1 = db
             .create_agent_task(
@@ -2564,13 +2505,14 @@ mod tests {
                 &[],
                 &IsolationStrategy::Shared,
             )
+            .await
             .unwrap();
 
         // Set wave 0 task to Failed
-        db.update_agent_task_status(task_w0.id, &AgentTaskStatus::Failed, Some("test error"))?;
+        db.update_agent_task_status(task_w0.id, &AgentTaskStatus::Failed, Some("test error")).await?;
 
         // Verify wave 1 task is still Pending (never started)
-        let task_w1_updated = db.get_agent_task(task_w1.id)?;
+        let task_w1_updated = db.get_agent_task(task_w1.id).await?;
         assert_eq!(task_w1_updated.status, AgentTaskStatus::Pending);
         assert!(
             task_w1_updated.started_at.is_none(),
@@ -2578,7 +2520,7 @@ mod tests {
         );
 
         // Verify the failed task has its error recorded
-        let task_w0_updated = db.get_agent_task(task_w0.id)?;
+        let task_w0_updated = db.get_agent_task(task_w0.id).await?;
         assert_eq!(task_w0_updated.status, AgentTaskStatus::Failed);
         assert_eq!(task_w0_updated.error.as_deref(), Some("test error"));
 
@@ -2853,20 +2795,17 @@ mod tests {
     }
 
     /// Helper: set up DB with project, issue, and pipeline run
-    fn setup_test_db() -> (DbHandle, i64) {
-        let db = FactoryDb::new_in_memory().unwrap();
-        let project = db.create_project("test", "/tmp/test-project").unwrap();
+    async fn setup_test_db() -> (DbHandle, i64) {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let project = db.create_project("test", "/tmp/test-project").await.unwrap();
         let issue = db
             .create_issue(project.id, "Test issue", "Test desc", &IssueColumn::Backlog)
+            .await
             .unwrap();
-        let run = db.create_pipeline_run(issue.id).unwrap();
-        let db = DbHandle::new(db);
-        {
-            let guard = db.lock_sync().unwrap();
-            guard
-                .update_pipeline_run(run.id, &PipelineStatus::Running, None, None)
-                .unwrap();
-        }
+        let run = db.create_pipeline_run(issue.id).await.unwrap();
+        db.update_pipeline_run(run.id, &PipelineStatus::Running, None, None)
+            .await
+            .unwrap();
         (db, run.id)
     }
 
@@ -2874,7 +2813,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_single_sequential_task_triggers_fallback() {
-        let (db, run_id) = setup_test_db();
+        let (db, run_id) = setup_test_db().await;
         let (tx, _rx) = broadcast::channel(16);
         let plan = PlanResponse {
             strategy: "sequential".to_string(),
@@ -2908,7 +2847,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_single_parallel_task_does_not_fallback() {
-        let (db, run_id) = setup_test_db();
+        let (db, run_id) = setup_test_db().await;
         let (tx, _rx) = broadcast::channel(16);
         let plan = PlanResponse {
             strategy: "parallel".to_string(),
@@ -2942,7 +2881,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_multi_task_sequential_does_not_fallback() {
-        let (db, run_id) = setup_test_db();
+        let (db, run_id) = setup_test_db().await;
         let (tx, _rx) = broadcast::channel(16);
         let plan = PlanResponse {
             strategy: "sequential".to_string(),
@@ -2979,7 +2918,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_planner_failure_triggers_fallback_plan() {
-        let (db, run_id) = setup_test_db();
+        let (db, run_id) = setup_test_db().await;
         let (tx, _rx) = broadcast::channel(16);
         let planner = MockPlanProvider::returning_error("LLM unavailable");
         let runner: Arc<dyn TaskRunner> = Arc::new(MockTaskRunner::all_succeed());
