@@ -229,21 +229,14 @@ impl AgentExecutor {
             anyhow::bail!("Git worktree creation failed: {}", stderr);
         }
 
-        {
-            let task_id = task.id;
-            let worktree_str_owned = worktree_str.to_string();
-            let branch_name_owned = branch_name.clone();
-            self.db
-                .call(move |db| {
-                    db.update_agent_task_isolation(
-                        task_id,
-                        Some(&worktree_str_owned),
-                        None,
-                        Some(&branch_name_owned),
-                    )
-                })
-                .await?;
-        }
+        self.db
+            .update_agent_task_isolation(
+                task.id,
+                Some(worktree_str),
+                None,
+                Some(&branch_name),
+            )
+            .await?;
 
         Ok((worktree_path, branch_name))
     }
@@ -286,14 +279,9 @@ impl AgentExecutor {
             },
         );
 
-        {
-            let task_id = task.id;
-            self.db
-                .call(move |db| {
-                    db.update_agent_task_status(task_id, &AgentTaskStatus::Running, None)
-                })
-                .await?;
-        }
+        self.db
+            .update_agent_task_status(task.id, &AgentTaskStatus::Running, None)
+            .await?;
 
         let claude_cmd = std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".to_string());
 
@@ -351,63 +339,52 @@ impl AgentExecutor {
             )>();
 
             let db_writer = self.db.clone();
+            let flush_interval = std::time::Duration::from_secs(2);
             let writer_task = tokio::spawn(async move {
-                let mut batch = Vec::new();
-                loop {
-                    // Wait for first event
-                    match event_rx.recv().await {
-                        Some(event) => batch.push(event),
-                        None => break, // Channel closed
-                    }
-                    // Drain any additional ready events (up to 50)
-                    while batch.len() < 50 {
-                        match event_rx.try_recv() {
-                            Ok(event) => batch.push(event),
-                            Err(_) => break,
-                        }
-                    }
-                    // Flush batch to DB using lock_sync() for brief batch writes
-                    {
-                        let db = match db_writer.lock_sync() {
-                            Ok(db) => db,
-                            Err(e) => {
-                                eprintln!("[agent] DB lock poisoned, stopping event writer: {}", e);
-                                break;
-                            }
-                        };
-                        for (task_id, event_type, content, metadata) in batch.drain(..) {
-                            if let Err(e) = db.create_agent_event(
-                                task_id,
-                                &event_type,
-                                &content,
-                                metadata.as_ref(),
-                            ) {
-                                eprintln!("[agent] Failed to write event: {:#}", e);
-                            }
+                let mut batch: Vec<(i64, String, String, Option<serde_json::Value>)> = Vec::new();
+
+                async fn flush_events(
+                    db: &DbHandle,
+                    batch: &mut Vec<(i64, String, String, Option<serde_json::Value>)>,
+                ) {
+                    for (task_id, event_type, content, metadata) in batch.drain(..) {
+                        if let Err(e) = db
+                            .create_agent_event(task_id, &event_type, &content, metadata.as_ref())
+                            .await
+                        {
+                            eprintln!("[agent] Failed to write event: {e:#}");
                         }
                     }
                 }
-                // Flush remaining
-                if !batch.is_empty() {
-                    let db = match db_writer.lock_sync() {
-                        Ok(db) => db,
-                        Err(e) => {
-                            eprintln!(
-                                "[agent] DB lock poisoned, dropping {} unflushed events: {}",
-                                batch.len(),
-                                e
-                            );
-                            return;
+
+                loop {
+                    tokio::select! {
+                        event = event_rx.recv() => {
+                            match event {
+                                Some(e) => {
+                                    batch.push(e);
+                                    // Drain additional ready events
+                                    while batch.len() < 25 {
+                                        match event_rx.try_recv() {
+                                            Ok(e) => batch.push(e),
+                                            Err(_) => break,
+                                        }
+                                    }
+                                    if batch.len() >= 25 {
+                                        flush_events(&db_writer, &mut batch).await;
+                                    }
+                                }
+                                None => {
+                                    // Channel closed — flush remaining and exit
+                                    flush_events(&db_writer, &mut batch).await;
+                                    break;
+                                }
+                            }
                         }
-                    };
-                    for (task_id, event_type, content, metadata) in batch.drain(..) {
-                        if let Err(e) =
-                            db.create_agent_event(task_id, &event_type, &content, metadata.as_ref())
-                        {
-                            eprintln!(
-                                "[agent] Failed to flush event for task {}: {:#}",
-                                task_id, e
-                            );
+                        _ = tokio::time::sleep(flush_interval) => {
+                            if !batch.is_empty() {
+                                flush_events(&db_writer, &mut batch).await;
+                            }
                         }
                     }
                 }
@@ -575,22 +552,19 @@ impl AgentExecutor {
                 Some(format!("Agent failed: {}", stderr_content.trim()))
             };
 
-            self.db
-                .call({
-                    let error_msg = error_msg.clone();
-                    move |db| {
-                        if success {
-                            db.update_agent_task_status(task_id, &AgentTaskStatus::Completed, None)
-                        } else {
-                            db.update_agent_task_status(
-                                task_id,
-                                &AgentTaskStatus::Failed,
-                                error_msg.as_deref(),
-                            )
-                        }
-                    }
-                })
-                .await?;
+            if success {
+                self.db
+                    .update_agent_task_status(task_id, &AgentTaskStatus::Completed, None)
+                    .await?;
+            } else {
+                self.db
+                    .update_agent_task_status(
+                        task_id,
+                        &AgentTaskStatus::Failed,
+                        error_msg.as_deref(),
+                    )
+                    .await?;
+            }
 
             if success {
                 broadcast_message(
@@ -619,13 +593,11 @@ impl AgentExecutor {
                 task_id
             );
             self.db
-                .call(move |db| {
-                    db.update_agent_task_status(
-                        task_id,
-                        &AgentTaskStatus::Failed,
-                        Some("Internal error: process handle lost"),
-                    )
-                })
+                .update_agent_task_status(
+                    task_id,
+                    &AgentTaskStatus::Failed,
+                    Some("Internal error: process handle lost"),
+                )
                 .await?;
             broadcast_message(
                 &self.tx,
@@ -752,13 +724,11 @@ impl AgentExecutor {
             }
             if let Err(e) = self
                 .db
-                .call(move |db| {
-                    db.update_agent_task_status(
-                        task_id,
-                        &AgentTaskStatus::Cancelled,
-                        Some("Pipeline cancelled"),
-                    )
-                })
+                .update_agent_task_status(
+                    task_id,
+                    &AgentTaskStatus::Cancelled,
+                    Some("Pipeline cancelled"),
+                )
                 .await
             {
                 eprintln!(

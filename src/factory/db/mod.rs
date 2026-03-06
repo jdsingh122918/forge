@@ -6,6 +6,7 @@ pub mod projects;
 pub mod settings;
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -18,7 +19,7 @@ use libsql::{Builder, Connection, Database};
 /// - **Local SQLite** otherwise (dev/offline fallback)
 #[derive(Clone)]
 pub struct DbHandle {
-    db: Database,
+    db: Arc<Database>,
 }
 
 impl DbHandle {
@@ -29,7 +30,7 @@ impl DbHandle {
             .build()
             .await
             .context("Failed to open local SQLite database")?;
-        let handle = Self { db };
+        let handle = Self { db: Arc::new(db) };
         handle.init().await?;
         Ok(handle)
     }
@@ -51,7 +52,7 @@ impl DbHandle {
         .build()
         .await
         .context("Failed to open Turso embedded replica")?;
-        let handle = Self { db };
+        let handle = Self { db: Arc::new(db) };
         handle.init().await?;
         Ok(handle)
     }
@@ -62,7 +63,7 @@ impl DbHandle {
             .build()
             .await
             .context("Failed to open in-memory database")?;
-        let handle = Self { db };
+        let handle = Self { db: Arc::new(db) };
         handle.init().await?;
         Ok(handle)
     }
