@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "92651821a058",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "docs/plans/2026-03-06-database-improvements-turso-design.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/92/651821a058/0/metadata.json",
+      "transcript": "/92/651821a058/0/full.jsonl",
+      "context": "/92/651821a058/0/context.md",
+      "content_hash": "/92/651821a058/0/content_hash.txt",
+      "prompt": "/92/651821a058/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 13788,
+    "cache_creation_tokens": 122024,
+    "cache_read_tokens": 1545456,
+    "output_tokens": 13472,
+    "api_call_count": 35
+  }
+}
