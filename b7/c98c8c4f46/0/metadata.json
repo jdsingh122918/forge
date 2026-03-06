@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "b7c98c8c4f46",
+  "session_id": "4e13127e-17ab-4f42-b9b3-a36fe39ae433",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-06T03:41:43.903502Z",
+  "branch": "main",
+  "checkpoints_count": 12,
+  "files_touched": [
+    "src/factory/agent_executor.rs",
+    "src/factory/db.rs",
+    "src/factory/pipeline.rs",
+    "ui/src/hooks/useMissionControl.ts"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "5c086222412a",
+  "token_usage": {
+    "input_tokens": 119,
+    "cache_creation_tokens": 96296,
+    "cache_read_tokens": 5275731,
+    "output_tokens": 17523,
+    "api_call_count": 77
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-06T03:41:43.766686Z",
+    "agent_lines": 106,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 106,
+    "agent_percentage": 100
+  }
+}
