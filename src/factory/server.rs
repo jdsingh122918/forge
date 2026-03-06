@@ -13,7 +13,7 @@ use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 
 use super::api::{self, AppState};
-use super::db::{DbHandle, FactoryDb};
+use super::db::{self, DbHandle};
 use super::embedded::Assets;
 use super::pipeline::PipelineRunner;
 use super::sandbox::DockerSandbox;
@@ -87,7 +87,32 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
         std::fs::create_dir_all(parent).context("Failed to create database directory")?;
     }
 
-    let db = FactoryDb::new(&config.db_path).context("Failed to initialize factory database")?;
+    let _ = dotenvy::dotenv(); // Load .env if present, ignore if missing
+
+    let db_handle = match (
+        std::env::var("TURSO_DATABASE_URL"),
+        std::env::var("TURSO_AUTH_TOKEN"),
+    ) {
+        (Ok(url), Ok(token)) => {
+            eprintln!("[factory] Connecting to Turso: {url}");
+            DbHandle::new_remote_replica(&config.db_path, &url, &token).await?
+        }
+        _ => {
+            eprintln!(
+                "[factory] Using local SQLite: {}",
+                config.db_path.display()
+            );
+            DbHandle::new_local(&config.db_path).await?
+        }
+    };
+
+    // Health check
+    let conn = db_handle.conn()?;
+    db::health_check(&conn).await;
+
+    // Initial sync for embedded replicas
+    db_handle.sync().await?;
+
     let (ws_tx, _rx) = broadcast::channel::<String>(256);
     let github_client_id = std::env::var("GITHUB_CLIENT_ID").ok();
 
@@ -116,30 +141,18 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     };
 
     let pipeline_runner = PipelineRunner::new(&config.project_path, sandbox);
-    let db_handle = DbHandle::new(db);
 
     // Recover orphaned runs from a previous server instance
-    match db_handle.lock_sync() {
-        Ok(db) => match db.recover_orphaned_runs() {
-            Ok(0) => {}
-            Ok(n) => eprintln!(
-                "[factory] Recovered {} orphaned pipeline run(s) from previous session",
-                n
-            ),
-            Err(e) => eprintln!("[factory] Warning: failed to recover orphaned runs: {}", e),
-        },
-        Err(e) => eprintln!(
-            "[factory] Warning: could not acquire DB lock for orphan recovery: {}",
-            e
+    match db_handle.recover_orphaned_runs().await {
+        Ok(0) => {}
+        Ok(n) => eprintln!(
+            "[factory] Recovered {} orphaned pipeline run(s) from previous session",
+            n
         ),
+        Err(e) => eprintln!("[factory] Warning: failed to recover orphaned runs: {}", e),
     }
 
-    let persisted_token = db_handle
-        .lock_sync()
-        .context("Failed to acquire DB lock during startup")?
-        .get_setting("github_token")
-        .ok()
-        .flatten();
+    let persisted_token = db_handle.get_setting("github_token").await.ok().flatten();
 
     let state = Arc::new(AppState {
         db: db_handle,
@@ -196,12 +209,12 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    fn test_router() -> Router {
-        let db = FactoryDb::new_in_memory().unwrap();
+    async fn test_router() -> Router {
+        let db = DbHandle::new_in_memory().await.unwrap();
         let (ws_tx, _) = broadcast::channel(16);
         let pipeline_runner = PipelineRunner::new("/tmp/test", None);
         let state = Arc::new(AppState {
-            db: DbHandle::new(db),
+            db,
             ws_tx,
             pipeline_runner,
             github_client_id: None,
@@ -212,7 +225,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_health_via_full_router() {
-        let app = test_router();
+        let app = test_router().await;
         let req = Request::builder()
             .uri("/health")
             .body(Body::empty())
@@ -223,7 +236,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_api_routes_mounted() {
-        let app = test_router();
+        let app = test_router().await;
         let req = Request::builder()
             .uri("/api/projects")
             .body(Body::empty())
@@ -234,7 +247,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_spa_fallback() {
-        let app = test_router();
+        let app = test_router().await;
         let req = Request::builder()
             .uri("/some/client/route")
             .body(Body::empty())
@@ -247,7 +260,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_static_handler_serves_index_html() {
-        let app = test_router();
+        let app = test_router().await;
         let req = Request::builder().uri("/").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let status = resp.status();
@@ -257,7 +270,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_api_create_project_via_full_router() {
-        let app = test_router();
+        let app = test_router().await;
         let req = Request::builder()
             .method("POST")
             .uri("/api/projects")
