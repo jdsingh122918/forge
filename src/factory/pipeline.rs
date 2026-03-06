@@ -1300,47 +1300,46 @@ pub fn parse_stream_json_line(line: &str) -> StreamJsonEvent {
     }
 
     // content_block_delta with text_delta → Text
-    if msg_type == "content_block_delta" {
-        if let Some(delta) = json.get("delta") {
-            if delta.get("type").and_then(|t| t.as_str()) == Some("text_delta") {
-                if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
-                    return StreamJsonEvent::Text {
-                        text: text.to_string(),
-                    };
-                }
-            }
-            if delta.get("type").and_then(|t| t.as_str()) == Some("thinking_delta") {
-                if let Some(text) = delta.get("thinking").and_then(|t| t.as_str()) {
-                    return StreamJsonEvent::Thinking {
-                        text: text.to_string(),
-                    };
-                }
-            }
+    if msg_type == "content_block_delta"
+        && let Some(delta) = json.get("delta")
+    {
+        if delta.get("type").and_then(|t| t.as_str()) == Some("text_delta")
+            && let Some(text) = delta.get("text").and_then(|t| t.as_str())
+        {
+            return StreamJsonEvent::Text {
+                text: text.to_string(),
+            };
+        }
+        if delta.get("type").and_then(|t| t.as_str()) == Some("thinking_delta")
+            && let Some(text) = delta.get("thinking").and_then(|t| t.as_str())
+        {
+            return StreamJsonEvent::Thinking {
+                text: text.to_string(),
+            };
         }
     }
 
     // content_block_start with tool_use → ToolStart
-    if msg_type == "content_block_start" {
-        if let Some(cb) = json.get("content_block") {
-            if cb.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                let tool_name = cb
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                let tool_id = cb
-                    .get("id")
-                    .and_then(|i| i.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let input_summary = extract_tool_input_summary(&tool_name, cb.get("input"));
-                return StreamJsonEvent::ToolStart {
-                    tool_name,
-                    tool_id,
-                    input_summary,
-                };
-            }
-        }
+    if msg_type == "content_block_start"
+        && let Some(cb) = json.get("content_block")
+        && cb.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+    {
+        let tool_name = cb
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let tool_id = cb
+            .get("id")
+            .and_then(|i| i.as_str())
+            .unwrap_or("")
+            .to_string();
+        let input_summary = extract_tool_input_summary(&tool_name, cb.get("input"));
+        return StreamJsonEvent::ToolStart {
+            tool_name,
+            tool_id,
+            input_summary,
+        };
     }
 
     // Legacy format: subtype == "tool_use"
@@ -1364,27 +1363,27 @@ pub fn parse_stream_json_line(line: &str) -> StreamJsonEvent {
     }
 
     // Full assistant message with content array containing tool_use
-    if json.get("role").and_then(|r| r.as_str()) == Some("assistant") {
-        if let Some(content) = json.get("content").and_then(|c| c.as_array()) {
-            for block in content {
-                if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                    let tool_name = block
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-                    let tool_id = block
-                        .get("id")
-                        .and_then(|i| i.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let input_summary = extract_tool_input_summary(&tool_name, block.get("input"));
-                    return StreamJsonEvent::ToolStart {
-                        tool_name,
-                        tool_id,
-                        input_summary,
-                    };
-                }
+    if json.get("role").and_then(|r| r.as_str()) == Some("assistant")
+        && let Some(content) = json.get("content").and_then(|c| c.as_array())
+    {
+        for block in content {
+            if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                let tool_name = block
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let tool_id = block
+                    .get("id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let input_summary = extract_tool_input_summary(&tool_name, block.get("input"));
+                return StreamJsonEvent::ToolStart {
+                    tool_name,
+                    tool_id,
+                    input_summary,
+                };
             }
         }
     }
@@ -1597,19 +1596,18 @@ async fn execute_pipeline_streaming(
                                 // Try legacy format
                                 v.get("input").cloned()
                             });
-                    if let Some(ref input_val) = input_json {
-                        if let Some((file_path, action)) =
+                    if let Some(ref input_val) = input_json
+                        && let Some((file_path, action)) =
                             extract_file_change(tool_name, Some(input_val))
-                        {
-                            broadcast_message(
-                                tx,
-                                &WsMessage::PipelineFileChanged {
-                                    run_id,
-                                    file_path,
-                                    action,
-                                },
-                            );
-                        }
+                    {
+                        broadcast_message(
+                            tx,
+                            &WsMessage::PipelineFileChanged {
+                                run_id,
+                                file_path,
+                                action,
+                            },
+                        );
                     }
                     last_output_broadcast = std::time::Instant::now();
                 }

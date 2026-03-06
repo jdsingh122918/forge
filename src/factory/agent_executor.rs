@@ -137,9 +137,11 @@ impl OutputParser {
                         .or_else(|| {
                             json.get("content")
                                 .and_then(|c| c.as_array())
-                                .and_then(|arr| arr.iter().find(|b| {
-                                    b.get("type").and_then(|t| t.as_str()) == Some("tool_use")
-                                }))
+                                .and_then(|arr| {
+                                    arr.iter().find(|b| {
+                                        b.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                                    })
+                                })
                                 .and_then(|b| b.get("input"))
                         });
                     let file_change = extract_file_change(&tool_name, input);
@@ -451,28 +453,27 @@ impl AgentExecutor {
                     }
                     AgentEventType::Action => {
                         // Emit file change event if this tool modified a file
-                        if let Some(ref meta) = parsed.metadata {
-                            if let Some(fc) = meta.get("file_change").and_then(|fc| fc.as_object()) {
-                                if let (Some(path), Some(action_str)) = (
-                                    fc.get("path").and_then(|p| p.as_str()),
-                                    fc.get("action").and_then(|a| a.as_str()),
-                                ) {
-                                    let action = match action_str {
-                                        "created" => FileAction::Created,
-                                        "modified" => FileAction::Modified,
-                                        "deleted" => FileAction::Deleted,
-                                        _ => FileAction::Modified,
-                                    };
-                                    broadcast_message(
-                                        &self.tx,
-                                        &WsMessage::PipelineFileChanged {
-                                            run_id,
-                                            file_path: path.to_string(),
-                                            action,
-                                        },
-                                    );
-                                }
-                            }
+                        if let Some(ref meta) = parsed.metadata
+                            && let Some(fc) = meta.get("file_change").and_then(|fc| fc.as_object())
+                            && let (Some(path), Some(action_str)) = (
+                                fc.get("path").and_then(|p| p.as_str()),
+                                fc.get("action").and_then(|a| a.as_str()),
+                            )
+                        {
+                            let action = match action_str {
+                                "created" => FileAction::Created,
+                                "modified" => FileAction::Modified,
+                                "deleted" => FileAction::Deleted,
+                                _ => FileAction::Modified,
+                            };
+                            broadcast_message(
+                                &self.tx,
+                                &WsMessage::PipelineFileChanged {
+                                    run_id,
+                                    file_path: path.to_string(),
+                                    action,
+                                },
+                            );
                         }
                         broadcast_message(
                             &self.tx,
@@ -508,8 +509,7 @@ impl AgentExecutor {
                     }
                     _ => {
                         if !parsed.content.is_empty()
-                            && last_broadcast.elapsed()
-                                >= std::time::Duration::from_millis(500)
+                            && last_broadcast.elapsed() >= std::time::Duration::from_millis(500)
                         {
                             broadcast_message(
                                 &self.tx,
@@ -830,7 +830,8 @@ mod tests {
     #[test]
     fn test_parse_output_line_tool_use_legacy_subtype() {
         // Legacy subtype format
-        let line = r#"{"subtype":"tool_use","tool_name":"Edit","input":{"file_path":"src/main.rs"}}"#;
+        let line =
+            r#"{"subtype":"tool_use","tool_name":"Edit","input":{"file_path":"src/main.rs"}}"#;
         let event = OutputParser::parse_line(line);
         assert_eq!(event.event_type, AgentEventType::Action);
         assert!(event.content.contains("Edit"));
@@ -874,9 +875,13 @@ mod tests {
 
     #[test]
     fn test_parse_output_line_message_start_skipped() {
-        let line = r#"{"type":"message_start","message":{"id":"msg_123","model":"claude-sonnet-4-6"}}"#;
+        let line =
+            r#"{"type":"message_start","message":{"id":"msg_123","model":"claude-sonnet-4-6"}}"#;
         let event = OutputParser::parse_line(line);
-        assert!(event.content.is_empty(), "metadata events should produce empty content");
+        assert!(
+            event.content.is_empty(),
+            "metadata events should produce empty content"
+        );
     }
 
     #[test]

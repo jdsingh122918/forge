@@ -636,19 +636,13 @@ export default function useMissionControl(): MissionControlReturn {
 
   const createProject = useCallback(async (name: string, path: string) => {
     const project = await api.createProject(name, path);
-    setState(prev => ({
-      ...prev,
-      projects: [...prev.projects, project],
-    }));
+    // State update handled by WebSocket ProjectCreated handler
     return project;
   }, []);
 
   const cloneProject = useCallback(async (repoUrl: string) => {
     const project = await api.cloneProject(repoUrl);
-    setState(prev => ({
-      ...prev,
-      projects: [...prev.projects, project],
-    }));
+    // State update handled by WebSocket ProjectCreated handler
     return project;
   }, []);
 
