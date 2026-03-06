@@ -19,7 +19,7 @@ pub async fn run_migrations(conn: &Connection) -> Result<()> {
     if current_version == 0 {
         let bootstrapped = bootstrap_existing_db(conn).await?;
         if bootstrapped > 0 {
-            tracing::info!("Bootstrapped existing database at migration version {bootstrapped}");
+            eprintln!("[db] Bootstrapped existing database at migration version {bootstrapped}");
             return run_from_version(conn, bootstrapped).await;
         }
     }
@@ -32,7 +32,7 @@ async fn run_from_version(conn: &Connection, current: i64) -> Result<()> {
         if *version <= current {
             continue;
         }
-        tracing::info!("Running migration {version}...");
+        eprintln!("[db] Running migration {version}...");
         conn.execute_batch(sql)
             .await
             .with_context(|| format!("Failed to run migration {version}"))?;
