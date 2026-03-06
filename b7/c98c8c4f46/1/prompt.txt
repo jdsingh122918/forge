@@ -1,0 +1,259 @@
+execute "make" and then fix any errors encountered
+
+---
+
+Tool loaded.
+
+---
+
+lets add a help command to makefile to list all the targets
+
+---
+
+lets execute "make dev" and fix any errors encountered
+
+---
+
+Tool loaded.
+
+---
+
+Investigate as to why the projects appear twice. use agent teams
+
+---
+
+[Image: source: /var/folders/67/1dn7whc160b__mdm_8ryrll80000gn/T/TemporaryItems/NSIRD_screencaptureui_tj0EQ9/Screenshot 2026-03-06 at 8.38.52 AM.png]
+
+---
+
+Tool loaded.
+
+---
+
+Tool loaded.
+
+---
+
+<teammate-message teammate_id="frontend-investigator" color="green" summary="Found duplicate project bug in frontend state management">
+## Frontend Duplicate Projects Investigation
+
+I found the root cause of the duplicate projects issue. The problem is in the **WebSocket ProjectCreated handler**, combined with how the backend sends both HTTP response + WebSocket message.
+
+### Root Cause
+
+**File:** `/Users/jdsingh/Projects/AI/forge/ui/src/hooks/useMissionControl.ts` lines 506-514
+
+```typescript
+case 'ProjectCreated': {
+  const project = msg.data.project;
+  setState(prev => {
+    if (prev.projects.some(p => p.id === project.id)) return prev;
+    return { ...prev, projects: [...prev.projects, project] };
+  });
+  addLogEntry('system', `Project added: "${project.name}"`);
+  break;
+}
+```
+
+**The issue:** This handler adds a project to state when a WebSocket `ProjectCreated` message arrives. HOWEVER, the `createProject` and `cloneProject` callbacks (lines 637-653) ALREADY add the project to state via the HTTP response:
+
+```typescript
+const createProject = useCallback(async (name: string, path: string) => {
+  const project = await api.createProject(name, path);
+  setState(prev => ({
+    ...prev,
+    projects: [...prev.projects, project],  // <- Adds to state here
+  }));
+  return project;
+}, []);
+
+const cloneProject = useCallback(async (repoUrl: string) => {
+  const project = await api.cloneProject(repoUrl);
+  setState(prev => ({
+    ...prev,
+    projects: [...prev.projects, project],  // <- Adds to state here
+  }));
+  return project;
+}, []);
+```
+
+**The sequence:**
+1. User clicks "Create Project"
+2. HTTP POST request sends to backend
+3. Backend creates project in DB, returns it in HTTP response
+4. `createProject` callback adds it to state: `projects: [...prev.projects, project]` ✓
+5. Backend broadcasts WebSocket `ProjectCreated` message to ALL clients (including this one)
+6. WebSocket handler receives the message and adds it AGAIN: `projects: [...prev.projects, project]` ✗ **DUPLICATE**
+
+The deduplication check on line 509 doesn't help because **the state hasn't re-rendered yet** between the HTTP response and WebSocket message, so `prev.projects` doesn't contain the project yet when the WS message arrives.
+
+### Why Deduplication Fails
+
+The deduplication on line 509 checks if the project already exists:
+```typescript
+if (prev.projects.some(p => p.id === project.id)) return prev;
+```
+
+But this is checking the **current state at the moment the WebSocket message is processed**, which is still stale. The flow is:
+
+1. State update from `createProject()` is scheduled
+2. WebSocket message arrives (possibly during or before state update completes)
+3. WS handler checks `prev.projects.some(...)` but `prev` is the OLD state (still empty)
+4. Both updates add the project
+
+### Secondary Issue
+
+The `refresh()` function (lines 664-707) also calls `api.listProjects()` which returns a fresh list, but then is immediately overwrit... wait, actually that one uses `setState` with a full replacement, not append, so that's fine.
+
+### Solution Options
+
+**Option A (Recommended):** Remove duplicate project from WebSocket handler
+- Don't add projects from `ProjectCreated` messages when we already added them via HTTP response
+- Only use WebSocket for passive notifications (like the event log entry)
+
+**Option B:** Deduplicate by comparing all properties or timestamp
+- More complex, less reliable
+
+**Option C:** Have backend not broadcast ProjectCreated to the originating client
+- Requires backend change
+
+**I recommend Option A:** Modify the WS handler to only log the event, don't mutate state on `ProjectCreated`. The HTTP response already handles state updates. The deduplication check should be removed since it's unreliable.
+
+### Files to Fix
+
+- `/Users/jdsingh/Projects/AI/forge/ui/src/hooks/useMissionControl.ts` lines 506-514
+
+The same pattern appears in the `refresh()` method but it's safe there since it does a full replacement rather than append.
+</teammate-message>
+
+---
+
+Tool loaded.
+
+---
+
+<teammate-message teammate_id="frontend-investigator" color="green">
+{"type":"idle_notification","from":"frontend-investigator","timestamp":"2026-03-06T03:10:51.816Z","idleReason":"available"}
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="backend-investigator" color="blue" summary="Backend investigation complete - found root cause">
+## BACKEND INVESTIGATION FINDINGS
+
+I've traced the duplicate projects issue to a **missing UNIQUE constraint in the database** combined with a race condition in the clone endpoint.
+
+### Root Cause
+
+**File: `/Users/jdsingh/Projects/AI/forge/src/factory/db.rs` (lines 90-95)**
+
+The `projects` table has NO UNIQUE constraint on `name` or `path`:
+```sql
+CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    path TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+### Race Condition in clone_project Endpoint
+
+**File: `/Users/jdsingh/Projects/AI/forge/src/factory/api.rs` (lines 528-538)**
+
+The clone endpoint attempts to check for existing projects but has a race condition:
+
+```rust
+let existing = db.list_projects()?
+    .into_iter()
+    .find(|p| p.path == abs_path_clone);
+
+let project = if let Some(project) = existing {
+    project
+} else {
+    db.create_project(&repo_name_clone, &abs_path_clone)?
+};
+```
+
+**The Problem:**
+1. Thread A checks `list_projects()` - path doesn't exist
+2. Thread B checks `list_projects()` - path doesn't exist  
+3. Thread A inserts the project ✓
+4. Thread B inserts the same project ✓
+5. Both ProjectCreated WebSocket messages broadcast (line 551-556)
+6. Frontend receives BOTH messages and adds both to state (useMissionControl.ts:506-514)
+
+**Frontend handling is actually correct** (line 509: `if (prev.projects.some(p => p.id === project.id)) return prev;`) but it checks by ID, not by name. If the backend inserts two separate rows with the same name/path but different IDs, both will be added.
+
+### Other Missing CONSTRAINTS
+
+The projects table also lacks a UNIQUE constraint on path, which would completely prevent duplicates at the database level.
+
+### Secondary Issue
+
+**File: `/Users/jdsingh/Projects/AI/forge/src/factory/api.rs` (line 392-396)**
+
+The `create_project` endpoint ALWAYS broadcasts ProjectCreated without checking if the project was newly created:
+
+```rust
+broadcast_message(
+    &state.ws_tx,
+    &WsMessage::ProjectCreated {
+        project: project.clone(),
+    },
+);
+```
+
+This should only broadcast if the project is new, not if it already existed.
+
+### Summary of Issues
+
+1. **No UNIQUE constraint on `path` or `name`** in projects table → allows duplicates at DB level
+2. **Race condition in clone_project** → check-then-insert without locking
+3. **Always broadcasts ProjectCreated** → even for projects that already existed
+4. **No deduplication logic** → relies only on WebSocket handler having the check
+
+### Recommendations
+
+1. Add `UNIQUE(path)` constraint (and optionally `name`)  
+2. Use atomic check-and-create transaction or SELECT ... FOR UPDATE
+3. Only broadcast ProjectCreated if project is actually new
+4. Consider making project.name/path composite unique
+</teammate-message>
+
+<teammate-message teammate_id="backend-investigator" color="blue">
+{"type":"idle_notification","from":"backend-investigator","timestamp":"2026-03-06T03:11:30.370Z","idleReason":"available"}
+</teammate-message>
+
+---
+
+Tool loaded.
+
+---
+
+<task-notification>
+<task-id>bcmqiix8n</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-Projects-AI-forge/tasks/bcmqiix8n.output</output-file>
+<status>failed</status>
+<summary>Background command "Run make dev (dev server)" failed with exit code 2</summary>
+</task-notification>
+Read the output file to retrieve the result: /private/tmp/claude-501/-Users-jdsingh-Projects-AI-forge/tasks/bcmqiix8n.output
+
+---
+
+<teammate-message teammate_id="system">
+{"type":"teammate_terminated","message":"backend-investigator has shut down."}
+</teammate-message>
+
+<teammate-message teammate_id="backend-investigator" color="blue">
+{"type":"shutdown_approved","requestId":"shutdown-1772766702699@backend-investigator","from":"backend-investigator","timestamp":"2026-03-06T03:11:45.232Z","paneId":"in-process","backendType":"in-process"}
+</teammate-message>
+
+<teammate-message teammate_id="system">
+{"type":"teammate_terminated","message":"frontend-investigator has shut down."}
+</teammate-message>
+
+<teammate-message teammate_id="frontend-investigator" color="green">
+{"type":"shutdown_approved","requestId":"shutdown-1772766703221@frontend-investigator","from":"frontend-investigator","timestamp":"2026-03-06T03:11:46.545Z","paneId":"in-process","backendType":"in-process"}
+</teammate-message>
