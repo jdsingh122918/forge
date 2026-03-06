@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "520f28af79b0",
+  "session_id": "4e13127e-17ab-4f42-b9b3-a36fe39ae433",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-06T03:41:59.770363Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docker-compose.yml",
+    "docs/plans/2026-03-06-cli-autocomplete-design.md",
+    "src/factory/api.rs",
+    "ui/src/api/client.ts",
+    "ui/src/components/CommandAutocomplete.tsx",
+    "ui/src/components/StatusBar.tsx",
+    "ui/src/types/index.ts"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "5c086222412a",
+  "token_usage": {
+    "input_tokens": 121,
+    "cache_creation_tokens": 96644,
+    "cache_read_tokens": 5468500,
+    "output_tokens": 17908,
+    "api_call_count": 79
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-06T03:41:59.625629Z",
+    "agent_lines": 417,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 417,
+    "agent_percentage": 100
+  }
+}

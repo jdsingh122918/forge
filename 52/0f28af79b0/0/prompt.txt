@@ -1,0 +1,399 @@
+Lets use the forge tool to auto create itself by creating issues/tasks to work on. Use the makefile to start the local dev server in docker for isolation. Lets clone the forge repo and start creating issues. The first issue being the following:
+- in the header where the forge cli input box, lets auto populate that with all the various options
+
+Use agent teams to accomplish the above
+
+---
+
+Tool loaded.
+
+---
+
+Tool loaded.
+
+---
+
+Base directory for this skill: /Users/jdsingh/.claude/plugins/cache/claude-plugins-official/superpowers/4.3.1/skills/brainstorming
+
+# Brainstorming Ideas Into Designs
+
+## Overview
+
+Help turn ideas into fully formed designs and specs through natural collaborative dialogue.
+
+Start by understanding the current project context, then ask questions one at a time to refine the idea. Once you understand what you're building, present the design and get user approval.
+
+<HARD-GATE>
+Do NOT invoke any implementation skill, write any code, scaffold any project, or take any implementation action until you have presented a design and the user has approved it. This applies to EVERY project regardless of perceived simplicity.
+</HARD-GATE>
+
+## Anti-Pattern: "This Is Too Simple To Need A Design"
+
+Every project goes through this process. A todo list, a single-function utility, a config change — all of them. "Simple" projects are where unexamined assumptions cause the most wasted work. The design can be short (a few sentences for truly simple projects), but you MUST present it and get approval.
+
+## Checklist
+
+You MUST create a task for each of these items and complete them in order:
+
+1. **Explore project context** — check files, docs, recent commits
+2. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
+3. **Propose 2-3 approaches** — with trade-offs and your recommendation
+4. **Present design** — in sections scaled to their complexity, get user approval after each section
+5. **Write design doc** — save to `docs/plans/YYYY-MM-DD-<topic>-design.md` and commit
+6. **Transition to implementation** — invoke writing-plans skill to create implementation plan
+
+## Process Flow
+
+```dot
+digraph brainstorming {
+    "Explore project context" [shape=box];
+    "Ask clarifying questions" [shape=box];
+    "Propose 2-3 approaches" [shape=box];
+    "Present design sections" [shape=box];
+    "User approves design?" [shape=diamond];
+    "Write design doc" [shape=box];
+    "Invoke writing-plans skill" [shape=doublecircle];
+
+    "Explore project context" -> "Ask clarifying questions";
+    "Ask clarifying questions" -> "Propose 2-3 approaches";
+    "Propose 2-3 approaches" -> "Present design sections";
+    "Present design sections" -> "User approves design?";
+    "User approves design?" -> "Present design sections" [label="no, revise"];
+    "User approves design?" -> "Write design doc" [label="yes"];
+    "Write design doc" -> "Invoke writing-plans skill";
+}
+```
+
+**The terminal state is invoking writing-plans.** Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skill you invoke after brainstorming is writing-plans.
+
+## The Process
+
+**Understanding the idea:**
+- Check out the current project state first (files, docs, recent commits)
+- Ask questions one at a time to refine the idea
+- Prefer multiple choice questions when possible, but open-ended is fine too
+- Only one question per message - if a topic needs more exploration, break it into multiple questions
+- Focus on understanding: purpose, constraints, success criteria
+
+**Exploring approaches:**
+- Propose 2-3 different approaches with trade-offs
+- Present options conversationally with your recommendation and reasoning
+- Lead with your recommended option and explain why
+
+**Presenting the design:**
+- Once you believe you understand what you're building, present the design
+- Scale each section to its complexity: a few sentences if straightforward, up to 200-300 words if nuanced
+- Ask after each section whether it looks right so far
+- Cover: architecture, components, data flow, error handling, testing
+- Be ready to go back and clarify if something doesn't make sense
+
+## After the Design
+
+**Documentation:**
+- Write the validated design to `docs/plans/YYYY-MM-DD-<topic>-design.md`
+- Use elements-of-style:writing-clearly-and-concisely skill if available
+- Commit the design document to git
+
+**Implementation:**
+- Invoke the writing-plans skill to create a detailed implementation plan
+- Do NOT invoke any other skill. writing-plans is the next step.
+
+## Key Principles
+
+- **One question at a time** - Don't overwhelm with multiple questions
+- **Multiple choice preferred** - Easier to answer than open-ended when possible
+- **YAGNI ruthlessly** - Remove unnecessary features from all designs
+- **Explore alternatives** - Always propose 2-3 approaches before settling
+- **Incremental validation** - Present design, get approval before moving on
+- **Be flexible** - Go back and clarify when something doesn't make sense
+
+
+ARGUMENTS: Add CLI autocomplete/auto-populate to the forge command input in the StatusBar header - show all available forge CLI options and subcommands as the user types
+
+---
+
+<task-notification>
+<task-id>b9qej8mhv</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-Projects-AI-forge/tasks/b9qej8mhv.output</output-file>
+<status>completed</status>
+<summary>Background command "Start dev server in Docker (background)" completed (exit code 0)</summary>
+</task-notification>
+Read the output file to retrieve the result: /private/tmp/claude-501/-Users-jdsingh-Projects-AI-forge/tasks/b9qej8mhv.output
+
+---
+
+1
+
+---
+
+3
+
+---
+
+2 -- also make sure to create issues/tasks within forge and then execute those using agent-browser skill to implement them
+
+---
+
+lets go with option B - it is cosmetic for now but we will make it a live feature
+
+---
+
+yes
+
+---
+
+Tool loaded.
+
+---
+
+Tool loaded.
+
+---
+
+<teammate-message teammate_id="frontend-api-dev" color="green" summary="Task #2 complete: cliHelp API method added">
+Task #2 is complete. I added:
+
+1. **Types** in `/Users/jdsingh/Projects/AI/forge/ui/src/types/index.ts` (lines 214-228): `CliHelpCommand`, `CliHelpOption`, and `CliHelpResponse` interfaces.
+
+2. **API method** in `/Users/jdsingh/Projects/AI/forge/ui/src/api/client.ts` (line 98): `cliHelp()` method that calls `GET /api/cli-help` and returns `CliHelpResponse`.
+
+Both follow the existing code patterns — inline type imports for the api object, and interfaces grouped with a section comment in the types file.
+</teammate-message>
+
+<teammate-message teammate_id="frontend-api-dev" color="green">
+{"type":"idle_notification","from":"frontend-api-dev","timestamp":"2026-03-06T03:29:22.529Z","idleReason":"available"}
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="backend-dev" color="blue" summary="Task #1 done: /api/cli-help endpoint implemented">
+Task #1 is complete. I added the `GET /api/cli-help` endpoint to `/Users/jdsingh/Projects/AI/forge/src/factory/api.rs`. Here's what was implemented:
+
+**Response types** (lines ~87-109): `CliCommand`, `CliOption`, and `CliHelpResponse` structs with `Serialize` derives.
+
+**Handler** (`cli_help_handler`, line ~386): Runs `forge --help` (using `FORGE_CMD` env var), caches the result in a `std::sync::OnceLock` so it only executes once, and returns parsed JSON.
+
+**Parser** (`parse_cli_help`, line ~400): Parses the clap-style help output into commands (name + description) and options (flag + description, with continuation line support).
+
+**Route**: Registered at `/api/cli-help` in `api_router()`.
+
+**JSON response format**:
+```json
+{
+  "commands": [{"name": "init", "description": "Initialize a new forge project"}, ...],
+  "options": [{"flag": "-v, --verbose", "description": ""}, ...]
+}
+```
+
+`cargo check` passes cleanly.
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="backend-dev" color="blue">
+{"type":"idle_notification","from":"backend-dev","timestamp":"2026-03-06T03:30:50.867Z","idleReason":"available"}
+</teammate-message>
+
+<teammate-message teammate_id="backend-dev" color="blue">
+{"type":"idle_notification","from":"backend-dev","timestamp":"2026-03-06T03:30:55.554Z","idleReason":"available"}
+</teammate-message>
+
+<teammate-message teammate_id="system">
+{"type":"teammate_terminated","message":"backend-dev has shut down."}
+</teammate-message>
+
+<teammate-message teammate_id="backend-dev" color="blue">
+{"type":"shutdown_approved","requestId":"shutdown-1772767859103@backend-dev","from":"backend-dev","timestamp":"2026-03-06T03:31:03.796Z","paneId":"in-process","backendType":"in-process"}
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="frontend-api-dev" color="green" summary="Task #3 complete: CommandAutocomplete component created">
+Task #3 is complete. Created `/Users/jdsingh/Projects/AI/forge/ui/src/components/CommandAutocomplete.tsx` with all requested features:
+
+- **Data fetching**: Calls `api.cliHelp()` on mount, caches in state
+- **Props**: `CommandAutocompleteProps` with optional `onCommand` callback
+- **Input**: Matches StatusBar styling (transparent bg, no border, inherited font)
+- **Dropdown**: Absolute positioned, prefix-filtered suggestions with "cmd"/"opt" badges, name + description layout, hover/keyboard highlight, 200px max height with scroll
+- **Keyboard**: Arrow Up/Down for navigation, Enter to select/submit, Escape to close, Tab to accept ghost text
+- **Ghost text**: Overlay span showing remaining chars of top match at 0.5 opacity
+- **Click outside**: mousedown listener on document to close dropdown
+
+The component is a drop-in replacement for the StatusBar input — same flex: 1 layout, same styling tokens.
+</teammate-message>
+
+<teammate-message teammate_id="frontend-api-dev" color="green">
+{"type":"idle_notification","from":"frontend-api-dev","timestamp":"2026-03-06T03:31:58.220Z","idleReason":"available"}
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="frontend-api-dev" color="green" summary="Task #4 complete: CommandAutocomplete integrated into StatusBar">
+Task #4 is complete. Changes to `/Users/jdsingh/Projects/AI/forge/ui/src/components/StatusBar.tsx`:
+
+- Imported `CommandAutocomplete` from `./CommandAutocomplete`
+- Replaced the raw `<input>` with `<CommandAutocomplete onCommand={onCommand} />`
+- Removed unused state/refs: `commandInput`, `setCommandInput`, `inputRef`, `handleKeyDown`
+- Dropped `useRef` from the React import
+
+TypeScript compiles cleanly (`npx tsc --noEmit` passes with no errors). All 4 tasks are now complete.
+</teammate-message>
+
+<teammate-message teammate_id="frontend-api-dev" color="green">
+{"type":"idle_notification","from":"frontend-api-dev","timestamp":"2026-03-06T03:34:14.060Z","idleReason":"available"}
+</teammate-message>
+
+---
+
+Base directory for this skill: /Users/jdsingh/.claude/skills/agent-browser
+
+# Browser Automation with agent-browser
+
+## Quick start
+
+```bash
+agent-browser open <url>        # Navigate to page
+agent-browser snapshot -i       # Get interactive elements with refs
+agent-browser click @e1         # Click element by ref
+agent-browser fill @e2 "text"   # Fill input by ref
+agent-browser close             # Close browser
+```
+
+## Core workflow
+
+1. Navigate: `agent-browser open <url>`
+2. Snapshot: `agent-browser snapshot -i` (returns elements with refs like `@e1`, `@e2`)
+3. Interact using refs from the snapshot
+4. Re-snapshot after navigation or significant DOM changes
+
+## Commands
+
+### Navigation
+```bash
+agent-browser open <url>      # Navigate to URL
+agent-browser back            # Go back
+agent-browser forward         # Go forward  
+agent-browser reload          # Reload page
+agent-browser close           # Close browser
+```
+
+### Snapshot (page analysis)
+```bash
+agent-browser snapshot        # Full accessibility tree
+agent-browser snapshot -i     # Interactive elements only (recommended)
+agent-browser snapshot -c     # Compact output
+agent-browser snapshot -d 3   # Limit depth to 3
+```
+
+### Interactions (use @refs from snapshot)
+```bash
+agent-browser click @e1           # Click
+agent-browser dblclick @e1        # Double-click
+agent-browser fill @e2 "text"     # Clear and type
+agent-browser type @e2 "text"     # Type without clearing
+agent-browser press Enter         # Press key
+agent-browser press Control+a     # Key combination
+agent-browser hover @e1           # Hover
+agent-browser check @e1           # Check checkbox
+agent-browser uncheck @e1         # Uncheck checkbox
+agent-browser select @e1 "value"  # Select dropdown
+agent-browser scroll down 500     # Scroll page
+agent-browser scrollintoview @e1  # Scroll element into view
+```
+
+### Get information
+```bash
+agent-browser get text @e1        # Get element text
+agent-browser get value @e1       # Get input value
+agent-browser get title           # Get page title
+agent-browser get url             # Get current URL
+```
+
+### Screenshots
+```bash
+agent-browser screenshot          # Screenshot to stdout
+agent-browser screenshot path.png # Save to file
+agent-browser screenshot --full   # Full page
+```
+
+### Wait
+```bash
+agent-browser wait @e1                     # Wait for element
+agent-browser wait 2000                    # Wait milliseconds
+agent-browser wait --text "Success"        # Wait for text
+agent-browser wait --load networkidle      # Wait for network idle
+```
+
+### Semantic locators (alternative to refs)
+```bash
+agent-browser find role button click --name "Submit"
+agent-browser find text "Sign In" click
+agent-browser find label "Email" fill "user@test.com"
+```
+
+## Example: Form submission
+
+```bash
+agent-browser open https://example.com/form
+agent-browser snapshot -i
+# Output shows: textbox "Email" [ref=e1], textbox "Password" [ref=e2], button "Submit" [ref=e3]
+
+agent-browser fill @e1 "user@example.com"
+agent-browser fill @e2 "password123"
+agent-browser click @e3
+agent-browser wait --load networkidle
+agent-browser snapshot -i  # Check result
+```
+
+## Example: Authentication with saved state
+
+```bash
+# Login once
+agent-browser open https://app.example.com/login
+agent-browser snapshot -i
+agent-browser fill @e1 "username"
+agent-browser fill @e2 "password"
+agent-browser click @e3
+agent-browser wait --url "**/dashboard"
+agent-browser state save auth.json
+
+# Later sessions: load saved state
+agent-browser state load auth.json
+agent-browser open https://app.example.com/dashboard
+```
+
+## Sessions (parallel browsers)
+
+```bash
+agent-browser --session test1 open site-a.com
+agent-browser --session test2 open site-b.com
+agent-browser session list
+```
+
+## JSON output (for parsing)
+
+Add `--json` for machine-readable output:
+```bash
+agent-browser snapshot -i --json
+agent-browser get text @e1 --json
+```
+
+## Debugging
+
+```bash
+agent-browser open example.com --headed  # Show browser window
+agent-browser console                    # View console messages
+agent-browser errors                     # View page errors
+```
+
+
+ARGUMENTS: Test the CLI autocomplete feature at http://localhost:5173
+
+---
+
+Tool loaded.
+
+---
+
+lets push all the changes to remote
