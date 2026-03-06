@@ -1,7 +1,8 @@
 /** Top status bar — system stats, command input, view toggle, uptime, WebSocket indicator. */
-import { useState, useRef, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useWsStatus } from '../contexts/WebSocketContext';
 import type { ViewMode } from '../types';
+import CommandAutocomplete from './CommandAutocomplete';
 
 /** Props for the StatusBar component */
 export interface StatusBarProps {
@@ -39,22 +40,13 @@ export default function StatusBar({
   onViewModeChange,
 }: StatusBarProps) {
   const wsStatus = useWsStatus();
-  const [commandInput, setCommandInput] = useState('');
   const [uptime, setUptime] = useState(0);
-  const inputRef = useRef<HTMLInputElement>(null);
 
   // Uptime counter
   useEffect(() => {
     const interval = setInterval(() => setUptime(u => u + 1), 1000);
     return () => clearInterval(interval);
   }, []);
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && commandInput.trim()) {
-      onCommand?.(commandInput.trim());
-      setCommandInput('');
-    }
-  };
 
   const wsColor = wsStatus === 'connected'
     ? 'var(--color-success)'
@@ -105,23 +97,7 @@ export default function StatusBar({
         margin: '0 auto',
       }}>
         <span style={{ color: 'var(--color-accent)', marginRight: '8px' }}>forge&gt;</span>
-        <input
-          ref={inputRef}
-          type="text"
-          value={commandInput}
-          onChange={e => setCommandInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="type a command..."
-          style={{
-            flex: 1,
-            background: 'transparent',
-            border: 'none',
-            outline: 'none',
-            color: 'var(--color-text-primary)',
-            fontFamily: 'inherit',
-            fontSize: 'inherit',
-          }}
-        />
+        <CommandAutocomplete onCommand={onCommand} />
       </div>
 
       {/* View toggle */}

@@ -94,4 +94,7 @@ export const api = {
     request<import('../types').SyncResult>(`/projects/${projectId}/sync-github`, {
       method: 'POST',
     }),
+
+  // CLI Help
+  cliHelp: () => request<import('../types').CliHelpResponse>('/cli-help'),
 };

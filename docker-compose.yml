@@ -32,7 +32,7 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
       - CLAUDE_CMD=${CLAUDE_CMD:-claude}
-      - FORGE_CMD=${FORGE_CMD:-forge}
+      - FORGE_CMD=${FORGE_CMD:-/app/target/debug/forge}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
       - FORGE_SANDBOX=${FORGE_SANDBOX:-false}

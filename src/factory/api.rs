@@ -1,5 +1,5 @@
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::errors::FactoryError;
 
@@ -89,6 +89,24 @@ pub struct SyncResult {
     pub total_github: usize,
 }
 
+#[derive(Clone, serde::Serialize)]
+pub struct CliCommand {
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct CliOption {
+    pub flag: String,
+    pub description: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct CliHelpResponse {
+    pub commands: Vec<CliCommand>,
+    pub options: Vec<CliOption>,
+}
+
 // ── Error handling ────────────────────────────────────────────────────
 
 pub enum ApiError {
@@ -166,6 +184,7 @@ impl From<FactoryError> for ApiError {
 /// | POST   | `/api/github/connect`           | Connect with PAT token    |
 /// | GET    | `/api/github/repos`             | List user's GitHub repos  |
 /// | POST   | `/api/github/disconnect`        | Remove GitHub token       |
+/// | GET    | `/api/cli-help`                 | Parsed CLI help data      |
 /// | GET    | `/health`                       | Liveness probe            |
 pub fn api_router() -> Router<SharedState> {
     Router::new()
@@ -196,6 +215,7 @@ pub fn api_router() -> Router<SharedState> {
         .route("/api/github/repos", get(github_list_repos))
         .route("/api/github/disconnect", post(github_disconnect))
         .route("/api/screenshots/{*path}", get(serve_screenshot))
+        .route("/api/cli-help", get(cli_help_handler))
         .route("/health", get(health_check))
 }
 
@@ -347,6 +367,107 @@ async fn detect_github_repo_from_path(path: &str) -> Option<String> {
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────
+
+/// `GET /api/cli-help` — return parsed CLI help (commands and options).
+///
+/// Runs `forge --help` once, caches the result, and returns it as JSON.
+async fn cli_help_handler() -> Result<Json<CliHelpResponse>, ApiError> {
+    static CACHED: OnceLock<Result<CliHelpResponse, String>> = OnceLock::new();
+
+    let result = CACHED.get_or_init(|| {
+        let forge_cmd = std::env::var("FORGE_CMD").unwrap_or_else(|_| "forge".to_string());
+        let output = std::process::Command::new(&forge_cmd)
+            .arg("--help")
+            .output()
+            .map_err(|e| format!("Failed to run {}: {}", forge_cmd, e))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(parse_cli_help(&stdout))
+    });
+
+    match result {
+        Ok(resp) => Ok(Json(resp.clone())),
+        Err(msg) => Err(ApiError::Internal(msg.clone())),
+    }
+}
+
+fn parse_cli_help(text: &str) -> CliHelpResponse {
+    let mut commands = Vec::new();
+    let mut options = Vec::new();
+
+    #[derive(PartialEq)]
+    enum Section {
+        None,
+        Commands,
+        Options,
+    }
+    let mut section = Section::None;
+
+    for line in text.lines() {
+        let trimmed = line.trim_end();
+        if trimmed == "Commands:" {
+            section = Section::Commands;
+            continue;
+        } else if trimmed == "Options:" {
+            section = Section::Options;
+            continue;
+        } else if !trimmed.is_empty() && !trimmed.starts_with(' ') {
+            // A non-indented line that isn't a section header ends the current section
+            section = Section::None;
+            continue;
+        }
+
+        let trimmed = trimmed.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        match section {
+            Section::Commands => {
+                // Format: "  name       Description text"
+                let mut parts = trimmed.splitn(2, char::is_whitespace);
+                let name = parts.next().unwrap_or("").to_string();
+                let description = parts
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if !name.is_empty() {
+                    commands.push(CliCommand { name, description });
+                }
+            }
+            Section::Options => {
+                // Flag lines start with '-' (e.g. "-v, --verbose" or "--yes")
+                if trimmed.starts_with('-') {
+                    // Split on multiple spaces to separate flag from description
+                    let flag;
+                    let description;
+                    // Some flags have <PLACEHOLDER> args, treat everything up to double-space as flag
+                    if let Some(pos) = trimmed.find("  ") {
+                        flag = trimmed[..pos].trim().to_string();
+                        description = trimmed[pos..].trim().to_string();
+                    } else {
+                        flag = trimmed.to_string();
+                        description = String::new();
+                    }
+                    options.push(CliOption { flag, description });
+                } else if !options.is_empty() {
+                    // Continuation line: append to the last option's description
+                    let last = options.last_mut().unwrap();
+                    if last.description.is_empty() {
+                        last.description = trimmed.to_string();
+                    } else {
+                        last.description.push(' ');
+                        last.description.push_str(trimmed);
+                    }
+                }
+            }
+            Section::None => {}
+        }
+    }
+
+    CliHelpResponse { commands, options }
+}
 
 /// `GET /health` — liveness probe.
 ///

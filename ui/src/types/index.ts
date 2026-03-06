@@ -211,6 +211,22 @@ export interface SyncResult {
   total_github: number;
 }
 
+// CLI Help types
+export interface CliHelpCommand {
+  name: string;
+  description: string;
+}
+
+export interface CliHelpOption {
+  flag: string;
+  description: string;
+}
+
+export interface CliHelpResponse {
+  commands: CliHelpCommand[];
+  options: CliHelpOption[];
+}
+
 // Column display configuration
 export const COLUMNS: { key: IssueColumn; label: string }[] = [
   { key: 'backlog', label: 'Backlog' },
