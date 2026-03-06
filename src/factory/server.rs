@@ -107,8 +107,7 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     };
 
     // Health check
-    let conn = db_handle.conn()?;
-    db::health_check(&conn).await;
+    db::health_check(db_handle.conn()).await;
 
     // Initial sync for embedded replicas
     db_handle.sync().await?;

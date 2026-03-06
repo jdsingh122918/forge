@@ -354,14 +354,14 @@ mod tests {
     use super::*;
     use crate::factory::db::DbHandle;
 
-    async fn setup() -> (DbHandle, libsql::Connection, PipelineRun) {
+    async fn setup() -> (DbHandle, PipelineRun) {
         let db = DbHandle::new_in_memory().await.unwrap();
-        let conn = db.conn().unwrap();
-        let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
+        let conn = db.conn();
+        let project = super::super::projects::create_project(conn, "test", "/tmp/test")
             .await
             .unwrap();
         let issue = super::super::issues::create_issue(
-            &conn,
+            conn,
             project.id,
             "Test",
             "",
@@ -369,15 +369,16 @@ mod tests {
         )
         .await
         .unwrap();
-        let run = super::super::pipeline::create_pipeline_run(&conn, issue.id)
+        let run = super::super::pipeline::create_pipeline_run(conn, issue.id)
             .await
             .unwrap();
-        (db, conn, run)
+        (db, run)
     }
 
     #[tokio::test]
     async fn test_create_agent_team() {
-        let (_db, conn, run) = setup().await;
+        let (db, run) = setup().await;
+        let conn = db.conn();
         let team = create_agent_team(
             &conn,
             run.id,
@@ -394,7 +395,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_and_get_agent_task() {
-        let (_db, conn, run) = setup().await;
+        let (db, run) = setup().await;
+        let conn = db.conn();
         let team = create_agent_team(
             &conn,
             run.id,
@@ -426,7 +428,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_agent_task_status() {
-        let (_db, conn, run) = setup().await;
+        let (db, run) = setup().await;
+        let conn = db.conn();
         let team = create_agent_team(
             &conn,
             run.id,
@@ -459,7 +462,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_events() {
-        let (_db, conn, run) = setup().await;
+        let (db, run) = setup().await;
+        let conn = db.conn();
         let team = create_agent_team(
             &conn,
             run.id,
@@ -498,7 +502,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_team_detail() {
-        let (_db, conn, run) = setup().await;
+        let (db, run) = setup().await;
+        let conn = db.conn();
         let team = create_agent_team(
             &conn,
             run.id,

@@ -38,7 +38,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_and_get_setting() {
         let db = DbHandle::new_in_memory().await.unwrap();
-        let conn = db.conn().unwrap();
+        let conn = db.conn();
         set_setting(&conn, "test_key", "test_value").await.unwrap();
         let val = get_setting(&conn, "test_key").await.unwrap();
         assert_eq!(val, Some("test_value".to_string()));
@@ -47,7 +47,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_missing_setting() {
         let db = DbHandle::new_in_memory().await.unwrap();
-        let conn = db.conn().unwrap();
+        let conn = db.conn();
         let val = get_setting(&conn, "nonexistent").await.unwrap();
         assert_eq!(val, None);
     }
@@ -55,7 +55,7 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_setting() {
         let db = DbHandle::new_in_memory().await.unwrap();
-        let conn = db.conn().unwrap();
+        let conn = db.conn();
         set_setting(&conn, "key", "v1").await.unwrap();
         set_setting(&conn, "key", "v2").await.unwrap();
         let val = get_setting(&conn, "key").await.unwrap();
@@ -65,7 +65,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_setting() {
         let db = DbHandle::new_in_memory().await.unwrap();
-        let conn = db.conn().unwrap();
+        let conn = db.conn();
         set_setting(&conn, "key", "value").await.unwrap();
         delete_setting(&conn, "key").await.unwrap();
         let val = get_setting(&conn, "key").await.unwrap();

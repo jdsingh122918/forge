@@ -333,7 +333,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_issue() {
         let db = DbHandle::new_in_memory().await.unwrap();
-        let conn = db.conn().unwrap();
+        let conn = db.conn();
         let project = super::super::projects::create_project(&conn, "test-proj", "/tmp/test-proj")
             .await
             .unwrap();
@@ -358,7 +358,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_issues() {
         let db = DbHandle::new_in_memory().await.unwrap();
-        let conn = db.conn().unwrap();
+        let conn = db.conn();
         let project = super::super::projects::create_project(&conn, "test-proj", "/tmp/test-proj")
             .await
             .unwrap();
@@ -379,7 +379,7 @@ mod tests {
     #[tokio::test]
     async fn test_move_issue() {
         let db = DbHandle::new_in_memory().await.unwrap();
-        let conn = db.conn().unwrap();
+        let conn = db.conn();
         let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
             .await
             .unwrap();
@@ -396,7 +396,7 @@ mod tests {
     #[tokio::test]
     async fn test_soft_delete_issue() {
         let db = DbHandle::new_in_memory().await.unwrap();
-        let conn = db.conn().unwrap();
+        let conn = db.conn();
         let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
             .await
             .unwrap();
@@ -414,7 +414,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_issue() {
         let db = DbHandle::new_in_memory().await.unwrap();
-        let conn = db.conn().unwrap();
+        let conn = db.conn();
         let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
             .await
             .unwrap();

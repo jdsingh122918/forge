@@ -132,7 +132,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_project() {
         let db = DbHandle::new_in_memory().await.unwrap();
-        let conn = db.conn().unwrap();
+        let conn = db.conn();
 
         let project = create_project(&conn, "my-project", "/tmp/my-project")
             .await
@@ -153,7 +153,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_projects() {
         let db = DbHandle::new_in_memory().await.unwrap();
-        let conn = db.conn().unwrap();
+        let conn = db.conn();
 
         create_project(&conn, "alpha", "/tmp/alpha").await.unwrap();
         create_project(&conn, "beta", "/tmp/beta").await.unwrap();
@@ -169,7 +169,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_project() {
         let db = DbHandle::new_in_memory().await.unwrap();
-        let conn = db.conn().unwrap();
+        let conn = db.conn();
 
         let project = create_project(&conn, "to-delete", "/tmp/to-delete")
             .await
@@ -185,7 +185,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_github_repo() {
         let db = DbHandle::new_in_memory().await.unwrap();
-        let conn = db.conn().unwrap();
+        let conn = db.conn();
 
         let project = create_project(&conn, "gh-proj", "/tmp/gh-proj")
             .await

@@ -242,7 +242,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_pipeline_run() {
         let db = DbHandle::new_in_memory().await.unwrap();
-        let conn = db.conn().unwrap();
+        let conn = db.conn();
         let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
             .await
             .unwrap();
@@ -265,7 +265,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_pipeline_run() {
         let db = DbHandle::new_in_memory().await.unwrap();
-        let conn = db.conn().unwrap();
+        let conn = db.conn();
         let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
             .await
             .unwrap();
@@ -303,7 +303,7 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_pipeline_phase() {
         let db = DbHandle::new_in_memory().await.unwrap();
-        let conn = db.conn().unwrap();
+        let conn = db.conn();
         let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
             .await
             .unwrap();
