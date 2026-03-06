@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "a02eb5d43d01",
+  "strategy": "manual-commit",
+  "branch": "feat/libsql-turso-migration",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "src/factory/db/agents.rs",
+    "src/factory/db/issues.rs",
+    "src/factory/db/mod.rs",
+    "src/factory/db/pipeline.rs",
+    "src/factory/db/projects.rs",
+    "src/factory/db/settings.rs",
+    "src/factory/server.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a0/2eb5d43d01/0/metadata.json",
+      "transcript": "/a0/2eb5d43d01/0/full.jsonl",
+      "context": "/a0/2eb5d43d01/0/context.md",
+      "content_hash": "/a0/2eb5d43d01/0/content_hash.txt",
+      "prompt": "/a0/2eb5d43d01/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 74,
+    "cache_creation_tokens": 85552,
+    "cache_read_tokens": 1296631,
+    "output_tokens": 9341,
+    "api_call_count": 24
+  }
+}
