@@ -1,18 +1,28 @@
+mod execution;
+pub mod git;
+pub mod parsing;
+
 use std::collections::HashMap;
-use std::process::Stdio;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
-use serde::Serialize;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use anyhow::Result;
 use tokio::sync::broadcast;
 
 use super::agent_executor::{AgentExecutor, TaskRunner};
 use super::db::DbHandle;
 use super::models::*;
-use super::planner::{PlanProvider, Planner};
+use super::planner::{PlanProvider, PlanResponse, Planner};
 use super::sandbox::{DockerSandbox, SandboxConfig};
 use super::ws::{WsMessage, broadcast_message};
+
+use execution::*;
+use git::*;
+
+// Re-export public items that were previously at this module's path
+pub use git::{GitLockMap, slugify};
+pub use parsing::{
+    StreamJsonEvent, extract_file_change, extract_tool_input_summary, parse_stream_json_line,
+};
 
 /// Decision for where to move an issue after pipeline completion.
 #[derive(Debug, Clone, PartialEq)]
@@ -51,180 +61,12 @@ impl AutoPromotePolicy {
     }
 }
 
-fn translate_host_path_to_container(path: &str) -> String {
-    if path.contains("/.forge/repos/")
-        && !path.starts_with("/app/")
-        && let Some(pos) = path.find("/.forge/repos/")
-    {
-        return format!("/app{}", &path[pos..]);
-    }
-    path.to_string()
-}
-
-/// Per-project mutex map that serializes git-mutating operations.
-/// Long-running agent execution remains parallel — only short git
-/// mutations (checkout, merge, push) are serialized.
-#[derive(Clone, Default)]
-pub struct GitLockMap {
-    locks: Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
-}
-
-impl GitLockMap {
-    pub async fn get(&self, project_path: &str) -> Arc<tokio::sync::Mutex<()>> {
-        let project_path = translate_host_path_to_container(project_path);
-        let canonical = match tokio::fs::canonicalize(&project_path).await {
-            Ok(p) => p.to_string_lossy().to_string(),
-            Err(e) => {
-                eprintln!(
-                    "[pipeline] Failed to canonicalize '{}': {}. Using raw path for git lock.",
-                    project_path, e
-                );
-                project_path.trim_end_matches('/').to_string()
-            }
-        };
-        let mut map = self.locks.lock().await;
-        map.entry(canonical)
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone()
-    }
-}
-
 /// Result of agent team execution
 enum PlanOutcome {
     /// Team successfully executed the plan
     TeamExecuted(String),
     /// Planner returned a single-task sequential plan; caller should fall back to the forge pipeline.
     FallbackToForge,
-}
-
-/// Convert a title to a URL-safe slug, limited to `max_len` characters.
-pub fn slugify(title: &str, max_len: usize) -> String {
-    let slug: String = title
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '-' })
-        .collect::<String>()
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.len() > max_len {
-        slug[..slug.floor_char_boundary(max_len)]
-            .trim_end_matches('-')
-            .to_string()
-    } else {
-        slug
-    }
-}
-
-/// Create a git branch for the pipeline run. Returns the branch name.
-async fn create_git_branch(project_path: &str, issue_id: i64, issue_title: &str) -> Result<String> {
-    let slug = slugify(issue_title, 40);
-    let branch_name = format!("forge/issue-{}-{}", issue_id, slug);
-
-    // Try creating a new branch
-    let output = tokio::process::Command::new("git")
-        .args(["checkout", "-b", &branch_name])
-        .current_dir(project_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .context("Failed to run git checkout -b")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        // Branch already exists — switch to it instead
-        if stderr.contains("already exists") {
-            let switch = tokio::process::Command::new("git")
-                .args(["checkout", &branch_name])
-                .current_dir(project_path)
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .output()
-                .await
-                .context("Failed to run git checkout")?;
-
-            if !switch.status.success() {
-                let switch_stderr = String::from_utf8_lossy(&switch.stderr);
-                anyhow::bail!(
-                    "Failed to switch to existing branch {}: {}",
-                    branch_name,
-                    switch_stderr.trim()
-                );
-            }
-        } else {
-            anyhow::bail!("Failed to create branch {}: {}", branch_name, stderr.trim());
-        }
-    }
-
-    Ok(branch_name)
-}
-
-/// Push branch and create a PR using `gh`. Returns the PR URL.
-async fn create_pull_request(
-    project_path: &str,
-    branch_name: &str,
-    issue_title: &str,
-    issue_description: &str,
-) -> Result<String> {
-    // Push the branch
-    let push_status = tokio::process::Command::new("git")
-        .args(["push", "-u", "origin", branch_name])
-        .current_dir(project_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .status()
-        .await
-        .context("Failed to push branch")?;
-
-    if !push_status.success() {
-        anyhow::bail!("Failed to push branch {}", branch_name);
-    }
-
-    // Create PR
-    let body = format!(
-        "## Summary\n\nAutomated implementation for: **{}**\n\n{}\n\n---\n*Created by Forge Factory*",
-        issue_title,
-        if issue_description.is_empty() {
-            "No description provided."
-        } else {
-            issue_description
-        }
-    );
-
-    let output = tokio::process::Command::new("gh")
-        .args(["pr", "create", "--title", issue_title, "--body", &body])
-        .current_dir(project_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .context("Failed to run gh pr create")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to create PR: {}", stderr);
-    }
-
-    let pr_url = String::from_utf8(output.stdout)
-        .context("Invalid UTF-8 in gh output")?
-        .trim()
-        .to_string();
-
-    Ok(pr_url)
-}
-
-/// Tracks progress parsed from subprocess stdout lines.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-struct ProgressInfo {
-    #[serde(default)]
-    phase: Option<i32>,
-    #[serde(default)]
-    phase_count: Option<i32>,
-    #[serde(default)]
-    iteration: Option<i32>,
 }
 
 /// Handle to a running pipeline — either a local subprocess or a Docker container.
@@ -406,15 +248,15 @@ impl PipelineRunner {
                         content: format!("Planning failed, using single-task fallback: {}", e),
                     },
                 );
-                super::planner::PlanResponse::fallback(issue_title, issue_description)
+                PlanResponse::fallback(issue_title, issue_description)
             }
         };
 
         // If it's a single sequential task, signal fallback
         let is_sequential = plan
             .strategy
-            .parse::<super::models::ExecutionStrategy>()
-            .map(|s| s == super::models::ExecutionStrategy::Sequential)
+            .parse::<ExecutionStrategy>()
+            .map(|s| s == ExecutionStrategy::Sequential)
             .unwrap_or(false);
         if plan.tasks.len() <= 1 && is_sequential {
             return Ok(PlanOutcome::FallbackToForge);
@@ -484,7 +326,6 @@ impl PipelineRunner {
         );
 
         // Step 4: Execute wave by wave
-        let executor = Arc::clone(task_runner);
         let max_wave = plan.max_wave();
         let base_branch = branch_name.as_deref().unwrap_or("main");
 
@@ -513,7 +354,7 @@ impl PipelineRunner {
                 let (working_dir, task_branch) = if task.isolation_type
                     == IsolationStrategy::Worktree
                 {
-                    match executor.setup_worktree(run_id, task, base_branch).await {
+                    match task_runner.setup_worktree(run_id, task, base_branch).await {
                         Ok((path, branch)) => (path, Some(branch)),
                         Err(e) => {
                             if wave_tasks.len() > 1 {
@@ -623,7 +464,7 @@ impl PipelineRunner {
                 let mut merge_conflicts = false;
                 for (_task, _working_dir, task_branch) in &task_working_dirs {
                     if let Some(branch) = task_branch {
-                        let merged = executor.merge_branch(branch, base_branch).await;
+                        let merged = task_runner.merge_branch(branch, base_branch).await;
                         match merged {
                             Ok(true) => { /* success */ }
                             Ok(false) => {
@@ -659,7 +500,7 @@ impl PipelineRunner {
 
             // Always clean up ALL worktrees, even after merge conflict
             for dir in &worktree_paths {
-                if let Err(e) = executor.cleanup_worktree(dir).await {
+                if let Err(e) = task_runner.cleanup_worktree(dir).await {
                     eprintln!(
                         "[pipeline] Failed to clean up worktree {}: {:#}",
                         dir.display(),
@@ -1113,932 +954,6 @@ impl PipelineRunner {
     }
 }
 
-/// Check if the project has `.forge/phases.json` for swarm execution.
-fn has_forge_phases(project_path: &str) -> bool {
-    std::path::Path::new(project_path)
-        .join(".forge")
-        .join("phases.json")
-        .exists()
-}
-
-/// Check if the project is initialized with `.forge/` directory.
-fn is_forge_initialized(project_path: &str) -> bool {
-    std::path::Path::new(project_path).join(".forge").is_dir()
-}
-
-/// Auto-generate spec and phases from an issue description.
-/// Writes a design doc to `.forge/spec.md`, then runs `forge generate`.
-/// Returns Ok(true) if phases were generated successfully, Ok(false) if generation
-/// failed or produced no output (caller should fall back to direct invocation).
-async fn auto_generate_phases(
-    project_path: &str,
-    issue_title: &str,
-    issue_description: &str,
-) -> Result<bool> {
-    // Ensure .forge directory exists
-    let forge_dir = std::path::Path::new(project_path).join(".forge");
-    if !forge_dir.exists() {
-        tokio::fs::create_dir_all(&forge_dir)
-            .await
-            .context("Failed to create .forge directory")?;
-    }
-
-    // Write a design document from the issue
-    let design_content = format!(
-        "# {}\n\n## Overview\n\n{}\n\n## Requirements\n\n- Implement the feature described above\n- Ensure all existing tests continue to pass\n- Add tests for new functionality\n",
-        issue_title,
-        if issue_description.is_empty() {
-            "No additional details provided."
-        } else {
-            issue_description
-        }
-    );
-    let design_path = forge_dir.join("spec.md");
-    tokio::fs::write(&design_path, &design_content)
-        .await
-        .context("Failed to write design document")?;
-
-    // Run forge generate to create phases.json
-    let forge_cmd = std::env::var("FORGE_CMD").unwrap_or_else(|_| "forge".to_string());
-    let status = match tokio::process::Command::new(&forge_cmd)
-        .arg("generate")
-        .current_dir(project_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .status()
-        .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[pipeline] Failed to spawn '{}': {e}", forge_cmd);
-            return Ok(false);
-        }
-    };
-
-    if status.success() && has_forge_phases(project_path) {
-        Ok(true)
-    } else {
-        // Generation failed — fall back to simple Claude invocation
-        Ok(false)
-    }
-}
-
-/// Build the command to execute: `forge swarm` if phases exist, otherwise `claude --print`.
-fn build_execution_command(
-    project_path: &str,
-    issue_title: &str,
-    issue_description: &str,
-) -> tokio::process::Command {
-    if has_forge_phases(project_path) {
-        // Use forge swarm for full DAG-based parallel execution
-        let forge_cmd = std::env::var("FORGE_CMD").unwrap_or_else(|_| "forge".to_string());
-        let mut cmd = tokio::process::Command::new(&forge_cmd);
-        cmd.arg("swarm")
-            .arg("--max-parallel")
-            .arg("4")
-            .arg("--fail-fast")
-            .env_remove("CLAUDECODE")
-            .current_dir(project_path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        cmd
-    } else {
-        // Fallback: direct Claude invocation for simple issues without phases
-        // Uses stream-json output format for realtime output streaming to the UI
-        let claude_cmd = std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".to_string());
-        let prompt = format!(
-            "Implement the following issue:\n\nTitle: {}\n\nDescription: {}\n",
-            issue_title, issue_description
-        );
-        let mut cmd = tokio::process::Command::new(&claude_cmd);
-        cmd.arg("--print")
-            .arg("--verbose")
-            .arg("--output-format")
-            .arg("stream-json")
-            .arg("--dangerously-skip-permissions")
-            .arg(&prompt)
-            .env_remove("CLAUDECODE")
-            .current_dir(project_path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        cmd
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "content_type")]
-#[allow(dead_code)]
-pub enum StreamJsonEvent {
-    Text {
-        text: String,
-    },
-    ToolStart {
-        tool_name: String,
-        tool_id: String,
-        input_summary: String,
-    },
-    ToolEnd {
-        tool_id: String,
-        output_preview: String,
-    },
-    Thinking {
-        text: String,
-    },
-    Skip,
-}
-
-pub fn parse_stream_json_line(line: &str) -> StreamJsonEvent {
-    // Try to parse as JSON
-    let json: serde_json::Value = match serde_json::from_str(line) {
-        Ok(v) => v,
-        Err(_) => {
-            // Not JSON — treat as plain text
-            return StreamJsonEvent::Text {
-                text: line.to_string(),
-            };
-        }
-    };
-
-    // Skip metadata-only messages
-    let msg_type = json.get("type").and_then(|t| t.as_str()).unwrap_or("");
-    match msg_type {
-        "message_start" | "message_stop" | "message_delta" | "content_block_stop" | "result" => {
-            return StreamJsonEvent::Skip;
-        }
-        _ => {}
-    }
-
-    // content_block_delta with text_delta → Text
-    if msg_type == "content_block_delta"
-        && let Some(delta) = json.get("delta")
-    {
-        if delta.get("type").and_then(|t| t.as_str()) == Some("text_delta")
-            && let Some(text) = delta.get("text").and_then(|t| t.as_str())
-        {
-            return StreamJsonEvent::Text {
-                text: text.to_string(),
-            };
-        }
-        if delta.get("type").and_then(|t| t.as_str()) == Some("thinking_delta")
-            && let Some(text) = delta.get("thinking").and_then(|t| t.as_str())
-        {
-            return StreamJsonEvent::Thinking {
-                text: text.to_string(),
-            };
-        }
-    }
-
-    // content_block_start with tool_use → ToolStart
-    if msg_type == "content_block_start"
-        && let Some(cb) = json.get("content_block")
-        && cb.get("type").and_then(|t| t.as_str()) == Some("tool_use")
-    {
-        let tool_name = cb
-            .get("name")
-            .and_then(|n| n.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let tool_id = cb
-            .get("id")
-            .and_then(|i| i.as_str())
-            .unwrap_or("")
-            .to_string();
-        let input_summary = extract_tool_input_summary(&tool_name, cb.get("input"));
-        return StreamJsonEvent::ToolStart {
-            tool_name,
-            tool_id,
-            input_summary,
-        };
-    }
-
-    // Legacy format: subtype == "tool_use"
-    if json.get("subtype").and_then(|s| s.as_str()) == Some("tool_use") {
-        let tool_name = json
-            .get("tool_name")
-            .and_then(|n| n.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let tool_id = json
-            .get("tool_use_id")
-            .and_then(|i| i.as_str())
-            .unwrap_or("")
-            .to_string();
-        let input_summary = extract_tool_input_summary(&tool_name, json.get("input"));
-        return StreamJsonEvent::ToolStart {
-            tool_name,
-            tool_id,
-            input_summary,
-        };
-    }
-
-    // Full assistant message with content array containing tool_use
-    if json.get("role").and_then(|r| r.as_str()) == Some("assistant")
-        && let Some(content) = json.get("content").and_then(|c| c.as_array())
-    {
-        for block in content {
-            if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                let tool_name = block
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                let tool_id = block
-                    .get("id")
-                    .and_then(|i| i.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let input_summary = extract_tool_input_summary(&tool_name, block.get("input"));
-                return StreamJsonEvent::ToolStart {
-                    tool_name,
-                    tool_id,
-                    input_summary,
-                };
-            }
-        }
-    }
-
-    StreamJsonEvent::Skip
-}
-
-pub fn extract_tool_input_summary(tool_name: &str, input: Option<&serde_json::Value>) -> String {
-    let input = match input {
-        Some(v) => v,
-        None => return String::new(),
-    };
-
-    match tool_name {
-        "Read" | "read" | "file_read" => input
-            .get("file_path")
-            .and_then(|p| p.as_str())
-            .unwrap_or("")
-            .to_string(),
-        "Write" | "write" | "file_write" => input
-            .get("file_path")
-            .and_then(|p| p.as_str())
-            .unwrap_or("")
-            .to_string(),
-        "Edit" | "edit" | "file_edit" => input
-            .get("file_path")
-            .and_then(|p| p.as_str())
-            .unwrap_or("")
-            .to_string(),
-        "Bash" | "bash" | "execute_command" => {
-            let cmd = input.get("command").and_then(|c| c.as_str()).unwrap_or("");
-            if cmd.len() > 80 {
-                format!("{}...", &cmd[..80])
-            } else {
-                cmd.to_string()
-            }
-        }
-        _ => String::new(),
-    }
-}
-
-pub fn extract_file_change(
-    tool_name: &str,
-    input: Option<&serde_json::Value>,
-) -> Option<(String, FileAction)> {
-    let input = input?;
-
-    match tool_name {
-        "Write" | "write" | "file_write" => {
-            let path = input.get("file_path").and_then(|p| p.as_str())?;
-            Some((path.to_string(), FileAction::Created))
-        }
-        "Edit" | "edit" | "file_edit" => {
-            let path = input.get("file_path").and_then(|p| p.as_str())?;
-            Some((path.to_string(), FileAction::Modified))
-        }
-        _ => None,
-    }
-}
-
-/// Execute a forge pipeline for the given issue, streaming stdout line by line.
-/// Uses `forge swarm` if phases.json exists, otherwise falls back to `claude --print`.
-/// Monitors output for progress JSON and emits PipelineProgress WS events.
-async fn execute_pipeline_streaming(
-    run_id: i64,
-    project_path: &str,
-    issue_title: &str,
-    issue_description: &str,
-    running_processes: &Arc<tokio::sync::Mutex<HashMap<i64, RunHandle>>>,
-    db: &DbHandle,
-    tx: &broadcast::Sender<String>,
-) -> Result<String> {
-    let mut cmd = build_execution_command(project_path, issue_title, issue_description);
-    let mut child = cmd.spawn().context("Failed to spawn pipeline process")?;
-
-    // Take stdout before storing child — we need ownership of the stdout handle
-    let stdout = child
-        .stdout
-        .take()
-        .context("Failed to capture stdout from child process")?;
-
-    // Store the child handle for cancellation
-    {
-        let mut processes = running_processes.lock().await;
-        processes.insert(run_id, RunHandle::Process(child));
-    }
-
-    // Read stdout line by line, looking for progress updates
-    let reader = BufReader::new(stdout);
-    let mut lines = reader.lines();
-    let mut all_output = String::new();
-    let mut last_output_broadcast = std::time::Instant::now() - std::time::Duration::from_secs(1);
-
-    while let Some(line) = lines
-        .next_line()
-        .await
-        .context("Failed to read stdout line")?
-    {
-        all_output.push_str(&line);
-        all_output.push('\n');
-
-        // Try to parse as DAG executor PhaseEvent first (from forge swarm)
-        if let Some(event) = try_parse_phase_event(&line) {
-            process_phase_event(&event, run_id, db, tx).await;
-            continue;
-        }
-
-        // Fall back to simple progress JSON (from claude --print)
-        if let Some(progress) = try_parse_progress(&line) {
-            // Update DB with progress
-            if let Err(e) = db
-                .update_pipeline_progress(run_id, progress.phase_count, progress.phase, progress.iteration)
-                .await
-            {
-                broadcast_message(
-                    tx,
-                    &WsMessage::PipelineError {
-                        run_id,
-                        message: format!("Failed to update pipeline progress: {:#}", e),
-                    },
-                );
-            }
-
-            // Compute a rough percentage
-            let percent = compute_percent(&progress);
-
-            // Broadcast progress event
-            broadcast_message(
-                tx,
-                &WsMessage::PipelineProgress {
-                    run_id,
-                    phase: progress.phase.unwrap_or(0),
-                    iteration: progress.iteration.unwrap_or(0),
-                    percent,
-                },
-            );
-        } else if !line.is_empty() {
-            let event = parse_stream_json_line(&line);
-            match event {
-                StreamJsonEvent::Skip => {}
-                StreamJsonEvent::Text { ref text } | StreamJsonEvent::Thinking { ref text } => {
-                    // Throttle text/thinking events to 200ms
-                    if last_output_broadcast.elapsed() >= std::time::Duration::from_millis(200)
-                        && !text.is_empty()
-                    {
-                        let content_type = match &event {
-                            StreamJsonEvent::Thinking { .. } => "thinking",
-                            _ => "text",
-                        };
-                        broadcast_message(
-                            tx,
-                            &WsMessage::PipelineOutputEvent {
-                                run_id,
-                                content_type: content_type.to_string(),
-                                content: text.clone(),
-                                tool_id: None,
-                                input_summary: None,
-                            },
-                        );
-                        // Also send legacy PipelineOutput for backward compat
-                        broadcast_message(
-                            tx,
-                            &WsMessage::PipelineOutput {
-                                run_id,
-                                content: text.clone(),
-                            },
-                        );
-                        last_output_broadcast = std::time::Instant::now();
-                    }
-                }
-                StreamJsonEvent::ToolStart {
-                    ref tool_name,
-                    ref tool_id,
-                    ref input_summary,
-                } => {
-                    broadcast_message(
-                        tx,
-                        &WsMessage::PipelineOutputEvent {
-                            run_id,
-                            content_type: "tool_start".to_string(),
-                            content: tool_name.clone(),
-                            tool_id: Some(tool_id.clone()),
-                            input_summary: Some(input_summary.clone()),
-                        },
-                    );
-                    // Also send legacy PipelineOutput
-                    broadcast_message(
-                        tx,
-                        &WsMessage::PipelineOutput {
-                            run_id,
-                            content: format!("[{}] {}", tool_name, input_summary),
-                        },
-                    );
-                    // Check for file changes
-                    let input_json: Option<serde_json::Value> =
-                        serde_json::from_str::<serde_json::Value>(&line)
-                            .ok()
-                            .and_then(|v| {
-                                // Try content_block_start format
-                                if let Some(cb) = v.get("content_block") {
-                                    return cb.get("input").cloned();
-                                }
-                                // Try legacy format
-                                v.get("input").cloned()
-                            });
-                    if let Some(ref input_val) = input_json
-                        && let Some((file_path, action)) =
-                            extract_file_change(tool_name, Some(input_val))
-                    {
-                        broadcast_message(
-                            tx,
-                            &WsMessage::PipelineFileChanged {
-                                run_id,
-                                file_path,
-                                action,
-                            },
-                        );
-                    }
-                    last_output_broadcast = std::time::Instant::now();
-                }
-                StreamJsonEvent::ToolEnd {
-                    ref tool_id,
-                    ref output_preview,
-                } => {
-                    broadcast_message(
-                        tx,
-                        &WsMessage::PipelineOutputEvent {
-                            run_id,
-                            content_type: "tool_end".to_string(),
-                            content: output_preview.clone(),
-                            tool_id: Some(tool_id.clone()),
-                            input_summary: None,
-                        },
-                    );
-                }
-            }
-        }
-    }
-
-    // Wait for the process to finish — retrieve the child from the map
-    let status = {
-        let mut processes = running_processes.lock().await;
-        if let Some(handle) = processes.remove(&run_id) {
-            match handle {
-                RunHandle::Process(mut child) => child
-                    .wait()
-                    .await
-                    .context("Failed to wait for child process")?,
-                RunHandle::Container(_) => {
-                    anyhow::bail!("Unexpected container handle in local execution path")
-                }
-            }
-        } else {
-            // Process was already removed (e.g., cancelled)
-            anyhow::bail!("Pipeline was cancelled")
-        }
-    };
-
-    if status.success() {
-        // Take last 500 chars as summary
-        let summary = if all_output.len() > 500 {
-            format!("...{}", &all_output[all_output.len() - 500..])
-        } else {
-            all_output
-        };
-        Ok(summary)
-    } else {
-        anyhow::bail!(
-            "Pipeline process failed with exit code: {:?}",
-            status.code()
-        )
-    }
-}
-
-/// Execute a pipeline in a Docker container, streaming logs line by line.
-#[allow(clippy::too_many_arguments)]
-async fn execute_pipeline_docker(
-    run_id: i64,
-    project_path: &str,
-    issue_title: &str,
-    issue_description: &str,
-    sandbox: &Arc<DockerSandbox>,
-    running_processes: &Arc<tokio::sync::Mutex<HashMap<i64, RunHandle>>>,
-    db: &DbHandle,
-    tx: &broadcast::Sender<String>,
-    timeout_secs: u64,
-) -> Result<String> {
-    let config = match SandboxConfig::load(std::path::Path::new(project_path)) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("[pipeline] Failed to load sandbox config, using defaults: {e}");
-            SandboxConfig::default()
-        }
-    };
-
-    // Build the command — same logic as local
-    let command = if has_forge_phases(project_path) {
-        let forge_cmd = std::env::var("FORGE_CMD").unwrap_or_else(|_| "forge".to_string());
-        vec![
-            forge_cmd,
-            "swarm".into(),
-            "--max-parallel".into(),
-            "4".into(),
-            "--fail-fast".into(),
-        ]
-    } else {
-        let claude_cmd = std::env::var("CLAUDE_CMD").unwrap_or_else(|_| "claude".into());
-        let prompt = format!(
-            "Implement the following issue:\n\nTitle: {}\n\nDescription: {}\n",
-            issue_title, issue_description
-        );
-        vec![
-            claude_cmd,
-            "--print".into(),
-            "--dangerously-skip-permissions".into(),
-            prompt,
-        ]
-    };
-
-    // Build environment variables to inject
-    let mut env = Vec::new();
-    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-        env.push(format!("ANTHROPIC_API_KEY={}", key));
-    }
-    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-        env.push(format!("GITHUB_TOKEN={}", token));
-    }
-    if let Ok(token) = std::env::var("CLAUDE_CODE_OAUTH_TOKEN") {
-        env.push(format!("CLAUDE_CODE_OAUTH_TOKEN={}", token));
-    }
-
-    // Get project name for volume naming
-    let project_name = std::path::Path::new(project_path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown");
-
-    let (container_id, mut line_rx) = sandbox
-        .run_pipeline(
-            std::path::Path::new(project_path),
-            command,
-            &config,
-            env,
-            run_id,
-            project_name,
-        )
-        .await?;
-
-    // Store the container handle for cancellation
-    {
-        let mut processes = running_processes.lock().await;
-        processes.insert(run_id, RunHandle::Container(container_id.clone()));
-    }
-
-    // Stream logs with timeout
-    let mut all_output = String::new();
-    let timeout_duration = tokio::time::Duration::from_secs(timeout_secs);
-
-    let stream_result = tokio::time::timeout(timeout_duration, async {
-        while let Some(line) = line_rx.recv().await {
-            all_output.push_str(&line);
-            all_output.push('\n');
-
-            // Parse progress — same logic as local
-            if let Some(event) = try_parse_phase_event(&line) {
-                process_phase_event(&event, run_id, db, tx).await;
-                continue;
-            }
-            if let Some(progress) = try_parse_progress(&line) {
-                if let Err(e) = db
-                    .update_pipeline_progress(run_id, progress.phase_count, progress.phase, progress.iteration)
-                    .await
-                {
-                    broadcast_message(
-                        tx,
-                        &WsMessage::PipelineError {
-                            run_id,
-                            message: format!("Failed to update pipeline progress: {:#}", e),
-                        },
-                    );
-                }
-
-                let percent = compute_percent(&progress);
-                broadcast_message(
-                    tx,
-                    &WsMessage::PipelineProgress {
-                        run_id,
-                        phase: progress.phase.unwrap_or(0),
-                        iteration: progress.iteration.unwrap_or(0),
-                        percent,
-                    },
-                );
-            }
-        }
-    })
-    .await;
-
-    // Handle timeout
-    if stream_result.is_err() {
-        sandbox.stop(&container_id).await?;
-        anyhow::bail!("Pipeline exceeded time limit ({}s)", timeout_secs);
-    }
-
-    // Wait for container to finish and check result
-    let exit_code = match sandbox.wait(&container_id).await {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("[pipeline] Failed to wait for container {container_id}: {e}");
-            -1
-        }
-    };
-
-    // Check for OOM
-    if let Ok(inspect) = sandbox.inspect(&container_id).await
-        && let Some(state) = inspect.state
-        && state.oom_killed.unwrap_or(false)
-    {
-        sandbox.stop(&container_id).await?;
-        anyhow::bail!("Pipeline exceeded memory limit ({})", config.memory);
-    }
-
-    // Clean up the container
-    sandbox.stop(&container_id).await?;
-
-    if exit_code == 0 {
-        let summary = if all_output.len() > 500 {
-            format!("...{}", &all_output[all_output.len() - 500..])
-        } else {
-            all_output
-        };
-        Ok(summary)
-    } else {
-        anyhow::bail!("Pipeline container exited with code: {}", exit_code)
-    }
-}
-
-/// Attempt to parse a line as progress JSON.
-/// Accepts lines like: `{"phase": 2, "phase_count": 5, "iteration": 3}`
-/// Also handles lines that contain JSON embedded after a prefix (e.g., `[progress] {...}`).
-fn try_parse_progress(line: &str) -> Option<ProgressInfo> {
-    let trimmed = line.trim();
-
-    // Try direct parse first
-    if let Ok(info) = serde_json::from_str::<ProgressInfo>(trimmed)
-        && (info.phase.is_some() || info.phase_count.is_some() || info.iteration.is_some())
-    {
-        return Some(info);
-    }
-
-    // Try to find JSON object embedded in the line
-    if let Some(start) = trimmed.find('{')
-        && let Some(end) = trimmed.rfind('}')
-        && end > start
-    {
-        let json_str = &trimmed[start..=end];
-        if let Ok(info) = serde_json::from_str::<ProgressInfo>(json_str)
-            && (info.phase.is_some() || info.phase_count.is_some() || info.iteration.is_some())
-        {
-            return Some(info);
-        }
-    }
-
-    None
-}
-
-/// Compute a rough progress percentage from the progress info.
-fn compute_percent(progress: &ProgressInfo) -> Option<u8> {
-    match (progress.phase, progress.phase_count) {
-        (Some(phase), Some(total)) if total > 0 => {
-            let pct = ((phase as f64 / total as f64) * 100.0).min(100.0) as u8;
-            Some(pct)
-        }
-        _ => None,
-    }
-}
-
-/// A PhaseEvent from the DAG executor's JSON output.
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-#[allow(dead_code)]
-enum PhaseEventJson {
-    Started {
-        phase: String,
-        wave: usize,
-    },
-    Progress {
-        phase: String,
-        iteration: u32,
-        budget: u32,
-        percent: Option<u32>,
-    },
-    Completed {
-        phase: String,
-        result: serde_json::Value,
-    },
-    ReviewStarted {
-        phase: String,
-    },
-    ReviewCompleted {
-        phase: String,
-        passed: bool,
-        findings_count: usize,
-    },
-    WaveStarted {
-        wave: usize,
-        phases: Vec<String>,
-    },
-    WaveCompleted {
-        wave: usize,
-        success_count: usize,
-        failed_count: usize,
-    },
-    DagCompleted {
-        success: bool,
-    },
-    #[serde(other)]
-    Unknown,
-}
-
-/// Try to parse a line as a DAG executor PhaseEvent.
-/// Returns the event if successfully parsed and actionable.
-fn try_parse_phase_event(line: &str) -> Option<PhaseEventJson> {
-    let trimmed = line.trim();
-    if let Ok(event) = serde_json::from_str::<PhaseEventJson>(trimmed) {
-        return match &event {
-            PhaseEventJson::Unknown => None,
-            _ => Some(event),
-        };
-    }
-    // Try embedded JSON
-    if let Some(start) = trimmed.find('{')
-        && let Some(end) = trimmed.rfind('}')
-        && end > start
-    {
-        let json_str = &trimmed[start..=end];
-        if let Ok(event) = serde_json::from_str::<PhaseEventJson>(json_str) {
-            return match &event {
-                PhaseEventJson::Unknown => None,
-                _ => Some(event),
-            };
-        }
-    }
-    None
-}
-
-/// Process a PhaseEvent and emit corresponding WsMessages + DB updates.
-async fn process_phase_event(
-    event: &PhaseEventJson,
-    run_id: i64,
-    db: &DbHandle,
-    tx: &broadcast::Sender<String>,
-) {
-    match event {
-        PhaseEventJson::Started { phase, wave } => {
-            if let Err(e) = db
-                .upsert_pipeline_phase(
-                    run_id,
-                    phase,
-                    phase,
-                    &PhaseStatus::Running,
-                    None,
-                    None,
-                )
-                .await
-            {
-                broadcast_message(
-                    tx,
-                    &WsMessage::PipelineError {
-                        run_id,
-                        message: format!("Failed to upsert pipeline phase (started): {:#}", e),
-                    },
-                );
-            }
-            broadcast_message(
-                tx,
-                &WsMessage::PipelinePhaseStarted {
-                    run_id,
-                    phase_number: phase.clone(),
-                    phase_name: phase.clone(),
-                    wave: *wave,
-                },
-            );
-        }
-        PhaseEventJson::Progress {
-            phase,
-            iteration,
-            budget,
-            percent,
-        } => {
-            if let Err(e) = db
-                .upsert_pipeline_phase(
-                    run_id,
-                    phase,
-                    phase,
-                    &PhaseStatus::Running,
-                    Some(*iteration as i32),
-                    Some(*budget as i32),
-                )
-                .await
-            {
-                broadcast_message(
-                    tx,
-                    &WsMessage::PipelineError {
-                        run_id,
-                        message: format!("Failed to upsert pipeline phase (progress): {:#}", e),
-                    },
-                );
-            }
-            broadcast_message(
-                tx,
-                &WsMessage::PipelineProgress {
-                    run_id,
-                    phase: phase.parse::<i32>().unwrap_or(0),
-                    iteration: *iteration as i32,
-                    percent: percent.map(|p| p.min(100) as u8),
-                },
-            );
-        }
-        PhaseEventJson::Completed { phase, result } => {
-            let success = result
-                .get("success")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            let status = if success { PhaseStatus::Completed } else { PhaseStatus::Failed };
-            if let Err(e) = db
-                .upsert_pipeline_phase(
-                    run_id,
-                    phase,
-                    phase,
-                    &status,
-                    None,
-                    None,
-                )
-                .await
-            {
-                broadcast_message(
-                    tx,
-                    &WsMessage::PipelineError {
-                        run_id,
-                        message: format!("Failed to upsert pipeline phase (completed): {:#}", e),
-                    },
-                );
-            }
-            broadcast_message(
-                tx,
-                &WsMessage::PipelinePhaseCompleted {
-                    run_id,
-                    phase_number: phase.clone(),
-                    success,
-                },
-            );
-        }
-        PhaseEventJson::ReviewStarted { phase } => {
-            broadcast_message(
-                tx,
-                &WsMessage::PipelineReviewStarted {
-                    run_id,
-                    phase_number: phase.clone(),
-                },
-            );
-        }
-        PhaseEventJson::ReviewCompleted {
-            phase,
-            passed,
-            findings_count,
-        } => {
-            broadcast_message(
-                tx,
-                &WsMessage::PipelineReviewCompleted {
-                    run_id,
-                    phase_number: phase.clone(),
-                    passed: *passed,
-                    findings_count: *findings_count,
-                },
-            );
-        }
-        PhaseEventJson::DagCompleted { success: _ } => {
-            // Handled by the outer pipeline completion logic
-        }
-        PhaseEventJson::WaveStarted { .. } | PhaseEventJson::WaveCompleted { .. } => {
-            // Wave events are informational, no DB/WS action needed
-        }
-        PhaseEventJson::Unknown => {}
-    }
-}
-
 /// Check if a pipeline run can be cancelled.
 pub fn is_cancellable(status: &PipelineStatus) -> bool {
     matches!(status, PipelineStatus::Queued | PipelineStatus::Running)
@@ -2090,7 +1005,6 @@ mod tests {
 
     #[test]
     fn test_valid_transitions() {
-        // Valid transitions
         assert!(is_valid_transition(
             &PipelineStatus::Queued,
             &PipelineStatus::Running
@@ -2115,7 +1029,6 @@ mod tests {
 
     #[test]
     fn test_invalid_transitions() {
-        // Invalid transitions
         assert!(!is_valid_transition(
             &PipelineStatus::Completed,
             &PipelineStatus::Running
@@ -2142,93 +1055,9 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn test_try_parse_progress_valid_json() {
-        let line = r#"{"phase": 2, "phase_count": 5, "iteration": 3}"#;
-        let progress = try_parse_progress(line).expect("should parse");
-        assert_eq!(progress.phase, Some(2));
-        assert_eq!(progress.phase_count, Some(5));
-        assert_eq!(progress.iteration, Some(3));
-    }
-
-    #[test]
-    fn test_try_parse_progress_embedded_json() {
-        let line = r#"[progress] {"phase": 1, "phase_count": 3}"#;
-        let progress = try_parse_progress(line).expect("should parse embedded");
-        assert_eq!(progress.phase, Some(1));
-        assert_eq!(progress.phase_count, Some(3));
-        assert_eq!(progress.iteration, None);
-    }
-
-    #[test]
-    fn test_try_parse_progress_no_progress_fields() {
-        let line = r#"{"message": "hello"}"#;
-        assert!(try_parse_progress(line).is_none());
-    }
-
-    #[test]
-    fn test_try_parse_progress_plain_text() {
-        let line = "Just some regular output text";
-        assert!(try_parse_progress(line).is_none());
-    }
-
-    #[test]
-    fn test_try_parse_progress_partial_fields() {
-        let line = r#"{"iteration": 7}"#;
-        let progress = try_parse_progress(line).expect("should parse partial");
-        assert_eq!(progress.phase, None);
-        assert_eq!(progress.phase_count, None);
-        assert_eq!(progress.iteration, Some(7));
-    }
-
-    #[test]
-    fn test_compute_percent() {
-        let p = ProgressInfo {
-            phase: Some(2),
-            phase_count: Some(4),
-            iteration: None,
-        };
-        assert_eq!(compute_percent(&p), Some(50));
-
-        let p = ProgressInfo {
-            phase: Some(5),
-            phase_count: Some(5),
-            iteration: None,
-        };
-        assert_eq!(compute_percent(&p), Some(100));
-
-        let p = ProgressInfo {
-            phase: Some(1),
-            phase_count: Some(10),
-            iteration: None,
-        };
-        assert_eq!(compute_percent(&p), Some(10));
-    }
-
-    #[test]
-    fn test_compute_percent_no_total() {
-        let p = ProgressInfo {
-            phase: Some(2),
-            phase_count: None,
-            iteration: None,
-        };
-        assert_eq!(compute_percent(&p), None);
-    }
-
-    #[test]
-    fn test_compute_percent_zero_total() {
-        let p = ProgressInfo {
-            phase: Some(0),
-            phase_count: Some(0),
-            iteration: None,
-        };
-        assert_eq!(compute_percent(&p), None);
-    }
-
     #[tokio::test]
     async fn test_pipeline_runner_updates_db_on_failure() {
         let _lock = ENV_MUTEX.lock().await;
-        // Use a command that will fail
         unsafe { std::env::set_var("CLAUDE_CMD", "false") };
 
         let db = DbHandle::new_in_memory().await.unwrap();
@@ -2247,11 +1076,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Give the background task time to complete
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
         let updated_run = db.get_pipeline_run(run.id).await.unwrap().unwrap();
-        // Should be either Running (if claude not found) or Failed
         assert!(
             updated_run.status == PipelineStatus::Failed
                 || updated_run.status == PipelineStatus::Running,
@@ -2259,7 +1086,6 @@ mod tests {
             updated_run.status
         );
 
-        // Clean up
         unsafe { std::env::remove_var("CLAUDE_CMD") };
     }
 
@@ -2283,7 +1109,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Should receive a PipelineStarted message
         let msg = tokio::time::timeout(tokio::time::Duration::from_secs(2), rx.recv()).await;
 
         assert!(msg.is_ok(), "Should receive a broadcast message");
@@ -2300,13 +1125,8 @@ mod tests {
     #[tokio::test]
     async fn test_pipeline_cancel_kills_process() {
         let _lock = ENV_MUTEX.lock().await;
-        // Use an isolated temp dir so the planner's `find` doesn't scan all of /tmp
-        // (which causes permission-denied delays on CI runners).
         let tmp_dir = tempfile::tempdir().unwrap();
         let tmp_path = tmp_dir.path().to_str().unwrap();
-        // Create a script that:
-        // - Exits with error when called with -p (planner call uses `-p` flag) so it falls back fast
-        // - Sleeps for 60s otherwise (pipeline execution via `claude --print --output-format stream-json <prompt>`) so we can cancel it
         let script_path = tmp_dir.path().join("forge_test_sleep_cancel.sh");
         std::fs::write(
             &script_path,
@@ -2332,9 +1152,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Wait for the process to be registered in the running_processes map.
-        // We poll because the spawned task needs to actually call spawn() and insert.
-        // The planner step may take several seconds (tries Claude CLI, fails, falls back).
         let mut tracked = false;
         for _ in 0..100 {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -2346,11 +1163,9 @@ mod tests {
         }
         assert!(tracked, "Process should be tracked within 10 seconds");
 
-        // Cancel it
         let cancelled_run = runner.cancel(run.id, &db, &tx).await.unwrap();
         assert_eq!(cancelled_run.status, PipelineStatus::Cancelled);
 
-        // Process should be removed from tracking
         {
             let processes = runner.running_processes.lock().await;
             assert!(
@@ -2359,18 +1174,14 @@ mod tests {
             );
         }
 
-        // Clean up
         unsafe { std::env::remove_var("CLAUDE_CMD") };
     }
 
     #[tokio::test]
     async fn test_pipeline_completed_cleans_up_process() {
         let _lock = ENV_MUTEX.lock().await;
-        // Use an isolated temp dir so the planner's `find` doesn't scan all of /tmp
         let tmp_dir = tempfile::tempdir().unwrap();
         let tmp_path = tmp_dir.path().to_str().unwrap();
-        // Create a script that exits with error for planner calls (-p flag)
-        // and exits immediately for pipeline calls (echo-like behavior)
         let script_path = tmp_dir.path().join("forge_test_echo_cleanup.sh");
         std::fs::write(
             &script_path,
@@ -2396,7 +1207,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Poll until the process is cleaned up (planner fallback + pipeline execution)
         let mut cleaned = false;
         for _ in 0..100 {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -2411,7 +1221,6 @@ mod tests {
             "Process should be removed after completion within 10 seconds"
         );
 
-        // Clean up
         unsafe { std::env::remove_var("CLAUDE_CMD") };
     }
 
@@ -2419,67 +1228,13 @@ mod tests {
     async fn test_running_processes_accessor() {
         let runner = PipelineRunner::new("/tmp", None);
         let processes = runner.running_processes();
-
-        // Should be empty initially
         let map = processes.lock().await;
         assert!(map.is_empty());
     }
 
-    #[test]
-    fn test_slugify_normal_title() {
-        assert_eq!(slugify("Fix the API bug", 50), "fix-the-api-bug");
-    }
-
-    #[test]
-    fn test_slugify_special_characters() {
-        assert_eq!(slugify("Fix @#$ bug!", 50), "fix-bug");
-    }
-
-    #[test]
-    fn test_slugify_truncation() {
-        let result = slugify("This is a very long title that should be truncated", 20);
-        assert!(result.len() <= 20);
-        // Should not end with a dash
-        assert!(!result.ends_with('-'));
-        assert_eq!(result, "this-is-a-very-long");
-    }
-
-    #[test]
-    fn test_slugify_empty_input() {
-        assert_eq!(slugify("", 50), "");
-    }
-
-    #[test]
-    fn test_slugify_unicode_characters() {
-        // Unicode non-alphanumeric chars get replaced with dashes, then collapsed
-        let result = slugify("cafe\u{0301} au lait", 50);
-        // 'e' is alphanumeric, combining accent is not, so we get "caf-e-au-lait" or similar
-        assert!(!result.is_empty());
-        assert!(result.chars().all(|c| c.is_alphanumeric() || c == '-'));
-        // Should not have leading or trailing dashes
-        assert!(!result.starts_with('-'));
-        assert!(!result.ends_with('-'));
-    }
-
-    #[test]
-    fn test_slugify_all_special_chars() {
-        assert_eq!(slugify("@#$%^&*()", 50), "");
-    }
-
-    #[test]
-    fn test_slugify_truncation_no_trailing_dash() {
-        // "abcde-fghij" truncated at 6 would give "abcde-" which should become "abcde"
-        let result = slugify("abcde fghij", 6);
-        assert_eq!(result, "abcde");
-        assert!(!result.ends_with('-'));
-    }
-
     /// Test that when a wave has failed tasks, subsequent wave tasks remain pending.
-    /// This validates the precondition for the abort-on-failure logic in execute_agent_team:
-    /// if wave 0 tasks fail, wave 1 tasks should never be started.
     #[tokio::test]
     async fn test_failed_wave_leaves_subsequent_tasks_pending() -> Result<()> {
-        // Set up DB with a team that has tasks in wave 0 and wave 1
         let db = DbHandle::new_in_memory().await.unwrap();
         let project = db.create_project("test", "/tmp/test-wave").await.unwrap();
         let issue = db
@@ -2497,7 +1252,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Create two tasks: wave 0 and wave 1
         let task_w0 = db
             .create_agent_task(
                 team.id,
@@ -2523,10 +1277,8 @@ mod tests {
             .await
             .unwrap();
 
-        // Set wave 0 task to Failed
         db.update_agent_task_status(task_w0.id, &AgentTaskStatus::Failed, Some("test error")).await?;
 
-        // Verify wave 1 task is still Pending (never started)
         let task_w1_updated = db.get_agent_task(task_w1.id).await?;
         assert_eq!(task_w1_updated.status, AgentTaskStatus::Pending);
         assert!(
@@ -2534,156 +1286,11 @@ mod tests {
             "Wave 1 task should not have been started"
         );
 
-        // Verify the failed task has its error recorded
         let task_w0_updated = db.get_agent_task(task_w0.id).await?;
         assert_eq!(task_w0_updated.status, AgentTaskStatus::Failed);
         assert_eq!(task_w0_updated.error.as_deref(), Some("test error"));
 
         Ok(())
-    }
-
-    #[test]
-    fn test_try_parse_phase_event_started() {
-        let line = r#"{"type": "started", "phase": "1", "wave": 0}"#;
-        let event = try_parse_phase_event(line).expect("should parse Started event");
-        match event {
-            PhaseEventJson::Started { phase, wave } => {
-                assert_eq!(phase, "1");
-                assert_eq!(wave, 0);
-            }
-            other => panic!("Expected Started, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_try_parse_phase_event_completed() {
-        let line = r#"{"type": "completed", "phase": "2", "result": {"success": true}}"#;
-        let event = try_parse_phase_event(line).expect("should parse Completed event");
-        match event {
-            PhaseEventJson::Completed { phase, result } => {
-                assert_eq!(phase, "2");
-                assert_eq!(result.get("success").and_then(|v| v.as_bool()), Some(true));
-            }
-            other => panic!("Expected Completed, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_try_parse_phase_event_progress() {
-        let line =
-            r#"{"type": "progress", "phase": "3", "iteration": 5, "budget": 10, "percent": 50}"#;
-        let event = try_parse_phase_event(line).expect("should parse Progress event");
-        match event {
-            PhaseEventJson::Progress {
-                phase,
-                iteration,
-                budget,
-                percent,
-            } => {
-                assert_eq!(phase, "3");
-                assert_eq!(iteration, 5);
-                assert_eq!(budget, 10);
-                assert_eq!(percent, Some(50));
-            }
-            other => panic!("Expected Progress, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_try_parse_phase_event_embedded_json() {
-        let line = r#"[2024-01-15T10:30:00Z] {"type": "progress", "phase": "1", "iteration": 2, "budget": 5}"#;
-        let event = try_parse_phase_event(line).expect("should parse embedded JSON");
-        match event {
-            PhaseEventJson::Progress {
-                phase,
-                iteration,
-                budget,
-                ..
-            } => {
-                assert_eq!(phase, "1");
-                assert_eq!(iteration, 2);
-                assert_eq!(budget, 5);
-            }
-            other => panic!("Expected Progress, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_try_parse_phase_event_unknown_returns_none() {
-        // An unrecognized event type should be captured by #[serde(other)] and return None
-        let line = r#"{"type": "some_unknown_event", "data": 42}"#;
-        assert!(try_parse_phase_event(line).is_none());
-    }
-
-    #[test]
-    fn test_try_parse_phase_event_plain_text_returns_none() {
-        let line = "Just some regular log output";
-        assert!(try_parse_phase_event(line).is_none());
-    }
-
-    #[test]
-    fn test_try_parse_phase_event_dag_completed() {
-        let line = r#"{"type": "dag_completed", "success": true}"#;
-        let event = try_parse_phase_event(line).expect("should parse DagCompleted event");
-        match event {
-            PhaseEventJson::DagCompleted { success } => {
-                assert!(success);
-            }
-            other => panic!("Expected DagCompleted, got {:?}", other),
-        }
-    }
-
-    // ── GitLockMap tests ──────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn test_git_lock_map_same_path_returns_same_lock() {
-        let map = GitLockMap::default();
-        let lock1 = map.get("/tmp/test-project").await;
-        let lock2 = map.get("/tmp/test-project").await;
-        assert!(Arc::ptr_eq(&lock1, &lock2));
-    }
-
-    #[tokio::test]
-    async fn test_git_lock_map_different_paths_return_different_locks() {
-        let map = GitLockMap::default();
-        let lock1 = map.get("/tmp/project-a").await;
-        let lock2 = map.get("/tmp/project-b").await;
-        assert!(!Arc::ptr_eq(&lock1, &lock2));
-    }
-
-    #[tokio::test]
-    async fn test_git_lock_map_trailing_slash_normalized() {
-        let map = GitLockMap::default();
-        let lock1 = map.get("/nonexistent/path").await;
-        let lock2 = map.get("/nonexistent/path/").await;
-        assert!(Arc::ptr_eq(&lock1, &lock2));
-    }
-
-    #[tokio::test]
-    async fn test_git_lock_map_serializes_access() {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        let map = GitLockMap::default();
-        let counter = Arc::new(AtomicU32::new(0));
-        let max_concurrent = Arc::new(AtomicU32::new(0));
-
-        let mut handles = vec![];
-        for _ in 0..5 {
-            let map = map.clone();
-            let counter = counter.clone();
-            let max_concurrent = max_concurrent.clone();
-            handles.push(tokio::spawn(async move {
-                let lock = map.get("/tmp/serialize-test").await;
-                let _guard = lock.lock().await;
-                let current = counter.fetch_add(1, Ordering::SeqCst) + 1;
-                max_concurrent.fetch_max(current, Ordering::SeqCst);
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                counter.fetch_sub(1, Ordering::SeqCst);
-            }));
-        }
-        for h in handles {
-            h.await.unwrap();
-        }
-        assert_eq!(max_concurrent.load(Ordering::SeqCst), 1);
     }
 
     // ── Agent team test infrastructure ──────────────────────────────
@@ -2958,177 +1565,9 @@ mod tests {
         assert!(matches!(result, PlanOutcome::FallbackToForge));
     }
 
-    #[test]
-    fn test_parse_text_delta() {
-        let line = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello world"}}"#;
-        let result = parse_stream_json_line(line);
-        assert_eq!(
-            result,
-            StreamJsonEvent::Text {
-                text: "Hello world".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn test_parse_message_start_skipped() {
-        let line = r#"{"type":"message_start","message":{"id":"msg_123"}}"#;
-        assert_eq!(parse_stream_json_line(line), StreamJsonEvent::Skip);
-    }
-
-    #[test]
-    fn test_parse_message_stop_skipped() {
-        let line = r#"{"type":"message_stop"}"#;
-        assert_eq!(parse_stream_json_line(line), StreamJsonEvent::Skip);
-    }
-
-    #[test]
-    fn test_parse_message_delta_usage_skipped() {
-        let line = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":50}}"#;
-        assert_eq!(parse_stream_json_line(line), StreamJsonEvent::Skip);
-    }
-
-    #[test]
-    fn test_parse_content_block_stop_skipped() {
-        let line = r#"{"type":"content_block_stop","index":0}"#;
-        assert_eq!(parse_stream_json_line(line), StreamJsonEvent::Skip);
-    }
-
-    #[test]
-    fn test_parse_result_skipped() {
-        let line = r#"{"type":"result","subtype":"success"}"#;
-        assert_eq!(parse_stream_json_line(line), StreamJsonEvent::Skip);
-    }
-
-    #[test]
-    fn test_parse_tool_use_content_block_start() {
-        let line = r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_123","name":"Edit","input":{"file_path":"src/main.rs"}}}"#;
-        match parse_stream_json_line(line) {
-            StreamJsonEvent::ToolStart {
-                tool_name,
-                tool_id,
-                input_summary,
-            } => {
-                assert_eq!(tool_name, "Edit");
-                assert_eq!(tool_id, "toolu_123");
-                assert_eq!(input_summary, "src/main.rs");
-            }
-            other => panic!("Expected ToolStart, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_parse_thinking_delta() {
-        let line = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me analyze..."}}"#;
-        assert_eq!(
-            parse_stream_json_line(line),
-            StreamJsonEvent::Thinking {
-                text: "Let me analyze...".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn test_parse_assistant_envelope_with_tool_use() {
-        let line = r#"{"role":"assistant","content":[{"type":"tool_use","id":"toolu_456","name":"Write","input":{"file_path":"src/new.rs","content":"fn main() {}"}}]}"#;
-        match parse_stream_json_line(line) {
-            StreamJsonEvent::ToolStart {
-                tool_name,
-                tool_id,
-                input_summary,
-            } => {
-                assert_eq!(tool_name, "Write");
-                assert_eq!(tool_id, "toolu_456");
-                assert_eq!(input_summary, "src/new.rs");
-            }
-            other => panic!("Expected ToolStart, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_parse_plain_text_fallback() {
-        let line = "This is just plain text output";
-        assert_eq!(
-            parse_stream_json_line(line),
-            StreamJsonEvent::Text {
-                text: "This is just plain text output".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn test_parse_subtype_tool_use() {
-        let line = r#"{"subtype":"tool_use","tool_name":"Bash","tool_use_id":"tu_789","input":{"command":"cargo test"}}"#;
-        match parse_stream_json_line(line) {
-            StreamJsonEvent::ToolStart {
-                tool_name,
-                tool_id,
-                input_summary,
-            } => {
-                assert_eq!(tool_name, "Bash");
-                assert_eq!(tool_id, "tu_789");
-                assert_eq!(input_summary, "cargo test");
-            }
-            other => panic!("Expected ToolStart, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_extract_tool_input_summary_read() {
-        let input = serde_json::json!({"file_path": "src/lib.rs"});
-        assert_eq!(
-            extract_tool_input_summary("Read", Some(&input)),
-            "src/lib.rs"
-        );
-    }
-
-    #[test]
-    fn test_extract_tool_input_summary_bash() {
-        let long_cmd = "a".repeat(100);
-        let input = serde_json::json!({"command": long_cmd});
-        let result = extract_tool_input_summary("Bash", Some(&input));
-        assert_eq!(result.len(), 83); // 80 + "..."
-        assert!(result.ends_with("..."));
-    }
-
-    #[test]
-    fn test_extract_tool_input_summary_unknown() {
-        let input = serde_json::json!({"something": "else"});
-        assert_eq!(extract_tool_input_summary("UnknownTool", Some(&input)), "");
-    }
-
-    #[test]
-    fn test_extract_file_change_write() {
-        let input = serde_json::json!({"file_path": "src/new.rs", "content": "fn main() {}"});
-        assert_eq!(
-            extract_file_change("Write", Some(&input)),
-            Some(("src/new.rs".to_string(), FileAction::Created))
-        );
-    }
-
-    #[test]
-    fn test_extract_file_change_edit() {
-        let input = serde_json::json!({"file_path": "src/lib.rs", "old_string": "foo", "new_string": "bar"});
-        assert_eq!(
-            extract_file_change("Edit", Some(&input)),
-            Some(("src/lib.rs".to_string(), FileAction::Modified))
-        );
-    }
-
-    #[test]
-    fn test_extract_file_change_read_returns_none() {
-        let input = serde_json::json!({"file_path": "src/lib.rs"});
-        assert_eq!(extract_file_change("Read", Some(&input)), None);
-    }
-
-    #[test]
-    fn test_extract_file_change_none_input() {
-        assert_eq!(extract_file_change("Write", None), None);
-    }
-
     #[cfg(test)]
     mod auto_promote_tests {
-        use super::super::*;
+        use super::*;
 
         #[test]
         fn test_promote_decision_clean_run() {
