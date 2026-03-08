@@ -107,7 +107,9 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     };
 
     // Health check
-    db::health_check(db_handle.conn()).await;
+    if let Err(e) = db::health_check(db_handle.conn()).await {
+        eprintln!("[factory] WARNING: {e:#}");
+    }
 
     // Initial sync for embedded replicas
     db_handle.sync().await?;
@@ -142,13 +144,10 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     let pipeline_runner = PipelineRunner::new(&config.project_path, sandbox);
 
     // Recover orphaned runs from a previous server instance
-    match db_handle.recover_orphaned_runs().await {
-        Ok(0) => {}
-        Ok(n) => eprintln!(
-            "[factory] Recovered {} orphaned pipeline run(s) from previous session",
-            n
-        ),
-        Err(e) => eprintln!("[factory] Warning: failed to recover orphaned runs: {}", e),
+    let recovered = db_handle.recover_orphaned_runs().await
+        .context("Failed to recover orphaned pipeline runs during startup")?;
+    if recovered > 0 {
+        eprintln!("[factory] Recovered {recovered} orphaned pipeline run(s) from previous session");
     }
 
     let persisted_token = match db_handle.get_setting("github_token").await {

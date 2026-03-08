@@ -78,14 +78,7 @@ impl DbHandle {
                 match db.sync().await {
                     Ok(_) => {
                         eprintln!("[db] Embedded replica synced successfully");
-                        let conn = db.connect().context("Failed to get initial connection")?;
-                        init_pragmas(&conn, DbMode::EmbeddedReplica).await?;
-                        migrations::run_migrations(&conn).await?;
-                        Ok(Self {
-                            db: Arc::new(db),
-                            conn: Arc::new(conn),
-                            mode: DbMode::EmbeddedReplica,
-                        })
+                        Self::from_db(db, DbMode::EmbeddedReplica).await
                     }
                     Err(e) => {
                         eprintln!("[db] Embedded replica sync failed ({e}), falling back to remote HTTP mode");
@@ -526,32 +519,16 @@ mod tests {
     }
 }
 
-/// Run integrity check on startup. Logs warning but does not fail.
-pub async fn health_check(conn: &Connection) {
-    match conn.query("PRAGMA integrity_check", ()).await {
-        Ok(mut rows) => {
-            match rows.next().await {
-                Ok(Some(row)) => {
-                    match row.get::<String>(0) {
-                        Ok(result) if result == "ok" => { /* healthy */ }
-                        Ok(result) => {
-                            eprintln!("[db] WARNING: database integrity check failed: {result}");
-                        }
-                        Err(e) => {
-                            eprintln!("[db] WARNING: could not read integrity check result: {e}");
-                        }
-                    }
-                }
-                Ok(None) => {
-                    eprintln!("[db] WARNING: integrity check returned no rows");
-                }
-                Err(e) => {
-                    eprintln!("[db] WARNING: failed to read integrity check row: {e}");
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("[db] WARNING: failed to run integrity check: {e}");
-        }
+/// Run integrity check on startup. Returns an error if the database is unhealthy.
+pub async fn health_check(conn: &Connection) -> Result<()> {
+    let mut rows = conn.query("PRAGMA integrity_check", ())
+        .await
+        .context("Failed to run integrity check")?;
+    let row = rows.next().await?
+        .context("Integrity check returned no rows")?;
+    let result: String = row.get(0)?;
+    if result != "ok" {
+        anyhow::bail!("Database integrity check failed: {result}");
     }
+    Ok(())
 }
