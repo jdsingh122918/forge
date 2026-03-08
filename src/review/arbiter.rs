@@ -36,6 +36,7 @@
 use crate::review::{FindingSeverity, ReviewAggregation, ReviewFinding, ReviewReport};
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use tracing::{debug, warn};
 
 /// Resolution mode for handling review failures.
 ///
@@ -87,7 +88,7 @@ impl<'de> serde::Deserialize<'de> for ResolutionMode {
         match &value {
             serde_json::Value::String(s) => match s.as_str() {
                 "manual" => {
-                    eprintln!("  Warning: 'manual' resolution mode is deprecated, using auto");
+                    warn!("'manual' resolution mode is deprecated, using auto");
                     Ok(ResolutionMode::default())
                 }
                 "auto" => Ok(ResolutionMode::default()),
@@ -107,9 +108,7 @@ impl<'de> serde::Deserialize<'de> for ResolutionMode {
                 {
                     match mode_str {
                         "manual" => {
-                            eprintln!(
-                                "  Warning: 'manual' resolution mode is deprecated, using auto"
-                            );
+                            warn!("'manual' resolution mode is deprecated, using auto");
                             return Ok(ResolutionMode::default());
                         }
                         "arbiter" => {
@@ -1073,8 +1072,8 @@ impl ArbiterExecutor {
                     } else {
                         // Low confidence - fall back to rule-based
                         if self.config.verbose {
-                            eprintln!(
-                                "[arbiter] LLM confidence ({:.0}%) below threshold ({:.0}%), using rules",
+                            debug!(
+                                "LLM confidence ({:.0}%) below threshold ({:.0}%), using rules",
                                 result.decision.confidence * 100.0,
                                 threshold * 100.0
                             );
@@ -1085,7 +1084,7 @@ impl ArbiterExecutor {
                 }
                 Err(e) => {
                     // LLM failed - fall back to rules
-                    eprintln!("[arbiter] Warning: LLM call failed: {}, using rules", e);
+                    warn!("LLM call failed: {}, using rules", e);
                     let decision = apply_rule_based_decision(&input, &self.config);
                     Ok(ArbiterResult::fallback(decision, &e.to_string()))
                 }
@@ -1110,7 +1109,7 @@ impl ArbiterExecutor {
         let prompt = build_arbiter_prompt(input);
 
         if self.config.verbose {
-            eprintln!("[arbiter] Invoking LLM with {} char prompt", prompt.len());
+            debug!("Invoking LLM with {} char prompt", prompt.len());
         }
 
         // Build command
@@ -1169,8 +1168,8 @@ impl ArbiterExecutor {
         let duration_ms = start.elapsed().as_millis() as u64;
 
         if self.config.verbose {
-            eprintln!(
-                "[arbiter] LLM completed in {}ms (exit: {})",
+            debug!(
+                "LLM completed in {}ms (exit: {})",
                 duration_ms,
                 status.code().unwrap_or(-1)
             );

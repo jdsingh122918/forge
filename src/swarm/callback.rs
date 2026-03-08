@@ -45,6 +45,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::{RwLock, oneshot};
+use tracing::error;
 
 /// Maximum number of events to retain before dropping oldest.
 /// This prevents unbounded memory growth from misbehaving agents.
@@ -245,7 +246,7 @@ impl CallbackServer {
                 })
                 .await
             {
-                eprintln!("Callback server error: {}", e);
+                error!("Callback server error: {}", e);
             }
         });
 

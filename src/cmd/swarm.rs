@@ -1,6 +1,7 @@
 //! Parallel phase execution — `forge swarm`, `forge swarm status`, `forge swarm abort`.
 
 use anyhow::{Context, Result};
+use tracing::warn;
 
 use super::super::Cli;
 
@@ -110,8 +111,8 @@ pub fn cmd_swarm_status(project_dir: &std::path::Path) -> Result<()> {
             println!("Completion: {:.1}%", completion_pct);
         }
         Err(e) => {
-            eprintln!(
-                "Warning: Could not parse swarm status file (may be partially written): {}",
+            warn!(
+                "Could not parse swarm status file (may be partially written): {}",
                 e
             );
             println!("Raw swarm status: {}", content);
@@ -363,8 +364,8 @@ pub async fn cmd_swarm(
     match serde_json::to_string_pretty(&initial_status) {
         Ok(status_json) => {
             if let Err(e) = std::fs::write(&status_file, &status_json) {
-                eprintln!(
-                    "Warning: Could not write swarm status file at {}: {}. \
+                warn!(
+                    "Could not write swarm status file at {}: {}. \
                      'forge swarm status' will not show real-time progress.",
                     status_file.display(),
                     e
@@ -372,7 +373,7 @@ pub async fn cmd_swarm(
             }
         }
         Err(e) => {
-            eprintln!("Warning: Could not serialize swarm status: {}", e);
+            warn!("Could not serialize swarm status: {}", e);
         }
     }
 

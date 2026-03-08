@@ -5,6 +5,7 @@ use crate::signals::SubPhaseSpawnSignal;
 use crate::ui::OrchestratorUI;
 use anyhow::Result;
 use dialoguer::{Select, theme::ColorfulTheme};
+use tracing::debug;
 
 /// Decision result from a gate check.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -538,8 +539,8 @@ impl AutonomousGateStrategy {
         if spawn_signal.budget <= remaining_budget {
             SubPhaseSpawnDecision::Approved
         } else {
-            eprintln!(
-                "  [autonomous] Sub-phase '{}' rejected: budget {} exceeds remaining {}",
+            debug!(
+                "Sub-phase '{}' rejected: budget {} exceeds remaining {}",
                 spawn_signal.name, spawn_signal.budget, remaining_budget
             );
             SubPhaseSpawnDecision::Skipped

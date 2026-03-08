@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::time::Instant;
+use tracing;
 
 use super::api::AppState;
 use super::models::*;
@@ -33,21 +34,21 @@ pub enum WsMessage {
     IssueUpdated {
         issue: Issue,
     },
-    // TODO: from_column/to_column should be IssueColumn once callers in pipeline.rs are updated
+    // TODO: from_column/to_column should be IssueColumn once callers in pipeline/mod.rs are updated
     IssueMoved {
-        issue_id: i64,
+        issue_id: IssueId,
         from_column: String,
         to_column: String,
         position: i32,
     },
     IssueDeleted {
-        issue_id: i64,
+        issue_id: IssueId,
     },
     PipelineStarted {
         run: PipelineRun,
     },
     PipelineProgress {
-        run_id: i64,
+        run_id: RunId,
         phase: i32,
         iteration: i32,
         percent: Option<u8>,
@@ -59,34 +60,34 @@ pub enum WsMessage {
         run: PipelineRun,
     },
     PipelineError {
-        run_id: i64,
+        run_id: RunId,
         message: String,
     },
     PipelineBranchCreated {
-        run_id: i64,
+        run_id: RunId,
         branch_name: String,
     },
     PipelinePrCreated {
-        run_id: i64,
+        run_id: RunId,
         pr_url: String,
     },
     PipelinePhaseStarted {
-        run_id: i64,
+        run_id: RunId,
         phase_number: String,
         phase_name: String,
         wave: usize,
     },
     PipelinePhaseCompleted {
-        run_id: i64,
+        run_id: RunId,
         phase_number: String,
         success: bool,
     },
     PipelineReviewStarted {
-        run_id: i64,
+        run_id: RunId,
         phase_number: String,
     },
     PipelineReviewCompleted {
-        run_id: i64,
+        run_id: RunId,
         phase_number: String,
         passed: bool,
         findings_count: usize,
@@ -94,8 +95,8 @@ pub enum WsMessage {
 
     // Agent team lifecycle
     TeamCreated {
-        run_id: i64,
-        team_id: i64,
+        run_id: RunId,
+        team_id: TeamId,
         strategy: ExecutionStrategy,
         isolation: IsolationStrategy,
         plan_summary: String,
@@ -104,14 +105,14 @@ pub enum WsMessage {
 
     // Wave lifecycle
     WaveStarted {
-        run_id: i64,
-        team_id: i64,
+        run_id: RunId,
+        team_id: TeamId,
         wave: i32,
-        task_ids: Vec<i64>,
+        task_ids: Vec<TaskId>,
     },
     WaveCompleted {
-        run_id: i64,
-        team_id: i64,
+        run_id: RunId,
+        team_id: TeamId,
         wave: i32,
         success_count: u32,
         failed_count: u32,
@@ -119,88 +120,88 @@ pub enum WsMessage {
 
     // Agent task lifecycle
     AgentTaskStarted {
-        run_id: i64,
-        task_id: i64,
+        run_id: RunId,
+        task_id: TaskId,
         name: String,
         role: AgentRole,
         wave: i32,
     },
     AgentTaskCompleted {
-        run_id: i64,
-        task_id: i64,
+        run_id: RunId,
+        task_id: TaskId,
         success: bool,
     },
     AgentTaskFailed {
-        run_id: i64,
-        task_id: i64,
+        run_id: RunId,
+        task_id: TaskId,
         error: String,
     },
 
     // Agent streaming events
     AgentThinking {
-        run_id: i64,
-        task_id: i64,
+        run_id: RunId,
+        task_id: TaskId,
         content: String,
     },
     AgentAction {
-        run_id: i64,
-        task_id: i64,
+        run_id: RunId,
+        task_id: TaskId,
         action_type: String,
         summary: String,
         metadata: serde_json::Value,
     },
     AgentOutput {
-        run_id: i64,
-        task_id: i64,
+        run_id: RunId,
+        task_id: TaskId,
         content: String,
     },
     AgentSignal {
-        run_id: i64,
-        task_id: i64,
+        run_id: RunId,
+        task_id: TaskId,
         signal_type: SignalType,
         content: String,
     },
 
     // Pipeline stdout streaming (forge fallback path)
     PipelineOutput {
-        run_id: i64,
+        run_id: RunId,
         content: String,
     },
 
     // Structured pipeline output events (parsed from stream-json)
     PipelineOutputEvent {
-        run_id: i64,
+        run_id: RunId,
         content_type: String,
         content: String,
         tool_id: Option<String>,
         input_summary: Option<String>,
     },
     PipelineFileChanged {
-        run_id: i64,
+        run_id: RunId,
         file_path: String,
         action: FileAction,
     },
 
     // Merge events
     MergeStarted {
-        run_id: i64,
+        run_id: RunId,
         wave: i32,
     },
     MergeCompleted {
-        run_id: i64,
+        run_id: RunId,
         wave: i32,
         conflicts: bool,
     },
     MergeConflict {
-        run_id: i64,
+        run_id: RunId,
         wave: i32,
         files: Vec<String>,
     },
 
     // Verification results
     VerificationResult {
-        run_id: i64,
-        task_id: i64,
+        run_id: RunId,
+        task_id: TaskId,
         verification_type: VerificationType,
         passed: bool,
         summary: String,
@@ -213,7 +214,7 @@ pub enum WsMessage {
         project: Project,
     },
     ProjectDeleted {
-        project_id: i64,
+        project_id: ProjectId,
     },
 }
 
@@ -327,7 +328,7 @@ pub fn broadcast_message(tx: &broadcast::Sender<String>, msg: &WsMessage) {
             let _ = tx.send(json); // Ignore error if no receivers
         }
         Err(e) => {
-            eprintln!("[ws] Failed to serialize WsMessage: {}", e);
+            tracing::error!(error = %e, "Failed to serialize WsMessage");
         }
     }
 }
@@ -341,8 +342,8 @@ mod tests {
     #[test]
     fn test_ws_message_issue_created_serialization() {
         let issue = Issue {
-            id: 1,
-            project_id: 1,
+            id: IssueId(1),
+            project_id: ProjectId(1),
             title: "Test".to_string(),
             description: "Desc".to_string(),
             column: IssueColumn::Backlog,
@@ -363,7 +364,7 @@ mod tests {
     #[test]
     fn test_ws_message_issue_moved_serialization() {
         let msg = WsMessage::IssueMoved {
-            issue_id: 5,
+            issue_id: IssueId(5),
             from_column: "backlog".to_string(),
             to_column: "in_progress".to_string(),
             position: 0,
@@ -377,7 +378,9 @@ mod tests {
 
     #[test]
     fn test_ws_message_issue_deleted_serialization() {
-        let msg = WsMessage::IssueDeleted { issue_id: 42 };
+        let msg = WsMessage::IssueDeleted {
+            issue_id: IssueId(42),
+        };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"IssueDeleted\""));
         assert!(json.contains("\"issue_id\":42"));
@@ -386,8 +389,8 @@ mod tests {
     #[test]
     fn test_ws_message_pipeline_started_serialization() {
         let run = PipelineRun {
-            id: 1,
-            issue_id: 1,
+            id: RunId(1),
+            issue_id: IssueId(1),
             status: PipelineStatus::Queued,
             phase_count: None,
             current_phase: None,
@@ -410,7 +413,7 @@ mod tests {
     #[test]
     fn test_ws_message_pipeline_progress_serialization() {
         let msg = WsMessage::PipelineProgress {
-            run_id: 3,
+            run_id: RunId(3),
             phase: 2,
             iteration: 5,
             percent: Some(75),
@@ -424,8 +427,8 @@ mod tests {
     #[test]
     fn test_ws_message_pipeline_completed_serialization() {
         let run = PipelineRun {
-            id: 1,
-            issue_id: 1,
+            id: RunId(1),
+            issue_id: IssueId(1),
             status: PipelineStatus::Completed,
             phase_count: Some(5),
             current_phase: Some(5),
@@ -449,8 +452,8 @@ mod tests {
     #[test]
     fn test_ws_message_pipeline_failed_serialization() {
         let run = PipelineRun {
-            id: 2,
-            issue_id: 1,
+            id: RunId(2),
+            issue_id: IssueId(1),
             status: PipelineStatus::Failed,
             phase_count: Some(5),
             current_phase: Some(3),
@@ -473,7 +476,7 @@ mod tests {
     #[test]
     fn test_ws_message_roundtrip_deserialization() {
         let msg = WsMessage::IssueMoved {
-            issue_id: 10,
+            issue_id: IssueId(10),
             from_column: "ready".to_string(),
             to_column: "done".to_string(),
             position: 2,
@@ -487,7 +490,7 @@ mod tests {
                 to_column,
                 position,
             } => {
-                assert_eq!(issue_id, 10);
+                assert_eq!(issue_id, IssueId(10));
                 assert_eq!(from_column, "ready");
                 assert_eq!(to_column, "done");
                 assert_eq!(position, 2);
@@ -502,7 +505,9 @@ mod tests {
         let mut rx1 = tx.subscribe();
         let mut rx2 = tx.subscribe();
 
-        let msg = WsMessage::IssueDeleted { issue_id: 1 };
+        let msg = WsMessage::IssueDeleted {
+            issue_id: IssueId(1),
+        };
         broadcast_message(&tx, &msg);
 
         let received1 = rx1.recv().await.unwrap();
@@ -517,15 +522,17 @@ mod tests {
     async fn test_broadcast_no_receivers_does_not_panic() {
         let (tx, _) = tokio::sync::broadcast::channel::<String>(16);
         // Drop all receivers - broadcast_message should not panic
-        let msg = WsMessage::IssueDeleted { issue_id: 1 };
+        let msg = WsMessage::IssueDeleted {
+            issue_id: IssueId(1),
+        };
         broadcast_message(&tx, &msg); // Should not panic
     }
 
     #[test]
     fn test_team_created_serialization() {
         let msg = WsMessage::TeamCreated {
-            run_id: 1,
-            team_id: 2,
+            run_id: RunId(1),
+            team_id: TeamId(2),
             strategy: ExecutionStrategy::WavePipeline,
             isolation: IsolationStrategy::Hybrid,
             plan_summary: "Two parallel tasks".to_string(),
@@ -541,8 +548,8 @@ mod tests {
     #[test]
     fn test_agent_action_serialization() {
         let msg = WsMessage::AgentAction {
-            run_id: 1,
-            task_id: 5,
+            run_id: RunId(1),
+            task_id: TaskId(5),
             action_type: "file_edit".to_string(),
             summary: "Edited src/api.rs:42".to_string(),
             metadata: serde_json::json!({"file": "src/api.rs"}),
@@ -557,8 +564,8 @@ mod tests {
     #[test]
     fn test_verification_result_serialization() {
         let msg = WsMessage::VerificationResult {
-            run_id: 1,
-            task_id: 10,
+            run_id: RunId(1),
+            task_id: TaskId(10),
             verification_type: VerificationType::Browser,
             passed: true,
             summary: "No visual regressions".to_string(),
@@ -574,10 +581,10 @@ mod tests {
     #[test]
     fn test_wave_started_serialization() {
         let msg = WsMessage::WaveStarted {
-            run_id: 1,
-            team_id: 2,
+            run_id: RunId(1),
+            team_id: TeamId(2),
             wave: 0,
-            task_ids: vec![10, 11, 12],
+            task_ids: vec![TaskId(10), TaskId(11), TaskId(12)],
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"WaveStarted\""));
@@ -590,9 +597,9 @@ mod tests {
                 task_ids,
                 ..
             } => {
-                assert_eq!(run_id, 1);
+                assert_eq!(run_id, RunId(1));
                 assert_eq!(wave, 0);
-                assert_eq!(task_ids, vec![10, 11, 12]);
+                assert_eq!(task_ids, vec![TaskId(10), TaskId(11), TaskId(12)]);
             }
             _ => panic!("Expected WaveStarted"),
         }
@@ -601,8 +608,8 @@ mod tests {
     #[test]
     fn test_wave_completed_serialization() {
         let msg = WsMessage::WaveCompleted {
-            run_id: 1,
-            team_id: 2,
+            run_id: RunId(1),
+            team_id: TeamId(2),
             wave: 0,
             success_count: 2,
             failed_count: 1,
@@ -626,8 +633,8 @@ mod tests {
     #[test]
     fn test_agent_task_started_serialization() {
         let msg = WsMessage::AgentTaskStarted {
-            run_id: 1,
-            task_id: 5,
+            run_id: RunId(1),
+            task_id: TaskId(5),
             name: "Fix API".to_string(),
             role: AgentRole::Coder,
             wave: 0,
@@ -643,7 +650,7 @@ mod tests {
                 role,
                 ..
             } => {
-                assert_eq!(task_id, 5);
+                assert_eq!(task_id, TaskId(5));
                 assert_eq!(name, "Fix API");
                 assert_eq!(role, AgentRole::Coder);
             }
@@ -654,8 +661,8 @@ mod tests {
     #[test]
     fn test_agent_task_completed_serialization() {
         let msg = WsMessage::AgentTaskCompleted {
-            run_id: 1,
-            task_id: 5,
+            run_id: RunId(1),
+            task_id: TaskId(5),
             success: true,
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -666,8 +673,8 @@ mod tests {
     #[test]
     fn test_agent_task_failed_serialization() {
         let msg = WsMessage::AgentTaskFailed {
-            run_id: 1,
-            task_id: 5,
+            run_id: RunId(1),
+            task_id: TaskId(5),
             error: "OOM killed".to_string(),
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -678,8 +685,8 @@ mod tests {
     #[test]
     fn test_agent_thinking_serialization() {
         let msg = WsMessage::AgentThinking {
-            run_id: 1,
-            task_id: 5,
+            run_id: RunId(1),
+            task_id: TaskId(5),
             content: "Analyzing the API response format".to_string(),
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -690,8 +697,8 @@ mod tests {
     #[test]
     fn test_agent_output_serialization() {
         let msg = WsMessage::AgentOutput {
-            run_id: 1,
-            task_id: 5,
+            run_id: RunId(1),
+            task_id: TaskId(5),
             content: "Fixed the serialization bug".to_string(),
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -701,8 +708,8 @@ mod tests {
     #[test]
     fn test_agent_signal_serialization() {
         let msg = WsMessage::AgentSignal {
-            run_id: 1,
-            task_id: 5,
+            run_id: RunId(1),
+            task_id: TaskId(5),
             signal_type: SignalType::Progress,
             content: "50% complete".to_string(),
         };
@@ -713,13 +720,16 @@ mod tests {
 
     #[test]
     fn test_merge_started_serialization() {
-        let msg = WsMessage::MergeStarted { run_id: 1, wave: 0 };
+        let msg = WsMessage::MergeStarted {
+            run_id: RunId(1),
+            wave: 0,
+        };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"MergeStarted\""));
         let deser: WsMessage = serde_json::from_str(&json).unwrap();
         match deser {
             WsMessage::MergeStarted { run_id, wave } => {
-                assert_eq!(run_id, 1);
+                assert_eq!(run_id, RunId(1));
                 assert_eq!(wave, 0);
             }
             _ => panic!("Expected MergeStarted"),
@@ -729,7 +739,7 @@ mod tests {
     #[test]
     fn test_merge_completed_serialization() {
         let msg = WsMessage::MergeCompleted {
-            run_id: 1,
+            run_id: RunId(1),
             wave: 0,
             conflicts: false,
         };
@@ -741,7 +751,7 @@ mod tests {
     #[test]
     fn test_merge_conflict_serialization() {
         let msg = WsMessage::MergeConflict {
-            run_id: 1,
+            run_id: RunId(1),
             wave: 0,
             files: vec!["src/api.rs".to_string(), "src/handler.rs".to_string()],
         };
@@ -753,7 +763,7 @@ mod tests {
     #[test]
     fn test_project_created_serialization() {
         let project = Project {
-            id: 1,
+            id: ProjectId(1),
             name: "test".to_string(),
             path: "/tmp/test".to_string(),
             github_repo: None,
@@ -768,7 +778,7 @@ mod tests {
     #[test]
     fn test_ws_message_pipeline_error_serialization() {
         let msg = WsMessage::PipelineError {
-            run_id: 42,
+            run_id: RunId(42),
             message: "Failed to update pipeline progress".to_string(),
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -778,7 +788,7 @@ mod tests {
         let deser: WsMessage = serde_json::from_str(&json).unwrap();
         match deser {
             WsMessage::PipelineError { run_id, message } => {
-                assert_eq!(run_id, 42);
+                assert_eq!(run_id, RunId(42));
                 assert!(message.contains("Failed"));
             }
             _ => panic!("Expected PipelineError"),
@@ -788,7 +798,7 @@ mod tests {
     #[test]
     fn test_ws_pipeline_output_event_serde() {
         let msg = WsMessage::PipelineOutputEvent {
-            run_id: 1,
+            run_id: RunId(1),
             content_type: "tool_start".to_string(),
             content: "Edit".to_string(),
             tool_id: Some("toolu_123".to_string()),
@@ -807,7 +817,7 @@ mod tests {
                 tool_id,
                 input_summary,
             } => {
-                assert_eq!(run_id, 1);
+                assert_eq!(run_id, RunId(1));
                 assert_eq!(content_type, "tool_start");
                 assert_eq!(content, "Edit");
                 assert_eq!(tool_id, Some("toolu_123".to_string()));
@@ -820,7 +830,7 @@ mod tests {
     #[test]
     fn test_ws_pipeline_file_changed_serde() {
         let msg = WsMessage::PipelineFileChanged {
-            run_id: 2,
+            run_id: RunId(2),
             file_path: "src/lib.rs".to_string(),
             action: FileAction::Modified,
         };
@@ -835,7 +845,7 @@ mod tests {
                 file_path,
                 action,
             } => {
-                assert_eq!(run_id, 2);
+                assert_eq!(run_id, RunId(2));
                 assert_eq!(file_path, "src/lib.rs");
                 assert_eq!(action, FileAction::Modified);
             }

@@ -1,6 +1,7 @@
 //! Factory Kanban UI server command — `forge factory`.
 
 use anyhow::Result;
+use tracing::warn;
 
 pub async fn cmd_factory(
     port: u16,
@@ -10,11 +11,11 @@ pub async fn cmd_factory(
     dev: bool,
 ) -> Result<()> {
     if init {
-        // Just initialize the database
+        // Just initialize the database (creates + runs migrations)
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        forge::factory::db::FactoryDb::new(&db_path)?;
+        forge::factory::db::DbHandle::new_local(&db_path).await?;
         println!("Factory database initialized at {}", db_path.display());
         return Ok(());
     }
@@ -27,7 +28,7 @@ pub async fn cmd_factory(
             // Small delay to let the server start binding
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             if let Err(e) = open::that(&url) {
-                eprintln!("Failed to open browser: {}", e);
+                warn!("Failed to open browser: {}", e);
             }
         });
     }

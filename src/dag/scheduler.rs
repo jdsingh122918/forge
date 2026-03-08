@@ -5,7 +5,7 @@
 
 use crate::dag::builder::{DagBuilder, PhaseGraph, PhaseIndex};
 use crate::phase::Phase;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -261,7 +261,9 @@ pub struct DagScheduler {
 impl DagScheduler {
     /// Create a DAG scheduler from a list of phases.
     pub fn from_phases(phases: &[Phase], config: DagConfig) -> Result<Self> {
-        let graph = DagBuilder::new(phases.to_vec()).build()?;
+        let graph = DagBuilder::new(phases.to_vec())
+            .build()
+            .context("Failed to build phase dependency graph")?;
 
         let nodes: Vec<PhaseNode> = graph
             .phases()

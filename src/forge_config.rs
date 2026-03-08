@@ -52,6 +52,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use tracing::warn;
 
 /// Permission modes for phase execution.
 ///
@@ -88,9 +89,7 @@ impl<'de> serde::Deserialize<'de> for PermissionMode {
         let s = String::deserialize(deserializer)?;
         match s.to_lowercase().as_str() {
             "strict" => {
-                eprintln!(
-                    "  Warning: 'strict' permission mode is deprecated and maps to 'standard'"
-                );
+                warn!("'strict' permission mode is deprecated and maps to 'standard'");
                 Ok(PermissionMode::Standard)
             }
             "standard" => Ok(PermissionMode::Standard),
@@ -120,9 +119,7 @@ impl std::str::FromStr for PermissionMode {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "strict" => {
-                eprintln!(
-                    "  Warning: 'strict' permission mode is deprecated and maps to 'standard'"
-                );
+                warn!("'strict' permission mode is deprecated and maps to 'standard'");
                 Ok(PermissionMode::Standard)
             }
             "standard" => Ok(PermissionMode::Standard),
@@ -307,7 +304,7 @@ impl ReviewMode {
     pub fn to_resolution_mode(self) -> crate::review::ResolutionMode {
         match self {
             ReviewMode::Manual => {
-                eprintln!("  Warning: 'manual' review mode is deprecated, using auto");
+                warn!("'manual' review mode is deprecated, using auto");
                 crate::review::ResolutionMode::default()
             }
             ReviewMode::Auto => crate::review::ResolutionMode::auto(2),

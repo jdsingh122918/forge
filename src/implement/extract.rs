@@ -6,6 +6,7 @@
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use tracing::warn;
 
 use crate::forge_config::ForgeConfig;
 use crate::phase::Phase;
@@ -126,7 +127,7 @@ pub fn validate_design_doc(path: &Path) -> Result<String> {
     }
 
     if !content.contains('#') {
-        eprintln!("Warning: Design doc has no markdown headers");
+        warn!("Design doc has no markdown headers");
     }
 
     Ok(content)
@@ -166,14 +167,14 @@ fn call_claude_for_extraction(project_dir: &Path, prompt: &str) -> Result<String
     let claude_cmd = match ForgeConfig::new(project_dir.to_path_buf()) {
         Ok(config) => config.claude_cmd(),
         Err(e) => {
-            eprintln!(
-                "Warning: Failed to load forge config ({}), checking CLAUDE_CMD env var",
+            warn!(
+                "Failed to load forge config ({}), checking CLAUDE_CMD env var",
                 e
             );
             match std::env::var("CLAUDE_CMD") {
                 Ok(cmd) => cmd,
                 Err(_) => {
-                    eprintln!("Warning: CLAUDE_CMD not set, using default 'claude'");
+                    warn!("CLAUDE_CMD not set, using default 'claude'");
                     "claude".to_string()
                 }
             }

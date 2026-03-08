@@ -536,3 +536,263 @@ impl OrchestratorUI {
         self.print_line(format!("  {} {}", style("📊").dim(), status));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn test_new_initializes_counters_to_zero() {
+        let ui = OrchestratorUI::new(5, false);
+        assert_eq!(ui.current_iter.load(Ordering::SeqCst), 0);
+        assert_eq!(ui.max_iter.load(Ordering::SeqCst), 0);
+        assert!(!ui.verbose);
+    }
+
+    #[test]
+    fn test_new_verbose_mode() {
+        let ui = OrchestratorUI::new(3, true);
+        assert!(ui.verbose);
+    }
+
+    #[test]
+    fn test_new_zero_phases() {
+        // Should not panic even with zero phases
+        let _ui = OrchestratorUI::new(0, false);
+    }
+
+    #[test]
+    fn test_start_iteration_stores_counters() {
+        let ui = OrchestratorUI::new(1, false);
+        ui.start_iteration(3, 10);
+        assert_eq!(ui.current_iter.load(Ordering::SeqCst), 3);
+        assert_eq!(ui.max_iter.load(Ordering::SeqCst), 10);
+    }
+
+    #[test]
+    fn test_start_iteration_updates_on_subsequent_calls() {
+        let ui = OrchestratorUI::new(1, false);
+        ui.start_iteration(1, 5);
+        assert_eq!(ui.current_iter.load(Ordering::SeqCst), 1);
+
+        ui.start_iteration(2, 5);
+        assert_eq!(ui.current_iter.load(Ordering::SeqCst), 2);
+
+        ui.start_iteration(5, 5);
+        assert_eq!(ui.current_iter.load(Ordering::SeqCst), 5);
+    }
+
+    #[test]
+    fn test_log_step_uses_current_counters() {
+        let ui = OrchestratorUI::new(1, false);
+        ui.start_iteration(2, 8);
+        // Should not panic — exercises the iteration_bar.set_message path
+        ui.log_step("running claude");
+    }
+
+    #[test]
+    fn test_update_elapsed_formats_seconds() {
+        let ui = OrchestratorUI::new(1, false);
+        ui.start_iteration(1, 5);
+        // Should not panic for sub-minute durations
+        ui.update_elapsed(Duration::from_secs(45));
+    }
+
+    #[test]
+    fn test_update_elapsed_formats_minutes() {
+        let ui = OrchestratorUI::new(1, false);
+        ui.start_iteration(1, 5);
+        // Should not panic for multi-minute durations
+        ui.update_elapsed(Duration::from_secs(125));
+    }
+
+    #[test]
+    fn test_show_tool_use_does_not_panic() {
+        let ui = OrchestratorUI::new(1, false);
+        ui.start_iteration(1, 3);
+        ui.show_tool_use("🔧", "Writing src/lib.rs");
+    }
+
+    #[test]
+    fn test_show_thinking_non_verbose() {
+        let ui = OrchestratorUI::new(1, false);
+        ui.start_iteration(1, 3);
+        // In non-verbose mode, thinking should only update spinner, not print
+        ui.show_thinking("Let me analyze the code...");
+    }
+
+    #[test]
+    fn test_show_thinking_verbose() {
+        let ui = OrchestratorUI::new(1, true);
+        ui.start_iteration(1, 3);
+        ui.show_thinking("Let me analyze the code...");
+    }
+
+    #[test]
+    fn test_iteration_lifecycle() {
+        let ui = OrchestratorUI::new(3, false);
+
+        // Start phase
+        ui.start_phase("01", "Setup");
+
+        // Run through iteration lifecycle
+        ui.start_iteration(1, 5);
+        ui.log_step("running claude");
+        ui.iteration_continue(1);
+
+        ui.start_iteration(2, 5);
+        ui.log_step("running claude");
+        ui.iteration_success(2);
+
+        // Complete phase
+        ui.phase_complete("01");
+    }
+
+    #[test]
+    fn test_iteration_error() {
+        let ui = OrchestratorUI::new(1, false);
+        ui.start_iteration(1, 3);
+        ui.iteration_error(1, "non-zero exit code");
+    }
+
+    #[test]
+    fn test_phase_failed() {
+        let ui = OrchestratorUI::new(1, false);
+        ui.start_phase("01", "Setup");
+        ui.phase_failed("01", "budget exhausted");
+    }
+
+    #[test]
+    fn test_print_phase_header() {
+        let ui = OrchestratorUI::new(3, false);
+        ui.print_phase_header("02", "Implementation", "DONE", 10);
+    }
+
+    #[test]
+    fn test_update_files_with_changes() {
+        let changes = FileChangeSummary {
+            files_added: vec!["src/new.rs".into()],
+            files_modified: vec!["src/lib.rs".into(), "Cargo.toml".into()],
+            files_deleted: vec![],
+            total_lines_added: 42,
+            total_lines_removed: 7,
+        };
+        let ui = OrchestratorUI::new(1, false);
+        ui.update_files(&changes);
+    }
+
+    #[test]
+    fn test_update_files_empty() {
+        let changes = FileChangeSummary {
+            files_added: vec![],
+            files_modified: vec![],
+            files_deleted: vec![],
+            total_lines_added: 0,
+            total_lines_removed: 0,
+        };
+        let ui = OrchestratorUI::new(1, false);
+        ui.update_files(&changes);
+    }
+
+    #[test]
+    fn test_show_file_change_non_verbose_is_noop() {
+        let ui = OrchestratorUI::new(1, false);
+        // Should not print anything in non-verbose mode
+        ui.show_file_change(Path::new("src/lib.rs"), ChangeType::Modified);
+    }
+
+    #[test]
+    fn test_show_file_change_verbose() {
+        let ui = OrchestratorUI::new(1, true);
+        ui.show_file_change(Path::new("src/new.rs"), ChangeType::Added);
+        ui.show_file_change(Path::new("src/lib.rs"), ChangeType::Modified);
+        ui.show_file_change(Path::new("src/old.rs"), ChangeType::Deleted);
+        ui.show_file_change(Path::new("src/moved.rs"), ChangeType::Renamed);
+    }
+
+    #[test]
+    fn test_print_previous_changes_empty_is_noop() {
+        let ui = OrchestratorUI::new(1, false);
+        let changes = FileChangeSummary {
+            files_added: vec![],
+            files_modified: vec![],
+            files_deleted: vec![],
+            total_lines_added: 0,
+            total_lines_removed: 0,
+        };
+        // Should return early without printing
+        ui.print_previous_changes(&changes);
+    }
+
+    #[test]
+    fn test_print_previous_changes_with_data() {
+        let ui = OrchestratorUI::new(1, false);
+        let changes = FileChangeSummary {
+            files_added: vec!["a.rs".into()],
+            files_modified: vec!["b.rs".into()],
+            files_deleted: vec!["c.rs".into()],
+            total_lines_added: 100,
+            total_lines_removed: 50,
+        };
+        ui.print_previous_changes(&changes);
+    }
+
+    #[test]
+    fn test_sub_phase_lifecycle() {
+        let ui = OrchestratorUI::new(3, false);
+        ui.print_sub_phase_header("01a", "Sub-task", "SUB_DONE", 3, "01");
+        ui.start_sub_phase("01a", "Sub-task", "01");
+        ui.show_sub_phase_spawn("01a", "SUB_DONE", 3);
+        ui.sub_phase_complete("01a", "01");
+    }
+
+    #[test]
+    fn test_sub_phase_failed() {
+        let ui = OrchestratorUI::new(1, false);
+        ui.sub_phase_failed("01b", "01", "timeout");
+    }
+
+    #[test]
+    fn test_show_sub_phase_progress_no_failures() {
+        let ui = OrchestratorUI::new(1, false);
+        ui.show_sub_phase_progress(2, 3, 0);
+    }
+
+    #[test]
+    fn test_show_sub_phase_progress_with_failures() {
+        let ui = OrchestratorUI::new(1, false);
+        ui.show_sub_phase_progress(2, 3, 1);
+    }
+
+    #[test]
+    fn test_show_progress() {
+        let ui = OrchestratorUI::new(1, false);
+        ui.start_iteration(1, 5);
+        ui.show_progress(75);
+    }
+
+    #[test]
+    fn test_show_blocker() {
+        let ui = OrchestratorUI::new(1, false);
+        ui.show_blocker("Cannot access database");
+    }
+
+    #[test]
+    fn test_show_pivot() {
+        let ui = OrchestratorUI::new(1, false);
+        ui.show_pivot("Using alternative API endpoint");
+    }
+
+    #[test]
+    fn test_iteration_bar_message() {
+        let ui = OrchestratorUI::new(1, false);
+        ui.iteration_bar_message(3, 10, "compacting context");
+    }
+
+    #[test]
+    fn test_print_separator() {
+        let ui = OrchestratorUI::new(1, false);
+        ui.print_separator();
+    }
+}

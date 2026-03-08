@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
+use tracing::warn;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateEntry {
@@ -157,7 +158,7 @@ impl StateManager {
                     let iteration = match parts[2].parse::<u32>() {
                         Ok(n) => n,
                         Err(_) => {
-                            eprintln!(
+                            warn!(
                                 "state: skipping malformed sub-phase line (bad iteration): {line}"
                             );
                             return None;
@@ -177,9 +178,7 @@ impl StateManager {
                     let iteration = match parts[1].parse::<u32>() {
                         Ok(n) => n,
                         Err(_) => {
-                            eprintln!(
-                                "state: skipping malformed entry line (bad iteration): {line}"
-                            );
+                            warn!("state: skipping malformed entry line (bad iteration): {line}");
                             return None;
                         }
                     };

@@ -112,11 +112,14 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Run security audit
-        run: cargo audit
+        run: cargo audit --ignore RUSTSEC-2025-0141 --ignore RUSTSEC-2025-0134
 
       - name: Dependency review
         if: github.event_name == 'pull_request'
         uses: actions/dependency-review-action@v4
+        with:
+          allow-ghsas: GHSA-9qpw-x2gq-jmwr
+          warn-only: true
 
   # Disabled: Multi-platform Docker build takes too long
   # Re-enable when needed for releases

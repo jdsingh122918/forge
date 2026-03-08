@@ -38,9 +38,9 @@ Rust (Edition 2024), clap v4, tokio v1, petgraph v0.6, git2 v0.20, axum v0.8, an
 | Configuration | `src/forge_config.rs` |
 | State persistence | `src/orchestrator/state.rs` |
 | Factory API server | `src/factory/api.rs`, `src/factory/server.rs` |
-| Factory database | `src/factory/db.rs` |
+| Factory database | `src/factory/db/` (mod.rs, agents.rs, issues.rs, pipeline.rs, projects.rs, settings.rs) |
 | Factory models | `src/factory/models.rs` |
-| Pipeline execution | `src/factory/pipeline.rs` |
+| Pipeline execution | `src/factory/pipeline/` (mod.rs, execution.rs, git.rs, parsing.rs) |
 | WebSocket messages | `src/factory/ws.rs` |
 | Factory UI (React) | `ui/src/` |
 

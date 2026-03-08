@@ -1,7 +1,8 @@
 //! Sequential phase orchestration — `forge run` and `forge phase <N>`.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::PathBuf;
+use tracing::warn;
 
 use super::super::Cli;
 
@@ -42,18 +43,22 @@ pub async fn run_orchestrator(
     use forge::tracker::GitTracker;
     use forge::ui::OrchestratorUI;
 
-    check_run_prerequisites(&project_dir)?;
+    check_run_prerequisites(&project_dir).context("Failed to check run prerequisites")?;
 
     let config = Config::new(
         project_dir.clone(),
         cli.verbose,
         cli.auto_approve_threshold,
         cli.spec_file.clone(),
-    )?;
-    config.ensure_directories()?;
+    )
+    .context("Failed to create project configuration")?;
+    config
+        .ensure_directories()
+        .context("Failed to ensure project directories")?;
 
     // Initialize hook manager
-    let mut hook_manager = HookManager::new(&project_dir, cli.verbose)?;
+    let mut hook_manager =
+        HookManager::new(&project_dir, cli.verbose).context("Failed to initialize hook manager")?;
 
     // Merge hooks from forge.toml if it exists
     let forge_dir = get_forge_dir(&project_dir);
@@ -70,7 +75,8 @@ pub async fn run_orchestrator(
     }
 
     let state = StateManager::new(config.state_file.clone());
-    let tracker = GitTracker::new(&config.project_dir)?;
+    let tracker =
+        GitTracker::new(&config.project_dir).context("Failed to initialize git tracker")?;
     let runner = ClaudeRunner::new(config.clone());
     let mut audit = AuditLogger::new(&config.audit_dir);
     let mut gate = ApprovalGate::new(cli.auto_approve_threshold, cli.yes);
@@ -82,10 +88,12 @@ pub async fn run_orchestrator(
     );
 
     // Load phases from phases.json if it exists, otherwise use defaults
-    let all_phases = load_phases_or_default(Some(&config.phases_file))?;
+    let all_phases =
+        load_phases_or_default(Some(&config.phases_file)).context("Failed to load phases")?;
 
     // Apply permission modes from config to each phase
-    let forge_toml = ForgeToml::load_or_default(&forge_dir)?;
+    let forge_toml = ForgeToml::load_or_default(&forge_dir)
+        .context("Failed to load forge.toml configuration")?;
     let phases: Vec<_> = all_phases
         .into_iter()
         .filter(|p| p.number.as_str() >= start.as_str())
@@ -448,8 +456,8 @@ pub async fn run_orchestrator(
                     {
                         Ok(answer) => answer,
                         Err(e) => {
-                            eprintln!(
-                                "Warning: Could not display blocker confirmation dialog: {}. \
+                            warn!(
+                                "Could not display blocker confirmation dialog: {}. \
                                  Stopping. Re-run with --yes to auto-continue past blockers.",
                                 e
                             );

@@ -35,6 +35,7 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use tracing::warn;
 
 /// The name of the skills directory within .forge
 pub const SKILLS_DIR: &str = "skills";
@@ -109,11 +110,7 @@ impl SkillsLoader {
 
         if !skill_file.exists() {
             if self.verbose {
-                eprintln!(
-                    "Warning: Skill '{}' not found at {}",
-                    name,
-                    skill_file.display()
-                );
+                warn!("Skill '{}' not found at {}", name, skill_file.display());
             }
             return Ok(None);
         }

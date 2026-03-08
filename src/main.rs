@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use tracing_subscriber::EnvFilter;
 
 mod cmd;
 
@@ -273,6 +274,12 @@ pub enum SkillsCommands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_target(false)
+        .with_thread_ids(false)
+        .init();
+
     let cli = Cli::parse();
     let project_dir = match cli.project_dir.clone() {
         Some(dir) => dir,

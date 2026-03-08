@@ -11,9 +11,10 @@ use axum::{
 };
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
+use tracing::{info, warn};
 
 use super::api::{self, AppState};
-use super::db::{DbHandle, FactoryDb};
+use super::db::{self, DbHandle};
 use super::embedded::Assets;
 use super::pipeline::PipelineRunner;
 use super::sandbox::DockerSandbox;
@@ -87,7 +88,30 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
         std::fs::create_dir_all(parent).context("Failed to create database directory")?;
     }
 
-    let db = FactoryDb::new(&config.db_path).context("Failed to initialize factory database")?;
+    let _ = dotenvy::dotenv(); // Load .env if present, ignore if missing
+
+    let db_handle = match (
+        std::env::var("TURSO_DATABASE_URL"),
+        std::env::var("TURSO_AUTH_TOKEN"),
+    ) {
+        (Ok(url), Ok(token)) => {
+            info!("Connecting to Turso: {url}");
+            DbHandle::new_remote_replica(&config.db_path, &url, &token).await?
+        }
+        _ => {
+            info!("Using local SQLite: {}", config.db_path.display());
+            DbHandle::new_local(&config.db_path).await?
+        }
+    };
+
+    // Health check
+    if let Err(e) = db::health_check(db_handle.conn()).await {
+        warn!("{e:#}");
+    }
+
+    // Initial sync for embedded replicas
+    db_handle.sync().await?;
+
     let (ws_tx, _rx) = broadcast::channel::<String>(256);
     let github_client_id = std::env::var("GITHUB_CLIENT_ID").ok();
 
@@ -95,18 +119,18 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     let sandbox = if std::env::var("FORGE_SANDBOX").unwrap_or_default() == "true" {
         match DockerSandbox::new("forge:local".to_string()).await {
             Some(sandbox) => {
-                eprintln!("[factory] Docker sandbox enabled");
+                info!("Docker sandbox enabled");
                 let s = Arc::new(sandbox);
                 if let Ok(pruned) = s.prune_stale_containers(7200).await
                     && pruned > 0
                 {
-                    eprintln!("[factory] Pruned {} stale pipeline containers", pruned);
+                    info!("Pruned {} stale pipeline containers", pruned);
                 }
                 Some(s)
             }
             None => {
-                eprintln!(
-                    "[factory] FORGE_SANDBOX=true but Docker is not available, falling back to local execution"
+                warn!(
+                    "FORGE_SANDBOX=true but Docker is not available, falling back to local execution"
                 );
                 None
             }
@@ -116,30 +140,23 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     };
 
     let pipeline_runner = PipelineRunner::new(&config.project_path, sandbox);
-    let db_handle = DbHandle::new(db);
 
     // Recover orphaned runs from a previous server instance
-    match db_handle.lock_sync() {
-        Ok(db) => match db.recover_orphaned_runs() {
-            Ok(0) => {}
-            Ok(n) => eprintln!(
-                "[factory] Recovered {} orphaned pipeline run(s) from previous session",
-                n
-            ),
-            Err(e) => eprintln!("[factory] Warning: failed to recover orphaned runs: {}", e),
-        },
-        Err(e) => eprintln!(
-            "[factory] Warning: could not acquire DB lock for orphan recovery: {}",
-            e
-        ),
+    let recovered = db_handle
+        .recover_orphaned_runs()
+        .await
+        .context("Failed to recover orphaned pipeline runs during startup")?;
+    if recovered > 0 {
+        info!("Recovered {recovered} orphaned pipeline run(s) from previous session");
     }
 
-    let persisted_token = db_handle
-        .lock_sync()
-        .context("Failed to acquire DB lock during startup")?
-        .get_setting("github_token")
-        .ok()
-        .flatten();
+    let persisted_token = match db_handle.get_setting("github_token").await {
+        Ok(token) => token,
+        Err(e) => {
+            warn!("Failed to load persisted GitHub token: {e}");
+            None
+        }
+    };
 
     let state = Arc::new(AppState {
         db: db_handle,
@@ -196,12 +213,12 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    fn test_router() -> Router {
-        let db = FactoryDb::new_in_memory().unwrap();
+    async fn test_router() -> Router {
+        let db = DbHandle::new_in_memory().await.unwrap();
         let (ws_tx, _) = broadcast::channel(16);
         let pipeline_runner = PipelineRunner::new("/tmp/test", None);
         let state = Arc::new(AppState {
-            db: DbHandle::new(db),
+            db,
             ws_tx,
             pipeline_runner,
             github_client_id: None,
@@ -212,7 +229,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_health_via_full_router() {
-        let app = test_router();
+        let app = test_router().await;
         let req = Request::builder()
             .uri("/health")
             .body(Body::empty())
@@ -223,7 +240,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_api_routes_mounted() {
-        let app = test_router();
+        let app = test_router().await;
         let req = Request::builder()
             .uri("/api/projects")
             .body(Body::empty())
@@ -234,7 +251,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_spa_fallback() {
-        let app = test_router();
+        let app = test_router().await;
         let req = Request::builder()
             .uri("/some/client/route")
             .body(Body::empty())
@@ -247,7 +264,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_static_handler_serves_index_html() {
-        let app = test_router();
+        let app = test_router().await;
         let req = Request::builder().uri("/").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let status = resp.status();
@@ -257,7 +274,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_api_create_project_via_full_router() {
-        let app = test_router();
+        let app = test_router().await;
         let req = Request::builder()
             .method("POST")
             .uri("/api/projects")

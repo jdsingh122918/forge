@@ -42,6 +42,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
+use tracing::{debug, warn};
 
 /// Default timeout for swarm execution (30 minutes).
 const DEFAULT_TIMEOUT_SECS: u64 = 1800;
@@ -259,7 +260,7 @@ impl SwarmExecutor {
             .context("Failed to start callback server")?;
 
         if self.config.verbose {
-            eprintln!("[swarm] Callback server started at {}", callback_url);
+            debug!("Callback server started at {}", callback_url);
         }
 
         // Update context with actual callback URL
@@ -269,7 +270,7 @@ impl SwarmExecutor {
         let prompt = build_orchestration_prompt(&context);
 
         if self.config.verbose {
-            eprintln!("[swarm] Generated prompt ({} chars)", prompt.len());
+            debug!("Generated prompt ({} chars)", prompt.len());
         }
 
         // 3. Determine working directory
@@ -286,7 +287,7 @@ impl SwarmExecutor {
 
         // 5. Cleanup callback server
         if let Err(e) = callback_server.stop().await {
-            eprintln!("[swarm] Warning: Failed to stop callback server: {}", e);
+            warn!("Failed to stop callback server: {}", e);
         }
 
         // Return result with phase info
@@ -335,7 +336,7 @@ impl SwarmExecutor {
             .stderr(Stdio::inherit());
 
         if self.config.verbose {
-            eprintln!("[swarm] Spawning Claude process in {:?}", working_dir);
+            debug!("Spawning Claude process in {:?}", working_dir);
         }
 
         // Spawn process
@@ -343,7 +344,7 @@ impl SwarmExecutor {
 
         let child_pid = child.id().unwrap_or(0);
         if self.config.verbose {
-            eprintln!("[swarm] Process spawned (PID: {})", child_pid);
+            debug!("Process spawned (PID: {})", child_pid);
         }
 
         // Write prompt to stdin
@@ -429,7 +430,7 @@ impl SwarmExecutor {
                             }
                         }
                         Err(e) => {
-                            eprintln!("[swarm] Warning: Error waiting for process: {}", e);
+                            warn!("Error waiting for process: {}", e);
                             process_exited = true;
                             if stdout_complete {
                                 break;
@@ -453,8 +454,8 @@ impl SwarmExecutor {
         let progress_events = callback_events.len();
 
         if self.config.verbose {
-            eprintln!(
-                "[swarm] Execution completed in {:?} (exit: {}, events: {})",
+            debug!(
+                "Execution completed in {:?} (exit: {}, events: {})",
                 duration, exit_code, progress_events
             );
         }
@@ -537,7 +538,7 @@ impl SwarmExecutor {
                 && let Ok(json) = serde_json::from_str::<serde_json::Value>(&line)
                 && let Some(msg_type) = json.get("type").and_then(|t| t.as_str())
             {
-                eprintln!("[swarm] Event: {}", msg_type);
+                debug!("Event: {}", msg_type);
             }
             accumulated.push_str(&line);
             accumulated.push('\n');

@@ -39,6 +39,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
+use tracing::{debug, warn};
 
 /// Default timeout for individual review specialist execution.
 const DEFAULT_REVIEW_TIMEOUT_SECS: u64 = 300; // 5 minutes
@@ -328,8 +329,8 @@ impl ReviewDispatcher {
         }
 
         if self.config.verbose {
-            eprintln!(
-                "[review] Dispatching {} specialists for phase {}",
+            debug!(
+                "Dispatching {} specialists for phase {}",
                 review_config.specialists.len(),
                 review_config.phase
             );
@@ -349,8 +350,8 @@ impl ReviewDispatcher {
             .with_total_duration_ms(start.elapsed().as_millis() as u64);
 
         if self.config.verbose {
-            eprintln!(
-                "[review] Aggregation complete: {} reports, {} findings, verdict: {}",
+            debug!(
+                "Aggregation complete: {} reports, {} findings, verdict: {}",
                 aggregation.reports_count(),
                 aggregation.all_findings_count(),
                 aggregation.overall_verdict()
@@ -390,7 +391,7 @@ impl ReviewDispatcher {
             match result {
                 Ok(report) => reports.push(report),
                 Err(e) => {
-                    eprintln!("[review] Warning: Specialist failed: {}", e);
+                    warn!("Specialist failed: {}", e);
                     // Continue with other reviews
                 }
             }
@@ -410,11 +411,7 @@ impl ReviewDispatcher {
             match self.run_single_review(specialist, review_config).await {
                 Ok(report) => reports.push(report),
                 Err(e) => {
-                    eprintln!(
-                        "[review] Warning: Specialist {} failed: {}",
-                        specialist.display_name(),
-                        e
-                    );
+                    warn!("Specialist {} failed: {}", specialist.display_name(), e);
                     // Continue with other reviews
                 }
             }
@@ -432,8 +429,8 @@ impl ReviewDispatcher {
         let start = Instant::now();
 
         if self.config.verbose {
-            eprintln!(
-                "[review] Starting {} for phase {}",
+            debug!(
+                "Starting {} for phase {}",
                 specialist.display_name(),
                 review_config.phase
             );
@@ -455,8 +452,8 @@ impl ReviewDispatcher {
         .with_duration_ms(start.elapsed().as_millis() as u64);
 
         if self.config.verbose {
-            eprintln!(
-                "[review] {} completed: {} ({} findings)",
+            debug!(
+                "{} completed: {} ({} findings)",
                 specialist.display_name(),
                 report.verdict,
                 report.findings_count()
@@ -532,8 +529,8 @@ impl ReviewDispatcher {
         review_config: &PhaseReviewConfig,
     ) -> Result<ArbiterResult> {
         if self.config.verbose {
-            eprintln!(
-                "[review] Invoking arbiter for {} gating failure(s)",
+            debug!(
+                "Invoking arbiter for {} gating failure(s)",
                 aggregation.gating_failures().len()
             );
         }
@@ -701,8 +698,8 @@ fn parse_review_output(output: &str, phase: &str, reviewer: &str, is_gating: boo
     }
 
     // Fallback: couldn't parse output, return warning so it's not silently ignored
-    eprintln!(
-        "Warning: Could not parse review output for phase '{}' by reviewer '{}' - manual inspection recommended",
+    warn!(
+        "Could not parse review output for phase '{}' by reviewer '{}' - manual inspection recommended",
         phase, reviewer
     );
     ReviewReport::new(phase, reviewer, ReviewVerdict::Warn)

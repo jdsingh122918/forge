@@ -11,6 +11,7 @@ use super::types::{
 };
 use regex::Regex;
 use std::sync::LazyLock;
+use tracing::{debug, warn};
 
 // Compile regexes once using LazyLock
 static PROGRESS_REGEX: LazyLock<Regex> =
@@ -54,7 +55,7 @@ impl SignalParser {
                         .push(ProgressSignal::new(clamped, raw_value));
 
                     if self.verbose {
-                        eprintln!("  Signal: progress {}%", clamped);
+                        debug!("Signal: progress {}%", clamped);
                     }
                 }
             }
@@ -68,7 +69,7 @@ impl SignalParser {
                     signals.blockers.push(BlockerSignal::new(description));
 
                     if self.verbose {
-                        eprintln!("  Signal: blocker \"{}\"", description);
+                        debug!("Signal: blocker \"{}\"", description);
                     }
                 }
             }
@@ -82,7 +83,7 @@ impl SignalParser {
                     signals.pivots.push(PivotSignal::new(new_approach));
 
                     if self.verbose {
-                        eprintln!("  Signal: pivot \"{}\"", new_approach);
+                        debug!("Signal: pivot \"{}\"", new_approach);
                     }
                 }
             }
@@ -97,19 +98,17 @@ impl SignalParser {
                     match serde_json::from_str::<SubPhaseSpawnSignal>(json_str) {
                         Ok(mut spawn_signal) => {
                             spawn_signal.timestamp = chrono::Utc::now();
-                            signals.sub_phase_spawns.push(spawn_signal);
-
                             if self.verbose {
-                                eprintln!(
-                                    "  Signal: spawn-subphase \"{}\" (budget: {})",
-                                    signals.sub_phase_spawns.last().unwrap().name,
-                                    signals.sub_phase_spawns.last().unwrap().budget
+                                debug!(
+                                    "Signal: spawn-subphase \"{}\" (budget: {})",
+                                    spawn_signal.name, spawn_signal.budget
                                 );
                             }
+                            signals.sub_phase_spawns.push(spawn_signal);
                         }
                         Err(e) => {
                             if self.verbose {
-                                eprintln!("  Warning: Failed to parse spawn-subphase JSON: {}", e);
+                                warn!("Failed to parse spawn-subphase JSON: {}", e);
                             }
                         }
                     }

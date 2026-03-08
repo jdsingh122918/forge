@@ -5,6 +5,8 @@
 //! - Prompt hooks: use a small LLM to evaluate a condition and return a decision
 //! - Swarm hooks: invoke SwarmExecutor for parallel task execution via Claude Code swarms
 
+use tracing::debug;
+
 use super::config::HookDefinition;
 use super::types::{HookAction, HookContext, HookResult, HookType};
 use crate::swarm::context::{
@@ -117,9 +119,9 @@ impl HookExecutor {
             serde_json::to_string(context).context("Failed to serialize hook context to JSON")?;
 
         if self.verbose {
-            eprintln!(
-                "[hook] Executing: {} (event: {}, timeout: {}s)",
-                command, context.event, hook.timeout_secs
+            debug!(
+                command = %command, event = %context.event, timeout_secs = hook.timeout_secs,
+                "Executing hook"
             );
         }
 
@@ -171,9 +173,9 @@ impl HookExecutor {
         };
 
         if self.verbose {
-            eprintln!(
-                "[hook] Completed with exit code: {}",
-                output.status.code().unwrap_or(-1)
+            debug!(
+                exit_code = output.status.code().unwrap_or(-1),
+                "Hook completed"
             );
         }
 
@@ -237,10 +239,7 @@ Respond ONLY with the JSON object, no other text."#,
         );
 
         if self.verbose {
-            eprintln!(
-                "[hook] Executing prompt hook (event: {}, timeout: {}s)",
-                context.event, hook.timeout_secs
-            );
+            debug!(event = %context.event, timeout_secs = hook.timeout_secs, "Executing prompt hook");
         }
 
         // Build and spawn Claude command
@@ -287,9 +286,9 @@ Respond ONLY with the JSON object, no other text."#,
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         if self.verbose {
-            eprintln!("[hook] Claude completed with exit code: {}", exit_code);
+            debug!(exit_code, "Claude completed");
             if !stderr.is_empty() {
-                eprintln!("[hook] Claude stderr: {}", stderr.trim());
+                debug!(stderr = %stderr.trim(), "Claude stderr");
             }
         }
 
@@ -349,10 +348,7 @@ Respond ONLY with the JSON object, no other text."#,
         );
 
         if self.verbose {
-            eprintln!(
-                "[hook] Executing swarm hook for phase {} with strategy {:?}",
-                phase_ctx.number, strategy
-            );
+            debug!(phase = %phase_ctx.number, ?strategy, "Executing swarm hook");
         }
 
         // Configure the SwarmExecutor
@@ -400,11 +396,11 @@ Respond ONLY with the JSON object, no other text."#,
         let result = executor.execute(swarm_context).await?;
 
         if self.verbose {
-            eprintln!(
-                "[hook] Swarm completed: success={}, tasks_completed={}, tasks_failed={}",
-                result.success,
-                result.tasks_completed.len(),
-                result.tasks_failed.len()
+            debug!(
+                success = result.success,
+                tasks_completed = result.tasks_completed.len(),
+                tasks_failed = result.tasks_failed.len(),
+                "Swarm completed"
             );
         }
 
@@ -471,7 +467,7 @@ Respond ONLY with the JSON object, no other text."#,
         // Try to parse as JSON HookResult
         if let Ok(result) = serde_json::from_str::<HookResult>(json_str) {
             if self.verbose {
-                eprintln!("[hook] Parsed JSON response: action={:?}", result.action);
+                debug!(action = ?result.action, "Parsed JSON response");
             }
             return Ok(result);
         }
@@ -583,8 +579,8 @@ Respond ONLY with the JSON object, no other text."#,
         // 1. The prompt asked for explicit action
         // 2. Most ambiguous responses should be treated as "proceed"
         if self.verbose {
-            eprintln!(
-                "[hook] No clear action in response, defaulting to continue: {}",
+            debug!(
+                "No clear action in response, defaulting to continue: {}",
                 Self::truncate(response, 100)
             );
         }
@@ -612,7 +608,7 @@ Respond ONLY with the JSON object, no other text."#,
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         if self.verbose && !stderr.is_empty() {
-            eprintln!("[hook] stderr: {}", stderr.trim());
+            debug!("hook stderr: {}", stderr.trim());
         }
 
         // First, try to parse stdout as JSON result

@@ -40,6 +40,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio::task::JoinHandle;
+use tracing::{debug, warn};
 
 /// Events emitted during DAG execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -580,8 +581,8 @@ async fn execute_single_phase(
     let forge_dir = get_forge_dir(&config.project_dir);
     let forge_toml = ForgeToml::load_or_default(&forge_dir)
         .inspect_err(|e| {
-            eprintln!(
-                "Warning: Could not load forge.toml: {}. \
+            warn!(
+                "Could not load forge.toml: {}. \
                  Proceeding with defaults (session continuity, iteration feedback, \
                  and hooks may be inactive).",
                 e
@@ -723,7 +724,7 @@ async fn execute_single_phase(
                                     }
 
                                     if config.verbose {
-                                        eprintln!(
+                                        debug!(
                                             "Phase {} decomposed into {} tasks (budget: {})",
                                             phase.number,
                                             decomposition.task_count(),
@@ -735,8 +736,8 @@ async fn execute_single_phase(
                                     break;
                                 }
                                 Err(e) => {
-                                    eprintln!(
-                                        "Warning: Failed to convert decomposition for phase {}: {}",
+                                    warn!(
+                                        "Failed to convert decomposition for phase {}: {}",
                                         phase.number, e
                                     );
                                     // Continue execution without decomposition
@@ -866,7 +867,7 @@ async fn execute_single_phase(
             }
             Err(e) => {
                 // Log review error but don't fail the phase
-                eprintln!("Warning: Review error for phase {}: {}", phase.number, e);
+                warn!("Review error for phase {}: {}", phase.number, e);
             }
         }
     }

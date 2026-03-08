@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tracing::warn;
 
 /// Optional context that can be injected into prompts.
 /// Used for compaction summaries and other context additions.
@@ -635,7 +636,7 @@ When complete, output:
             Ok(section) => section,
             Err(e) => {
                 if self.config.verbose {
-                    eprintln!("Warning: Failed to load skills: {}", e);
+                    warn!("Failed to load skills: {}", e);
                 }
                 String::new()
             }
