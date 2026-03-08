@@ -45,7 +45,8 @@ pub async fn create_issue(
     description: &str,
     column: &IssueColumn,
 ) -> Result<Issue> {
-    let mut rows = conn
+    let tx = conn.transaction().await.context("Failed to begin transaction")?;
+    let mut rows = tx
         .query(
             "SELECT COALESCE(MAX(position), -1) FROM issues WHERE project_id = ?1 AND column_name = ?2",
             (project_id, column.as_str()),
@@ -57,8 +58,6 @@ pub async fn create_issue(
         None => -1,
     };
     let position = max_pos + 1;
-
-    let tx = conn.transaction().await.context("Failed to begin transaction")?;
     tx.execute(
         "INSERT INTO issues (project_id, title, description, column_name, position) VALUES (?1, ?2, ?3, ?4, ?5)",
         libsql::params![project_id, title, description, column.as_str(), position],
@@ -193,12 +192,15 @@ pub async fn create_issue_from_github(
     description: &str,
     github_issue_number: i64,
 ) -> Result<Option<Issue>> {
-    let mut rows = conn
+    let tx = conn.transaction().await.context("Failed to begin transaction")?;
+
+    let mut rows = tx
         .query(
             "SELECT COUNT(*) > 0 FROM issues WHERE project_id = ?1 AND github_issue_number = ?2",
             (project_id, github_issue_number),
         )
-        .await?;
+        .await
+        .context("Failed to check for existing github issue")?;
     let exists: bool = match rows.next().await? {
         Some(row) => {
             let count: i64 = row.get(0)?;
@@ -210,24 +212,26 @@ pub async fn create_issue_from_github(
         return Ok(None);
     }
 
-    let mut rows = conn
+    let mut rows = tx
         .query(
             "SELECT COALESCE(MAX(position), -1) FROM issues WHERE project_id = ?1 AND column_name = 'backlog'",
             [project_id],
         )
-        .await?;
+        .await
+        .context("Failed to get max backlog position")?;
     let max_pos: i32 = match rows.next().await? {
         Some(row) => row.get(0)?,
         None => -1,
     };
 
-    conn.execute(
+    tx.execute(
         "INSERT INTO issues (project_id, title, description, column_name, position, github_issue_number) VALUES (?1, ?2, ?3, 'backlog', ?4, ?5)",
         libsql::params![project_id, title, description, max_pos + 1, github_issue_number],
     )
     .await
     .context("Failed to insert github issue")?;
-    let id = conn.last_insert_rowid();
+    let id = tx.last_insert_rowid();
+    tx.commit().await.context("Failed to commit")?;
     get_issue(conn, id).await
 }
 
@@ -264,7 +268,7 @@ pub async fn get_board(conn: &Connection, project_id: i64) -> Result<BoardView> 
                 "SELECT {} FROM pipeline_runs WHERE issue_id = ?1 AND status IN ('queued', 'running') ORDER BY id DESC LIMIT 1",
                 RUN_COLS
             );
-            let mut rows = conn.query(&sql, [iws.issue.id]).await?;
+            let mut rows = conn.query(&sql, [iws.issue.id]).await.context("Failed to query active pipeline run for issue")?;
             if let Some(row) = rows.next().await? {
                 iws.active_run = Some(row_to_pipeline_run(&row)?);
             }
