@@ -258,4 +258,74 @@ mod tests {
         let sv = get_schema_version(&conn).await.unwrap();
         assert_eq!(sv, 4);
     }
+
+    #[tokio::test]
+    async fn test_bootstrap_then_upgrade_applies_remaining_migrations() {
+        let (_db, conn) = test_db().await;
+        // Apply migrations 1 + 2 manually (simulates pre-migration database)
+        conn.execute_batch(MIGRATIONS[0].1).await.unwrap();
+        conn.execute_batch(MIGRATIONS[1].1).await.unwrap();
+
+        // Run the full migration system — should bootstrap at version 2,
+        // then apply migrations 3-6
+        run_migrations(&conn).await.unwrap();
+
+        // Verify final version
+        let version = get_schema_version(&conn).await.unwrap();
+        assert_eq!(version, 6);
+
+        // Verify tables from migrations 3-6 exist and are usable
+        // First, set up FK prerequisites: insert a project, issue, and pipeline_run
+        conn.execute(
+            "INSERT INTO projects (name, path) VALUES ('test-proj', '/tmp/test')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO issues (project_id, title) VALUES (1, 'test issue')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pipeline_runs (issue_id) VALUES (1)",
+            (),
+        )
+        .await
+        .unwrap();
+
+        // Migration 3: agent_teams table
+        conn.execute(
+            "INSERT INTO agent_teams (run_id, strategy, isolation, plan_summary) VALUES (1, 'sequential', 'none', 'test')",
+            (),
+        )
+        .await
+        .unwrap();
+
+        // Migration 4: settings table
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('test_key', 'test_value')",
+            (),
+        )
+        .await
+        .unwrap();
+
+        // Migration 5: orchestrator_state table
+        conn.execute(
+            "INSERT INTO orchestrator_state (run_context, phase, iteration, status) VALUES ('test-run', 'phase1', 1, 'running')",
+            (),
+        )
+        .await
+        .unwrap();
+
+        // Migration 6: soft deletes (deleted_at column + indexes)
+        // Verify the column exists by doing an update
+        conn.execute(
+            "UPDATE issues SET deleted_at = datetime('now') WHERE id = -1",
+            (),
+        )
+        .await
+        .unwrap();
+    }
 }

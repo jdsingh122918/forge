@@ -462,4 +462,61 @@ mod tests {
             .unwrap();
         assert_eq!(issue_f.column, IssueColumn::Backlog);
     }
+
+    #[tokio::test]
+    async fn test_upsert_pipeline_phase_update_preserves_values() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let conn = db.conn();
+        let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
+            .await
+            .unwrap();
+        let issue = super::super::issues::create_issue(
+            &conn,
+            project.id,
+            "Test",
+            "",
+            &IssueColumn::Backlog,
+        )
+        .await
+        .unwrap();
+        let run = create_pipeline_run(&conn, issue.id).await.unwrap();
+
+        // Insert phase as Running with iteration=1, budget=5
+        upsert_pipeline_phase(
+            &conn,
+            run.id,
+            "1",
+            "Phase One",
+            &PhaseStatus::Running,
+            Some(1),
+            Some(5),
+        )
+        .await
+        .unwrap();
+
+        // Upsert same (run_id, phase_number) with Completed status, None iteration/budget
+        upsert_pipeline_phase(
+            &conn,
+            run.id,
+            "1",
+            "Phase One",
+            &PhaseStatus::Completed,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let phases = get_pipeline_phases(&conn, run.id).await.unwrap();
+        assert_eq!(phases.len(), 1);
+        assert_eq!(phases[0].status, PhaseStatus::Completed);
+        // COALESCE should preserve the original values
+        assert_eq!(phases[0].iteration, Some(1));
+        assert_eq!(phases[0].budget, Some(5));
+        // completed_at should be set for terminal status
+        assert!(
+            phases[0].completed_at.is_some(),
+            "completed_at should be set for Completed status"
+        );
+    }
 }
