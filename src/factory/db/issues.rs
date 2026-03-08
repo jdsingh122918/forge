@@ -5,6 +5,8 @@ use libsql::{Connection, Row};
 
 use crate::factory::models::*;
 
+use super::pipeline::{row_to_pipeline_run, RUN_COLS};
+
 fn row_to_issue(row: &Row) -> Result<Issue> {
     let column_name: String = row.get(4)?;
     let priority_str: String = row.get(6)?;
@@ -34,33 +36,7 @@ fn row_to_issue(row: &Row) -> Result<Issue> {
     })
 }
 
-fn row_to_pipeline_run(row: &Row) -> Result<PipelineRun> {
-    let status_str: String = row.get(2)?;
-    let status = PipelineStatus::from_str(&status_str)
-        .map_err(|e| anyhow::anyhow!(e))
-        .context("Failed to parse pipeline run status")?;
-    let has_team: Option<i64> = row.get(11)?;
-    Ok(PipelineRun {
-        id: row.get(0)?,
-        issue_id: row.get(1)?,
-        status,
-        phase_count: row.get(3)?,
-        current_phase: row.get(4)?,
-        iteration: row.get(5)?,
-        summary: row.get(6)?,
-        error: row.get(7)?,
-        branch_name: row.get(8)?,
-        pr_url: row.get(9)?,
-        team_id: row.get(10)?,
-        has_team: has_team.map(|v| v != 0).unwrap_or(false),
-        started_at: row.get(12)?,
-        completed_at: row.get(13)?,
-    })
-}
-
 const ISSUE_COLS: &str = "id, project_id, title, description, column_name, position, priority, labels, github_issue_number, created_at, updated_at";
-
-const RUN_COLS: &str = "id, issue_id, status, phase_count, current_phase, iteration, summary, error, branch_name, pr_url, team_id, has_team, started_at, completed_at";
 
 pub async fn create_issue(
     conn: &Connection,
@@ -82,13 +58,15 @@ pub async fn create_issue(
     };
     let position = max_pos + 1;
 
-    conn.execute(
+    let tx = conn.transaction().await.context("Failed to begin transaction")?;
+    tx.execute(
         "INSERT INTO issues (project_id, title, description, column_name, position) VALUES (?1, ?2, ?3, ?4, ?5)",
         libsql::params![project_id, title, description, column.as_str(), position],
     )
     .await
     .context("Failed to insert issue")?;
-    let id = conn.last_insert_rowid();
+    let id = tx.last_insert_rowid();
+    tx.commit().await.context("Failed to commit")?;
     get_issue(conn, id)
         .await?
         .context("Issue not found after insert")
@@ -404,11 +382,166 @@ mod tests {
             .await
             .unwrap();
 
+        // First delete should succeed
         let deleted = delete_issue(&conn, issue.id).await.unwrap();
         assert!(deleted);
 
+        // get_issue should hide soft-deleted issues
         let fetched = get_issue(&conn, issue.id).await.unwrap();
         assert!(fetched.is_none());
+
+        // Raw query proves the row still exists in the database
+        let mut rows = conn
+            .query(
+                "SELECT id, title, deleted_at FROM issues WHERE id = ?1",
+                [issue.id],
+            )
+            .await
+            .unwrap();
+        let row = rows.next().await.unwrap().expect("row should still exist in database");
+        let title: String = row.get(1).unwrap();
+        assert_eq!(title, "Delete me");
+        let deleted_at: Option<String> = row.get(2).unwrap();
+        assert!(deleted_at.is_some(), "deleted_at should be set");
+
+        // Second delete on the same issue should return Ok(false) — already soft-deleted
+        let deleted_again = delete_issue(&conn, issue.id).await.unwrap();
+        assert!(!deleted_again);
+    }
+
+    #[tokio::test]
+    async fn test_get_board_view() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let conn = db.conn();
+        let project = super::super::projects::create_project(&conn, "board-proj", "/tmp/board-proj")
+            .await
+            .unwrap();
+
+        // Create issues in different columns
+        let backlog_issue = create_issue(&conn, project.id, "Backlog item", "", &IssueColumn::Backlog)
+            .await
+            .unwrap();
+        let ready_issue = create_issue(&conn, project.id, "Ready item", "", &IssueColumn::Ready)
+            .await
+            .unwrap();
+        let in_progress_issue = create_issue(&conn, project.id, "In progress item", "", &IssueColumn::InProgress)
+            .await
+            .unwrap();
+        let review_issue = create_issue(&conn, project.id, "Review item", "", &IssueColumn::InReview)
+            .await
+            .unwrap();
+        let done_issue = create_issue(&conn, project.id, "Done item", "", &IssueColumn::Done)
+            .await
+            .unwrap();
+
+        // Create an active pipeline run for the in_progress issue
+        let run = super::super::pipeline::create_pipeline_run(&conn, in_progress_issue.id)
+            .await
+            .unwrap();
+
+        let board = get_board(&conn, project.id).await.unwrap();
+
+        // All 5 columns should be present
+        assert_eq!(board.columns.len(), 5);
+        assert_eq!(board.columns[0].name, IssueColumn::Backlog);
+        assert_eq!(board.columns[1].name, IssueColumn::Ready);
+        assert_eq!(board.columns[2].name, IssueColumn::InProgress);
+        assert_eq!(board.columns[3].name, IssueColumn::InReview);
+        assert_eq!(board.columns[4].name, IssueColumn::Done);
+
+        // Verify issues appear in their correct columns
+        assert_eq!(board.columns[0].issues.len(), 1);
+        assert_eq!(board.columns[0].issues[0].issue.id, backlog_issue.id);
+
+        assert_eq!(board.columns[1].issues.len(), 1);
+        assert_eq!(board.columns[1].issues[0].issue.id, ready_issue.id);
+
+        assert_eq!(board.columns[2].issues.len(), 1);
+        assert_eq!(board.columns[2].issues[0].issue.id, in_progress_issue.id);
+        // The in_progress issue should have an active_run attached
+        let active_run = board.columns[2].issues[0].active_run.as_ref().expect("should have active run");
+        assert_eq!(active_run.id, run.id);
+
+        assert_eq!(board.columns[3].issues.len(), 1);
+        assert_eq!(board.columns[3].issues[0].issue.id, review_issue.id);
+
+        assert_eq!(board.columns[4].issues.len(), 1);
+        assert_eq!(board.columns[4].issues[0].issue.id, done_issue.id);
+    }
+
+    #[tokio::test]
+    async fn test_update_issue_rejects_invalid_priority() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let conn = db.conn();
+        let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
+            .await
+            .unwrap();
+        let issue = create_issue(&conn, project.id, "Priority test", "", &IssueColumn::Backlog)
+            .await
+            .unwrap();
+
+        // "urgent" is not a valid priority (valid: low, medium, high, critical)
+        let result = update_issue(&conn, issue.id, None, None, Some("urgent"), None).await;
+        assert!(result.is_err(), "update_issue should reject invalid priority 'urgent'");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("Invalid priority"),
+            "Error should mention invalid priority, got: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_issue_detail() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let conn = db.conn();
+        let project = super::super::projects::create_project(&conn, "detail-proj", "/tmp/detail-proj")
+            .await
+            .unwrap();
+        let issue = create_issue(&conn, project.id, "Detail test", "Full description", &IssueColumn::Backlog)
+            .await
+            .unwrap();
+
+        // Create pipeline runs for the issue
+        let run1 = super::super::pipeline::create_pipeline_run(&conn, issue.id)
+            .await
+            .unwrap();
+        let run2 = super::super::pipeline::create_pipeline_run(&conn, issue.id)
+            .await
+            .unwrap();
+
+        // Add a phase to the first run
+        super::super::pipeline::upsert_pipeline_phase(
+            &conn,
+            run1.id,
+            "1",
+            "Phase One",
+            &crate::factory::models::PhaseStatus::Completed,
+            Some(1),
+            Some(3),
+        )
+        .await
+        .unwrap();
+
+        let detail = get_issue_detail(&conn, issue.id)
+            .await
+            .unwrap()
+            .expect("issue detail should exist");
+
+        assert_eq!(detail.issue.id, issue.id);
+        assert_eq!(detail.issue.title, "Detail test");
+        assert_eq!(detail.runs.len(), 2);
+        assert_eq!(detail.runs[0].run.id, run1.id);
+        assert_eq!(detail.runs[1].run.id, run2.id);
+        // First run should have 1 phase
+        assert_eq!(detail.runs[0].phases.len(), 1);
+        assert_eq!(detail.runs[0].phases[0].phase_name, "Phase One");
+        // Second run should have 0 phases
+        assert_eq!(detail.runs[1].phases.len(), 0);
+
+        // Non-existent issue should return None
+        let missing = get_issue_detail(&conn, 99999).await.unwrap();
+        assert!(missing.is_none());
     }
 
     #[tokio::test]
@@ -426,5 +559,59 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(updated.title, "New title");
+    }
+
+    #[tokio::test]
+    async fn test_create_issue_from_github() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let conn = db.conn();
+        let project = super::super::projects::create_project(&conn, "test-proj", "/tmp/test-proj-gh")
+            .await
+            .unwrap();
+
+        // First creation should succeed
+        let issue = create_issue_from_github(
+            &conn,
+            project.id,
+            "GH Issue #100",
+            "Fix the widget",
+            100,
+        )
+        .await
+        .unwrap();
+        assert!(issue.is_some());
+        let issue = issue.unwrap();
+        assert_eq!(issue.title, "GH Issue #100");
+        assert_eq!(issue.description, "Fix the widget");
+        assert_eq!(issue.github_issue_number, Some(100));
+        assert_eq!(issue.column, IssueColumn::Backlog);
+        assert_eq!(issue.position, 0);
+
+        // Duplicate github_issue_number should return None
+        let duplicate = create_issue_from_github(
+            &conn,
+            project.id,
+            "GH Issue #100 duplicate",
+            "Another description",
+            100,
+        )
+        .await
+        .unwrap();
+        assert!(duplicate.is_none(), "Duplicate github_issue_number should return None");
+
+        // Different github_issue_number should succeed with incremented position
+        let issue2 = create_issue_from_github(
+            &conn,
+            project.id,
+            "GH Issue #200",
+            "Another fix",
+            200,
+        )
+        .await
+        .unwrap();
+        assert!(issue2.is_some());
+        let issue2 = issue2.unwrap();
+        assert_eq!(issue2.github_issue_number, Some(200));
+        assert_eq!(issue2.position, 1, "Second issue should have position 1");
     }
 }

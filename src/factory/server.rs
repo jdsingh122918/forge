@@ -151,7 +151,13 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
         Err(e) => eprintln!("[factory] Warning: failed to recover orphaned runs: {}", e),
     }
 
-    let persisted_token = db_handle.get_setting("github_token").await.ok().flatten();
+    let persisted_token = match db_handle.get_setting("github_token").await {
+        Ok(token) => token,
+        Err(e) => {
+            eprintln!("[factory] Warning: failed to load persisted GitHub token: {e}");
+            None
+        }
+    };
 
     let state = Arc::new(AppState {
         db: db_handle,

@@ -12,18 +12,35 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use libsql::{Builder, Connection, Database};
 
+/// Connection mode for the database handle.
+#[derive(Clone, Copy, PartialEq)]
+enum DbMode {
+    /// Local SQLite file or in-memory database.
+    Local,
+    /// Turso embedded replica with local cache — supports sync().
+    EmbeddedReplica,
+    /// Pure remote HTTP connection to Turso — no local cache, no sync().
+    Remote,
+}
+
 /// Async database handle wrapping a libsql Database.
 ///
-/// Supports two modes:
-/// - **Turso embedded replica** when TURSO_DATABASE_URL and TURSO_AUTH_TOKEN are set
-/// - **Local SQLite** otherwise (dev/offline fallback)
+/// Supports three modes:
+/// - **Local SQLite** (dev/offline fallback)
+/// - **Turso embedded replica** with local cache and sync
+/// - **Turso remote HTTP** (pure HTTP, no local cache — fallback when replica handshake fails)
 #[derive(Clone)]
 pub struct DbHandle {
     db: Arc<Database>,
     /// Shared connection used for all operations.
     /// libsql's `:memory:` databases create a new database per `connect()` call,
     /// so we keep one connection alive and reuse it everywhere.
+    ///
+    /// Safety: libsql connections are internally synchronized (serialized via mutex),
+    /// so sharing a single `Connection` behind `Arc` is safe for concurrent use
+    /// across multiple tokio tasks.
     conn: Arc<Connection>,
+    mode: DbMode,
 }
 
 impl DbHandle {
@@ -34,17 +51,18 @@ impl DbHandle {
             .build()
             .await
             .context("Failed to open local SQLite database")?;
-        Self::from_db(db).await
+        Self::from_db(db, DbMode::Local).await
     }
 
     /// Open a Turso embedded replica with local file cache.
+    /// Falls back to pure remote (HTTP) mode if the embedded replica handshake fails.
     pub async fn new_remote_replica(
         local_path: &Path,
         url: &str,
         token: &str,
     ) -> Result<Self> {
         let path_str = local_path.to_string_lossy().to_string();
-        let db = Builder::new_remote_replica(
+        let replica_result = Builder::new_remote_replica(
             &path_str,
             url.to_string(),
             token.to_string(),
@@ -52,9 +70,47 @@ impl DbHandle {
         .sync_interval(Duration::from_secs(60))
         .read_your_writes(true)
         .build()
-        .await
-        .context("Failed to open Turso embedded replica")?;
-        Self::from_db(db).await
+        .await;
+
+        match replica_result {
+            Ok(db) => {
+                // Try initial sync; if it fails, fall back to remote mode
+                match db.sync().await {
+                    Ok(_) => {
+                        eprintln!("[db] Embedded replica synced successfully");
+                        let conn = db.connect().context("Failed to get initial connection")?;
+                        init_pragmas(&conn, DbMode::EmbeddedReplica).await?;
+                        migrations::run_migrations(&conn).await?;
+                        Ok(Self {
+                            db: Arc::new(db),
+                            conn: Arc::new(conn),
+                            mode: DbMode::EmbeddedReplica,
+                        })
+                    }
+                    Err(e) => {
+                        eprintln!("[db] Embedded replica sync failed ({e}), falling back to remote HTTP mode");
+                        // Clean up stale replica files
+                        let _ = std::fs::remove_file(&path_str);
+                        let _ = std::fs::remove_file(format!("{path_str}-shm"));
+                        let _ = std::fs::remove_file(format!("{path_str}-wal"));
+                        Self::new_remote(url, token).await
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("[db] Failed to open embedded replica ({e}), falling back to remote HTTP mode");
+                Self::new_remote(url, token).await
+            }
+        }
+    }
+
+    /// Open a pure remote (HTTP) connection to Turso. No local cache.
+    pub async fn new_remote(url: &str, token: &str) -> Result<Self> {
+        let db = Builder::new_remote(url.to_string(), token.to_string())
+            .build()
+            .await
+            .context("Failed to open remote Turso database")?;
+        Self::from_db(db, DbMode::Remote).await
     }
 
     /// Open an in-memory database (for testing).
@@ -63,16 +119,17 @@ impl DbHandle {
             .build()
             .await
             .context("Failed to open in-memory database")?;
-        Self::from_db(db).await
+        Self::from_db(db, DbMode::Local).await
     }
 
-    async fn from_db(db: Database) -> Result<Self> {
+    async fn from_db(db: Database, mode: DbMode) -> Result<Self> {
         let conn = db.connect().context("Failed to get initial connection")?;
-        init_pragmas(&conn).await?;
+        init_pragmas(&conn, mode).await?;
         migrations::run_migrations(&conn).await?;
         Ok(Self {
             db: Arc::new(db),
             conn: Arc::new(conn),
+            mode,
         })
     }
 
@@ -81,9 +138,16 @@ impl DbHandle {
         &self.conn
     }
 
-    /// Sync embedded replica with remote (no-op for local-only).
+    /// Sync embedded replica with remote.
+    /// Only meaningful for `EmbeddedReplica` mode; no-op for Local and Remote.
     pub async fn sync(&self) -> Result<()> {
-        let _ = self.db.sync().await;
+        if self.mode == DbMode::EmbeddedReplica {
+            self.db
+                .sync()
+                .await
+                .map_err(|e| anyhow::anyhow!(e))
+                .context("Failed to sync embedded replica with Turso remote")?;
+        }
         Ok(())
     }
 
@@ -256,25 +320,12 @@ impl DbHandle {
         run_id: i64,
         phase_number: &str,
         phase_name: &str,
-        status: &str,
-        iteration: Option<i32>,
-        budget: Option<i32>,
-    ) -> Result<()> {
-        let conn = self.conn();
-        pipeline::upsert_pipeline_phase(&conn, run_id, phase_number, phase_name, status, iteration, budget).await
-    }
-
-    pub async fn upsert_pipeline_phase_typed(
-        &self,
-        run_id: i64,
-        phase_number: &str,
-        phase_name: &str,
         status: &super::models::PhaseStatus,
         iteration: Option<i32>,
         budget: Option<i32>,
     ) -> Result<()> {
         let conn = self.conn();
-        pipeline::upsert_pipeline_phase_typed(&conn, run_id, phase_number, phase_name, status, iteration, budget).await
+        pipeline::upsert_pipeline_phase(&conn, run_id, phase_number, phase_name, status, iteration, budget).await
     }
 
     pub async fn get_pipeline_phases(&self, run_id: i64) -> Result<Vec<super::models::PipelinePhase>> {
@@ -427,8 +478,13 @@ impl DbHandle {
 }
 
 /// Set WAL mode, busy timeout, and enable foreign keys.
-async fn init_pragmas(conn: &Connection) -> Result<()> {
-    // journal_mode returns a row, so use query() instead of execute()
+/// Only applies to local databases — Turso (both embedded replica and remote HTTP)
+/// manages these internally and doesn't support PRAGMA statements over HTTP.
+async fn init_pragmas(conn: &Connection, mode: DbMode) -> Result<()> {
+    if mode != DbMode::Local {
+        return Ok(());
+    }
+    // journal_mode and busy_timeout return rows, so use query() instead of execute()
     conn.query("PRAGMA journal_mode=WAL", ())
         .await
         .context("Failed to set WAL mode")?;
@@ -441,20 +497,61 @@ async fn init_pragmas(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_shared_connection_visibility() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+
+        // Create a project through the db handle
+        let project = db.create_project("visibility-test", "/tmp/visibility-test")
+            .await
+            .unwrap();
+        assert!(project.id > 0);
+
+        // Read the project back through the same db handle
+        let fetched = db.get_project(project.id)
+            .await
+            .unwrap()
+            .expect("project should be visible through the shared connection");
+        assert_eq!(fetched.name, "visibility-test");
+        assert_eq!(fetched.path, "/tmp/visibility-test");
+
+        // Also verify list_projects sees it
+        let all = db.list_projects().await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, project.id);
+    }
+}
+
 /// Run integrity check on startup. Logs warning but does not fail.
 pub async fn health_check(conn: &Connection) {
     match conn.query("PRAGMA integrity_check", ()).await {
         Ok(mut rows) => {
-            if let Ok(Some(row)) = rows.next().await {
-                if let Ok(result) = row.get::<String>(0) {
-                    if result != "ok" {
-                        eprintln!("[db] Warning: database integrity check failed: {result}");
+            match rows.next().await {
+                Ok(Some(row)) => {
+                    match row.get::<String>(0) {
+                        Ok(result) if result == "ok" => { /* healthy */ }
+                        Ok(result) => {
+                            eprintln!("[db] WARNING: database integrity check failed: {result}");
+                        }
+                        Err(e) => {
+                            eprintln!("[db] WARNING: could not read integrity check result: {e}");
+                        }
                     }
+                }
+                Ok(None) => {
+                    eprintln!("[db] WARNING: integrity check returned no rows");
+                }
+                Err(e) => {
+                    eprintln!("[db] WARNING: failed to read integrity check row: {e}");
                 }
             }
         }
         Err(e) => {
-            eprintln!("[db] Warning: failed to run integrity check: {e}");
+            eprintln!("[db] WARNING: failed to run integrity check: {e}");
         }
     }
 }

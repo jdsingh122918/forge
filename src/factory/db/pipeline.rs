@@ -5,7 +5,7 @@ use libsql::{Connection, Row};
 
 use crate::factory::models::*;
 
-fn row_to_pipeline_run(row: &Row) -> Result<PipelineRun> {
+pub(super) fn row_to_pipeline_run(row: &Row) -> Result<PipelineRun> {
     let status_str: String = row.get(2)?;
     let status = PipelineStatus::from_str(&status_str)
         .map_err(|e| anyhow::anyhow!(e))
@@ -29,16 +29,18 @@ fn row_to_pipeline_run(row: &Row) -> Result<PipelineRun> {
     })
 }
 
-const RUN_COLS: &str = "id, issue_id, status, phase_count, current_phase, iteration, summary, error, branch_name, pr_url, team_id, has_team, started_at, completed_at";
+pub(super) const RUN_COLS: &str = "id, issue_id, status, phase_count, current_phase, iteration, summary, error, branch_name, pr_url, team_id, has_team, started_at, completed_at";
 
 pub async fn create_pipeline_run(conn: &Connection, issue_id: i64) -> Result<PipelineRun> {
-    conn.execute(
+    let tx = conn.transaction().await.context("Failed to begin transaction")?;
+    tx.execute(
         "INSERT INTO pipeline_runs (issue_id) VALUES (?1)",
         [issue_id],
     )
     .await
     .context("Failed to insert pipeline run")?;
-    let id = conn.last_insert_rowid();
+    let id = tx.last_insert_rowid();
+    tx.commit().await.context("Failed to commit")?;
     get_pipeline_run(conn, id)
         .await?
         .context("Pipeline run not found after insert")
@@ -163,10 +165,11 @@ pub async fn upsert_pipeline_phase(
     run_id: i64,
     phase_number: &str,
     phase_name: &str,
-    status: &str,
+    status: &PhaseStatus,
     iteration: Option<i32>,
     budget: Option<i32>,
 ) -> Result<()> {
+    let status_str = status.to_string();
     conn.execute(
         "INSERT INTO pipeline_phases (run_id, phase_number, phase_name, status, iteration, budget, started_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
@@ -176,32 +179,11 @@ pub async fn upsert_pipeline_phase(
             budget = COALESCE(?6, pipeline_phases.budget),
             completed_at = CASE WHEN ?4 IN ('completed', 'failed') THEN datetime('now') ELSE pipeline_phases.completed_at END,
             error = NULL",
-        libsql::params![run_id, phase_number, phase_name, status, iteration, budget],
+        libsql::params![run_id, phase_number, phase_name, status_str, iteration, budget],
     )
     .await
     .context("Failed to upsert pipeline phase")?;
     Ok(())
-}
-
-pub async fn upsert_pipeline_phase_typed(
-    conn: &Connection,
-    run_id: i64,
-    phase_number: &str,
-    phase_name: &str,
-    status: &PhaseStatus,
-    iteration: Option<i32>,
-    budget: Option<i32>,
-) -> Result<()> {
-    upsert_pipeline_phase(
-        conn,
-        run_id,
-        phase_number,
-        phase_name,
-        &status.to_string(),
-        iteration,
-        budget,
-    )
-    .await
 }
 
 pub async fn get_pipeline_phases(conn: &Connection, run_id: i64) -> Result<Vec<PipelinePhase>> {
@@ -217,7 +199,9 @@ pub async fn get_pipeline_phases(conn: &Connection, run_id: i64) -> Result<Vec<P
     let mut phases = Vec::new();
     while let Some(row) = rows.next().await? {
         let status_str: String = row.get(4)?;
-        let status = status_str.parse::<PhaseStatus>().unwrap_or(PhaseStatus::Pending);
+        let status = status_str.parse::<PhaseStatus>().map_err(|_| {
+            anyhow::anyhow!("invalid phase status in database: '{}'", status_str)
+        })?;
         phases.push(PipelinePhase {
             id: row.get(0)?,
             run_id: row.get(1)?,
@@ -318,7 +302,7 @@ mod tests {
         .unwrap();
         let run = create_pipeline_run(&conn, issue.id).await.unwrap();
 
-        upsert_pipeline_phase(&conn, run.id, "1", "Phase One", "running", Some(1), Some(5))
+        upsert_pipeline_phase(&conn, run.id, "1", "Phase One", &PhaseStatus::Running, Some(1), Some(5))
             .await
             .unwrap();
 
@@ -326,5 +310,156 @@ mod tests {
         assert_eq!(phases.len(), 1);
         assert_eq!(phases[0].phase_name, "Phase One");
         assert_eq!(phases[0].status, PhaseStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn test_recover_orphaned_runs() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let conn = db.conn();
+        let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
+            .await
+            .unwrap();
+
+        // Create four issues with different pipeline run statuses
+        let issue_running = super::super::issues::create_issue(
+            &conn,
+            project.id,
+            "Running issue",
+            "",
+            &IssueColumn::InProgress,
+        )
+        .await
+        .unwrap();
+        let issue_queued = super::super::issues::create_issue(
+            &conn,
+            project.id,
+            "Queued issue",
+            "",
+            &IssueColumn::InProgress,
+        )
+        .await
+        .unwrap();
+        let issue_completed = super::super::issues::create_issue(
+            &conn,
+            project.id,
+            "Completed issue",
+            "",
+            &IssueColumn::Done,
+        )
+        .await
+        .unwrap();
+        let issue_failed = super::super::issues::create_issue(
+            &conn,
+            project.id,
+            "Failed issue",
+            "",
+            &IssueColumn::Backlog,
+        )
+        .await
+        .unwrap();
+
+        // Create pipeline runs and set their statuses
+        let run_running = create_pipeline_run(&conn, issue_running.id).await.unwrap();
+        update_pipeline_run(&conn, run_running.id, &PipelineStatus::Running, None, None)
+            .await
+            .unwrap();
+
+        let run_queued = create_pipeline_run(&conn, issue_queued.id).await.unwrap();
+        // Queued is the default status, no update needed
+
+        let run_completed = create_pipeline_run(&conn, issue_completed.id).await.unwrap();
+        update_pipeline_run(
+            &conn,
+            run_completed.id,
+            &PipelineStatus::Completed,
+            Some("Done"),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let run_failed = create_pipeline_run(&conn, issue_failed.id).await.unwrap();
+        update_pipeline_run(
+            &conn,
+            run_failed.id,
+            &PipelineStatus::Failed,
+            None,
+            Some("Original error"),
+        )
+        .await
+        .unwrap();
+
+        // Recover orphaned runs
+        let count = recover_orphaned_runs(&conn).await.unwrap();
+        assert_eq!(count, 2, "Should recover running + queued runs");
+
+        // Verify running run is now failed with error message
+        let recovered_running = get_pipeline_run(&conn, run_running.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered_running.status, PipelineStatus::Failed);
+        assert_eq!(
+            recovered_running.error.as_deref(),
+            Some("Server restarted — pipeline process was lost")
+        );
+        assert!(recovered_running.completed_at.is_some());
+
+        // Verify queued run is now failed with error message
+        let recovered_queued = get_pipeline_run(&conn, run_queued.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered_queued.status, PipelineStatus::Failed);
+        assert_eq!(
+            recovered_queued.error.as_deref(),
+            Some("Server restarted — pipeline process was lost")
+        );
+        assert!(recovered_queued.completed_at.is_some());
+
+        // Verify completed run is untouched
+        let unchanged_completed = get_pipeline_run(&conn, run_completed.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged_completed.status, PipelineStatus::Completed);
+        assert_eq!(unchanged_completed.summary, Some("Done".to_string()));
+
+        // Verify failed run is untouched (original error preserved)
+        let unchanged_failed = get_pipeline_run(&conn, run_failed.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged_failed.status, PipelineStatus::Failed);
+        assert_eq!(
+            unchanged_failed.error.as_deref(),
+            Some("Original error")
+        );
+
+        // Verify in_progress issues were moved back to ready
+        let issue_r = super::super::issues::get_issue(&conn, issue_running.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(issue_r.column, IssueColumn::Ready);
+
+        let issue_q = super::super::issues::get_issue(&conn, issue_queued.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(issue_q.column, IssueColumn::Ready);
+
+        // Verify completed/failed issues' columns are untouched
+        let issue_c = super::super::issues::get_issue(&conn, issue_completed.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(issue_c.column, IssueColumn::Done);
+
+        let issue_f = super::super::issues::get_issue(&conn, issue_failed.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(issue_f.column, IssueColumn::Backlog);
     }
 }

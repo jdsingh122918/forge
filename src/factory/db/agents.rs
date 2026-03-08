@@ -10,20 +10,22 @@ pub async fn create_agent_team(
     isolation: &IsolationStrategy,
     plan_summary: &str,
 ) -> Result<AgentTeam> {
-    conn.execute(
+    let tx = conn.transaction().await.context("Failed to begin transaction")?;
+    tx.execute(
         "INSERT INTO agent_teams (run_id, strategy, isolation, plan_summary) VALUES (?1, ?2, ?3, ?4)",
         libsql::params![run_id, strategy.as_str(), isolation.as_str(), plan_summary],
     )
     .await
     .context("Failed to insert agent team")?;
-    let id = conn.last_insert_rowid();
+    let id = tx.last_insert_rowid();
 
-    conn.execute(
+    tx.execute(
         "UPDATE pipeline_runs SET team_id = ?1, has_team = 1 WHERE id = ?2",
         (id, run_id),
     )
     .await
     .context("Failed to link agent team to pipeline run")?;
+    tx.commit().await.context("Failed to commit")?;
 
     Ok(AgentTeam {
         id,
@@ -101,14 +103,16 @@ pub async fn create_agent_task(
 ) -> Result<AgentTask> {
     let depends_json =
         serde_json::to_string(depends_on).context("Failed to serialize depends_on")?;
-    conn.execute(
+    let tx = conn.transaction().await.context("Failed to begin transaction")?;
+    tx.execute(
         "INSERT INTO agent_tasks (team_id, name, description, agent_role, wave, depends_on, isolation_type) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         libsql::params![team_id, name, description, agent_role.as_str(), wave, depends_json, isolation_type.as_str()],
     )
     .await
     .context("Failed to insert agent task")?;
-    let id = conn.last_insert_rowid();
+    let id = tx.last_insert_rowid();
+    tx.commit().await.context("Failed to commit")?;
     Ok(AgentTask {
         id,
         team_id,
@@ -266,13 +270,15 @@ pub async fn create_agent_event(
         Some(m) => Some(serde_json::to_string(m).context("Failed to serialize event metadata")?),
         None => None,
     };
-    conn.execute(
+    let tx = conn.transaction().await.context("Failed to begin transaction")?;
+    tx.execute(
         "INSERT INTO agent_events (task_id, event_type, content, metadata) VALUES (?1, ?2, ?3, ?4)",
         libsql::params![task_id, event_type, content, metadata_str],
     )
     .await
     .context("Failed to insert agent event")?;
-    let id = conn.last_insert_rowid();
+    let id = tx.last_insert_rowid();
+    tx.commit().await.context("Failed to commit")?;
     Ok(AgentEvent {
         id,
         task_id,
@@ -498,6 +504,69 @@ mod tests {
         // Ordered by id DESC
         assert_eq!(events[0].content, "Editing file");
         assert_eq!(events[1].content, "Hello world");
+    }
+
+    #[tokio::test]
+    async fn test_create_multiple_events() {
+        let (db, run) = setup().await;
+        let conn = db.conn();
+        let team = create_agent_team(
+            &conn,
+            run.id,
+            &ExecutionStrategy::Sequential,
+            &IsolationStrategy::Shared,
+            "",
+        )
+        .await
+        .unwrap();
+        let task = create_agent_task(
+            &conn,
+            team.id,
+            "Multi-event task",
+            "",
+            &AgentRole::Coder,
+            0,
+            &[],
+            &IsolationStrategy::Shared,
+        )
+        .await
+        .unwrap();
+
+        // Create multiple events of different types
+        let meta = serde_json::json!({"signal": "progress"});
+        create_agent_event(&conn, task.id, "output", "Starting work", None)
+            .await
+            .unwrap();
+        create_agent_event(&conn, task.id, "action", "Editing main.rs", None)
+            .await
+            .unwrap();
+        create_agent_event(&conn, task.id, "signal", "Making progress", Some(&meta))
+            .await
+            .unwrap();
+        create_agent_event(&conn, task.id, "output", "Tests passing", None)
+            .await
+            .unwrap();
+        create_agent_event(&conn, task.id, "output", "Done", None)
+            .await
+            .unwrap();
+
+        // Retrieve all events via get_agent_events_for_task
+        let events = get_agent_events_for_task(&conn, task.id, 100).await.unwrap();
+        assert_eq!(events.len(), 5, "all 5 events should be returned");
+
+        // Events are ordered by id DESC, so the last created event comes first
+        assert_eq!(events[0].content, "Done");
+        assert_eq!(events[4].content, "Starting work");
+
+        // Verify the signal event has metadata
+        let signal_event = events.iter().find(|e| e.event_type == AgentEventType::Signal).unwrap();
+        assert_eq!(signal_event.content, "Making progress");
+        assert!(signal_event.metadata.is_some());
+        assert_eq!(signal_event.metadata.as_ref().unwrap()["signal"], "progress");
+
+        // Verify pagination works: limit to 2
+        let limited = get_agent_events_for_task(&conn, task.id, 2).await.unwrap();
+        assert_eq!(limited.len(), 2);
     }
 
     #[tokio::test]

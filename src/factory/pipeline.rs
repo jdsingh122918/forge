@@ -1169,7 +1169,10 @@ async fn auto_generate_phases(
         .await
     {
         Ok(s) => s,
-        Err(_) => return Ok(false),
+        Err(e) => {
+            eprintln!("[pipeline] Failed to spawn '{}': {e}", forge_cmd);
+            return Ok(false);
+        }
     };
 
     if status.success() && has_forge_phases(project_path) {
@@ -1637,7 +1640,13 @@ async fn execute_pipeline_docker(
     tx: &broadcast::Sender<String>,
     timeout_secs: u64,
 ) -> Result<String> {
-    let config = SandboxConfig::load(std::path::Path::new(project_path)).unwrap_or_default();
+    let config = match SandboxConfig::load(std::path::Path::new(project_path)) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[pipeline] Failed to load sandbox config, using defaults: {e}");
+            SandboxConfig::default()
+        }
+    };
 
     // Build the command — same logic as local
     let command = if has_forge_phases(project_path) {
@@ -1748,7 +1757,13 @@ async fn execute_pipeline_docker(
     }
 
     // Wait for container to finish and check result
-    let exit_code = sandbox.wait(&container_id).await.unwrap_or(-1);
+    let exit_code = match sandbox.wait(&container_id).await {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("[pipeline] Failed to wait for container {container_id}: {e}");
+            -1
+        }
+    };
 
     // Check for OOM
     if let Ok(inspect) = sandbox.inspect(&container_id).await
@@ -1897,7 +1912,7 @@ async fn process_phase_event(
                     run_id,
                     phase,
                     phase,
-                    "running",
+                    &PhaseStatus::Running,
                     None,
                     None,
                 )
@@ -1932,7 +1947,7 @@ async fn process_phase_event(
                     run_id,
                     phase,
                     phase,
-                    "running",
+                    &PhaseStatus::Running,
                     Some(*iteration as i32),
                     Some(*budget as i32),
                 )
@@ -1961,13 +1976,13 @@ async fn process_phase_event(
                 .get("success")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            let status_str = if success { "completed" } else { "failed" };
+            let status = if success { PhaseStatus::Completed } else { PhaseStatus::Failed };
             if let Err(e) = db
                 .upsert_pipeline_phase(
                     run_id,
                     phase,
                     phase,
-                    status_str,
+                    &status,
                     None,
                     None,
                 )

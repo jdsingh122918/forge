@@ -182,6 +182,8 @@ impl From<FactoryError> for ApiError {
 /// | POST   | `/api/github/connect`           | Connect with PAT token    |
 /// | GET    | `/api/github/repos`             | List user's GitHub repos  |
 /// | POST   | `/api/github/disconnect`        | Remove GitHub token       |
+/// | DELETE | `/api/projects/:id`             | Delete a project          |
+/// | GET    | `/api/screenshots/*path`        | Serve screenshot file     |
 /// | GET    | `/api/cli-help`                 | Parsed CLI help data      |
 /// | GET    | `/health`                       | Liveness probe            |
 pub fn api_router() -> Router<SharedState> {
@@ -264,10 +266,13 @@ async fn do_sync_github_issues(
                 // Try to detect github_repo from git remote (async to avoid blocking)
                 let detected = detect_github_repo_from_path(&project_path).await;
                 if let Some(ref owner_repo) = detected {
-                    let _ = state
+                    if let Err(e) = state
                         .db
                         .update_project_github_repo(project_id, owner_repo)
-                        .await;
+                        .await
+                    {
+                        eprintln!("[factory] Warning: failed to persist detected GitHub repo: {e}");
+                    }
                 }
                 detected.ok_or_else(|| {
                     ApiError::BadRequest(
@@ -595,11 +600,20 @@ async fn clone_project(
 
         // After successful clone, strip token from remote URL to prevent leaking
         if token.is_some() {
-            let _ = tokio::process::Command::new("git")
+            let output = tokio::process::Command::new("git")
                 .args(["remote", "set-url", "origin", &repo_url])
                 .current_dir(&clone_path_str)
                 .output()
                 .await;
+            match output {
+                Ok(o) if !o.status.success() => {
+                    eprintln!("[factory] WARNING: failed to strip auth token from git remote URL: {}", String::from_utf8_lossy(&o.stderr));
+                }
+                Err(e) => {
+                    eprintln!("[factory] WARNING: failed to strip auth token from git remote URL: {e}");
+                }
+                Ok(_) => {}
+            }
         }
     }
 
@@ -664,8 +678,11 @@ async fn clone_project(
                         result.imported, pid
                     );
                 }
-                Err(_) => {
-                    eprintln!("Auto-sync GitHub issues failed for project {}", pid);
+                Err(e) => {
+                    let detail = match e {
+                        ApiError::Internal(msg) | ApiError::BadRequest(msg) | ApiError::NotFound(msg) => msg,
+                    };
+                    eprintln!("Auto-sync GitHub issues failed for project {}: {}", pid, detail);
                 }
             }
         });
@@ -714,7 +731,7 @@ async fn get_project(
 
 /// `DELETE /api/projects/:id` — delete a project and all associated data.
 ///
-/// Cascades to issues, pipeline runs, and agent data via foreign keys.
+/// Deletes the project and manually cascades deletion to agent events, tasks, teams, pipeline runs, and issues.
 ///
 /// **Response:** `204 No Content` on success.
 async fn delete_project(
@@ -809,11 +826,11 @@ async fn get_issue(
     }
 }
 
-/// `PATCH /api/issues/:id` — update an issue's title and/or description.
+/// `PATCH /api/issues/:id` — update an issue's title, description, priority, and/or labels.
 ///
 /// **Request body:**
 /// ```json
-/// { "title": "New title", "description": "Updated body" }
+/// { "title": "New title", "description": "Updated body", "priority": "high", "labels": "bug,urgent" }
 /// ```
 ///
 /// All fields are optional; only provided fields are updated.
@@ -867,7 +884,8 @@ async fn move_issue(
 ) -> Result<impl IntoResponse, ApiError> {
     let column = IssueColumn::from_str(&req.column).map_err(ApiError::BadRequest)?;
     let position = req.position;
-    // Capture the original column before the move for the WsMessage
+    // Note: from_column may be stale if another request moves the issue concurrently.
+    // This only affects the WebSocket broadcast animation, not data integrity.
     let from_column = state
         .db
         .get_issue(id)
@@ -892,7 +910,7 @@ async fn move_issue(
     Ok(Json(issue))
 }
 
-/// `DELETE /api/issues/:id` — permanently delete an issue.
+/// `DELETE /api/issues/:id` — soft-delete an issue (sets deleted_at timestamp).
 ///
 /// **Response:** `204 No Content` on success.
 /// Broadcasts an `IssueDeleted` WebSocket message.
