@@ -35,7 +35,7 @@
 //! | Module           | Responsibility                                       |
 //! |------------------|------------------------------------------------------|
 //! | `models`         | Shared types: `Issue`, `AgentTask`, `IssueColumn`    |
-//! | `db`             | SQLite access via `DbHandle` (thin `Arc<Mutex<_>>`)  |
+//! | `db`             | SQLite/Turso access via async `DbHandle`              |
 //! | `ws`             | `WsMessage` enum + `broadcast_message()` helper      |
 //! | `github`         | OAuth device-flow + PR creation via `gh`             |
 //! | `planner`        | `Planner` trait — converts issue → `Vec<AgentTask>`  |

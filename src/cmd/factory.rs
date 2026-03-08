@@ -10,11 +10,11 @@ pub async fn cmd_factory(
     dev: bool,
 ) -> Result<()> {
     if init {
-        // Just initialize the database
+        // Just initialize the database (creates + runs migrations)
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        forge::factory::db::FactoryDb::new(&db_path)?;
+        forge::factory::db::DbHandle::new_local(&db_path).await?;
         println!("Factory database initialized at {}", db_path.display());
         return Ok(());
     }
