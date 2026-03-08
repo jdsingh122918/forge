@@ -616,7 +616,7 @@ impl AgentExecutor {
     /// WARNING: This performs `git checkout` on the main project directory.
     /// It is NOT safe for concurrent use -- callers must ensure exclusive access
     /// to the project directory during merge operations.
-    /// See `GitLockMap` in `pipeline.rs` which provides per-project mutex serialization for callers.
+    /// See `GitLockMap` in `pipeline/git.rs` which provides per-project mutex serialization for callers.
     pub async fn merge_branch(&self, task_branch: &str, target_branch: &str) -> Result<bool> {
         // Record current HEAD so we can restore on failure
         let head_output = Command::new("git")

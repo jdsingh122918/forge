@@ -68,7 +68,8 @@ pub async fn get_agent_team_by_run(conn: &Connection, run_id: i64) -> Result<Opt
             "SELECT id, run_id, strategy, isolation, plan_summary, created_at FROM agent_teams WHERE run_id = ?1",
             [run_id],
         )
-        .await?;
+        .await
+        .context("Failed to query agent team by run")?;
     match rows.next().await? {
         Some(row) => {
             let strategy_str: String = row.get(2)?;

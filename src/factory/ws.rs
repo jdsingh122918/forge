@@ -33,7 +33,7 @@ pub enum WsMessage {
     IssueUpdated {
         issue: Issue,
     },
-    // TODO: from_column/to_column should be IssueColumn once callers in pipeline.rs are updated
+    // TODO: from_column/to_column should be IssueColumn once callers in pipeline/mod.rs are updated
     IssueMoved {
         issue_id: i64,
         from_column: String,

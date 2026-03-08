@@ -16,7 +16,7 @@
 //! └──────────┘ WebSocket│         │                                        │
 //!                       │         │ PipelineRunner::run_pipeline()          │
 //!                       │         v                                        │
-//!                       │  pipeline.rs  (PipelineRunner, GitLockMap)       │
+//!                       │  pipeline/   (PipelineRunner, GitLockMap)        │
 //!                       │         │                                        │
 //!                       │         │ Planner::plan() → Vec<AgentTask>       │
 //!                       │         │                                        │
@@ -48,7 +48,7 @@
 //! 3. `PipelineRunner` acquires a per-repo `GitLockMap` entry (prevents
 //!    concurrent branch checkouts on the same repo), then calls
 //!    `Planner::plan()` which returns a `Vec<AgentTask>`.
-//!    **Git branch creation** happens here: `pipeline.rs` calls
+//!    **Git branch creation** happens here: `pipeline/mod.rs` calls
 //!    `git checkout -b forge/issue-<id>-<slug>` before handing tasks to the executor.
 //! 4. For each `AgentTask`: `AgentExecutor::run_task()` either spawns
 //!    the `forge` CLI directly (no sandbox) or wraps it in a
@@ -57,7 +57,7 @@
 //!    read-write and streams stdout lines back to the host process.
 //! 5. Each parsed `ParsedEvent` is persisted to `db` and broadcast via `ws`
 //!    so the React UI receives live phase-progress events over WebSocket.
-//! 6. On completion, `pipeline.rs` calls `github::create_pull_request()` (via
+//! 6. On completion, `pipeline/mod.rs` calls `github::create_pull_request()` (via
 //!    the `gh` CLI) then transitions the issue column to `Done`.
 
 pub mod agent_executor;
