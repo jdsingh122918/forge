@@ -108,9 +108,7 @@ impl<'de> serde::Deserialize<'de> for ResolutionMode {
                 {
                     match mode_str {
                         "manual" => {
-                            warn!(
-                                "'manual' resolution mode is deprecated, using auto"
-                            );
+                            warn!("'manual' resolution mode is deprecated, using auto");
                             return Ok(ResolutionMode::default());
                         }
                         "arbiter" => {

@@ -14,7 +14,10 @@ fn row_to_project(row: &Row) -> Result<Project> {
 }
 
 pub async fn create_project(conn: &Connection, name: &str, path: &str) -> Result<Project> {
-    let tx = conn.transaction().await.context("Failed to begin transaction")?;
+    let tx = conn
+        .transaction()
+        .await
+        .context("Failed to begin transaction")?;
     tx.execute(
         "INSERT INTO projects (name, path) VALUES (?1, ?2)",
         (name, path),
@@ -76,7 +79,10 @@ pub async fn update_project_github_repo(
 pub async fn delete_project(conn: &Connection, id: ProjectId) -> Result<bool> {
     // Manually clean up agent tables that lack ON DELETE CASCADE.
     // Chain: project -> issues -> pipeline_runs -> agent_teams -> agent_tasks -> agent_events
-    let tx = conn.transaction().await.context("Failed to begin transaction")?;
+    let tx = conn
+        .transaction()
+        .await
+        .context("Failed to begin transaction")?;
     tx.execute(
         "DELETE FROM agent_events WHERE task_id IN (
             SELECT t.id FROM agent_tasks t
@@ -253,7 +259,9 @@ mod tests {
         assert!(fetched_project.is_none());
 
         // Verify the issue is gone (cascade from project delete)
-        let fetched_issue = super::super::issues::get_issue(conn, issue.id).await.unwrap();
+        let fetched_issue = super::super::issues::get_issue(conn, issue.id)
+            .await
+            .unwrap();
         assert!(fetched_issue.is_none());
 
         // Verify agent events are cleaned up
@@ -285,10 +293,9 @@ mod tests {
             .unwrap();
         assert!(project.github_repo.is_none());
 
-        let updated =
-            update_project_github_repo(conn, project.id, "owner/repo")
-                .await
-                .unwrap();
+        let updated = update_project_github_repo(conn, project.id, "owner/repo")
+            .await
+            .unwrap();
         assert_eq!(updated.github_repo, Some("owner/repo".to_string()));
     }
 }

@@ -33,7 +33,6 @@
 //! ```
 
 use anyhow::{Context, Result};
-use tracing::error;
 use axum::{
     Json, Router,
     extract::State,
@@ -46,6 +45,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::{RwLock, oneshot};
+use tracing::error;
 
 /// Maximum number of events to retain before dropping oldest.
 /// This prevents unbounded memory growth from misbehaving agents.

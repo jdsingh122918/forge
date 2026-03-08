@@ -33,7 +33,6 @@ use crate::orchestrator::{ClaudeRunner, IterationFeedback};
 use crate::phase::Phase;
 use crate::tracker::GitTracker;
 use anyhow::{Context, Result};
-use tracing::{debug, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -41,6 +40,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio::task::JoinHandle;
+use tracing::{debug, warn};
 
 /// Events emitted during DAG execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -140,10 +140,7 @@ impl PipelineRunner {
             .await?
             .is_some_and(|issue| issue.column == IssueColumn::InProgress);
         if should_move {
-            if let Err(e) = db
-                .move_issue(issue_id, &IssueColumn::Ready, 0)
-                .await
-            {
+            if let Err(e) = db.move_issue(issue_id, &IssueColumn::Ready, 0).await {
                 error!(run_id, error = %e, "Failed to move issue to Ready");
             }
             broadcast_message(
@@ -276,7 +273,9 @@ impl PipelineRunner {
             ));
         }
         let reasoning = plan.reasoning.clone();
-        let team = db.create_agent_team(RunId(run_id), &strategy, &isolation, &reasoning).await?;
+        let team = db
+            .create_agent_team(RunId(run_id), &strategy, &isolation, &reasoning)
+            .await?;
 
         let mut db_tasks = Vec::new();
         for (name, description, role, wave, depends_on, task_isolation) in &parsed_tasks {
@@ -284,15 +283,17 @@ impl PipelineRunner {
                 .iter()
                 .filter_map(|&idx| db_tasks.get(idx as usize).map(|t: &AgentTask| t.id))
                 .collect();
-            let task = db.create_agent_task(
-                team.id,
-                name,
-                description,
-                role,
-                *wave,
-                &depends,
-                task_isolation,
-            ).await?;
+            let task = db
+                .create_agent_task(
+                    team.id,
+                    name,
+                    description,
+                    role,
+                    *wave,
+                    &depends,
+                    task_isolation,
+                )
+                .await?;
             db_tasks.push(task);
         }
 
@@ -338,7 +339,10 @@ impl PipelineRunner {
                 let (working_dir, task_branch) = if task.isolation_type
                     == IsolationStrategy::Worktree
                 {
-                    match task_runner.setup_worktree(RunId(run_id), task, base_branch).await {
+                    match task_runner
+                        .setup_worktree(RunId(run_id), task, base_branch)
+                        .await
+                    {
                         Ok((path, branch)) => (path, Some(branch)),
                         Err(e) => {
                             if wave_tasks.len() > 1 {
@@ -439,7 +443,13 @@ impl PipelineRunner {
                 let git_lock = git_locks.get(project_path).await;
                 let _guard = git_lock.lock().await;
 
-                broadcast_message(tx, &WsMessage::MergeStarted { run_id: RunId(run_id), wave });
+                broadcast_message(
+                    tx,
+                    &WsMessage::MergeStarted {
+                        run_id: RunId(run_id),
+                        wave,
+                    },
+                );
 
                 let mut merge_conflicts = false;
                 for (_task, _working_dir, task_branch) in &task_working_dirs {
@@ -600,8 +610,7 @@ impl PipelineRunner {
             let run = db
                 .update_pipeline_run(RunId(run_id), &PipelineStatus::Running, None, None)
                 .await?;
-            if need_move
-                && let Err(e) = db.move_issue(issue_id, &IssueColumn::InProgress, 0).await
+            if need_move && let Err(e) = db.move_issue(issue_id, &IssueColumn::InProgress, 0).await
             {
                 error!(run_id, error = %e, "Failed to move issue to InProgress");
             }
@@ -632,10 +641,7 @@ impl PipelineRunner {
                 match git_result {
                     Ok(name) => {
                         // Store branch name in DB and broadcast
-                        if let Err(e) = db
-                            .update_pipeline_branch(RunId(run_id), &name)
-                            .await
-                        {
+                        if let Err(e) = db.update_pipeline_branch(RunId(run_id), &name).await {
                             error!(run_id, error = %e, "Failed to update pipeline branch");
                         }
                         broadcast_message(
@@ -778,20 +784,28 @@ impl PipelineRunner {
                         error!(run_id, error = %e, "DB error checking cancellation");
                         // Attempt to mark the run as failed so it doesn't stay stuck in "Running"
                         let error_msg = format!("DB error during cancellation check: {e:#}");
-                        if let Err(e2) = db.update_pipeline_run(
-                            RunId(run_id),
-                            &PipelineStatus::Failed,
-                            None,
-                            Some(&error_msg),
-                        ).await {
+                        if let Err(e2) = db
+                            .update_pipeline_run(
+                                RunId(run_id),
+                                &PipelineStatus::Failed,
+                                None,
+                                Some(&error_msg),
+                            )
+                            .await
+                        {
                             error!(run_id, error = %e2, "CRITICAL: also failed to mark run as failed");
                             // Last resort: broadcast so UI doesn't show "running" forever
-                            broadcast_message(&tx, &WsMessage::AgentSignal {
-                                run_id: RunId(run_id),
-                                task_id: TaskId(0),
-                                signal_type: SignalType::Blocker,
-                                content: format!("[pipeline] Run failed but could not persist status: {error_msg}"),
-                            });
+                            broadcast_message(
+                                &tx,
+                                &WsMessage::AgentSignal {
+                                    run_id: RunId(run_id),
+                                    task_id: TaskId(0),
+                                    signal_type: SignalType::Blocker,
+                                    content: format!(
+                                        "[pipeline] Run failed but could not persist status: {error_msg}"
+                                    ),
+                                },
+                            );
                         }
                         return;
                     }
@@ -819,15 +833,17 @@ impl PipelineRunner {
                         // git lock released — now safe to acquire DB lock
                         match pr_result {
                             Ok(pr_url) => {
-                                if let Err(e) = db
-                                    .update_pipeline_pr_url(RunId(run_id), &pr_url)
-                                    .await
+                                if let Err(e) =
+                                    db.update_pipeline_pr_url(RunId(run_id), &pr_url).await
                                 {
                                     error!(run_id, error = %e, "Failed to update pipeline PR URL");
                                 }
                                 broadcast_message(
                                     &tx,
-                                    &WsMessage::PipelinePrCreated { run_id: RunId(run_id), pr_url },
+                                    &WsMessage::PipelinePrCreated {
+                                        run_id: RunId(run_id),
+                                        pr_url,
+                                    },
                                 );
                             }
                             Err(e) => {
@@ -839,22 +855,31 @@ impl PipelineRunner {
                     if let Err(e) = db.move_issue(issue_id, &IssueColumn::InReview, 0).await {
                         error!(run_id, error = %e, "Failed to move issue to InReview");
                     }
-                    match db.update_pipeline_run(
-                        RunId(run_id),
-                        &PipelineStatus::Completed,
-                        Some(&summary),
-                        None,
-                    ).await {
+                    match db
+                        .update_pipeline_run(
+                            RunId(run_id),
+                            &PipelineStatus::Completed,
+                            Some(&summary),
+                            None,
+                        )
+                        .await
+                    {
                         Ok(run) => broadcast_message(&tx, &WsMessage::PipelineCompleted { run }),
                         Err(e) => {
                             error!(run_id, error = %e, "CRITICAL: completed but failed to update DB");
                             // Still broadcast completion so UI doesn't show "running" forever
-                            broadcast_message(&tx, &WsMessage::AgentSignal {
-                                run_id: RunId(run_id),
-                                task_id: TaskId(0),
-                                signal_type: SignalType::Blocker,
-                                content: format!("[pipeline] Pipeline completed but failed to persist status: {}", e),
-                            });
+                            broadcast_message(
+                                &tx,
+                                &WsMessage::AgentSignal {
+                                    run_id: RunId(run_id),
+                                    task_id: TaskId(0),
+                                    signal_type: SignalType::Blocker,
+                                    content: format!(
+                                        "[pipeline] Pipeline completed but failed to persist status: {}",
+                                        e
+                                    ),
+                                },
+                            );
                         }
                     }
                     broadcast_message(
@@ -1228,7 +1253,8 @@ mod tests {
             .await
             .unwrap();
 
-        db.update_agent_task_status(task_w0.id, &AgentTaskStatus::Failed, Some("test error")).await?;
+        db.update_agent_task_status(task_w0.id, &AgentTaskStatus::Failed, Some("test error"))
+            .await?;
 
         let task_w1_updated = db.get_agent_task(task_w1.id).await?;
         assert_eq!(task_w1_updated.status, AgentTaskStatus::Pending);
@@ -1370,7 +1396,10 @@ mod tests {
     /// Helper: set up DB with project, issue, and pipeline run
     async fn setup_test_db() -> (DbHandle, i64) {
         let db = DbHandle::new_in_memory().await.unwrap();
-        let project = db.create_project("test", "/tmp/test-project").await.unwrap();
+        let project = db
+            .create_project("test", "/tmp/test-project")
+            .await
+            .unwrap();
         let issue = db
             .create_issue(project.id, "Test issue", "Test desc", &IssueColumn::Backlog)
             .await

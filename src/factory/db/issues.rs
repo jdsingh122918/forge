@@ -5,7 +5,7 @@ use libsql::{Connection, Row};
 
 use crate::factory::models::*;
 
-use super::pipeline::{row_to_pipeline_run, RUN_COLS};
+use super::pipeline::{RUN_COLS, row_to_pipeline_run};
 
 fn row_to_issue(row: &Row) -> Result<Issue> {
     let column_name: String = row.get(4)?;
@@ -45,7 +45,10 @@ pub async fn create_issue(
     description: &str,
     column: &IssueColumn,
 ) -> Result<Issue> {
-    let tx = conn.transaction().await.context("Failed to begin transaction")?;
+    let tx = conn
+        .transaction()
+        .await
+        .context("Failed to begin transaction")?;
     let mut rows = tx
         .query(
             "SELECT COALESCE(MAX(position), -1) FROM issues WHERE project_id = ?1 AND column_name = ?2",
@@ -116,7 +119,10 @@ pub async fn update_issue(
             .context("Invalid priority value")?;
     }
 
-    let tx = conn.transaction().await.context("Failed to begin transaction")?;
+    let tx = conn
+        .transaction()
+        .await
+        .context("Failed to begin transaction")?;
 
     if let Some(t) = title {
         tx.execute(
@@ -192,7 +198,10 @@ pub async fn create_issue_from_github(
     description: &str,
     github_issue_number: i64,
 ) -> Result<Option<Issue>> {
-    let tx = conn.transaction().await.context("Failed to begin transaction")?;
+    let tx = conn
+        .transaction()
+        .await
+        .context("Failed to begin transaction")?;
 
     let mut rows = tx
         .query(
@@ -268,7 +277,10 @@ pub async fn get_board(conn: &Connection, project_id: ProjectId) -> Result<Board
                 "SELECT {} FROM pipeline_runs WHERE issue_id = ?1 AND status IN ('queued', 'running') ORDER BY id DESC LIMIT 1",
                 RUN_COLS
             );
-            let mut rows = conn.query(&sql, [iws.issue.id.0]).await.context("Failed to query active pipeline run for issue")?;
+            let mut rows = conn
+                .query(&sql, [iws.issue.id.0])
+                .await
+                .context("Failed to query active pipeline run for issue")?;
             if let Some(row) = rows.next().await? {
                 iws.active_run = Some(row_to_pipeline_run(&row)?);
             }
@@ -402,7 +414,11 @@ mod tests {
             )
             .await
             .unwrap();
-        let row = rows.next().await.unwrap().expect("row should still exist in database");
+        let row = rows
+            .next()
+            .await
+            .unwrap()
+            .expect("row should still exist in database");
         let title: String = row.get(1).unwrap();
         assert_eq!(title, "Delete me");
         let deleted_at: Option<String> = row.get(2).unwrap();
@@ -422,18 +438,26 @@ mod tests {
             .unwrap();
 
         // Create issues in different columns
-        let backlog_issue = create_issue(conn, project.id, "Backlog item", "", &IssueColumn::Backlog)
-            .await
-            .unwrap();
+        let backlog_issue =
+            create_issue(conn, project.id, "Backlog item", "", &IssueColumn::Backlog)
+                .await
+                .unwrap();
         let ready_issue = create_issue(conn, project.id, "Ready item", "", &IssueColumn::Ready)
             .await
             .unwrap();
-        let in_progress_issue = create_issue(conn, project.id, "In progress item", "", &IssueColumn::InProgress)
-            .await
-            .unwrap();
-        let review_issue = create_issue(conn, project.id, "Review item", "", &IssueColumn::InReview)
-            .await
-            .unwrap();
+        let in_progress_issue = create_issue(
+            conn,
+            project.id,
+            "In progress item",
+            "",
+            &IssueColumn::InProgress,
+        )
+        .await
+        .unwrap();
+        let review_issue =
+            create_issue(conn, project.id, "Review item", "", &IssueColumn::InReview)
+                .await
+                .unwrap();
         let done_issue = create_issue(conn, project.id, "Done item", "", &IssueColumn::Done)
             .await
             .unwrap();
@@ -463,7 +487,10 @@ mod tests {
         assert_eq!(board.columns[2].issues.len(), 1);
         assert_eq!(board.columns[2].issues[0].issue.id, in_progress_issue.id);
         // The in_progress issue should have an active_run attached
-        let active_run = board.columns[2].issues[0].active_run.as_ref().expect("should have active run");
+        let active_run = board.columns[2].issues[0]
+            .active_run
+            .as_ref()
+            .expect("should have active run");
         assert_eq!(active_run.id, run.id);
 
         assert_eq!(board.columns[3].issues.len(), 1);
@@ -486,7 +513,10 @@ mod tests {
 
         // "urgent" is not a valid priority (valid: low, medium, high, critical)
         let result = update_issue(conn, issue.id, None, None, Some("urgent"), None).await;
-        assert!(result.is_err(), "update_issue should reject invalid priority 'urgent'");
+        assert!(
+            result.is_err(),
+            "update_issue should reject invalid priority 'urgent'"
+        );
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
             err_msg.contains("Invalid priority"),
@@ -499,12 +529,19 @@ mod tests {
     async fn test_get_issue_detail() {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
-        let project = super::super::projects::create_project(conn, "detail-proj", "/tmp/detail-proj")
-            .await
-            .unwrap();
-        let issue = create_issue(conn, project.id, "Detail test", "Full description", &IssueColumn::Backlog)
-            .await
-            .unwrap();
+        let project =
+            super::super::projects::create_project(conn, "detail-proj", "/tmp/detail-proj")
+                .await
+                .unwrap();
+        let issue = create_issue(
+            conn,
+            project.id,
+            "Detail test",
+            "Full description",
+            &IssueColumn::Backlog,
+        )
+        .await
+        .unwrap();
 
         // Create pipeline runs for the issue
         let run1 = super::super::pipeline::create_pipeline_run(conn, issue.id)
@@ -569,20 +606,16 @@ mod tests {
     async fn test_create_issue_from_github() {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
-        let project = super::super::projects::create_project(conn, "test-proj", "/tmp/test-proj-gh")
-            .await
-            .unwrap();
+        let project =
+            super::super::projects::create_project(conn, "test-proj", "/tmp/test-proj-gh")
+                .await
+                .unwrap();
 
         // First creation should succeed
-        let issue = create_issue_from_github(
-            conn,
-            project.id,
-            "GH Issue #100",
-            "Fix the widget",
-            100,
-        )
-        .await
-        .unwrap();
+        let issue =
+            create_issue_from_github(conn, project.id, "GH Issue #100", "Fix the widget", 100)
+                .await
+                .unwrap();
         assert!(issue.is_some());
         let issue = issue.unwrap();
         assert_eq!(issue.title, "GH Issue #100");
@@ -601,18 +634,16 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(duplicate.is_none(), "Duplicate github_issue_number should return None");
+        assert!(
+            duplicate.is_none(),
+            "Duplicate github_issue_number should return None"
+        );
 
         // Different github_issue_number should succeed with incremented position
-        let issue2 = create_issue_from_github(
-            conn,
-            project.id,
-            "GH Issue #200",
-            "Another fix",
-            200,
-        )
-        .await
-        .unwrap();
+        let issue2 =
+            create_issue_from_github(conn, project.id, "GH Issue #200", "Another fix", 200)
+                .await
+                .unwrap();
         assert!(issue2.is_some());
         let issue2 = issue2.unwrap();
         assert_eq!(issue2.github_issue_number, Some(200));

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use libsql::Connection;
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("migrations/001_initial.sql")),
@@ -8,7 +8,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (3, include_str!("migrations/003_agent_teams.sql")),
     (4, include_str!("migrations/004_settings.sql")),
     (5, include_str!("migrations/005_orchestrator_state.sql")),
-    (6, include_str!("migrations/006_soft_deletes_and_indexes.sql")),
+    (
+        6,
+        include_str!("migrations/006_soft_deletes_and_indexes.sql"),
+    ),
 ];
 
 /// Run all pending migrations.
@@ -289,12 +292,9 @@ mod tests {
         )
         .await
         .unwrap();
-        conn.execute(
-            "INSERT INTO pipeline_runs (issue_id) VALUES (1)",
-            (),
-        )
-        .await
-        .unwrap();
+        conn.execute("INSERT INTO pipeline_runs (issue_id) VALUES (1)", ())
+            .await
+            .unwrap();
 
         // Migration 3: agent_teams table
         conn.execute(

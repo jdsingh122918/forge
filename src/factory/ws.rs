@@ -1,5 +1,4 @@
 use super::models::{SignalType, VerificationType};
-use tracing;
 use axum::{
     extract::{
         State,
@@ -13,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::time::Instant;
+use tracing;
 
 use super::api::AppState;
 use super::models::*;
@@ -378,7 +378,9 @@ mod tests {
 
     #[test]
     fn test_ws_message_issue_deleted_serialization() {
-        let msg = WsMessage::IssueDeleted { issue_id: IssueId(42) };
+        let msg = WsMessage::IssueDeleted {
+            issue_id: IssueId(42),
+        };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"IssueDeleted\""));
         assert!(json.contains("\"issue_id\":42"));
@@ -503,7 +505,9 @@ mod tests {
         let mut rx1 = tx.subscribe();
         let mut rx2 = tx.subscribe();
 
-        let msg = WsMessage::IssueDeleted { issue_id: IssueId(1) };
+        let msg = WsMessage::IssueDeleted {
+            issue_id: IssueId(1),
+        };
         broadcast_message(&tx, &msg);
 
         let received1 = rx1.recv().await.unwrap();
@@ -518,7 +522,9 @@ mod tests {
     async fn test_broadcast_no_receivers_does_not_panic() {
         let (tx, _) = tokio::sync::broadcast::channel::<String>(16);
         // Drop all receivers - broadcast_message should not panic
-        let msg = WsMessage::IssueDeleted { issue_id: IssueId(1) };
+        let msg = WsMessage::IssueDeleted {
+            issue_id: IssueId(1),
+        };
         broadcast_message(&tx, &msg); // Should not panic
     }
 
@@ -714,7 +720,10 @@ mod tests {
 
     #[test]
     fn test_merge_started_serialization() {
-        let msg = WsMessage::MergeStarted { run_id: RunId(1), wave: 0 };
+        let msg = WsMessage::MergeStarted {
+            run_id: RunId(1),
+            wave: 0,
+        };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"MergeStarted\""));
         let deser: WsMessage = serde_json::from_str(&json).unwrap();

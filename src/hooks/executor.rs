@@ -173,7 +173,10 @@ impl HookExecutor {
         };
 
         if self.verbose {
-            debug!(exit_code = output.status.code().unwrap_or(-1), "Hook completed");
+            debug!(
+                exit_code = output.status.code().unwrap_or(-1),
+                "Hook completed"
+            );
         }
 
         // Parse result based on exit code and stdout

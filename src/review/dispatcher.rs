@@ -411,11 +411,7 @@ impl ReviewDispatcher {
             match self.run_single_review(specialist, review_config).await {
                 Ok(report) => reports.push(report),
                 Err(e) => {
-                    warn!(
-                        "Specialist {} failed: {}",
-                        specialist.display_name(),
-                        e
-                    );
+                    warn!("Specialist {} failed: {}", specialist.display_name(), e);
                     // Continue with other reviews
                 }
             }

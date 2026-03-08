@@ -178,9 +178,7 @@ impl StateManager {
                     let iteration = match parts[1].parse::<u32>() {
                         Ok(n) => n,
                         Err(_) => {
-                            warn!(
-                                "state: skipping malformed entry line (bad iteration): {line}"
-                            );
+                            warn!("state: skipping malformed entry line (bad iteration): {line}");
                             return None;
                         }
                     };

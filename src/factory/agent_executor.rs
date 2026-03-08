@@ -1,16 +1,18 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use tracing::{self, error, warn};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{Mutex, broadcast};
+use tracing::{self, error, warn};
 
 use crate::factory::db::DbHandle;
-use crate::factory::models::{AgentEventType, AgentTask, AgentTaskStatus, FileAction, RunId, SignalType, TaskId};
+use crate::factory::models::{
+    AgentEventType, AgentTask, AgentTaskStatus, FileAction, RunId, SignalType, TaskId,
+};
 use crate::factory::pipeline::{StreamJsonEvent, extract_file_change, parse_stream_json_line};
 use crate::factory::ws::{WsMessage, broadcast_message};
 
@@ -231,12 +233,7 @@ impl AgentExecutor {
         }
 
         self.db
-            .update_agent_task_isolation(
-                task.id,
-                Some(worktree_str),
-                None,
-                Some(&branch_name),
-            )
+            .update_agent_task_isolation(task.id, Some(worktree_str), None, Some(&branch_name))
             .await?;
 
         Ok((worktree_path, branch_name))
@@ -342,7 +339,8 @@ impl AgentExecutor {
             let db_writer = self.db.clone();
             let flush_interval = std::time::Duration::from_secs(2);
             let writer_task = tokio::spawn(async move {
-                let mut batch: Vec<(TaskId, String, String, Option<serde_json::Value>)> = Vec::new();
+                let mut batch: Vec<(TaskId, String, String, Option<serde_json::Value>)> =
+                    Vec::new();
 
                 async fn flush_events(
                     db: &DbHandle,
@@ -405,7 +403,10 @@ impl AgentExecutor {
                         ))
                         .is_err()
                 {
-                    tracing::warn!(task_id = task_id.0, "Event channel closed -- remaining events will not be persisted");
+                    tracing::warn!(
+                        task_id = task_id.0,
+                        "Event channel closed -- remaining events will not be persisted"
+                    );
                     channel_closed = true;
                 }
 
@@ -712,10 +713,7 @@ impl AgentExecutor {
             if let Some(path) = &handle.worktree_path
                 && let Err(e) = self.cleanup_worktree(path).await
             {
-                warn!(
-                    "Failed to clean up worktree for task {}: {}",
-                    task_id, e
-                );
+                warn!("Failed to clean up worktree for task {}: {}", task_id, e);
             }
             if let Err(e) = self
                 .db
@@ -726,10 +724,7 @@ impl AgentExecutor {
                 )
                 .await
             {
-                error!(
-                    "Failed to mark task {} as cancelled: {}",
-                    task_id, e
-                );
+                error!("Failed to mark task {} as cancelled: {}", task_id, e);
             }
         }
     }

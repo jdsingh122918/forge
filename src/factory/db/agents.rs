@@ -10,7 +10,10 @@ pub async fn create_agent_team(
     isolation: &IsolationStrategy,
     plan_summary: &str,
 ) -> Result<AgentTeam> {
-    let tx = conn.transaction().await.context("Failed to begin transaction")?;
+    let tx = conn
+        .transaction()
+        .await
+        .context("Failed to begin transaction")?;
     tx.execute(
         "INSERT INTO agent_teams (run_id, strategy, isolation, plan_summary) VALUES (?1, ?2, ?3, ?4)",
         libsql::params![run_id.0, strategy.as_str(), isolation.as_str(), plan_summary],
@@ -105,7 +108,10 @@ pub async fn create_agent_task(
     let depends_raw: Vec<i64> = depends_on.iter().map(|id| id.0).collect();
     let depends_json =
         serde_json::to_string(&depends_raw).context("Failed to serialize depends_on")?;
-    let tx = conn.transaction().await.context("Failed to begin transaction")?;
+    let tx = conn
+        .transaction()
+        .await
+        .context("Failed to begin transaction")?;
     tx.execute(
         "INSERT INTO agent_tasks (team_id, name, description, agent_role, wave, depends_on, isolation_type) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -199,9 +205,9 @@ fn row_to_agent_task(row: &libsql::Row) -> Result<AgentTask> {
         team_id: TeamId(row.get::<i64>(1)?),
         name: row.get(2)?,
         description: row.get(3)?,
-        agent_role: agent_role_str.parse().map_err(|_| {
-            anyhow::anyhow!("invalid agent_role in database: '{}'", agent_role_str)
-        })?,
+        agent_role: agent_role_str
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid agent_role in database: '{}'", agent_role_str))?,
         wave: row.get(5)?,
         depends_on,
         status: status_str
@@ -273,7 +279,10 @@ pub async fn create_agent_event(
         Some(m) => Some(serde_json::to_string(m).context("Failed to serialize event metadata")?),
         None => None,
     };
-    let tx = conn.transaction().await.context("Failed to begin transaction")?;
+    let tx = conn
+        .transaction()
+        .await
+        .context("Failed to begin transaction")?;
     tx.execute(
         "INSERT INTO agent_events (task_id, event_type, content, metadata) VALUES (?1, ?2, ?3, ?4)",
         libsql::params![task_id.0, event_type, content, metadata_str],
@@ -313,9 +322,10 @@ pub async fn get_agent_events(
         let event_type_str: String = row.get(2)?;
         let metadata_str: Option<String> = row.get(4)?;
         let metadata: Option<serde_json::Value> = match metadata_str {
-            Some(s) => Some(serde_json::from_str(&s).map_err(|e| {
-                anyhow::anyhow!("corrupt event metadata JSON '{}': {}", s, e)
-            })?),
+            Some(s) => Some(
+                serde_json::from_str(&s)
+                    .map_err(|e| anyhow::anyhow!("corrupt event metadata JSON '{}': {}", s, e))?,
+            ),
             None => None,
         };
         events.push(AgentEvent {
@@ -369,15 +379,10 @@ mod tests {
         let project = super::super::projects::create_project(conn, "test", "/tmp/test")
             .await
             .unwrap();
-        let issue = super::super::issues::create_issue(
-            conn,
-            project.id,
-            "Test",
-            "",
-            &IssueColumn::Backlog,
-        )
-        .await
-        .unwrap();
+        let issue =
+            super::super::issues::create_issue(conn, project.id, "Test", "", &IssueColumn::Backlog)
+                .await
+                .unwrap();
         let run = super::super::pipeline::create_pipeline_run(conn, issue.id)
             .await
             .unwrap();
@@ -562,10 +567,16 @@ mod tests {
         assert_eq!(events[4].content, "Starting work");
 
         // Verify the signal event has metadata
-        let signal_event = events.iter().find(|e| e.event_type == AgentEventType::Signal).unwrap();
+        let signal_event = events
+            .iter()
+            .find(|e| e.event_type == AgentEventType::Signal)
+            .unwrap();
         assert_eq!(signal_event.content, "Making progress");
         assert!(signal_event.metadata.is_some());
-        assert_eq!(signal_event.metadata.as_ref().unwrap()["signal"], "progress");
+        assert_eq!(
+            signal_event.metadata.as_ref().unwrap()["signal"],
+            "progress"
+        );
 
         // Verify pagination works: limit to 2
         let limited = get_agent_events_for_task(conn, task.id, 2).await.unwrap();

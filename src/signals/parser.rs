@@ -101,8 +101,7 @@ impl SignalParser {
                             if self.verbose {
                                 debug!(
                                     "Signal: spawn-subphase \"{}\" (budget: {})",
-                                    spawn_signal.name,
-                                    spawn_signal.budget
+                                    spawn_signal.name, spawn_signal.budget
                                 );
                             }
                             signals.sub_phase_spawns.push(spawn_signal);

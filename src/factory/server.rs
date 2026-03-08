@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use tracing::{info, warn};
 use axum::{
     Router,
     body::Body,
@@ -12,6 +11,7 @@ use axum::{
 };
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
+use tracing::{info, warn};
 
 use super::api::{self, AppState};
 use super::db::{self, DbHandle};
@@ -99,10 +99,7 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
             DbHandle::new_remote_replica(&config.db_path, &url, &token).await?
         }
         _ => {
-            info!(
-                "Using local SQLite: {}",
-                config.db_path.display()
-            );
+            info!("Using local SQLite: {}", config.db_path.display());
             DbHandle::new_local(&config.db_path).await?
         }
     };
@@ -145,7 +142,9 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     let pipeline_runner = PipelineRunner::new(&config.project_path, sandbox);
 
     // Recover orphaned runs from a previous server instance
-    let recovered = db_handle.recover_orphaned_runs().await
+    let recovered = db_handle
+        .recover_orphaned_runs()
+        .await
         .context("Failed to recover orphaned pipeline runs during startup")?;
     if recovered > 0 {
         info!("Recovered {recovered} orphaned pipeline run(s) from previous session");

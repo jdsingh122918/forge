@@ -13,8 +13,8 @@ use crate::factory::models::RunId;
 use crate::factory::sandbox::{DockerSandbox, SandboxConfig};
 use crate::factory::ws::{WsMessage, broadcast_message};
 
-use super::parsing::*;
 use super::RunHandle;
+use super::parsing::*;
 
 /// Check if the project has `.forge/phases.json` for swarm execution.
 pub(crate) fn has_forge_phases(project_path: &str) -> bool {
@@ -179,7 +179,12 @@ pub(crate) async fn execute_pipeline_streaming(
         if let Some(progress) = try_parse_progress(&line) {
             // Update DB with progress
             if let Err(e) = db
-                .update_pipeline_progress(run_id, progress.phase_count, progress.phase, progress.iteration)
+                .update_pipeline_progress(
+                    run_id,
+                    progress.phase_count,
+                    progress.phase,
+                    progress.iteration,
+                )
                 .await
             {
                 broadcast_message(
@@ -438,7 +443,12 @@ pub(crate) async fn execute_pipeline_docker(
             }
             if let Some(progress) = try_parse_progress(&line) {
                 if let Err(e) = db
-                    .update_pipeline_progress(run_id, progress.phase_count, progress.phase, progress.iteration)
+                    .update_pipeline_progress(
+                        run_id,
+                        progress.phase_count,
+                        progress.phase,
+                        progress.iteration,
+                    )
                     .await
                 {
                     broadcast_message(

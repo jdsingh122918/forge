@@ -323,14 +323,7 @@ pub(crate) async fn process_phase_event(
     match event {
         PhaseEventJson::Started { phase, wave } => {
             if let Err(e) = db
-                .upsert_pipeline_phase(
-                    run_id,
-                    phase,
-                    phase,
-                    &PhaseStatus::Running,
-                    None,
-                    None,
-                )
+                .upsert_pipeline_phase(run_id, phase, phase, &PhaseStatus::Running, None, None)
                 .await
             {
                 broadcast_message(
@@ -391,16 +384,13 @@ pub(crate) async fn process_phase_event(
                 .get("success")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            let status = if success { PhaseStatus::Completed } else { PhaseStatus::Failed };
+            let status = if success {
+                PhaseStatus::Completed
+            } else {
+                PhaseStatus::Failed
+            };
             if let Err(e) = db
-                .upsert_pipeline_phase(
-                    run_id,
-                    phase,
-                    phase,
-                    &status,
-                    None,
-                    None,
-                )
+                .upsert_pipeline_phase(run_id, phase, phase, &status, None, None)
                 .await
             {
                 broadcast_message(

@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use tracing;
 use bollard::Docker;
 use bollard::models::{
     ContainerCreateBody, ContainerInspectResponse, HostConfig, Mount, MountTypeEnum,
@@ -14,6 +13,7 @@ use bollard::query_parameters::{
 use futures_util::StreamExt;
 use serde::Deserialize;
 use tokio::sync::mpsc;
+use tracing;
 
 /// Configuration for a sandboxed pipeline container.
 #[derive(Debug, Clone)]

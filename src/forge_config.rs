@@ -89,9 +89,7 @@ impl<'de> serde::Deserialize<'de> for PermissionMode {
         let s = String::deserialize(deserializer)?;
         match s.to_lowercase().as_str() {
             "strict" => {
-                warn!(
-                    "'strict' permission mode is deprecated and maps to 'standard'"
-                );
+                warn!("'strict' permission mode is deprecated and maps to 'standard'");
                 Ok(PermissionMode::Standard)
             }
             "standard" => Ok(PermissionMode::Standard),
@@ -121,9 +119,7 @@ impl std::str::FromStr for PermissionMode {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "strict" => {
-                warn!(
-                    "'strict' permission mode is deprecated and maps to 'standard'"
-                );
+                warn!("'strict' permission mode is deprecated and maps to 'standard'");
                 Ok(PermissionMode::Standard)
             }
             "standard" => Ok(PermissionMode::Standard),

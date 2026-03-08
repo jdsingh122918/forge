@@ -33,7 +33,10 @@ pub(super) fn row_to_pipeline_run(row: &Row) -> Result<PipelineRun> {
 pub(super) const RUN_COLS: &str = "id, issue_id, status, phase_count, current_phase, iteration, summary, error, branch_name, pr_url, team_id, has_team, started_at, completed_at";
 
 pub async fn create_pipeline_run(conn: &Connection, issue_id: IssueId) -> Result<PipelineRun> {
-    let tx = conn.transaction().await.context("Failed to begin transaction")?;
+    let tx = conn
+        .transaction()
+        .await
+        .context("Failed to begin transaction")?;
     tx.execute(
         "INSERT INTO pipeline_runs (issue_id) VALUES (?1)",
         [issue_id.0],
@@ -200,9 +203,9 @@ pub async fn get_pipeline_phases(conn: &Connection, run_id: RunId) -> Result<Vec
     let mut phases = Vec::new();
     while let Some(row) = rows.next().await? {
         let status_str: String = row.get(4)?;
-        let status = status_str.parse::<PhaseStatus>().map_err(|_| {
-            anyhow::anyhow!("invalid phase status in database: '{}'", status_str)
-        })?;
+        let status = status_str
+            .parse::<PhaseStatus>()
+            .map_err(|_| anyhow::anyhow!("invalid phase status in database: '{}'", status_str))?;
         phases.push(PipelinePhase {
             id: PhaseId(row.get::<i64>(0)?),
             run_id: RunId(row.get::<i64>(1)?),
@@ -254,21 +257,15 @@ mod tests {
         let project = super::super::projects::create_project(conn, "test", "/tmp/test")
             .await
             .unwrap();
-        let issue = super::super::issues::create_issue(
-            conn,
-            project.id,
-            "Test",
-            "",
-            &IssueColumn::Backlog,
-        )
-        .await
-        .unwrap();
-        let run = create_pipeline_run(conn, issue.id).await.unwrap();
-
-        let updated =
-            update_pipeline_run(conn, run.id, &PipelineStatus::Running, None, None)
+        let issue =
+            super::super::issues::create_issue(conn, project.id, "Test", "", &IssueColumn::Backlog)
                 .await
                 .unwrap();
+        let run = create_pipeline_run(conn, issue.id).await.unwrap();
+
+        let updated = update_pipeline_run(conn, run.id, &PipelineStatus::Running, None, None)
+            .await
+            .unwrap();
         assert_eq!(updated.status, PipelineStatus::Running);
 
         let completed = update_pipeline_run(
@@ -292,20 +289,23 @@ mod tests {
         let project = super::super::projects::create_project(conn, "test", "/tmp/test")
             .await
             .unwrap();
-        let issue = super::super::issues::create_issue(
+        let issue =
+            super::super::issues::create_issue(conn, project.id, "Test", "", &IssueColumn::Backlog)
+                .await
+                .unwrap();
+        let run = create_pipeline_run(conn, issue.id).await.unwrap();
+
+        upsert_pipeline_phase(
             conn,
-            project.id,
-            "Test",
-            "",
-            &IssueColumn::Backlog,
+            run.id,
+            "1",
+            "Phase One",
+            &PhaseStatus::Running,
+            Some(1),
+            Some(5),
         )
         .await
         .unwrap();
-        let run = create_pipeline_run(conn, issue.id).await.unwrap();
-
-        upsert_pipeline_phase(conn, run.id, "1", "Phase One", &PhaseStatus::Running, Some(1), Some(5))
-            .await
-            .unwrap();
 
         let phases = get_pipeline_phases(conn, run.id).await.unwrap();
         assert_eq!(phases.len(), 1);
@@ -432,10 +432,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(unchanged_failed.status, PipelineStatus::Failed);
-        assert_eq!(
-            unchanged_failed.error.as_deref(),
-            Some("Original error")
-        );
+        assert_eq!(unchanged_failed.error.as_deref(), Some("Original error"));
 
         // Verify in_progress issues were moved back to ready
         let issue_r = super::super::issues::get_issue(conn, issue_running.id)
@@ -471,15 +468,10 @@ mod tests {
         let project = super::super::projects::create_project(conn, "test", "/tmp/test")
             .await
             .unwrap();
-        let issue = super::super::issues::create_issue(
-            conn,
-            project.id,
-            "Test",
-            "",
-            &IssueColumn::Backlog,
-        )
-        .await
-        .unwrap();
+        let issue =
+            super::super::issues::create_issue(conn, project.id, "Test", "", &IssueColumn::Backlog)
+                .await
+                .unwrap();
         let run = create_pipeline_run(conn, issue.id).await.unwrap();
 
         // Insert phase as Running with iteration=1, budget=5

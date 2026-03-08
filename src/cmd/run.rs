@@ -43,8 +43,7 @@ pub async fn run_orchestrator(
     use forge::tracker::GitTracker;
     use forge::ui::OrchestratorUI;
 
-    check_run_prerequisites(&project_dir)
-        .context("Failed to check run prerequisites")?;
+    check_run_prerequisites(&project_dir).context("Failed to check run prerequisites")?;
 
     let config = Config::new(
         project_dir.clone(),
@@ -53,12 +52,13 @@ pub async fn run_orchestrator(
         cli.spec_file.clone(),
     )
     .context("Failed to create project configuration")?;
-    config.ensure_directories()
+    config
+        .ensure_directories()
         .context("Failed to ensure project directories")?;
 
     // Initialize hook manager
-    let mut hook_manager = HookManager::new(&project_dir, cli.verbose)
-        .context("Failed to initialize hook manager")?;
+    let mut hook_manager =
+        HookManager::new(&project_dir, cli.verbose).context("Failed to initialize hook manager")?;
 
     // Merge hooks from forge.toml if it exists
     let forge_dir = get_forge_dir(&project_dir);
@@ -75,8 +75,8 @@ pub async fn run_orchestrator(
     }
 
     let state = StateManager::new(config.state_file.clone());
-    let tracker = GitTracker::new(&config.project_dir)
-        .context("Failed to initialize git tracker")?;
+    let tracker =
+        GitTracker::new(&config.project_dir).context("Failed to initialize git tracker")?;
     let runner = ClaudeRunner::new(config.clone());
     let mut audit = AuditLogger::new(&config.audit_dir);
     let mut gate = ApprovalGate::new(cli.auto_approve_threshold, cli.yes);
@@ -88,8 +88,8 @@ pub async fn run_orchestrator(
     );
 
     // Load phases from phases.json if it exists, otherwise use defaults
-    let all_phases = load_phases_or_default(Some(&config.phases_file))
-        .context("Failed to load phases")?;
+    let all_phases =
+        load_phases_or_default(Some(&config.phases_file)).context("Failed to load phases")?;
 
     // Apply permission modes from config to each phase
     let forge_toml = ForgeToml::load_or_default(&forge_dir)

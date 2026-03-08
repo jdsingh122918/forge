@@ -404,11 +404,7 @@ fn parse_cli_help(text: &str) -> CliHelpResponse {
                 // Format: "  name       Description text"
                 let mut parts = trimmed.splitn(2, char::is_whitespace);
                 let name = parts.next().unwrap_or("").to_string();
-                let description = parts
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
+                let description = parts.next().unwrap_or("").trim().to_string();
                 if !name.is_empty() {
                     commands.push(CliCommand { name, description });
                 }
@@ -672,11 +668,17 @@ async fn clone_project(
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             match do_sync_github_issues(&state_clone, pid).await {
                 Ok(result) => {
-                    tracing::info!(imported = result.imported, project_id = pid.0, "Auto-synced GitHub issues");
+                    tracing::info!(
+                        imported = result.imported,
+                        project_id = pid.0,
+                        "Auto-synced GitHub issues"
+                    );
                 }
                 Err(e) => {
                     let detail = match e {
-                        ApiError::Internal(msg) | ApiError::BadRequest(msg) | ApiError::NotFound(msg) => msg,
+                        ApiError::Internal(msg)
+                        | ApiError::BadRequest(msg)
+                        | ApiError::NotFound(msg) => msg,
                     };
                     tracing::error!(project_id = pid.0, error = %detail, "Auto-sync GitHub issues failed");
                 }
@@ -741,7 +743,12 @@ async fn delete_project(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     match deleted {
         true => {
-            broadcast_message(&state.ws_tx, &WsMessage::ProjectDeleted { project_id: ProjectId(id) });
+            broadcast_message(
+                &state.ws_tx,
+                &WsMessage::ProjectDeleted {
+                    project_id: ProjectId(id),
+                },
+            );
             Ok(StatusCode::NO_CONTENT)
         }
         false => Err(ApiError::NotFound(format!("Project {} not found", id))),
@@ -924,7 +931,12 @@ async fn delete_issue(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     match deleted {
         true => {
-            broadcast_message(&state.ws_tx, &WsMessage::IssueDeleted { issue_id: IssueId(id) });
+            broadcast_message(
+                &state.ws_tx,
+                &WsMessage::IssueDeleted {
+                    issue_id: IssueId(id),
+                },
+            );
             Ok(StatusCode::NO_CONTENT)
         }
         false => Err(ApiError::NotFound(format!("Issue {} not found", id))),

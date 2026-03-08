@@ -110,11 +110,7 @@ impl SkillsLoader {
 
         if !skill_file.exists() {
             if self.verbose {
-                warn!(
-                    "Skill '{}' not found at {}",
-                    name,
-                    skill_file.display()
-                );
+                warn!("Skill '{}' not found at {}", name, skill_file.display());
             }
             return Ok(None);
         }

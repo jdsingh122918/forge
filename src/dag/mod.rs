@@ -126,9 +126,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("cycle") || err.contains("Cycle") || err.contains("dependency graph"),
-        );
+        assert!(err.contains("cycle") || err.contains("Cycle") || err.contains("dependency graph"),);
     }
 
     #[test]
@@ -148,7 +146,9 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("Unknown dependency") || err.contains("nonexistent") || err.contains("dependency graph"),
+            err.contains("Unknown dependency")
+                || err.contains("nonexistent")
+                || err.contains("dependency graph"),
         );
     }
 }

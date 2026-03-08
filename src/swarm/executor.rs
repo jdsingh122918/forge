@@ -35,7 +35,6 @@ use crate::swarm::prompts::{
     SwarmCompletionResult, build_orchestration_prompt, parse_swarm_completion,
 };
 use anyhow::{Context, Result};
-use tracing::{debug, warn};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -43,6 +42,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
+use tracing::{debug, warn};
 
 /// Default timeout for swarm execution (30 minutes).
 const DEFAULT_TIMEOUT_SECS: u64 = 1800;
