@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "9f8c4b06fbf8",
+  "session_id": "e7799edb-9dc0-4f56-a518-7cbe653229f8",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-08T03:43:44.791867Z",
+  "branch": "feat/libsql-turso-migration",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "CLAUDE.md",
+    "src/factory/api.rs",
+    "src/factory/db/agents.rs",
+    "src/factory/db/issues.rs",
+    "src/factory/db/migrations.rs",
+    "src/factory/db/mod.rs",
+    "src/factory/db/pipeline.rs",
+    "src/factory/db/projects.rs",
+    "src/factory/pipeline.rs",
+    "src/factory/server.rs"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "474b7f6763af",
+  "token_usage": {
+    "input_tokens": 10,
+    "cache_creation_tokens": 52231,
+    "cache_read_tokens": 143028,
+    "output_tokens": 1598,
+    "api_call_count": 8
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-08T03:43:44.71743Z",
+    "agent_lines": 884,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 884,
+    "agent_percentage": 100
+  }
+}
