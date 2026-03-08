@@ -228,11 +228,11 @@ mod tests {
     async fn test_create_pipeline_run() {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
-        let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
+        let project = super::super::projects::create_project(conn, "test", "/tmp/test")
             .await
             .unwrap();
         let issue = super::super::issues::create_issue(
-            &conn,
+            conn,
             project.id,
             "Test issue",
             "",
@@ -241,7 +241,7 @@ mod tests {
         .await
         .unwrap();
 
-        let run = create_pipeline_run(&conn, issue.id).await.unwrap();
+        let run = create_pipeline_run(conn, issue.id).await.unwrap();
         assert!(run.id.0 > 0);
         assert_eq!(run.issue_id, issue.id);
         assert_eq!(run.status, PipelineStatus::Queued);
@@ -251,11 +251,11 @@ mod tests {
     async fn test_update_pipeline_run() {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
-        let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
+        let project = super::super::projects::create_project(conn, "test", "/tmp/test")
             .await
             .unwrap();
         let issue = super::super::issues::create_issue(
-            &conn,
+            conn,
             project.id,
             "Test",
             "",
@@ -263,16 +263,16 @@ mod tests {
         )
         .await
         .unwrap();
-        let run = create_pipeline_run(&conn, issue.id).await.unwrap();
+        let run = create_pipeline_run(conn, issue.id).await.unwrap();
 
         let updated =
-            update_pipeline_run(&conn, run.id, &PipelineStatus::Running, None, None)
+            update_pipeline_run(conn, run.id, &PipelineStatus::Running, None, None)
                 .await
                 .unwrap();
         assert_eq!(updated.status, PipelineStatus::Running);
 
         let completed = update_pipeline_run(
-            &conn,
+            conn,
             run.id,
             &PipelineStatus::Completed,
             Some("All done"),
@@ -289,11 +289,11 @@ mod tests {
     async fn test_upsert_pipeline_phase() {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
-        let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
+        let project = super::super::projects::create_project(conn, "test", "/tmp/test")
             .await
             .unwrap();
         let issue = super::super::issues::create_issue(
-            &conn,
+            conn,
             project.id,
             "Test",
             "",
@@ -301,13 +301,13 @@ mod tests {
         )
         .await
         .unwrap();
-        let run = create_pipeline_run(&conn, issue.id).await.unwrap();
+        let run = create_pipeline_run(conn, issue.id).await.unwrap();
 
-        upsert_pipeline_phase(&conn, run.id, "1", "Phase One", &PhaseStatus::Running, Some(1), Some(5))
+        upsert_pipeline_phase(conn, run.id, "1", "Phase One", &PhaseStatus::Running, Some(1), Some(5))
             .await
             .unwrap();
 
-        let phases = get_pipeline_phases(&conn, run.id).await.unwrap();
+        let phases = get_pipeline_phases(conn, run.id).await.unwrap();
         assert_eq!(phases.len(), 1);
         assert_eq!(phases[0].phase_name, "Phase One");
         assert_eq!(phases[0].status, PhaseStatus::Running);
@@ -317,13 +317,13 @@ mod tests {
     async fn test_recover_orphaned_runs() {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
-        let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
+        let project = super::super::projects::create_project(conn, "test", "/tmp/test")
             .await
             .unwrap();
 
         // Create four issues with different pipeline run statuses
         let issue_running = super::super::issues::create_issue(
-            &conn,
+            conn,
             project.id,
             "Running issue",
             "",
@@ -332,7 +332,7 @@ mod tests {
         .await
         .unwrap();
         let issue_queued = super::super::issues::create_issue(
-            &conn,
+            conn,
             project.id,
             "Queued issue",
             "",
@@ -341,7 +341,7 @@ mod tests {
         .await
         .unwrap();
         let issue_completed = super::super::issues::create_issue(
-            &conn,
+            conn,
             project.id,
             "Completed issue",
             "",
@@ -350,7 +350,7 @@ mod tests {
         .await
         .unwrap();
         let issue_failed = super::super::issues::create_issue(
-            &conn,
+            conn,
             project.id,
             "Failed issue",
             "",
@@ -360,17 +360,17 @@ mod tests {
         .unwrap();
 
         // Create pipeline runs and set their statuses
-        let run_running = create_pipeline_run(&conn, issue_running.id).await.unwrap();
-        update_pipeline_run(&conn, run_running.id, &PipelineStatus::Running, None, None)
+        let run_running = create_pipeline_run(conn, issue_running.id).await.unwrap();
+        update_pipeline_run(conn, run_running.id, &PipelineStatus::Running, None, None)
             .await
             .unwrap();
 
-        let run_queued = create_pipeline_run(&conn, issue_queued.id).await.unwrap();
+        let run_queued = create_pipeline_run(conn, issue_queued.id).await.unwrap();
         // Queued is the default status, no update needed
 
-        let run_completed = create_pipeline_run(&conn, issue_completed.id).await.unwrap();
+        let run_completed = create_pipeline_run(conn, issue_completed.id).await.unwrap();
         update_pipeline_run(
-            &conn,
+            conn,
             run_completed.id,
             &PipelineStatus::Completed,
             Some("Done"),
@@ -379,9 +379,9 @@ mod tests {
         .await
         .unwrap();
 
-        let run_failed = create_pipeline_run(&conn, issue_failed.id).await.unwrap();
+        let run_failed = create_pipeline_run(conn, issue_failed.id).await.unwrap();
         update_pipeline_run(
-            &conn,
+            conn,
             run_failed.id,
             &PipelineStatus::Failed,
             None,
@@ -391,11 +391,11 @@ mod tests {
         .unwrap();
 
         // Recover orphaned runs
-        let count = recover_orphaned_runs(&conn).await.unwrap();
+        let count = recover_orphaned_runs(conn).await.unwrap();
         assert_eq!(count, 2, "Should recover running + queued runs");
 
         // Verify running run is now failed with error message
-        let recovered_running = get_pipeline_run(&conn, run_running.id)
+        let recovered_running = get_pipeline_run(conn, run_running.id)
             .await
             .unwrap()
             .unwrap();
@@ -407,7 +407,7 @@ mod tests {
         assert!(recovered_running.completed_at.is_some());
 
         // Verify queued run is now failed with error message
-        let recovered_queued = get_pipeline_run(&conn, run_queued.id)
+        let recovered_queued = get_pipeline_run(conn, run_queued.id)
             .await
             .unwrap()
             .unwrap();
@@ -419,7 +419,7 @@ mod tests {
         assert!(recovered_queued.completed_at.is_some());
 
         // Verify completed run is untouched
-        let unchanged_completed = get_pipeline_run(&conn, run_completed.id)
+        let unchanged_completed = get_pipeline_run(conn, run_completed.id)
             .await
             .unwrap()
             .unwrap();
@@ -427,7 +427,7 @@ mod tests {
         assert_eq!(unchanged_completed.summary, Some("Done".to_string()));
 
         // Verify failed run is untouched (original error preserved)
-        let unchanged_failed = get_pipeline_run(&conn, run_failed.id)
+        let unchanged_failed = get_pipeline_run(conn, run_failed.id)
             .await
             .unwrap()
             .unwrap();
@@ -438,26 +438,26 @@ mod tests {
         );
 
         // Verify in_progress issues were moved back to ready
-        let issue_r = super::super::issues::get_issue(&conn, issue_running.id)
+        let issue_r = super::super::issues::get_issue(conn, issue_running.id)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(issue_r.column, IssueColumn::Ready);
 
-        let issue_q = super::super::issues::get_issue(&conn, issue_queued.id)
+        let issue_q = super::super::issues::get_issue(conn, issue_queued.id)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(issue_q.column, IssueColumn::Ready);
 
         // Verify completed/failed issues' columns are untouched
-        let issue_c = super::super::issues::get_issue(&conn, issue_completed.id)
+        let issue_c = super::super::issues::get_issue(conn, issue_completed.id)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(issue_c.column, IssueColumn::Done);
 
-        let issue_f = super::super::issues::get_issue(&conn, issue_failed.id)
+        let issue_f = super::super::issues::get_issue(conn, issue_failed.id)
             .await
             .unwrap()
             .unwrap();
@@ -468,11 +468,11 @@ mod tests {
     async fn test_upsert_pipeline_phase_update_preserves_values() {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
-        let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
+        let project = super::super::projects::create_project(conn, "test", "/tmp/test")
             .await
             .unwrap();
         let issue = super::super::issues::create_issue(
-            &conn,
+            conn,
             project.id,
             "Test",
             "",
@@ -480,11 +480,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let run = create_pipeline_run(&conn, issue.id).await.unwrap();
+        let run = create_pipeline_run(conn, issue.id).await.unwrap();
 
         // Insert phase as Running with iteration=1, budget=5
         upsert_pipeline_phase(
-            &conn,
+            conn,
             run.id,
             "1",
             "Phase One",
@@ -497,7 +497,7 @@ mod tests {
 
         // Upsert same (run_id, phase_number) with Completed status, None iteration/budget
         upsert_pipeline_phase(
-            &conn,
+            conn,
             run.id,
             "1",
             "Phase One",
@@ -508,7 +508,7 @@ mod tests {
         .await
         .unwrap();
 
-        let phases = get_pipeline_phases(&conn, run.id).await.unwrap();
+        let phases = get_pipeline_phases(conn, run.id).await.unwrap();
         assert_eq!(phases.len(), 1);
         assert_eq!(phases[0].status, PhaseStatus::Completed);
         // COALESCE should preserve the original values

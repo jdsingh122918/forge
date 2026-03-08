@@ -138,7 +138,7 @@ mod tests {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
 
-        let project = create_project(&conn, "my-project", "/tmp/my-project")
+        let project = create_project(conn, "my-project", "/tmp/my-project")
             .await
             .unwrap();
         assert_eq!(project.name, "my-project");
@@ -146,7 +146,7 @@ mod tests {
         assert!(project.id.0 > 0);
         assert!(!project.created_at.is_empty());
 
-        let fetched = get_project(&conn, project.id)
+        let fetched = get_project(conn, project.id)
             .await
             .unwrap()
             .expect("project should exist");
@@ -159,11 +159,11 @@ mod tests {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
 
-        create_project(&conn, "alpha", "/tmp/alpha").await.unwrap();
-        create_project(&conn, "beta", "/tmp/beta").await.unwrap();
-        create_project(&conn, "gamma", "/tmp/gamma").await.unwrap();
+        create_project(conn, "alpha", "/tmp/alpha").await.unwrap();
+        create_project(conn, "beta", "/tmp/beta").await.unwrap();
+        create_project(conn, "gamma", "/tmp/gamma").await.unwrap();
 
-        let projects = list_projects(&conn).await.unwrap();
+        let projects = list_projects(conn).await.unwrap();
         assert_eq!(projects.len(), 3);
         assert_eq!(projects[0].name, "alpha");
         assert_eq!(projects[1].name, "beta");
@@ -175,13 +175,13 @@ mod tests {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
 
-        let project = create_project(&conn, "to-delete", "/tmp/to-delete")
+        let project = create_project(conn, "to-delete", "/tmp/to-delete")
             .await
             .unwrap();
-        let deleted = delete_project(&conn, project.id).await.unwrap();
+        let deleted = delete_project(conn, project.id).await.unwrap();
         assert!(deleted);
 
-        let fetched = get_project(&conn, project.id).await.unwrap();
+        let fetched = get_project(conn, project.id).await.unwrap();
         // Hard delete, so it should be gone
         assert!(fetched.is_none());
     }
@@ -194,13 +194,13 @@ mod tests {
         let conn = db.conn();
 
         // Create a project with a full chain of data
-        let project = create_project(&conn, "cascade-proj", "/tmp/cascade-proj")
+        let project = create_project(conn, "cascade-proj", "/tmp/cascade-proj")
             .await
             .unwrap();
 
         // Create an issue for that project
         let issue = super::super::issues::create_issue(
-            &conn,
+            conn,
             project.id,
             "Cascade issue",
             "desc",
@@ -210,13 +210,13 @@ mod tests {
         .unwrap();
 
         // Create a pipeline run for that issue
-        let run = super::super::pipeline::create_pipeline_run(&conn, issue.id)
+        let run = super::super::pipeline::create_pipeline_run(conn, issue.id)
             .await
             .unwrap();
 
         // Create an agent team for that run
         let team = super::super::agents::create_agent_team(
-            &conn,
+            conn,
             run.id,
             &ExecutionStrategy::Sequential,
             &IsolationStrategy::Shared,
@@ -227,7 +227,7 @@ mod tests {
 
         // Create an agent task for that team
         let task = super::super::agents::create_agent_task(
-            &conn,
+            conn,
             team.id,
             "Test task",
             "do something",
@@ -240,36 +240,36 @@ mod tests {
         .unwrap();
 
         // Create an agent event for that task
-        super::super::agents::create_agent_event(&conn, task.id, "output", "hello", None)
+        super::super::agents::create_agent_event(conn, task.id, "output", "hello", None)
             .await
             .unwrap();
 
         // Now delete the project
-        let deleted = delete_project(&conn, project.id).await.unwrap();
+        let deleted = delete_project(conn, project.id).await.unwrap();
         assert!(deleted);
 
         // Verify the project is gone
-        let fetched_project = get_project(&conn, project.id).await.unwrap();
+        let fetched_project = get_project(conn, project.id).await.unwrap();
         assert!(fetched_project.is_none());
 
         // Verify the issue is gone (cascade from project delete)
-        let fetched_issue = super::super::issues::get_issue(&conn, issue.id).await.unwrap();
+        let fetched_issue = super::super::issues::get_issue(conn, issue.id).await.unwrap();
         assert!(fetched_issue.is_none());
 
         // Verify agent events are cleaned up
-        let events = super::super::agents::get_agent_events(&conn, task.id, 100, 0)
+        let events = super::super::agents::get_agent_events(conn, task.id, 100, 0)
             .await
             .unwrap();
         assert_eq!(events.len(), 0, "agent events should be cleaned up");
 
         // Verify agent tasks are cleaned up
-        let tasks = super::super::agents::get_agent_tasks(&conn, team.id)
+        let tasks = super::super::agents::get_agent_tasks(conn, team.id)
             .await
             .unwrap();
         assert_eq!(tasks.len(), 0, "agent tasks should be cleaned up");
 
         // Verify agent team is cleaned up (should error or be empty)
-        let team_detail = super::super::agents::get_agent_team_by_run(&conn, run.id)
+        let team_detail = super::super::agents::get_agent_team_by_run(conn, run.id)
             .await
             .unwrap();
         assert!(team_detail.is_none(), "agent team should be cleaned up");
@@ -280,13 +280,13 @@ mod tests {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
 
-        let project = create_project(&conn, "gh-proj", "/tmp/gh-proj")
+        let project = create_project(conn, "gh-proj", "/tmp/gh-proj")
             .await
             .unwrap();
         assert!(project.github_repo.is_none());
 
         let updated =
-            update_project_github_repo(&conn, project.id, "owner/repo")
+            update_project_github_repo(conn, project.id, "owner/repo")
                 .await
                 .unwrap();
         assert_eq!(updated.github_repo, Some("owner/repo".to_string()));

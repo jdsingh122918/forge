@@ -316,12 +316,12 @@ mod tests {
     async fn test_create_issue() {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
-        let project = super::super::projects::create_project(&conn, "test-proj", "/tmp/test-proj")
+        let project = super::super::projects::create_project(conn, "test-proj", "/tmp/test-proj")
             .await
             .unwrap();
 
         let issue = create_issue(
-            &conn,
+            conn,
             project.id,
             "Fix bug #42",
             "The login page crashes",
@@ -341,18 +341,18 @@ mod tests {
     async fn test_list_issues() {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
-        let project = super::super::projects::create_project(&conn, "test-proj", "/tmp/test-proj")
+        let project = super::super::projects::create_project(conn, "test-proj", "/tmp/test-proj")
             .await
             .unwrap();
 
-        create_issue(&conn, project.id, "Issue A", "", &IssueColumn::Backlog)
+        create_issue(conn, project.id, "Issue A", "", &IssueColumn::Backlog)
             .await
             .unwrap();
-        create_issue(&conn, project.id, "Issue B", "", &IssueColumn::Backlog)
+        create_issue(conn, project.id, "Issue B", "", &IssueColumn::Backlog)
             .await
             .unwrap();
 
-        let issues = list_issues(&conn, project.id).await.unwrap();
+        let issues = list_issues(conn, project.id).await.unwrap();
         assert_eq!(issues.len(), 2);
         assert_eq!(issues[0].title, "Issue A");
         assert_eq!(issues[1].title, "Issue B");
@@ -362,14 +362,14 @@ mod tests {
     async fn test_move_issue() {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
-        let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
+        let project = super::super::projects::create_project(conn, "test", "/tmp/test")
             .await
             .unwrap();
-        let issue = create_issue(&conn, project.id, "Move me", "", &IssueColumn::Backlog)
+        let issue = create_issue(conn, project.id, "Move me", "", &IssueColumn::Backlog)
             .await
             .unwrap();
 
-        let moved = move_issue(&conn, issue.id, &IssueColumn::InProgress, 0)
+        let moved = move_issue(conn, issue.id, &IssueColumn::InProgress, 0)
             .await
             .unwrap();
         assert_eq!(moved.column, IssueColumn::InProgress);
@@ -379,19 +379,19 @@ mod tests {
     async fn test_soft_delete_issue() {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
-        let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
+        let project = super::super::projects::create_project(conn, "test", "/tmp/test")
             .await
             .unwrap();
-        let issue = create_issue(&conn, project.id, "Delete me", "", &IssueColumn::Backlog)
+        let issue = create_issue(conn, project.id, "Delete me", "", &IssueColumn::Backlog)
             .await
             .unwrap();
 
         // First delete should succeed
-        let deleted = delete_issue(&conn, issue.id).await.unwrap();
+        let deleted = delete_issue(conn, issue.id).await.unwrap();
         assert!(deleted);
 
         // get_issue should hide soft-deleted issues
-        let fetched = get_issue(&conn, issue.id).await.unwrap();
+        let fetched = get_issue(conn, issue.id).await.unwrap();
         assert!(fetched.is_none());
 
         // Raw query proves the row still exists in the database
@@ -409,7 +409,7 @@ mod tests {
         assert!(deleted_at.is_some(), "deleted_at should be set");
 
         // Second delete on the same issue should return Ok(false) — already soft-deleted
-        let deleted_again = delete_issue(&conn, issue.id).await.unwrap();
+        let deleted_again = delete_issue(conn, issue.id).await.unwrap();
         assert!(!deleted_again);
     }
 
@@ -417,33 +417,33 @@ mod tests {
     async fn test_get_board_view() {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
-        let project = super::super::projects::create_project(&conn, "board-proj", "/tmp/board-proj")
+        let project = super::super::projects::create_project(conn, "board-proj", "/tmp/board-proj")
             .await
             .unwrap();
 
         // Create issues in different columns
-        let backlog_issue = create_issue(&conn, project.id, "Backlog item", "", &IssueColumn::Backlog)
+        let backlog_issue = create_issue(conn, project.id, "Backlog item", "", &IssueColumn::Backlog)
             .await
             .unwrap();
-        let ready_issue = create_issue(&conn, project.id, "Ready item", "", &IssueColumn::Ready)
+        let ready_issue = create_issue(conn, project.id, "Ready item", "", &IssueColumn::Ready)
             .await
             .unwrap();
-        let in_progress_issue = create_issue(&conn, project.id, "In progress item", "", &IssueColumn::InProgress)
+        let in_progress_issue = create_issue(conn, project.id, "In progress item", "", &IssueColumn::InProgress)
             .await
             .unwrap();
-        let review_issue = create_issue(&conn, project.id, "Review item", "", &IssueColumn::InReview)
+        let review_issue = create_issue(conn, project.id, "Review item", "", &IssueColumn::InReview)
             .await
             .unwrap();
-        let done_issue = create_issue(&conn, project.id, "Done item", "", &IssueColumn::Done)
+        let done_issue = create_issue(conn, project.id, "Done item", "", &IssueColumn::Done)
             .await
             .unwrap();
 
         // Create an active pipeline run for the in_progress issue
-        let run = super::super::pipeline::create_pipeline_run(&conn, in_progress_issue.id)
+        let run = super::super::pipeline::create_pipeline_run(conn, in_progress_issue.id)
             .await
             .unwrap();
 
-        let board = get_board(&conn, project.id).await.unwrap();
+        let board = get_board(conn, project.id).await.unwrap();
 
         // All 5 columns should be present
         assert_eq!(board.columns.len(), 5);
@@ -477,15 +477,15 @@ mod tests {
     async fn test_update_issue_rejects_invalid_priority() {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
-        let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
+        let project = super::super::projects::create_project(conn, "test", "/tmp/test")
             .await
             .unwrap();
-        let issue = create_issue(&conn, project.id, "Priority test", "", &IssueColumn::Backlog)
+        let issue = create_issue(conn, project.id, "Priority test", "", &IssueColumn::Backlog)
             .await
             .unwrap();
 
         // "urgent" is not a valid priority (valid: low, medium, high, critical)
-        let result = update_issue(&conn, issue.id, None, None, Some("urgent"), None).await;
+        let result = update_issue(conn, issue.id, None, None, Some("urgent"), None).await;
         assert!(result.is_err(), "update_issue should reject invalid priority 'urgent'");
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
@@ -499,24 +499,24 @@ mod tests {
     async fn test_get_issue_detail() {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
-        let project = super::super::projects::create_project(&conn, "detail-proj", "/tmp/detail-proj")
+        let project = super::super::projects::create_project(conn, "detail-proj", "/tmp/detail-proj")
             .await
             .unwrap();
-        let issue = create_issue(&conn, project.id, "Detail test", "Full description", &IssueColumn::Backlog)
+        let issue = create_issue(conn, project.id, "Detail test", "Full description", &IssueColumn::Backlog)
             .await
             .unwrap();
 
         // Create pipeline runs for the issue
-        let run1 = super::super::pipeline::create_pipeline_run(&conn, issue.id)
+        let run1 = super::super::pipeline::create_pipeline_run(conn, issue.id)
             .await
             .unwrap();
-        let run2 = super::super::pipeline::create_pipeline_run(&conn, issue.id)
+        let run2 = super::super::pipeline::create_pipeline_run(conn, issue.id)
             .await
             .unwrap();
 
         // Add a phase to the first run
         super::super::pipeline::upsert_pipeline_phase(
-            &conn,
+            conn,
             run1.id,
             "1",
             "Phase One",
@@ -527,7 +527,7 @@ mod tests {
         .await
         .unwrap();
 
-        let detail = get_issue_detail(&conn, issue.id)
+        let detail = get_issue_detail(conn, issue.id)
             .await
             .unwrap()
             .expect("issue detail should exist");
@@ -544,7 +544,7 @@ mod tests {
         assert_eq!(detail.runs[1].phases.len(), 0);
 
         // Non-existent issue should return None
-        let missing = get_issue_detail(&conn, IssueId(99999)).await.unwrap();
+        let missing = get_issue_detail(conn, IssueId(99999)).await.unwrap();
         assert!(missing.is_none());
     }
 
@@ -552,14 +552,14 @@ mod tests {
     async fn test_update_issue() {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
-        let project = super::super::projects::create_project(&conn, "test", "/tmp/test")
+        let project = super::super::projects::create_project(conn, "test", "/tmp/test")
             .await
             .unwrap();
-        let issue = create_issue(&conn, project.id, "Old title", "", &IssueColumn::Backlog)
+        let issue = create_issue(conn, project.id, "Old title", "", &IssueColumn::Backlog)
             .await
             .unwrap();
 
-        let updated = update_issue(&conn, issue.id, Some("New title"), None, None, None)
+        let updated = update_issue(conn, issue.id, Some("New title"), None, None, None)
             .await
             .unwrap();
         assert_eq!(updated.title, "New title");
@@ -569,13 +569,13 @@ mod tests {
     async fn test_create_issue_from_github() {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
-        let project = super::super::projects::create_project(&conn, "test-proj", "/tmp/test-proj-gh")
+        let project = super::super::projects::create_project(conn, "test-proj", "/tmp/test-proj-gh")
             .await
             .unwrap();
 
         // First creation should succeed
         let issue = create_issue_from_github(
-            &conn,
+            conn,
             project.id,
             "GH Issue #100",
             "Fix the widget",
@@ -593,7 +593,7 @@ mod tests {
 
         // Duplicate github_issue_number should return None
         let duplicate = create_issue_from_github(
-            &conn,
+            conn,
             project.id,
             "GH Issue #100 duplicate",
             "Another description",
@@ -605,7 +605,7 @@ mod tests {
 
         // Different github_issue_number should succeed with incremented position
         let issue2 = create_issue_from_github(
-            &conn,
+            conn,
             project.id,
             "GH Issue #200",
             "Another fix",

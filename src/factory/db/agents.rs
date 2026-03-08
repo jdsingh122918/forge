@@ -389,7 +389,7 @@ mod tests {
         let (db, run) = setup().await;
         let conn = db.conn();
         let team = create_agent_team(
-            &conn,
+            conn,
             run.id,
             &ExecutionStrategy::WavePipeline,
             &IsolationStrategy::Worktree,
@@ -407,7 +407,7 @@ mod tests {
         let (db, run) = setup().await;
         let conn = db.conn();
         let team = create_agent_team(
-            &conn,
+            conn,
             run.id,
             &ExecutionStrategy::Sequential,
             &IsolationStrategy::Shared,
@@ -417,7 +417,7 @@ mod tests {
         .unwrap();
 
         let task = create_agent_task(
-            &conn,
+            conn,
             team.id,
             "Implement feature",
             "Write the code",
@@ -431,7 +431,7 @@ mod tests {
         assert!(task.id.0 > 0);
         assert_eq!(task.status, AgentTaskStatus::Pending);
 
-        let fetched = get_agent_task(&conn, task.id).await.unwrap();
+        let fetched = get_agent_task(conn, task.id).await.unwrap();
         assert_eq!(fetched.name, "Implement feature");
     }
 
@@ -440,7 +440,7 @@ mod tests {
         let (db, run) = setup().await;
         let conn = db.conn();
         let team = create_agent_team(
-            &conn,
+            conn,
             run.id,
             &ExecutionStrategy::Sequential,
             &IsolationStrategy::Shared,
@@ -449,7 +449,7 @@ mod tests {
         .await
         .unwrap();
         let task = create_agent_task(
-            &conn,
+            conn,
             team.id,
             "Task",
             "",
@@ -461,10 +461,10 @@ mod tests {
         .await
         .unwrap();
 
-        update_agent_task_status(&conn, task.id, &AgentTaskStatus::Running, None)
+        update_agent_task_status(conn, task.id, &AgentTaskStatus::Running, None)
             .await
             .unwrap();
-        let fetched = get_agent_task(&conn, task.id).await.unwrap();
+        let fetched = get_agent_task(conn, task.id).await.unwrap();
         assert_eq!(fetched.status, AgentTaskStatus::Running);
         assert!(fetched.started_at.is_some());
     }
@@ -474,7 +474,7 @@ mod tests {
         let (db, run) = setup().await;
         let conn = db.conn();
         let team = create_agent_team(
-            &conn,
+            conn,
             run.id,
             &ExecutionStrategy::Sequential,
             &IsolationStrategy::Shared,
@@ -483,7 +483,7 @@ mod tests {
         .await
         .unwrap();
         let task = create_agent_task(
-            &conn,
+            conn,
             team.id,
             "Task",
             "",
@@ -495,14 +495,14 @@ mod tests {
         .await
         .unwrap();
 
-        create_agent_event(&conn, task.id, "output", "Hello world", None)
+        create_agent_event(conn, task.id, "output", "Hello world", None)
             .await
             .unwrap();
-        create_agent_event(&conn, task.id, "action", "Editing file", None)
+        create_agent_event(conn, task.id, "action", "Editing file", None)
             .await
             .unwrap();
 
-        let events = get_agent_events(&conn, task.id, 10, 0).await.unwrap();
+        let events = get_agent_events(conn, task.id, 10, 0).await.unwrap();
         assert_eq!(events.len(), 2);
         // Ordered by id DESC
         assert_eq!(events[0].content, "Editing file");
@@ -514,7 +514,7 @@ mod tests {
         let (db, run) = setup().await;
         let conn = db.conn();
         let team = create_agent_team(
-            &conn,
+            conn,
             run.id,
             &ExecutionStrategy::Sequential,
             &IsolationStrategy::Shared,
@@ -523,7 +523,7 @@ mod tests {
         .await
         .unwrap();
         let task = create_agent_task(
-            &conn,
+            conn,
             team.id,
             "Multi-event task",
             "",
@@ -537,24 +537,24 @@ mod tests {
 
         // Create multiple events of different types
         let meta = serde_json::json!({"signal": "progress"});
-        create_agent_event(&conn, task.id, "output", "Starting work", None)
+        create_agent_event(conn, task.id, "output", "Starting work", None)
             .await
             .unwrap();
-        create_agent_event(&conn, task.id, "action", "Editing main.rs", None)
+        create_agent_event(conn, task.id, "action", "Editing main.rs", None)
             .await
             .unwrap();
-        create_agent_event(&conn, task.id, "signal", "Making progress", Some(&meta))
+        create_agent_event(conn, task.id, "signal", "Making progress", Some(&meta))
             .await
             .unwrap();
-        create_agent_event(&conn, task.id, "output", "Tests passing", None)
+        create_agent_event(conn, task.id, "output", "Tests passing", None)
             .await
             .unwrap();
-        create_agent_event(&conn, task.id, "output", "Done", None)
+        create_agent_event(conn, task.id, "output", "Done", None)
             .await
             .unwrap();
 
         // Retrieve all events via get_agent_events_for_task
-        let events = get_agent_events_for_task(&conn, task.id, 100).await.unwrap();
+        let events = get_agent_events_for_task(conn, task.id, 100).await.unwrap();
         assert_eq!(events.len(), 5, "all 5 events should be returned");
 
         // Events are ordered by id DESC, so the last created event comes first
@@ -568,7 +568,7 @@ mod tests {
         assert_eq!(signal_event.metadata.as_ref().unwrap()["signal"], "progress");
 
         // Verify pagination works: limit to 2
-        let limited = get_agent_events_for_task(&conn, task.id, 2).await.unwrap();
+        let limited = get_agent_events_for_task(conn, task.id, 2).await.unwrap();
         assert_eq!(limited.len(), 2);
     }
 
@@ -577,7 +577,7 @@ mod tests {
         let (db, run) = setup().await;
         let conn = db.conn();
         let team = create_agent_team(
-            &conn,
+            conn,
             run.id,
             &ExecutionStrategy::WavePipeline,
             &IsolationStrategy::Worktree,
@@ -586,7 +586,7 @@ mod tests {
         .await
         .unwrap();
         create_agent_task(
-            &conn,
+            conn,
             team.id,
             "Task 1",
             "",
@@ -598,7 +598,7 @@ mod tests {
         .await
         .unwrap();
 
-        let detail = get_agent_team_detail(&conn, run.id)
+        let detail = get_agent_team_detail(conn, run.id)
             .await
             .unwrap()
             .expect("should have detail");

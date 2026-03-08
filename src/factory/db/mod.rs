@@ -149,17 +149,17 @@ impl DbHandle {
 
     pub async fn list_projects(&self) -> Result<Vec<super::models::Project>> {
         let conn = self.conn();
-        projects::list_projects(&conn).await
+        projects::list_projects(conn).await
     }
 
     pub async fn create_project(&self, name: &str, path: &str) -> Result<super::models::Project> {
         let conn = self.conn();
-        projects::create_project(&conn, name, path).await
+        projects::create_project(conn, name, path).await
     }
 
     pub async fn get_project(&self, id: super::models::ProjectId) -> Result<Option<super::models::Project>> {
         let conn = self.conn();
-        projects::get_project(&conn, id).await
+        projects::get_project(conn, id).await
     }
 
     pub async fn update_project_github_repo(
@@ -168,12 +168,12 @@ impl DbHandle {
         github_repo: &str,
     ) -> Result<super::models::Project> {
         let conn = self.conn();
-        projects::update_project_github_repo(&conn, id, github_repo).await
+        projects::update_project_github_repo(conn, id, github_repo).await
     }
 
     pub async fn delete_project(&self, id: super::models::ProjectId) -> Result<bool> {
         let conn = self.conn();
-        projects::delete_project(&conn, id).await
+        projects::delete_project(conn, id).await
     }
 
     // ── Issue convenience methods ────────────────────────────────────
@@ -186,17 +186,17 @@ impl DbHandle {
         column: &super::models::IssueColumn,
     ) -> Result<super::models::Issue> {
         let conn = self.conn();
-        issues::create_issue(&conn, project_id, title, description, column).await
+        issues::create_issue(conn, project_id, title, description, column).await
     }
 
     pub async fn list_issues(&self, project_id: super::models::ProjectId) -> Result<Vec<super::models::Issue>> {
         let conn = self.conn();
-        issues::list_issues(&conn, project_id).await
+        issues::list_issues(conn, project_id).await
     }
 
     pub async fn get_issue(&self, id: super::models::IssueId) -> Result<Option<super::models::Issue>> {
         let conn = self.conn();
-        issues::get_issue(&conn, id).await
+        issues::get_issue(conn, id).await
     }
 
     pub async fn update_issue(
@@ -208,7 +208,7 @@ impl DbHandle {
         labels: Option<&str>,
     ) -> Result<super::models::Issue> {
         let conn = self.conn();
-        issues::update_issue(&conn, id, title, description, priority, labels).await
+        issues::update_issue(conn, id, title, description, priority, labels).await
     }
 
     pub async fn move_issue(
@@ -218,12 +218,12 @@ impl DbHandle {
         position: i32,
     ) -> Result<super::models::Issue> {
         let conn = self.conn();
-        issues::move_issue(&conn, id, column, position).await
+        issues::move_issue(conn, id, column, position).await
     }
 
     pub async fn delete_issue(&self, id: super::models::IssueId) -> Result<bool> {
         let conn = self.conn();
-        issues::delete_issue(&conn, id).await
+        issues::delete_issue(conn, id).await
     }
 
     pub async fn create_issue_from_github(
@@ -234,24 +234,24 @@ impl DbHandle {
         github_issue_number: i64,
     ) -> Result<Option<super::models::Issue>> {
         let conn = self.conn();
-        issues::create_issue_from_github(&conn, project_id, title, description, github_issue_number).await
+        issues::create_issue_from_github(conn, project_id, title, description, github_issue_number).await
     }
 
     pub async fn get_board(&self, project_id: super::models::ProjectId) -> Result<super::models::BoardView> {
         let conn = self.conn();
-        issues::get_board(&conn, project_id).await
+        issues::get_board(conn, project_id).await
     }
 
     pub async fn get_issue_detail(&self, id: super::models::IssueId) -> Result<Option<super::models::IssueDetail>> {
         let conn = self.conn();
-        issues::get_issue_detail(&conn, id).await
+        issues::get_issue_detail(conn, id).await
     }
 
     // ── Pipeline convenience methods ─────────────────────────────────
 
     pub async fn create_pipeline_run(&self, issue_id: super::models::IssueId) -> Result<super::models::PipelineRun> {
         let conn = self.conn();
-        pipeline::create_pipeline_run(&conn, issue_id).await
+        pipeline::create_pipeline_run(conn, issue_id).await
     }
 
     pub async fn update_pipeline_run(
@@ -262,22 +262,22 @@ impl DbHandle {
         error: Option<&str>,
     ) -> Result<super::models::PipelineRun> {
         let conn = self.conn();
-        pipeline::update_pipeline_run(&conn, id, status, summary, error).await
+        pipeline::update_pipeline_run(conn, id, status, summary, error).await
     }
 
     pub async fn get_pipeline_run(&self, id: super::models::RunId) -> Result<Option<super::models::PipelineRun>> {
         let conn = self.conn();
-        pipeline::get_pipeline_run(&conn, id).await
+        pipeline::get_pipeline_run(conn, id).await
     }
 
     pub async fn cancel_pipeline_run(&self, id: super::models::RunId) -> Result<super::models::PipelineRun> {
         let conn = self.conn();
-        pipeline::cancel_pipeline_run(&conn, id).await
+        pipeline::cancel_pipeline_run(conn, id).await
     }
 
     pub async fn recover_orphaned_runs(&self) -> Result<usize> {
         let conn = self.conn();
-        pipeline::recover_orphaned_runs(&conn).await
+        pipeline::recover_orphaned_runs(conn).await
     }
 
     pub async fn update_pipeline_progress(
@@ -288,7 +288,7 @@ impl DbHandle {
         iteration: Option<i32>,
     ) -> Result<super::models::PipelineRun> {
         let conn = self.conn();
-        pipeline::update_pipeline_progress(&conn, id, phase_count, current_phase, iteration).await
+        pipeline::update_pipeline_progress(conn, id, phase_count, current_phase, iteration).await
     }
 
     pub async fn update_pipeline_branch(
@@ -297,7 +297,7 @@ impl DbHandle {
         branch_name: &str,
     ) -> Result<super::models::PipelineRun> {
         let conn = self.conn();
-        pipeline::update_pipeline_branch(&conn, id, branch_name).await
+        pipeline::update_pipeline_branch(conn, id, branch_name).await
     }
 
     pub async fn update_pipeline_pr_url(
@@ -306,7 +306,7 @@ impl DbHandle {
         pr_url: &str,
     ) -> Result<super::models::PipelineRun> {
         let conn = self.conn();
-        pipeline::update_pipeline_pr_url(&conn, id, pr_url).await
+        pipeline::update_pipeline_pr_url(conn, id, pr_url).await
     }
 
     pub async fn upsert_pipeline_phase(
@@ -319,12 +319,12 @@ impl DbHandle {
         budget: Option<i32>,
     ) -> Result<()> {
         let conn = self.conn();
-        pipeline::upsert_pipeline_phase(&conn, run_id, phase_number, phase_name, status, iteration, budget).await
+        pipeline::upsert_pipeline_phase(conn, run_id, phase_number, phase_name, status, iteration, budget).await
     }
 
     pub async fn get_pipeline_phases(&self, run_id: super::models::RunId) -> Result<Vec<super::models::PipelinePhase>> {
         let conn = self.conn();
-        pipeline::get_pipeline_phases(&conn, run_id).await
+        pipeline::get_pipeline_phases(conn, run_id).await
     }
 
     // ── Agent convenience methods ────────────────────────────────────
@@ -337,17 +337,17 @@ impl DbHandle {
         plan_summary: &str,
     ) -> Result<super::models::AgentTeam> {
         let conn = self.conn();
-        agents::create_agent_team(&conn, run_id, strategy, isolation, plan_summary).await
+        agents::create_agent_team(conn, run_id, strategy, isolation, plan_summary).await
     }
 
     pub async fn get_agent_team(&self, team_id: super::models::TeamId) -> Result<super::models::AgentTeam> {
         let conn = self.conn();
-        agents::get_agent_team(&conn, team_id).await
+        agents::get_agent_team(conn, team_id).await
     }
 
     pub async fn get_agent_team_by_run(&self, run_id: super::models::RunId) -> Result<Option<super::models::AgentTeam>> {
         let conn = self.conn();
-        agents::get_agent_team_by_run(&conn, run_id).await
+        agents::get_agent_team_by_run(conn, run_id).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -362,7 +362,7 @@ impl DbHandle {
         isolation_type: &super::models::IsolationStrategy,
     ) -> Result<super::models::AgentTask> {
         let conn = self.conn();
-        agents::create_agent_task(&conn, team_id, name, description, agent_role, wave, depends_on, isolation_type).await
+        agents::create_agent_task(conn, team_id, name, description, agent_role, wave, depends_on, isolation_type).await
     }
 
     pub async fn update_agent_task_status(
@@ -372,7 +372,7 @@ impl DbHandle {
         error: Option<&str>,
     ) -> Result<()> {
         let conn = self.conn();
-        agents::update_agent_task_status(&conn, task_id, status, error).await
+        agents::update_agent_task_status(conn, task_id, status, error).await
     }
 
     pub async fn update_agent_task_isolation(
@@ -383,17 +383,17 @@ impl DbHandle {
         branch_name: Option<&str>,
     ) -> Result<()> {
         let conn = self.conn();
-        agents::update_agent_task_isolation(&conn, task_id, worktree_path, container_id, branch_name).await
+        agents::update_agent_task_isolation(conn, task_id, worktree_path, container_id, branch_name).await
     }
 
     pub async fn get_agent_tasks(&self, team_id: super::models::TeamId) -> Result<Vec<super::models::AgentTask>> {
         let conn = self.conn();
-        agents::get_agent_tasks(&conn, team_id).await
+        agents::get_agent_tasks(conn, team_id).await
     }
 
     pub async fn get_agent_task(&self, task_id: super::models::TaskId) -> Result<super::models::AgentTask> {
         let conn = self.conn();
-        agents::get_agent_task(&conn, task_id).await
+        agents::get_agent_task(conn, task_id).await
     }
 
     pub async fn get_agent_team_detail(
@@ -401,7 +401,7 @@ impl DbHandle {
         run_id: super::models::RunId,
     ) -> Result<Option<super::models::AgentTeamDetail>> {
         let conn = self.conn();
-        agents::get_agent_team_detail(&conn, run_id).await
+        agents::get_agent_team_detail(conn, run_id).await
     }
 
     pub async fn create_agent_event(
@@ -412,7 +412,7 @@ impl DbHandle {
         metadata: Option<&serde_json::Value>,
     ) -> Result<super::models::AgentEvent> {
         let conn = self.conn();
-        agents::create_agent_event(&conn, task_id, event_type, content, metadata).await
+        agents::create_agent_event(conn, task_id, event_type, content, metadata).await
     }
 
     pub async fn get_agent_events(
@@ -422,7 +422,7 @@ impl DbHandle {
         offset: i64,
     ) -> Result<Vec<super::models::AgentEvent>> {
         let conn = self.conn();
-        agents::get_agent_events(&conn, task_id, limit, offset).await
+        agents::get_agent_events(conn, task_id, limit, offset).await
     }
 
     pub async fn get_agent_team_for_run(
@@ -430,7 +430,7 @@ impl DbHandle {
         run_id: super::models::RunId,
     ) -> Result<Option<super::models::AgentTeamDetail>> {
         let conn = self.conn();
-        agents::get_agent_team_for_run(&conn, run_id).await
+        agents::get_agent_team_for_run(conn, run_id).await
     }
 
     pub async fn get_agent_events_for_task(
@@ -439,7 +439,7 @@ impl DbHandle {
         limit: i64,
     ) -> Result<Vec<super::models::AgentEvent>> {
         let conn = self.conn();
-        agents::get_agent_events_for_task(&conn, task_id, limit).await
+        agents::get_agent_events_for_task(conn, task_id, limit).await
     }
 
     pub async fn insert_agent_event(
@@ -450,24 +450,24 @@ impl DbHandle {
         metadata: Option<&serde_json::Value>,
     ) -> Result<super::models::AgentEvent> {
         let conn = self.conn();
-        agents::insert_agent_event(&conn, task_id, event_type, content, metadata).await
+        agents::insert_agent_event(conn, task_id, event_type, content, metadata).await
     }
 
     // ── Settings convenience methods ─────────────────────────────────
 
     pub async fn get_setting(&self, key: &str) -> Result<Option<String>> {
         let conn = self.conn();
-        settings::get_setting(&conn, key).await
+        settings::get_setting(conn, key).await
     }
 
     pub async fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         let conn = self.conn();
-        settings::set_setting(&conn, key, value).await
+        settings::set_setting(conn, key, value).await
     }
 
     pub async fn delete_setting(&self, key: &str) -> Result<()> {
         let conn = self.conn();
-        settings::delete_setting(&conn, key).await
+        settings::delete_setting(conn, key).await
     }
 }
 
@@ -488,6 +488,20 @@ async fn init_pragmas(conn: &Connection, mode: DbMode) -> Result<()> {
     conn.execute("PRAGMA foreign_keys=ON", ())
         .await
         .context("Failed to enable foreign keys")?;
+    Ok(())
+}
+
+/// Run integrity check on startup. Returns an error if the database is unhealthy.
+pub async fn health_check(conn: &Connection) -> Result<()> {
+    let mut rows = conn.query("PRAGMA integrity_check", ())
+        .await
+        .context("Failed to run integrity check")?;
+    let row = rows.next().await?
+        .context("Integrity check returned no rows")?;
+    let result: String = row.get(0)?;
+    if result != "ok" {
+        anyhow::bail!("Database integrity check failed: {result}");
+    }
     Ok(())
 }
 
@@ -518,18 +532,4 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].id, project.id);
     }
-}
-
-/// Run integrity check on startup. Returns an error if the database is unhealthy.
-pub async fn health_check(conn: &Connection) -> Result<()> {
-    let mut rows = conn.query("PRAGMA integrity_check", ())
-        .await
-        .context("Failed to run integrity check")?;
-    let row = rows.next().await?
-        .context("Integrity check returned no rows")?;
-    let result: String = row.get(0)?;
-    if result != "ok" {
-        anyhow::bail!("Database integrity check failed: {result}");
-    }
-    Ok(())
 }

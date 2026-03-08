@@ -266,14 +266,13 @@ async fn do_sync_github_issues(
             None => {
                 // Try to detect github_repo from git remote (async to avoid blocking)
                 let detected = detect_github_repo_from_path(&project_path).await;
-                if let Some(ref owner_repo) = detected {
-                    if let Err(e) = state
+                if let Some(ref owner_repo) = detected
+                    && let Err(e) = state
                         .db
                         .update_project_github_repo(project_id, owner_repo)
                         .await
-                    {
-                        tracing::warn!(error = %e, "Failed to persist detected GitHub repo");
-                    }
+                {
+                    tracing::warn!(error = %e, "Failed to persist detected GitHub repo");
                 }
                 detected.ok_or_else(|| {
                     ApiError::BadRequest(
