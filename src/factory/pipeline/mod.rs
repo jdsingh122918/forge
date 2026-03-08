@@ -830,6 +830,26 @@ impl PipelineRunner {
                             "[pipeline] run_id={}: DB error checking cancellation: {:#}",
                             run_id, e
                         );
+                        // Attempt to mark the run as failed so it doesn't stay stuck in "Running"
+                        let error_msg = format!("DB error during cancellation check: {e:#}");
+                        if let Err(e2) = db.update_pipeline_run(
+                            run_id,
+                            &PipelineStatus::Failed,
+                            None,
+                            Some(&error_msg),
+                        ).await {
+                            eprintln!(
+                                "[pipeline] run_id={}: CRITICAL: also failed to mark run as failed: {:#}",
+                                run_id, e2
+                            );
+                            // Last resort: broadcast so UI doesn't show "running" forever
+                            broadcast_message(&tx, &WsMessage::AgentSignal {
+                                run_id,
+                                task_id: 0,
+                                signal_type: SignalType::Blocker,
+                                content: format!("[pipeline] Run failed but could not persist status: {error_msg}"),
+                            });
+                        }
                         return;
                     }
                 };
