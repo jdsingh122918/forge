@@ -44,7 +44,7 @@ textwrap = "0.16"
 terminal_size = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-libsql = "0.6"
+libsql = "0.9"
 dotenvy = "0.15"
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 mime_guess = "2"
