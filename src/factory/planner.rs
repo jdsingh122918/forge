@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use tokio::process::Command;
+use tracing::warn;
 
 /// Abstraction over the planning step for testability.
 #[async_trait]
@@ -298,8 +299,8 @@ impl Planner {
             .await
             .context("Failed to list project files")?;
         if !tree_output.status.success() {
-            eprintln!(
-                "[planner] File tree command failed ({}): {}. Planner will have reduced repo context.",
+            warn!(
+                "File tree command failed ({}): {}. Planner will have reduced repo context.",
                 tree_output.status,
                 String::from_utf8_lossy(&tree_output.stderr).trim()
             );
@@ -313,8 +314,8 @@ impl Planner {
             .await
             .context("Failed to get git log")?;
         if !log_output.status.success() {
-            eprintln!(
-                "[planner] git log failed: {}",
+            warn!(
+                "git log failed: {}",
                 String::from_utf8_lossy(&log_output.stderr)
             );
         }

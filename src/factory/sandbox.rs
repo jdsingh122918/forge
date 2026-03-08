@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use tracing;
 use bollard::Docker;
 use bollard::models::{
     ContainerCreateBody, ContainerInspectResponse, HostConfig, Mount, MountTypeEnum,
@@ -108,15 +109,12 @@ impl DockerSandbox {
         let docker = match Docker::connect_with_socket_defaults() {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("[sandbox] Docker connection failed: {}", e);
+                tracing::warn!(error = %e, "Docker connection failed");
                 return None;
             }
         };
         if let Err(e) = docker.ping().await {
-            eprintln!(
-                "[sandbox] Docker ping failed (daemon may not be running): {}",
-                e
-            );
+            tracing::warn!(error = %e, "Docker ping failed (daemon may not be running)");
             return None;
         }
         Some(Self {
@@ -255,7 +253,7 @@ impl DockerSandbox {
                         }
                     }
                     Err(e) => {
-                        eprintln!("[sandbox] Log stream error for container {}: {}", cid, e);
+                        tracing::error!(container_id = %cid, error = %e, "Log stream error");
                         let _ = line_tx
                             .send(format!("[forge] Log stream error: {}", e))
                             .await;
@@ -280,10 +278,7 @@ impl DockerSandbox {
             .stop_container(container_id, Some(stop_opts))
             .await
         {
-            eprintln!(
-                "[sandbox] Warning: stop_container {} failed (may already be stopped): {}",
-                container_id, e
-            );
+            tracing::warn!(container_id = %container_id, error = %e, "stop_container failed (may already be stopped)");
         }
 
         // Remove the container
@@ -296,10 +291,7 @@ impl DockerSandbox {
             .remove_container(container_id, Some(remove_opts))
             .await
         {
-            eprintln!(
-                "[sandbox] Warning: remove_container {} failed: {}",
-                container_id, e
-            );
+            tracing::warn!(container_id = %container_id, error = %e, "remove_container failed");
         }
 
         Ok(())
@@ -378,7 +370,7 @@ impl DockerSandbox {
                 match self.stop(id).await {
                     Ok(()) => pruned += 1,
                     Err(e) => {
-                        eprintln!("[sandbox] Failed to prune stale container {}: {}", id, e);
+                        tracing::warn!(container_id = %id, error = %e, "Failed to prune stale container");
                     }
                 }
             }

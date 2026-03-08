@@ -6,7 +6,10 @@ use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::broadcast;
 
+use tracing::warn;
+
 use crate::factory::db::DbHandle;
+use crate::factory::models::RunId;
 use crate::factory::sandbox::{DockerSandbox, SandboxConfig};
 use crate::factory::ws::{WsMessage, broadcast_message};
 
@@ -70,7 +73,7 @@ pub(crate) async fn auto_generate_phases(
     {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[pipeline] Failed to spawn '{}': {e}", forge_cmd);
+            warn!("Failed to spawn '{}': {e}", forge_cmd);
             return Ok(false);
         }
     };
@@ -129,7 +132,7 @@ pub(crate) fn build_execution_command(
 /// Uses `forge swarm` if phases.json exists, otherwise falls back to `claude --print`.
 /// Monitors output for progress JSON and emits PipelineProgress WS events.
 pub(crate) async fn execute_pipeline_streaming(
-    run_id: i64,
+    run_id: RunId,
     project_path: &str,
     issue_title: &str,
     issue_description: &str,
@@ -149,7 +152,7 @@ pub(crate) async fn execute_pipeline_streaming(
     // Store the child handle for cancellation
     {
         let mut processes = running_processes.lock().await;
-        processes.insert(run_id, RunHandle::Process(child));
+        processes.insert(run_id.0, RunHandle::Process(child));
     }
 
     // Read stdout line by line, looking for progress updates
@@ -307,7 +310,7 @@ pub(crate) async fn execute_pipeline_streaming(
     // Wait for the process to finish — retrieve the child from the map
     let status = {
         let mut processes = running_processes.lock().await;
-        if let Some(handle) = processes.remove(&run_id) {
+        if let Some(handle) = processes.remove(&run_id.0) {
             match handle {
                 RunHandle::Process(mut child) => child
                     .wait()
@@ -342,7 +345,7 @@ pub(crate) async fn execute_pipeline_streaming(
 /// Execute a pipeline in a Docker container, streaming logs line by line.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_pipeline_docker(
-    run_id: i64,
+    run_id: RunId,
     project_path: &str,
     issue_title: &str,
     issue_description: &str,
@@ -355,7 +358,7 @@ pub(crate) async fn execute_pipeline_docker(
     let config = match SandboxConfig::load(std::path::Path::new(project_path)) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[pipeline] Failed to load sandbox config, using defaults: {e}");
+            warn!("Failed to load sandbox config, using defaults: {e}");
             SandboxConfig::default()
         }
     };
@@ -408,7 +411,7 @@ pub(crate) async fn execute_pipeline_docker(
             command,
             &config,
             env,
-            run_id,
+            run_id.0,
             project_name,
         )
         .await?;
@@ -416,7 +419,7 @@ pub(crate) async fn execute_pipeline_docker(
     // Store the container handle for cancellation
     {
         let mut processes = running_processes.lock().await;
-        processes.insert(run_id, RunHandle::Container(container_id.clone()));
+        processes.insert(run_id.0, RunHandle::Container(container_id.clone()));
     }
 
     // Stream logs with timeout
@@ -472,7 +475,7 @@ pub(crate) async fn execute_pipeline_docker(
     let exit_code = match sandbox.wait(&container_id).await {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("[pipeline] Failed to wait for container {container_id}: {e}");
+            warn!("Failed to wait for container {container_id}: {e}");
             -1
         }
     };

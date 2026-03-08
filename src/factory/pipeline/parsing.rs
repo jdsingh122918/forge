@@ -316,7 +316,7 @@ pub(crate) fn try_parse_phase_event(line: &str) -> Option<PhaseEventJson> {
 /// Process a PhaseEvent and emit corresponding WsMessages + DB updates.
 pub(crate) async fn process_phase_event(
     event: &PhaseEventJson,
-    run_id: i64,
+    run_id: RunId,
     db: &DbHandle,
     tx: &broadcast::Sender<String>,
 ) {

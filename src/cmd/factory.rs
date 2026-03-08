@@ -1,6 +1,7 @@
 //! Factory Kanban UI server command — `forge factory`.
 
 use anyhow::Result;
+use tracing::warn;
 
 pub async fn cmd_factory(
     port: u16,
@@ -27,7 +28,7 @@ pub async fn cmd_factory(
             // Small delay to let the server start binding
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             if let Err(e) = open::that(&url) {
-                eprintln!("Failed to open browser: {}", e);
+                warn!("Failed to open browser: {}", e);
             }
         });
     }

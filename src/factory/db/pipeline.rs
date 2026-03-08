@@ -11,9 +11,10 @@ pub(super) fn row_to_pipeline_run(row: &Row) -> Result<PipelineRun> {
         .map_err(|e| anyhow::anyhow!(e))
         .context("Failed to parse pipeline run status")?;
     let has_team: Option<i64> = row.get(11)?;
+    let team_id_raw: Option<i64> = row.get(10)?;
     Ok(PipelineRun {
-        id: row.get(0)?,
-        issue_id: row.get(1)?,
+        id: RunId(row.get::<i64>(0)?),
+        issue_id: IssueId(row.get::<i64>(1)?),
         status,
         phase_count: row.get(3)?,
         current_phase: row.get(4)?,
@@ -22,7 +23,7 @@ pub(super) fn row_to_pipeline_run(row: &Row) -> Result<PipelineRun> {
         error: row.get(7)?,
         branch_name: row.get(8)?,
         pr_url: row.get(9)?,
-        team_id: row.get(10)?,
+        team_id: team_id_raw.map(TeamId),
         has_team: has_team.map(|v| v != 0).unwrap_or(false),
         started_at: row.get(12)?,
         completed_at: row.get(13)?,
@@ -31,15 +32,15 @@ pub(super) fn row_to_pipeline_run(row: &Row) -> Result<PipelineRun> {
 
 pub(super) const RUN_COLS: &str = "id, issue_id, status, phase_count, current_phase, iteration, summary, error, branch_name, pr_url, team_id, has_team, started_at, completed_at";
 
-pub async fn create_pipeline_run(conn: &Connection, issue_id: i64) -> Result<PipelineRun> {
+pub async fn create_pipeline_run(conn: &Connection, issue_id: IssueId) -> Result<PipelineRun> {
     let tx = conn.transaction().await.context("Failed to begin transaction")?;
     tx.execute(
         "INSERT INTO pipeline_runs (issue_id) VALUES (?1)",
-        [issue_id],
+        [issue_id.0],
     )
     .await
     .context("Failed to insert pipeline run")?;
-    let id = tx.last_insert_rowid();
+    let id = RunId(tx.last_insert_rowid());
     tx.commit().await.context("Failed to commit")?;
     get_pipeline_run(conn, id)
         .await?
@@ -48,7 +49,7 @@ pub async fn create_pipeline_run(conn: &Connection, issue_id: i64) -> Result<Pip
 
 pub async fn update_pipeline_run(
     conn: &Connection,
-    id: i64,
+    id: RunId,
     status: &PipelineStatus,
     summary: Option<&str>,
     error: Option<&str>,
@@ -56,14 +57,14 @@ pub async fn update_pipeline_run(
     if status.is_terminal() {
         conn.execute(
             "UPDATE pipeline_runs SET status = ?1, summary = ?2, error = ?3, completed_at = datetime('now') WHERE id = ?4",
-            libsql::params![status.as_str(), summary, error, id],
+            libsql::params![status.as_str(), summary, error, id.0],
         )
         .await
         .context("Failed to update pipeline run")?;
     } else {
         conn.execute(
             "UPDATE pipeline_runs SET status = ?1, summary = ?2, error = ?3 WHERE id = ?4",
-            libsql::params![status.as_str(), summary, error, id],
+            libsql::params![status.as_str(), summary, error, id.0],
         )
         .await
         .context("Failed to update pipeline run")?;
@@ -74,10 +75,10 @@ pub async fn update_pipeline_run(
         .context("Pipeline run not found after update")
 }
 
-pub async fn get_pipeline_run(conn: &Connection, id: i64) -> Result<Option<PipelineRun>> {
+pub async fn get_pipeline_run(conn: &Connection, id: RunId) -> Result<Option<PipelineRun>> {
     let sql = format!("SELECT {} FROM pipeline_runs WHERE id = ?1", RUN_COLS);
     let mut rows = conn
-        .query(&sql, [id])
+        .query(&sql, [id.0])
         .await
         .context("Failed to query pipeline run")?;
     match rows.next().await? {
@@ -86,7 +87,7 @@ pub async fn get_pipeline_run(conn: &Connection, id: i64) -> Result<Option<Pipel
     }
 }
 
-pub async fn cancel_pipeline_run(conn: &Connection, id: i64) -> Result<PipelineRun> {
+pub async fn cancel_pipeline_run(conn: &Connection, id: RunId) -> Result<PipelineRun> {
     update_pipeline_run(conn, id, &PipelineStatus::Cancelled, None, None).await
 }
 
@@ -112,14 +113,14 @@ pub async fn recover_orphaned_runs(conn: &Connection) -> Result<usize> {
 
 pub async fn update_pipeline_progress(
     conn: &Connection,
-    id: i64,
+    id: RunId,
     phase_count: Option<i32>,
     current_phase: Option<i32>,
     iteration: Option<i32>,
 ) -> Result<PipelineRun> {
     conn.execute(
         "UPDATE pipeline_runs SET phase_count = ?1, current_phase = ?2, iteration = ?3 WHERE id = ?4",
-        libsql::params![phase_count, current_phase, iteration, id],
+        libsql::params![phase_count, current_phase, iteration, id.0],
     )
     .await
     .context("Failed to update pipeline progress")?;
@@ -130,12 +131,12 @@ pub async fn update_pipeline_progress(
 
 pub async fn update_pipeline_branch(
     conn: &Connection,
-    id: i64,
+    id: RunId,
     branch_name: &str,
 ) -> Result<PipelineRun> {
     conn.execute(
         "UPDATE pipeline_runs SET branch_name = ?1 WHERE id = ?2",
-        (branch_name, id),
+        (branch_name, id.0),
     )
     .await
     .context("Failed to update pipeline branch")?;
@@ -146,12 +147,12 @@ pub async fn update_pipeline_branch(
 
 pub async fn update_pipeline_pr_url(
     conn: &Connection,
-    id: i64,
+    id: RunId,
     pr_url: &str,
 ) -> Result<PipelineRun> {
     conn.execute(
         "UPDATE pipeline_runs SET pr_url = ?1 WHERE id = ?2",
-        (pr_url, id),
+        (pr_url, id.0),
     )
     .await
     .context("Failed to update pipeline PR URL")?;
@@ -162,7 +163,7 @@ pub async fn update_pipeline_pr_url(
 
 pub async fn upsert_pipeline_phase(
     conn: &Connection,
-    run_id: i64,
+    run_id: RunId,
     phase_number: &str,
     phase_name: &str,
     status: &PhaseStatus,
@@ -179,19 +180,19 @@ pub async fn upsert_pipeline_phase(
             budget = COALESCE(?6, pipeline_phases.budget),
             completed_at = CASE WHEN ?4 IN ('completed', 'failed') THEN datetime('now') ELSE pipeline_phases.completed_at END,
             error = NULL",
-        libsql::params![run_id, phase_number, phase_name, status_str, iteration, budget],
+        libsql::params![run_id.0, phase_number, phase_name, status_str, iteration, budget],
     )
     .await
     .context("Failed to upsert pipeline phase")?;
     Ok(())
 }
 
-pub async fn get_pipeline_phases(conn: &Connection, run_id: i64) -> Result<Vec<PipelinePhase>> {
+pub async fn get_pipeline_phases(conn: &Connection, run_id: RunId) -> Result<Vec<PipelinePhase>> {
     let mut rows = conn
         .query(
             "SELECT id, run_id, phase_number, phase_name, status, iteration, budget, started_at, completed_at, error
              FROM pipeline_phases WHERE run_id = ?1 ORDER BY phase_number ASC",
-            [run_id],
+            [run_id.0],
         )
         .await
         .context("Failed to query pipeline phases")?;
@@ -203,8 +204,8 @@ pub async fn get_pipeline_phases(conn: &Connection, run_id: i64) -> Result<Vec<P
             anyhow::anyhow!("invalid phase status in database: '{}'", status_str)
         })?;
         phases.push(PipelinePhase {
-            id: row.get(0)?,
-            run_id: row.get(1)?,
+            id: PhaseId(row.get::<i64>(0)?),
+            run_id: RunId(row.get::<i64>(1)?),
             phase_number: row.get(2)?,
             phase_name: row.get(3)?,
             status,
@@ -241,7 +242,7 @@ mod tests {
         .unwrap();
 
         let run = create_pipeline_run(&conn, issue.id).await.unwrap();
-        assert!(run.id > 0);
+        assert!(run.id.0 > 0);
         assert_eq!(run.issue_id, issue.id);
         assert_eq!(run.status, PipelineStatus::Queued);
     }

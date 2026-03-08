@@ -1,5 +1,6 @@
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
+use tracing;
 
 use crate::errors::FactoryError;
 
@@ -14,7 +15,7 @@ use serde::Deserialize;
 use tokio::sync::broadcast;
 
 use super::db::DbHandle;
-use super::models::IssueColumn;
+use super::models::{IssueColumn, IssueId, ProjectId, RunId, TaskId};
 use super::pipeline::PipelineRunner;
 use super::ws::{WsMessage, broadcast_message};
 
@@ -249,7 +250,7 @@ fn parse_github_owner_repo(url: &str) -> Option<String> {
 /// Shared sync logic used by both the endpoint handler and auto-sync after clone.
 async fn do_sync_github_issues(
     state: &SharedState,
-    project_id: i64,
+    project_id: ProjectId,
 ) -> Result<SyncResult, ApiError> {
     let github_repo = {
         let project = state
@@ -257,7 +258,7 @@ async fn do_sync_github_issues(
             .get_project(project_id)
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?
-            .ok_or_else(|| ApiError::from(FactoryError::ProjectNotFound { id: project_id }))?;
+            .ok_or_else(|| ApiError::from(FactoryError::ProjectNotFound { id: project_id.0 }))?;
         let (existing_repo, project_path) = (project.github_repo.clone(), project.path.clone());
 
         match existing_repo {
@@ -271,7 +272,7 @@ async fn do_sync_github_issues(
                         .update_project_github_repo(project_id, owner_repo)
                         .await
                     {
-                        eprintln!("[factory] Warning: failed to persist detected GitHub repo: {e}");
+                        tracing::warn!(error = %e, "Failed to persist detected GitHub repo");
                     }
                 }
                 detected.ok_or_else(|| {
@@ -428,9 +429,8 @@ fn parse_cli_help(text: &str) -> CliHelpResponse {
                         description = String::new();
                     }
                     options.push(CliOption { flag, description });
-                } else if !options.is_empty() {
+                } else if let Some(last) = options.last_mut() {
                     // Continuation line: append to the last option's description
-                    let last = options.last_mut().unwrap();
                     if last.description.is_empty() {
                         last.description = trimmed.to_string();
                     } else {
@@ -607,10 +607,10 @@ async fn clone_project(
                 .await;
             match output {
                 Ok(o) if !o.status.success() => {
-                    eprintln!("[factory] WARNING: failed to strip auth token from git remote URL: {}", String::from_utf8_lossy(&o.stderr));
+                    tracing::warn!(stderr = %String::from_utf8_lossy(&o.stderr), "Failed to strip auth token from git remote URL");
                 }
                 Err(e) => {
-                    eprintln!("[factory] WARNING: failed to strip auth token from git remote URL: {e}");
+                    tracing::warn!(error = %e, "Failed to strip auth token from git remote URL");
                 }
                 Ok(_) => {}
             }
@@ -673,16 +673,13 @@ async fn clone_project(
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             match do_sync_github_issues(&state_clone, pid).await {
                 Ok(result) => {
-                    eprintln!(
-                        "Auto-synced {} GitHub issues for project {}",
-                        result.imported, pid
-                    );
+                    tracing::info!(imported = result.imported, project_id = pid.0, "Auto-synced GitHub issues");
                 }
                 Err(e) => {
                     let detail = match e {
                         ApiError::Internal(msg) | ApiError::BadRequest(msg) | ApiError::NotFound(msg) => msg,
                     };
-                    eprintln!("Auto-sync GitHub issues failed for project {}: {}", pid, detail);
+                    tracing::error!(project_id = pid.0, error = %detail, "Auto-sync GitHub issues failed");
                 }
             }
         });
@@ -704,7 +701,7 @@ async fn sync_github_issues(
     State(state): State<SharedState>,
     Path(project_id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let result = do_sync_github_issues(&state, project_id).await?;
+    let result = do_sync_github_issues(&state, ProjectId(project_id)).await?;
     Ok(Json(result))
 }
 
@@ -720,7 +717,7 @@ async fn get_project(
 ) -> Result<impl IntoResponse, ApiError> {
     let project = state
         .db
-        .get_project(id)
+        .get_project(ProjectId(id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     match project {
@@ -740,12 +737,12 @@ async fn delete_project(
 ) -> Result<impl IntoResponse, ApiError> {
     let deleted = state
         .db
-        .delete_project(id)
+        .delete_project(ProjectId(id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     match deleted {
         true => {
-            broadcast_message(&state.ws_tx, &WsMessage::ProjectDeleted { project_id: id });
+            broadcast_message(&state.ws_tx, &WsMessage::ProjectDeleted { project_id: ProjectId(id) });
             Ok(StatusCode::NO_CONTENT)
         }
         false => Err(ApiError::NotFound(format!("Project {} not found", id))),
@@ -763,7 +760,7 @@ async fn get_board(
 ) -> Result<impl IntoResponse, ApiError> {
     let board = state
         .db
-        .get_board(id)
+        .get_board(ProjectId(id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(board))
@@ -793,7 +790,7 @@ async fn create_issue(
     let description = req.description.unwrap_or_default();
     let issue = state
         .db
-        .create_issue(project_id, &title, &description, &column)
+        .create_issue(ProjectId(project_id), &title, &description, &column)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     broadcast_message(
@@ -817,7 +814,7 @@ async fn get_issue(
 ) -> Result<impl IntoResponse, ApiError> {
     let detail = state
         .db
-        .get_issue_detail(id)
+        .get_issue_detail(IssueId(id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     match detail {
@@ -849,7 +846,7 @@ async fn update_issue(
     let issue = state
         .db
         .update_issue(
-            id,
+            IssueId(id),
             title.as_deref(),
             description.as_deref(),
             priority.as_deref(),
@@ -888,20 +885,20 @@ async fn move_issue(
     // This only affects the WebSocket broadcast animation, not data integrity.
     let from_column = state
         .db
-        .get_issue(id)
+        .get_issue(IssueId(id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .map(|i| i.column.as_str().to_string())
         .unwrap_or_default();
     let issue = state
         .db
-        .move_issue(id, &column, position)
+        .move_issue(IssueId(id), &column, position)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     broadcast_message(
         &state.ws_tx,
         &WsMessage::IssueMoved {
-            issue_id: id,
+            issue_id: IssueId(id),
             from_column,
             to_column: req.column.clone(),
             position: req.position,
@@ -923,12 +920,12 @@ async fn delete_issue(
 ) -> Result<impl IntoResponse, ApiError> {
     let deleted = state
         .db
-        .delete_issue(id)
+        .delete_issue(IssueId(id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     match deleted {
         true => {
-            broadcast_message(&state.ws_tx, &WsMessage::IssueDeleted { issue_id: id });
+            broadcast_message(&state.ws_tx, &WsMessage::IssueDeleted { issue_id: IssueId(id) });
             Ok(StatusCode::NO_CONTENT)
         }
         false => Err(ApiError::NotFound(format!("Issue {} not found", id))),
@@ -951,13 +948,13 @@ async fn trigger_pipeline(
 ) -> Result<impl IntoResponse, ApiError> {
     let issue = state
         .db
-        .get_issue(issue_id)
+        .get_issue(IssueId(issue_id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::from(FactoryError::IssueNotFound { id: issue_id }))?;
     let run = state
         .db
-        .create_pipeline_run(issue_id)
+        .create_pipeline_run(IssueId(issue_id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -965,7 +962,7 @@ async fn trigger_pipeline(
     let run_id = run.id;
     state
         .pipeline_runner
-        .start_run(run_id, &issue, state.db.clone(), state.ws_tx.clone())
+        .start_run(run_id.0, &issue, state.db.clone(), state.ws_tx.clone())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -975,7 +972,7 @@ async fn trigger_pipeline(
         .get_pipeline_run(run_id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::Internal(format!("Pipeline run {} not found", run_id)))?;
+        .ok_or_else(|| ApiError::Internal(format!("Pipeline run {} not found", run_id.0)))?;
 
     Ok((StatusCode::CREATED, Json(updated_run)))
 }
@@ -992,7 +989,7 @@ async fn get_pipeline_run(
 ) -> Result<impl IntoResponse, ApiError> {
     let run = state
         .db
-        .get_pipeline_run(id)
+        .get_pipeline_run(RunId(id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     match run {
@@ -1043,7 +1040,7 @@ async fn get_run_team(
 ) -> Result<impl IntoResponse, ApiError> {
     let detail = state
         .db
-        .get_agent_team_for_run(run_id)
+        .get_agent_team_for_run(RunId(run_id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -1069,13 +1066,13 @@ async fn get_run_phases(
     // Verify run exists first
     state
         .db
-        .get_pipeline_run(run_id)
+        .get_pipeline_run(RunId(run_id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound(format!("Run {} not found", run_id)))?;
     let phases = state
         .db
-        .get_pipeline_phases(run_id)
+        .get_pipeline_phases(RunId(run_id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(phases))
@@ -1094,7 +1091,7 @@ async fn get_task_events(
     let limit = query.limit.unwrap_or(100).min(500);
     let events = state
         .db
-        .get_agent_events_for_task(task_id, limit)
+        .get_agent_events_for_task(TaskId(task_id), limit)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(events))
@@ -2062,5 +2059,324 @@ mod tests {
         // Simulate disconnect
         db.delete_setting("github_token").await.unwrap();
         assert!(db.get_setting("github_token").await.unwrap().is_none());
+    }
+
+    // ── Error case tests ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_create_project_missing_fields() {
+        let app = test_app().await;
+
+        // Send empty JSON object — missing required "name" and "path"
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/projects")
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn test_create_issue_invalid_column() {
+        let app = test_app().await;
+
+        // Create a project first
+        let create_proj = Request::builder()
+            .method("POST")
+            .uri("/api/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"name": "col-proj", "path": "/tmp/col"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(create_proj).await.unwrap();
+
+        // Create issue with invalid column
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/projects/1/issues")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "title": "Bad column issue",
+                    "column": "nonexistent_column"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_move_issue_invalid_column() {
+        let app = test_app().await;
+
+        // Create project and issue
+        let create_proj = Request::builder()
+            .method("POST")
+            .uri("/api/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"name": "move-bad-proj", "path": "/tmp/move-bad"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(create_proj).await.unwrap();
+
+        let create_issue_req = Request::builder()
+            .method("POST")
+            .uri("/api/projects/1/issues")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"title": "Move invalid col"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(create_issue_req).await.unwrap();
+
+        // Move issue to invalid column
+        let request = Request::builder()
+            .method("PATCH")
+            .uri("/api/issues/1/move")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "column": "totally_invalid",
+                    "position": 0
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_move_issue_not_found() {
+        let app = test_app().await;
+
+        // Move a non-existent issue (no project or issue created)
+        let request = Request::builder()
+            .method("PATCH")
+            .uri("/api/issues/999/move")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "column": "in_progress",
+                    "position": 0
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        // move_issue DB function returns error when issue not found after move;
+        // the handler maps DB errors to 500
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn test_update_issue_not_found() {
+        let app = test_app().await;
+
+        // Update a non-existent issue
+        let request = Request::builder()
+            .method("PATCH")
+            .uri("/api/issues/999")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "title": "Ghost issue"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        // update_issue DB function returns error when issue not found after update;
+        // the handler maps DB errors to 500
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn test_trigger_pipeline_not_found() {
+        let app = test_app().await;
+
+        // Trigger pipeline for non-existent issue
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/issues/999/run")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── Missing endpoint tests ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_delete_project() {
+        let app = test_app().await;
+
+        // Create a project
+        let create_proj = Request::builder()
+            .method("POST")
+            .uri("/api/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"name": "del-proj", "path": "/tmp/del-proj"}).to_string(),
+            ))
+            .unwrap();
+        let create_resp = app.clone().oneshot(create_proj).await.unwrap();
+        assert_eq!(create_resp.status(), StatusCode::CREATED);
+
+        // Delete the project
+        let delete_req = Request::builder()
+            .method("DELETE")
+            .uri("/api/projects/1")
+            .body(Body::empty())
+            .unwrap();
+        let delete_resp = app.clone().oneshot(delete_req).await.unwrap();
+        assert_eq!(delete_resp.status(), StatusCode::NO_CONTENT);
+
+        // Verify the project is gone
+        let get_req = Request::builder()
+            .method("GET")
+            .uri("/api/projects/1")
+            .body(Body::empty())
+            .unwrap();
+        let get_resp = app.oneshot(get_req).await.unwrap();
+        assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_run_phases_empty() {
+        let app = test_app().await;
+
+        // Create project + issue + pipeline run
+        let create_proj = Request::builder()
+            .method("POST")
+            .uri("/api/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"name": "phases-proj", "path": "/tmp/phases"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(create_proj).await.unwrap();
+
+        let create_issue_req = Request::builder()
+            .method("POST")
+            .uri("/api/projects/1/issues")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"title": "Phases issue"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(create_issue_req).await.unwrap();
+
+        let trigger = Request::builder()
+            .method("POST")
+            .uri("/api/issues/1/run")
+            .body(Body::empty())
+            .unwrap();
+        app.clone().oneshot(trigger).await.unwrap();
+
+        // Get phases for run 1
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/runs/1/phases")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Phases array is returned successfully (may be empty or populated
+        // depending on pipeline execution timing)
+        let _phases: Vec<serde_json::Value> = body_json(response.into_body()).await;
+    }
+
+    #[tokio::test]
+    async fn test_get_run_phases_not_found() {
+        let app = test_app().await;
+
+        // Get phases for non-existent run
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/runs/999/phases")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_task_events_not_found() {
+        let app = test_app().await;
+
+        // Get events for a non-existent task (returns empty array, not 404,
+        // because the DB query just returns no rows)
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/tasks/999/events")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let events: Vec<serde_json::Value> = body_json(response.into_body()).await;
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_github_status_disconnected() {
+        let app = test_app().await;
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/github/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let status: serde_json::Value = body_json(response.into_body()).await;
+        assert_eq!(status["connected"], false);
+        assert_eq!(status["client_id_configured"], false);
+    }
+
+    #[tokio::test]
+    async fn test_cli_help() {
+        let app = test_app().await;
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/cli-help")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        // cli_help_handler runs FORGE_CMD --help; in test environments the binary
+        // may or may not exist. Accept both 200 (success) and 500 (command not found).
+        let status = response.status();
+        assert!(
+            status == StatusCode::OK || status == StatusCode::INTERNAL_SERVER_ERROR,
+            "Expected 200 or 500, got {}",
+            status
+        );
+
+        if status == StatusCode::OK {
+            let body: serde_json::Value = body_json(response.into_body()).await;
+            assert!(body["commands"].is_array());
+            assert!(body["options"].is_array());
+        }
     }
 }

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use tracing::{info, warn};
 use axum::{
     Router,
     body::Body,
@@ -94,12 +95,12 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
         std::env::var("TURSO_AUTH_TOKEN"),
     ) {
         (Ok(url), Ok(token)) => {
-            eprintln!("[factory] Connecting to Turso: {url}");
+            info!("Connecting to Turso: {url}");
             DbHandle::new_remote_replica(&config.db_path, &url, &token).await?
         }
         _ => {
-            eprintln!(
-                "[factory] Using local SQLite: {}",
+            info!(
+                "Using local SQLite: {}",
                 config.db_path.display()
             );
             DbHandle::new_local(&config.db_path).await?
@@ -108,7 +109,7 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
 
     // Health check
     if let Err(e) = db::health_check(db_handle.conn()).await {
-        eprintln!("[factory] WARNING: {e:#}");
+        warn!("{e:#}");
     }
 
     // Initial sync for embedded replicas
@@ -121,18 +122,18 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     let sandbox = if std::env::var("FORGE_SANDBOX").unwrap_or_default() == "true" {
         match DockerSandbox::new("forge:local".to_string()).await {
             Some(sandbox) => {
-                eprintln!("[factory] Docker sandbox enabled");
+                info!("Docker sandbox enabled");
                 let s = Arc::new(sandbox);
                 if let Ok(pruned) = s.prune_stale_containers(7200).await
                     && pruned > 0
                 {
-                    eprintln!("[factory] Pruned {} stale pipeline containers", pruned);
+                    info!("Pruned {} stale pipeline containers", pruned);
                 }
                 Some(s)
             }
             None => {
-                eprintln!(
-                    "[factory] FORGE_SANDBOX=true but Docker is not available, falling back to local execution"
+                warn!(
+                    "FORGE_SANDBOX=true but Docker is not available, falling back to local execution"
                 );
                 None
             }
@@ -147,13 +148,13 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     let recovered = db_handle.recover_orphaned_runs().await
         .context("Failed to recover orphaned pipeline runs during startup")?;
     if recovered > 0 {
-        eprintln!("[factory] Recovered {recovered} orphaned pipeline run(s) from previous session");
+        info!("Recovered {recovered} orphaned pipeline run(s) from previous session");
     }
 
     let persisted_token = match db_handle.get_setting("github_token").await {
         Ok(token) => token,
         Err(e) => {
-            eprintln!("[factory] Warning: failed to load persisted GitHub token: {e}");
+            warn!("Failed to load persisted GitHub token: {e}");
             None
         }
     };

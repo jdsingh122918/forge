@@ -2,6 +2,40 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+macro_rules! define_id_type {
+    ($name:ident) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[serde(transparent)]
+        pub struct $name(pub i64);
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}", self.0)
+            }
+        }
+
+        impl From<i64> for $name {
+            fn from(id: i64) -> Self {
+                Self(id)
+            }
+        }
+
+        impl From<$name> for i64 {
+            fn from(id: $name) -> Self {
+                id.0
+            }
+        }
+    };
+}
+
+define_id_type!(ProjectId);
+define_id_type!(IssueId);
+define_id_type!(RunId);
+define_id_type!(TeamId);
+define_id_type!(TaskId);
+define_id_type!(PhaseId);
+define_id_type!(EventId);
+
 /// A project registered in the Factory, representing a local codebase that can
 /// have issues managed on the Kanban board and executed by the agent pipeline.
 ///
@@ -11,7 +45,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     /// Unique integer identifier assigned by the database.
-    pub id: i64,
+    pub id: ProjectId,
     /// Human-readable name shown in the Factory UI.
     pub name: String,
     /// Absolute filesystem path to the project root on the host machine.
@@ -128,9 +162,9 @@ impl FromStr for Priority {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Issue {
     /// Unique integer identifier assigned by the database.
-    pub id: i64,
+    pub id: IssueId,
     /// Foreign key to the [`Project`] this issue belongs to.
-    pub project_id: i64,
+    pub project_id: ProjectId,
     /// Short summary of the work, shown as the card title on the board.
     pub title: String,
     /// Full specification of the work, passed as the prompt to the pipeline.
@@ -216,9 +250,9 @@ impl PipelineStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineRun {
     /// Unique integer identifier assigned by the database.
-    pub id: i64,
+    pub id: RunId,
     /// Foreign key to the [`Issue`] that triggered this run.
-    pub issue_id: i64,
+    pub issue_id: IssueId,
     /// Current lifecycle state of the run.
     pub status: PipelineStatus,
     /// Total number of phases in the spec being executed, once known.
@@ -237,7 +271,7 @@ pub struct PipelineRun {
     pub pr_url: Option<String>,
     /// Foreign key to the [`AgentTeam`] coordinating this run, if agent-team mode is active.
     #[serde(default)]
-    pub team_id: Option<i64>,
+    pub team_id: Option<TeamId>,
     /// `true` when this run is being executed by an agent team rather than a single pipeline.
     #[serde(default)]
     pub has_team: bool,
@@ -293,9 +327,9 @@ impl std::str::FromStr for PhaseStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelinePhase {
     /// Unique integer identifier assigned by the database.
-    pub id: i64,
+    pub id: PhaseId,
     /// Foreign key to the owning [`PipelineRun`].
-    pub run_id: i64,
+    pub run_id: RunId,
     /// Hierarchical phase identifier from the spec (e.g. `"1"`, `"2.1"`).
     pub phase_number: String,
     /// Human-readable name of the phase (e.g. `"Implement feature"`).
@@ -732,9 +766,9 @@ impl FromStr for VerificationType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTeam {
     /// Unique integer identifier assigned by the database.
-    pub id: i64,
+    pub id: TeamId,
     /// Foreign key to the [`PipelineRun`] this team is executing.
-    pub run_id: i64,
+    pub run_id: RunId,
     /// How tasks within the team are scheduled relative to each other.
     pub strategy: ExecutionStrategy,
     /// How each task is isolated from the others on the filesystem.
@@ -757,9 +791,9 @@ pub struct AgentTeam {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTask {
     /// Unique integer identifier assigned by the database.
-    pub id: i64,
+    pub id: TaskId,
     /// Foreign key to the [`AgentTeam`] this task belongs to.
-    pub team_id: i64,
+    pub team_id: TeamId,
     /// Short name describing what this specific task does (e.g. `"Implement auth middleware"`).
     pub name: String,
     /// Full instructions passed to the agent as its prompt for this task.
@@ -769,7 +803,7 @@ pub struct AgentTask {
     /// Wave number for dependency-ordered execution. Tasks in the same wave can run in parallel.
     pub wave: i32,
     /// IDs of other [`AgentTask`]s that must complete before this task can start.
-    pub depends_on: Vec<i64>,
+    pub depends_on: Vec<TaskId>,
     /// Current lifecycle state of this task.
     pub status: AgentTaskStatus,
     /// Isolation mode used for this task's filesystem environment.
@@ -797,9 +831,9 @@ pub struct AgentTask {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentEvent {
     /// Unique integer identifier assigned by the database.
-    pub id: i64,
+    pub id: EventId,
     /// Foreign key to the [`AgentTask`] that emitted this event.
-    pub task_id: i64,
+    pub task_id: TaskId,
     /// Classifies the nature of the event for filtering and display.
     pub event_type: AgentEventType,
     /// The raw textual content of the event.

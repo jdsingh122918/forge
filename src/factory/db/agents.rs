@@ -5,7 +5,7 @@ use crate::factory::models::*;
 
 pub async fn create_agent_team(
     conn: &Connection,
-    run_id: i64,
+    run_id: RunId,
     strategy: &ExecutionStrategy,
     isolation: &IsolationStrategy,
     plan_summary: &str,
@@ -13,15 +13,15 @@ pub async fn create_agent_team(
     let tx = conn.transaction().await.context("Failed to begin transaction")?;
     tx.execute(
         "INSERT INTO agent_teams (run_id, strategy, isolation, plan_summary) VALUES (?1, ?2, ?3, ?4)",
-        libsql::params![run_id, strategy.as_str(), isolation.as_str(), plan_summary],
+        libsql::params![run_id.0, strategy.as_str(), isolation.as_str(), plan_summary],
     )
     .await
     .context("Failed to insert agent team")?;
-    let id = tx.last_insert_rowid();
+    let id = TeamId(tx.last_insert_rowid());
 
     tx.execute(
         "UPDATE pipeline_runs SET team_id = ?1, has_team = 1 WHERE id = ?2",
-        (id, run_id),
+        (id.0, run_id.0),
     )
     .await
     .context("Failed to link agent team to pipeline run")?;
@@ -37,11 +37,11 @@ pub async fn create_agent_team(
     })
 }
 
-pub async fn get_agent_team(conn: &Connection, team_id: i64) -> Result<AgentTeam> {
+pub async fn get_agent_team(conn: &Connection, team_id: TeamId) -> Result<AgentTeam> {
     let mut rows = conn
         .query(
             "SELECT id, run_id, strategy, isolation, plan_summary, created_at FROM agent_teams WHERE id = ?1",
-            [team_id],
+            [team_id.0],
         )
         .await
         .context("Failed to query agent team")?;
@@ -49,8 +49,8 @@ pub async fn get_agent_team(conn: &Connection, team_id: i64) -> Result<AgentTeam
     let strategy_str: String = row.get(2)?;
     let isolation_str: String = row.get(3)?;
     Ok(AgentTeam {
-        id: row.get(0)?,
-        run_id: row.get(1)?,
+        id: TeamId(row.get::<i64>(0)?),
+        run_id: RunId(row.get::<i64>(1)?),
         strategy: strategy_str
             .parse()
             .map_err(|_| anyhow::anyhow!("invalid strategy in database: '{}'", strategy_str))?,
@@ -62,11 +62,11 @@ pub async fn get_agent_team(conn: &Connection, team_id: i64) -> Result<AgentTeam
     })
 }
 
-pub async fn get_agent_team_by_run(conn: &Connection, run_id: i64) -> Result<Option<AgentTeam>> {
+pub async fn get_agent_team_by_run(conn: &Connection, run_id: RunId) -> Result<Option<AgentTeam>> {
     let mut rows = conn
         .query(
             "SELECT id, run_id, strategy, isolation, plan_summary, created_at FROM agent_teams WHERE run_id = ?1",
-            [run_id],
+            [run_id.0],
         )
         .await
         .context("Failed to query agent team by run")?;
@@ -75,8 +75,8 @@ pub async fn get_agent_team_by_run(conn: &Connection, run_id: i64) -> Result<Opt
             let strategy_str: String = row.get(2)?;
             let isolation_str: String = row.get(3)?;
             Ok(Some(AgentTeam {
-                id: row.get(0)?,
-                run_id: row.get(1)?,
+                id: TeamId(row.get::<i64>(0)?),
+                run_id: RunId(row.get::<i64>(1)?),
                 strategy: strategy_str.parse().map_err(|_| {
                     anyhow::anyhow!("invalid strategy in database: '{}'", strategy_str)
                 })?,
@@ -94,25 +94,26 @@ pub async fn get_agent_team_by_run(conn: &Connection, run_id: i64) -> Result<Opt
 #[allow(clippy::too_many_arguments)]
 pub async fn create_agent_task(
     conn: &Connection,
-    team_id: i64,
+    team_id: TeamId,
     name: &str,
     description: &str,
     agent_role: &AgentRole,
     wave: i32,
-    depends_on: &[i64],
+    depends_on: &[TaskId],
     isolation_type: &IsolationStrategy,
 ) -> Result<AgentTask> {
+    let depends_raw: Vec<i64> = depends_on.iter().map(|id| id.0).collect();
     let depends_json =
-        serde_json::to_string(depends_on).context("Failed to serialize depends_on")?;
+        serde_json::to_string(&depends_raw).context("Failed to serialize depends_on")?;
     let tx = conn.transaction().await.context("Failed to begin transaction")?;
     tx.execute(
         "INSERT INTO agent_tasks (team_id, name, description, agent_role, wave, depends_on, isolation_type) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        libsql::params![team_id, name, description, agent_role.as_str(), wave, depends_json, isolation_type.as_str()],
+        libsql::params![team_id.0, name, description, agent_role.as_str(), wave, depends_json, isolation_type.as_str()],
     )
     .await
     .context("Failed to insert agent task")?;
-    let id = tx.last_insert_rowid();
+    let id = TaskId(tx.last_insert_rowid());
     tx.commit().await.context("Failed to commit")?;
     Ok(AgentTask {
         id,
@@ -135,7 +136,7 @@ pub async fn create_agent_task(
 
 pub async fn update_agent_task_status(
     conn: &Connection,
-    task_id: i64,
+    task_id: TaskId,
     status: &AgentTaskStatus,
     error: Option<&str>,
 ) -> Result<()> {
@@ -144,7 +145,7 @@ pub async fn update_agent_task_status(
         AgentTaskStatus::Running => {
             conn.execute(
                 "UPDATE agent_tasks SET status = ?1, started_at = datetime('now') WHERE id = ?2",
-                (status_str, task_id),
+                (status_str, task_id.0),
             )
             .await
             .context("Failed to update agent task status to running")?;
@@ -152,7 +153,7 @@ pub async fn update_agent_task_status(
         AgentTaskStatus::Completed | AgentTaskStatus::Failed | AgentTaskStatus::Cancelled => {
             conn.execute(
                 "UPDATE agent_tasks SET status = ?1, error = ?2, completed_at = datetime('now') WHERE id = ?3",
-                (status_str, error, task_id),
+                (status_str, error, task_id.0),
             )
             .await
             .context("Failed to update agent task status to terminal")?;
@@ -160,7 +161,7 @@ pub async fn update_agent_task_status(
         _ => {
             conn.execute(
                 "UPDATE agent_tasks SET status = ?1 WHERE id = ?2",
-                (status_str, task_id),
+                (status_str, task_id.0),
             )
             .await
             .context("Failed to update agent task status")?;
@@ -171,14 +172,14 @@ pub async fn update_agent_task_status(
 
 pub async fn update_agent_task_isolation(
     conn: &Connection,
-    task_id: i64,
+    task_id: TaskId,
     worktree_path: Option<&str>,
     container_id: Option<&str>,
     branch_name: Option<&str>,
 ) -> Result<()> {
     conn.execute(
         "UPDATE agent_tasks SET worktree_path = ?1, container_id = ?2, branch_name = ?3 WHERE id = ?4",
-        libsql::params![worktree_path, container_id, branch_name, task_id],
+        libsql::params![worktree_path, container_id, branch_name, task_id.0],
     )
     .await
     .context("Failed to update agent task isolation")?;
@@ -190,11 +191,12 @@ fn row_to_agent_task(row: &libsql::Row) -> Result<AgentTask> {
     let depends_str: String = row.get(6)?;
     let status_str: String = row.get(7)?;
     let isolation_str: String = row.get(8)?;
-    let depends_on: Vec<i64> = serde_json::from_str(&depends_str)
+    let depends_raw: Vec<i64> = serde_json::from_str(&depends_str)
         .map_err(|e| anyhow::anyhow!("corrupt depends_on JSON '{}': {}", depends_str, e))?;
+    let depends_on: Vec<TaskId> = depends_raw.into_iter().map(TaskId).collect();
     Ok(AgentTask {
-        id: row.get(0)?,
-        team_id: row.get(1)?,
+        id: TaskId(row.get::<i64>(0)?),
+        team_id: TeamId(row.get::<i64>(1)?),
         name: row.get(2)?,
         description: row.get(3)?,
         agent_role: agent_role_str.parse().map_err(|_| {
@@ -217,13 +219,13 @@ fn row_to_agent_task(row: &libsql::Row) -> Result<AgentTask> {
     })
 }
 
-pub async fn get_agent_tasks(conn: &Connection, team_id: i64) -> Result<Vec<AgentTask>> {
+pub async fn get_agent_tasks(conn: &Connection, team_id: TeamId) -> Result<Vec<AgentTask>> {
     let mut rows = conn
         .query(
             "SELECT id, team_id, name, description, agent_role, wave, depends_on, status, \
              isolation_type, worktree_path, container_id, branch_name, started_at, completed_at, error \
              FROM agent_tasks WHERE team_id = ?1 ORDER BY wave, id",
-            [team_id],
+            [team_id.0],
         )
         .await
         .context("Failed to query agent tasks")?;
@@ -234,13 +236,13 @@ pub async fn get_agent_tasks(conn: &Connection, team_id: i64) -> Result<Vec<Agen
     Ok(tasks)
 }
 
-pub async fn get_agent_task(conn: &Connection, task_id: i64) -> Result<AgentTask> {
+pub async fn get_agent_task(conn: &Connection, task_id: TaskId) -> Result<AgentTask> {
     let mut rows = conn
         .query(
             "SELECT id, team_id, name, description, agent_role, wave, depends_on, status, \
              isolation_type, worktree_path, container_id, branch_name, started_at, completed_at, error \
              FROM agent_tasks WHERE id = ?1",
-            [task_id],
+            [task_id.0],
         )
         .await
         .context("Failed to query agent task")?;
@@ -250,7 +252,7 @@ pub async fn get_agent_task(conn: &Connection, task_id: i64) -> Result<AgentTask
 
 pub async fn get_agent_team_detail(
     conn: &Connection,
-    run_id: i64,
+    run_id: RunId,
 ) -> Result<Option<AgentTeamDetail>> {
     let team = match get_agent_team_by_run(conn, run_id).await? {
         Some(t) => t,
@@ -262,7 +264,7 @@ pub async fn get_agent_team_detail(
 
 pub async fn create_agent_event(
     conn: &Connection,
-    task_id: i64,
+    task_id: TaskId,
     event_type: &str,
     content: &str,
     metadata: Option<&serde_json::Value>,
@@ -274,11 +276,11 @@ pub async fn create_agent_event(
     let tx = conn.transaction().await.context("Failed to begin transaction")?;
     tx.execute(
         "INSERT INTO agent_events (task_id, event_type, content, metadata) VALUES (?1, ?2, ?3, ?4)",
-        libsql::params![task_id, event_type, content, metadata_str],
+        libsql::params![task_id.0, event_type, content, metadata_str],
     )
     .await
     .context("Failed to insert agent event")?;
-    let id = tx.last_insert_rowid();
+    let id = EventId(tx.last_insert_rowid());
     tx.commit().await.context("Failed to commit")?;
     Ok(AgentEvent {
         id,
@@ -294,7 +296,7 @@ pub async fn create_agent_event(
 
 pub async fn get_agent_events(
     conn: &Connection,
-    task_id: i64,
+    task_id: TaskId,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<AgentEvent>> {
@@ -302,7 +304,7 @@ pub async fn get_agent_events(
         .query(
             "SELECT id, task_id, event_type, content, metadata, created_at \
              FROM agent_events WHERE task_id = ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3",
-            (task_id, limit, offset),
+            (task_id.0, limit, offset),
         )
         .await
         .context("Failed to query agent events")?;
@@ -317,8 +319,8 @@ pub async fn get_agent_events(
             None => None,
         };
         events.push(AgentEvent {
-            id: row.get(0)?,
-            task_id: row.get(1)?,
+            id: EventId(row.get::<i64>(0)?),
+            task_id: TaskId(row.get::<i64>(1)?),
             event_type: event_type_str.parse().map_err(|_| {
                 anyhow::anyhow!("invalid event_type in database: '{}'", event_type_str)
             })?,
@@ -333,14 +335,14 @@ pub async fn get_agent_events(
 // Aliases for backward compatibility with callers
 pub async fn get_agent_team_for_run(
     conn: &Connection,
-    run_id: i64,
+    run_id: RunId,
 ) -> Result<Option<AgentTeamDetail>> {
     get_agent_team_detail(conn, run_id).await
 }
 
 pub async fn get_agent_events_for_task(
     conn: &Connection,
-    task_id: i64,
+    task_id: TaskId,
     limit: i64,
 ) -> Result<Vec<AgentEvent>> {
     get_agent_events(conn, task_id, limit, 0).await
@@ -348,7 +350,7 @@ pub async fn get_agent_events_for_task(
 
 pub async fn insert_agent_event(
     conn: &Connection,
-    task_id: i64,
+    task_id: TaskId,
     event_type: &str,
     content: &str,
     metadata: Option<&serde_json::Value>,
@@ -395,7 +397,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(team.id > 0);
+        assert!(team.id.0 > 0);
         assert_eq!(team.run_id, run.id);
         assert_eq!(team.strategy, ExecutionStrategy::WavePipeline);
     }
@@ -426,7 +428,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(task.id > 0);
+        assert!(task.id.0 > 0);
         assert_eq!(task.status, AgentTaskStatus::Pending);
 
         let fetched = get_agent_task(&conn, task.id).await.unwrap();

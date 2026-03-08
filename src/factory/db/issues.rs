@@ -22,8 +22,8 @@ fn row_to_issue(row: &Row) -> Result<Issue> {
         serde_json::from_str(&labels_str).context("Failed to parse issue labels JSON")?;
 
     Ok(Issue {
-        id: row.get(0)?,
-        project_id: row.get(1)?,
+        id: IssueId(row.get::<i64>(0)?),
+        project_id: ProjectId(row.get::<i64>(1)?),
         title: row.get(2)?,
         description: row.get(3)?,
         column,
@@ -40,7 +40,7 @@ const ISSUE_COLS: &str = "id, project_id, title, description, column_name, posit
 
 pub async fn create_issue(
     conn: &Connection,
-    project_id: i64,
+    project_id: ProjectId,
     title: &str,
     description: &str,
     column: &IssueColumn,
@@ -49,7 +49,7 @@ pub async fn create_issue(
     let mut rows = tx
         .query(
             "SELECT COALESCE(MAX(position), -1) FROM issues WHERE project_id = ?1 AND column_name = ?2",
-            (project_id, column.as_str()),
+            (project_id.0, column.as_str()),
         )
         .await
         .context("Failed to get max position")?;
@@ -60,24 +60,24 @@ pub async fn create_issue(
     let position = max_pos + 1;
     tx.execute(
         "INSERT INTO issues (project_id, title, description, column_name, position) VALUES (?1, ?2, ?3, ?4, ?5)",
-        libsql::params![project_id, title, description, column.as_str(), position],
+        libsql::params![project_id.0, title, description, column.as_str(), position],
     )
     .await
     .context("Failed to insert issue")?;
-    let id = tx.last_insert_rowid();
+    let id = IssueId(tx.last_insert_rowid());
     tx.commit().await.context("Failed to commit")?;
     get_issue(conn, id)
         .await?
         .context("Issue not found after insert")
 }
 
-pub async fn list_issues(conn: &Connection, project_id: i64) -> Result<Vec<Issue>> {
+pub async fn list_issues(conn: &Connection, project_id: ProjectId) -> Result<Vec<Issue>> {
     let sql = format!(
         "SELECT {} FROM issues WHERE project_id = ?1 AND deleted_at IS NULL ORDER BY position",
         ISSUE_COLS
     );
     let mut rows = conn
-        .query(&sql, [project_id])
+        .query(&sql, [project_id.0])
         .await
         .context("Failed to query issues")?;
     let mut issues = Vec::new();
@@ -87,13 +87,13 @@ pub async fn list_issues(conn: &Connection, project_id: i64) -> Result<Vec<Issue
     Ok(issues)
 }
 
-pub async fn get_issue(conn: &Connection, id: i64) -> Result<Option<Issue>> {
+pub async fn get_issue(conn: &Connection, id: IssueId) -> Result<Option<Issue>> {
     let sql = format!(
         "SELECT {} FROM issues WHERE id = ?1 AND deleted_at IS NULL",
         ISSUE_COLS
     );
     let mut rows = conn
-        .query(&sql, [id])
+        .query(&sql, [id.0])
         .await
         .context("Failed to query issue")?;
     match rows.next().await? {
@@ -104,7 +104,7 @@ pub async fn get_issue(conn: &Connection, id: i64) -> Result<Option<Issue>> {
 
 pub async fn update_issue(
     conn: &Connection,
-    id: i64,
+    id: IssueId,
     title: Option<&str>,
     description: Option<&str>,
     priority: Option<&str>,
@@ -121,7 +121,7 @@ pub async fn update_issue(
     if let Some(t) = title {
         tx.execute(
             "UPDATE issues SET title = ?1, updated_at = datetime('now') WHERE id = ?2",
-            (t, id),
+            (t, id.0),
         )
         .await
         .context("Failed to update issue title")?;
@@ -129,7 +129,7 @@ pub async fn update_issue(
     if let Some(d) = description {
         tx.execute(
             "UPDATE issues SET description = ?1, updated_at = datetime('now') WHERE id = ?2",
-            (d, id),
+            (d, id.0),
         )
         .await
         .context("Failed to update issue description")?;
@@ -137,7 +137,7 @@ pub async fn update_issue(
     if let Some(p) = priority {
         tx.execute(
             "UPDATE issues SET priority = ?1, updated_at = datetime('now') WHERE id = ?2",
-            (p, id),
+            (p, id.0),
         )
         .await
         .context("Failed to update issue priority")?;
@@ -145,7 +145,7 @@ pub async fn update_issue(
     if let Some(l) = labels {
         tx.execute(
             "UPDATE issues SET labels = ?1, updated_at = datetime('now') WHERE id = ?2",
-            (l, id),
+            (l, id.0),
         )
         .await
         .context("Failed to update issue labels")?;
@@ -159,13 +159,13 @@ pub async fn update_issue(
 
 pub async fn move_issue(
     conn: &Connection,
-    id: i64,
+    id: IssueId,
     column: &IssueColumn,
     position: i32,
 ) -> Result<Issue> {
     conn.execute(
         "UPDATE issues SET column_name = ?1, position = ?2, updated_at = datetime('now') WHERE id = ?3",
-        (column.as_str(), position, id),
+        (column.as_str(), position, id.0),
     )
     .await
     .context("Failed to move issue")?;
@@ -174,11 +174,11 @@ pub async fn move_issue(
         .context("Issue not found after move")
 }
 
-pub async fn delete_issue(conn: &Connection, id: i64) -> Result<bool> {
+pub async fn delete_issue(conn: &Connection, id: IssueId) -> Result<bool> {
     let count = conn
         .execute(
             "UPDATE issues SET deleted_at = datetime('now') WHERE id = ?1 AND deleted_at IS NULL",
-            [id],
+            [id.0],
         )
         .await
         .context("Failed to soft-delete issue")?;
@@ -187,7 +187,7 @@ pub async fn delete_issue(conn: &Connection, id: i64) -> Result<bool> {
 
 pub async fn create_issue_from_github(
     conn: &Connection,
-    project_id: i64,
+    project_id: ProjectId,
     title: &str,
     description: &str,
     github_issue_number: i64,
@@ -197,7 +197,7 @@ pub async fn create_issue_from_github(
     let mut rows = tx
         .query(
             "SELECT COUNT(*) > 0 FROM issues WHERE project_id = ?1 AND github_issue_number = ?2",
-            (project_id, github_issue_number),
+            (project_id.0, github_issue_number),
         )
         .await
         .context("Failed to check for existing github issue")?;
@@ -215,7 +215,7 @@ pub async fn create_issue_from_github(
     let mut rows = tx
         .query(
             "SELECT COALESCE(MAX(position), -1) FROM issues WHERE project_id = ?1 AND column_name = 'backlog'",
-            [project_id],
+            [project_id.0],
         )
         .await
         .context("Failed to get max backlog position")?;
@@ -226,16 +226,16 @@ pub async fn create_issue_from_github(
 
     tx.execute(
         "INSERT INTO issues (project_id, title, description, column_name, position, github_issue_number) VALUES (?1, ?2, ?3, 'backlog', ?4, ?5)",
-        libsql::params![project_id, title, description, max_pos + 1, github_issue_number],
+        libsql::params![project_id.0, title, description, max_pos + 1, github_issue_number],
     )
     .await
     .context("Failed to insert github issue")?;
-    let id = tx.last_insert_rowid();
+    let id = IssueId(tx.last_insert_rowid());
     tx.commit().await.context("Failed to commit")?;
     get_issue(conn, id).await
 }
 
-pub async fn get_board(conn: &Connection, project_id: i64) -> Result<BoardView> {
+pub async fn get_board(conn: &Connection, project_id: ProjectId) -> Result<BoardView> {
     let project = super::projects::get_project(conn, project_id)
         .await?
         .context("Project not found for board view")?;
@@ -268,7 +268,7 @@ pub async fn get_board(conn: &Connection, project_id: i64) -> Result<BoardView> 
                 "SELECT {} FROM pipeline_runs WHERE issue_id = ?1 AND status IN ('queued', 'running') ORDER BY id DESC LIMIT 1",
                 RUN_COLS
             );
-            let mut rows = conn.query(&sql, [iws.issue.id]).await.context("Failed to query active pipeline run for issue")?;
+            let mut rows = conn.query(&sql, [iws.issue.id.0]).await.context("Failed to query active pipeline run for issue")?;
             if let Some(row) = rows.next().await? {
                 iws.active_run = Some(row_to_pipeline_run(&row)?);
             }
@@ -283,7 +283,7 @@ pub async fn get_board(conn: &Connection, project_id: i64) -> Result<BoardView> 
     Ok(BoardView { project, columns })
 }
 
-pub async fn get_issue_detail(conn: &Connection, id: i64) -> Result<Option<IssueDetail>> {
+pub async fn get_issue_detail(conn: &Connection, id: IssueId) -> Result<Option<IssueDetail>> {
     let issue = match get_issue(conn, id).await? {
         Some(i) => i,
         None => return Ok(None),
@@ -294,7 +294,7 @@ pub async fn get_issue_detail(conn: &Connection, id: i64) -> Result<Option<Issue
         RUN_COLS
     );
     let mut rows = conn
-        .query(&sql, [id])
+        .query(&sql, [id.0])
         .await
         .context("Failed to query pipeline runs")?;
     let mut runs = Vec::new();
@@ -329,7 +329,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(issue.id > 0);
+        assert!(issue.id.0 > 0);
         assert_eq!(issue.project_id, project.id);
         assert_eq!(issue.title, "Fix bug #42");
         assert_eq!(issue.description, "The login page crashes");
@@ -398,7 +398,7 @@ mod tests {
         let mut rows = conn
             .query(
                 "SELECT id, title, deleted_at FROM issues WHERE id = ?1",
-                [issue.id],
+                [issue.id.0],
             )
             .await
             .unwrap();
@@ -544,7 +544,7 @@ mod tests {
         assert_eq!(detail.runs[1].phases.len(), 0);
 
         // Non-existent issue should return None
-        let missing = get_issue_detail(&conn, 99999).await.unwrap();
+        let missing = get_issue_detail(&conn, IssueId(99999)).await.unwrap();
         assert!(missing.is_none());
     }
 

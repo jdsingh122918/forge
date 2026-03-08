@@ -14,6 +14,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use tracing::warn;
 
 use crate::init::get_forge_dir;
 use crate::orchestrator::StateManager;
@@ -412,7 +413,7 @@ pub fn list_patterns() -> Result<Vec<Pattern>> {
             match Pattern::load(&path) {
                 Ok(pattern) => patterns.push(pattern),
                 Err(e) => {
-                    eprintln!("Warning: Failed to load pattern {}: {}", path.display(), e);
+                    warn!("Failed to load pattern {}: {}", path.display(), e);
                 }
             }
         }

@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use libsql::{Connection, Row};
 
-use crate::factory::models::Project;
+use crate::factory::models::{Project, ProjectId};
 
 fn row_to_project(row: &Row) -> Result<Project> {
     Ok(Project {
-        id: row.get(0)?,
+        id: ProjectId(row.get::<i64>(0)?),
         name: row.get(1)?,
         path: row.get(2)?,
         github_repo: row.get(3)?,
@@ -21,7 +21,7 @@ pub async fn create_project(conn: &Connection, name: &str, path: &str) -> Result
     )
     .await
     .context("Failed to insert project")?;
-    let id = tx.last_insert_rowid();
+    let id = ProjectId(tx.last_insert_rowid());
     tx.commit().await.context("Failed to commit")?;
     get_project(conn, id)
         .await?
@@ -43,11 +43,11 @@ pub async fn list_projects(conn: &Connection) -> Result<Vec<Project>> {
     Ok(projects)
 }
 
-pub async fn get_project(conn: &Connection, id: i64) -> Result<Option<Project>> {
+pub async fn get_project(conn: &Connection, id: ProjectId) -> Result<Option<Project>> {
     let mut rows = conn
         .query(
             "SELECT id, name, path, github_repo, created_at FROM projects WHERE id = ?1 AND deleted_at IS NULL",
-            [id],
+            [id.0],
         )
         .await
         .context("Failed to query project")?;
@@ -59,12 +59,12 @@ pub async fn get_project(conn: &Connection, id: i64) -> Result<Option<Project>> 
 
 pub async fn update_project_github_repo(
     conn: &Connection,
-    id: i64,
+    id: ProjectId,
     github_repo: &str,
 ) -> Result<Project> {
     conn.execute(
         "UPDATE projects SET github_repo = ?1 WHERE id = ?2",
-        (github_repo, id),
+        (github_repo, id.0),
     )
     .await
     .context("Failed to update project github_repo")?;
@@ -73,7 +73,7 @@ pub async fn update_project_github_repo(
         .context("Project not found after github_repo update")
 }
 
-pub async fn delete_project(conn: &Connection, id: i64) -> Result<bool> {
+pub async fn delete_project(conn: &Connection, id: ProjectId) -> Result<bool> {
     // Manually clean up agent tables that lack ON DELETE CASCADE.
     // Chain: project -> issues -> pipeline_runs -> agent_teams -> agent_tasks -> agent_events
     let tx = conn.transaction().await.context("Failed to begin transaction")?;
@@ -85,7 +85,7 @@ pub async fn delete_project(conn: &Connection, id: i64) -> Result<bool> {
             JOIN issues i ON r.issue_id = i.id
             WHERE i.project_id = ?1
         )",
-        [id],
+        [id.0],
     )
     .await
     .context("Failed to delete agent events for project")?;
@@ -96,7 +96,7 @@ pub async fn delete_project(conn: &Connection, id: i64) -> Result<bool> {
             JOIN issues i ON r.issue_id = i.id
             WHERE i.project_id = ?1
         )",
-        [id],
+        [id.0],
     )
     .await
     .context("Failed to delete agent tasks for project")?;
@@ -105,7 +105,7 @@ pub async fn delete_project(conn: &Connection, id: i64) -> Result<bool> {
         "UPDATE pipeline_runs SET team_id = NULL WHERE issue_id IN (
             SELECT i.id FROM issues i WHERE i.project_id = ?1
         )",
-        [id],
+        [id.0],
     )
     .await
     .context("Failed to clear team_id on pipeline runs")?;
@@ -115,13 +115,13 @@ pub async fn delete_project(conn: &Connection, id: i64) -> Result<bool> {
             JOIN issues i ON r.issue_id = i.id
             WHERE i.project_id = ?1
         )",
-        [id],
+        [id.0],
     )
     .await
     .context("Failed to delete agent teams for project")?;
 
     let count = tx
-        .execute("DELETE FROM projects WHERE id = ?1", [id])
+        .execute("DELETE FROM projects WHERE id = ?1", [id.0])
         .await
         .context("Failed to delete project")?;
     tx.commit().await.context("Failed to commit")?;
@@ -143,7 +143,7 @@ mod tests {
             .unwrap();
         assert_eq!(project.name, "my-project");
         assert_eq!(project.path, "/tmp/my-project");
-        assert!(project.id > 0);
+        assert!(project.id.0 > 0);
         assert!(!project.created_at.is_empty());
 
         let fetched = get_project(&conn, project.id)

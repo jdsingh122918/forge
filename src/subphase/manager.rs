@@ -7,6 +7,7 @@
 //! - Coordinating with parent phase completion
 
 use anyhow::Result;
+use tracing::{debug, warn};
 
 use crate::phase::{Phase, PhasesFile, SubPhase, SubPhaseStatus};
 use crate::signals::SubPhaseSpawnSignal;
@@ -59,8 +60,8 @@ impl SubPhaseManager {
             if validation.is_valid() {
                 let sub_phase = spawn_from_signal(signal, parent);
                 if self.verbose {
-                    eprintln!(
-                        "  Sub-phase spawned: {} (budget: {})",
+                    debug!(
+                        "Sub-phase spawned: {} (budget: {})",
                         sub_phase.number, sub_phase.budget
                     );
                 }
@@ -68,7 +69,7 @@ impl SubPhaseManager {
             } else if self.verbose
                 && let Some(msg) = validation.error_message()
             {
-                eprintln!("  Sub-phase spawn rejected: {}", msg);
+                warn!("Sub-phase spawn rejected: {}", msg);
             }
 
             results.push((signal.clone(), validation));

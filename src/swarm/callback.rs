@@ -33,6 +33,7 @@
 //! ```
 
 use anyhow::{Context, Result};
+use tracing::error;
 use axum::{
     Json, Router,
     extract::State,
@@ -245,7 +246,7 @@ impl CallbackServer {
                 })
                 .await
             {
-                eprintln!("Callback server error: {}", e);
+                error!("Callback server error: {}", e);
             }
         });
 

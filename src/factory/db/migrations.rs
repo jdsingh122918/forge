@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use libsql::Connection;
+use tracing::{info, debug};
 
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("migrations/001_initial.sql")),
@@ -21,7 +22,7 @@ pub async fn run_migrations(conn: &Connection) -> Result<()> {
     if current_version == 0 {
         let bootstrapped = bootstrap_existing_db(conn).await?;
         if bootstrapped > 0 {
-            eprintln!("[db] Bootstrapped existing database at migration version {bootstrapped}");
+            info!("Bootstrapped existing database at migration version {bootstrapped}");
             return run_from_version(conn, bootstrapped).await;
         }
     }
@@ -68,7 +69,7 @@ async fn run_from_version(conn: &Connection, current: i64) -> Result<()> {
         if *version <= current {
             continue;
         }
-        eprintln!("[db] Running migration {version}...");
+        debug!("Running migration {version}...");
         conn.execute_batch(sql)
             .await
             .with_context(|| format!("Failed to run migration {version}"))?;

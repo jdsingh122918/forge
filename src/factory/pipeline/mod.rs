@@ -15,6 +15,8 @@ use super::planner::{PlanProvider, PlanResponse, Planner};
 use super::sandbox::{DockerSandbox, SandboxConfig};
 use super::ws::{WsMessage, broadcast_message};
 
+use tracing::{debug, error, info, warn};
+
 use execution::*;
 use git::*;
 
@@ -113,20 +115,14 @@ impl PipelineRunner {
                 match handle {
                     RunHandle::Process(mut child) => {
                         if let Err(e) = child.kill().await {
-                            eprintln!(
-                                "[factory] WARNING: failed to kill process for run {}: {}",
-                                run_id, e
-                            );
+                            warn!(run_id, error = %e, "Failed to kill process");
                         }
                     }
                     RunHandle::Container(container_id) => {
                         if let Some(ref sandbox) = self.sandbox
                             && let Err(e) = sandbox.stop(&container_id).await
                         {
-                            eprintln!(
-                                "[factory] WARNING: failed to stop container {} for run {}: {}",
-                                container_id, run_id, e
-                            );
+                            warn!(run_id, container_id, error = %e, "Failed to stop container");
                         }
                     }
                 }
@@ -134,7 +130,7 @@ impl PipelineRunner {
         }
 
         // Update DB status to Cancelled and move issue back to Ready
-        let run = db.cancel_pipeline_run(run_id).await?;
+        let run = db.cancel_pipeline_run(RunId(run_id)).await?;
         broadcast_message(tx, &WsMessage::PipelineFailed { run: run.clone() });
 
         // Auto-move issue back to Ready
@@ -148,10 +144,7 @@ impl PipelineRunner {
                 .move_issue(issue_id, &IssueColumn::Ready, 0)
                 .await
             {
-                eprintln!(
-                    "[pipeline] run_id={}: failed to move issue to Ready: {:#}",
-                    run_id, e
-                );
+                error!(run_id, error = %e, "Failed to move issue to Ready");
             }
             broadcast_message(
                 tx,
@@ -176,24 +169,18 @@ impl PipelineRunner {
     pub async fn shutdown(&self) {
         let mut processes = self.running_processes.lock().await;
         for (run_id, handle) in processes.drain() {
-            eprintln!("[factory] Shutting down pipeline run {}", run_id);
+            info!(run_id, "Shutting down pipeline run");
             match handle {
                 RunHandle::Process(mut child) => {
                     if let Err(e) = child.kill().await {
-                        eprintln!(
-                            "[factory] WARNING: failed to kill process for run {}: {}",
-                            run_id, e
-                        );
+                        warn!(run_id, error = %e, "Failed to kill process");
                     }
                 }
                 RunHandle::Container(container_id) => {
                     if let Some(ref sandbox) = self.sandbox
                         && let Err(e) = sandbox.stop(&container_id).await
                     {
-                        eprintln!(
-                            "[factory] WARNING: failed to stop container {} for run {}: {}",
-                            container_id, run_id, e
-                        );
+                        warn!(run_id, container_id, error = %e, "Failed to stop container");
                     }
                 }
             }
@@ -234,16 +221,13 @@ impl PipelineRunner {
         {
             Ok(plan) => plan,
             Err(e) => {
-                eprintln!(
-                    "[pipeline] run_id={}: Planning failed, falling back to single task: {:#}",
-                    run_id, e
-                );
+                warn!(run_id, error = %e, "Planning failed, falling back to single task");
                 // Broadcast a warning to the UI
                 broadcast_message(
                     tx,
                     &WsMessage::AgentSignal {
-                        run_id,
-                        task_id: 0,
+                        run_id: RunId(run_id),
+                        task_id: TaskId(0),
                         signal_type: SignalType::Blocker,
                         content: format!("Planning failed, using single-task fallback: {}", e),
                     },
@@ -292,11 +276,11 @@ impl PipelineRunner {
             ));
         }
         let reasoning = plan.reasoning.clone();
-        let team = db.create_agent_team(run_id, &strategy, &isolation, &reasoning).await?;
+        let team = db.create_agent_team(RunId(run_id), &strategy, &isolation, &reasoning).await?;
 
         let mut db_tasks = Vec::new();
         for (name, description, role, wave, depends_on, task_isolation) in &parsed_tasks {
-            let depends: Vec<i64> = depends_on
+            let depends: Vec<TaskId> = depends_on
                 .iter()
                 .filter_map(|&idx| db_tasks.get(idx as usize).map(|t: &AgentTask| t.id))
                 .collect();
@@ -316,7 +300,7 @@ impl PipelineRunner {
         broadcast_message(
             tx,
             &WsMessage::TeamCreated {
-                run_id,
+                run_id: RunId(run_id),
                 team_id: team.id,
                 strategy: team.strategy.clone(),
                 isolation: team.isolation.clone(),
@@ -336,11 +320,11 @@ impl PipelineRunner {
                 continue;
             }
 
-            let task_ids: Vec<i64> = wave_tasks.iter().map(|t| t.id).collect();
+            let task_ids: Vec<TaskId> = wave_tasks.iter().map(|t| t.id).collect();
             broadcast_message(
                 tx,
                 &WsMessage::WaveStarted {
-                    run_id,
+                    run_id: RunId(run_id),
                     team_id: team.id,
                     wave,
                     task_ids: task_ids.clone(),
@@ -354,7 +338,7 @@ impl PipelineRunner {
                 let (working_dir, task_branch) = if task.isolation_type
                     == IsolationStrategy::Worktree
                 {
-                    match task_runner.setup_worktree(run_id, task, base_branch).await {
+                    match task_runner.setup_worktree(RunId(run_id), task, base_branch).await {
                         Ok((path, branch)) => (path, Some(branch)),
                         Err(e) => {
                             if wave_tasks.len() > 1 {
@@ -369,15 +353,14 @@ impl PipelineRunner {
                                     e
                                 );
                             }
-                            eprintln!(
-                                "[pipeline] run_id={}: worktree setup failed for task {} ({}): {:#}. \
-                                 Falling back to shared directory (single-task wave).",
-                                run_id, task.id, task.name, e
+                            warn!(
+                                run_id, task_id = task.id.0, task_name = %task.name, error = %e,
+                                "Worktree setup failed, falling back to shared directory (single-task wave)"
                             );
                             broadcast_message(
                                 tx,
                                 &WsMessage::AgentSignal {
-                                    run_id,
+                                    run_id: RunId(run_id),
                                     task_id: task.id,
                                     signal_type: SignalType::Blocker,
                                     content: format!(
@@ -412,7 +395,7 @@ impl PipelineRunner {
                 let handle = tokio::spawn(async move {
                     executor_ref
                         .run_task(
-                            run_id_clone,
+                            RunId(run_id_clone),
                             &task_clone,
                             use_team,
                             &dir_clone,
@@ -434,14 +417,11 @@ impl PipelineRunner {
                         failed_count += 1;
                     }
                     Ok(Err(e)) => {
-                        eprintln!(
-                            "[pipeline] run_id={}: task execution error: {:#}",
-                            run_id, e
-                        );
+                        error!(run_id, error = %e, "Task execution error");
                         failed_count += 1;
                     }
                     Err(join_err) => {
-                        eprintln!("[pipeline] run_id={}: task panicked: {}", run_id, join_err);
+                        error!(run_id, error = %join_err, "Task panicked");
                         failed_count += 1;
                     }
                 }
@@ -459,7 +439,7 @@ impl PipelineRunner {
                 let git_lock = git_locks.get(project_path).await;
                 let _guard = git_lock.lock().await;
 
-                broadcast_message(tx, &WsMessage::MergeStarted { run_id, wave });
+                broadcast_message(tx, &WsMessage::MergeStarted { run_id: RunId(run_id), wave });
 
                 let mut merge_conflicts = false;
                 for (_task, _working_dir, task_branch) in &task_working_dirs {
@@ -468,18 +448,12 @@ impl PipelineRunner {
                         match merged {
                             Ok(true) => { /* success */ }
                             Ok(false) => {
-                                eprintln!(
-                                    "[pipeline] run_id={}: merge conflict for branch {}",
-                                    run_id, branch
-                                );
+                                warn!(run_id, branch, "Merge conflict");
                                 merge_conflicts = true;
                                 break;
                             }
                             Err(e) => {
-                                eprintln!(
-                                    "[pipeline] run_id={}: merge command failed for branch {}: {:#}",
-                                    run_id, branch, e
-                                );
+                                error!(run_id, branch, error = %e, "Merge command failed");
                                 merge_conflicts = true;
                                 break;
                             }
@@ -490,7 +464,7 @@ impl PipelineRunner {
                 broadcast_message(
                     tx,
                     &WsMessage::MergeCompleted {
-                        run_id,
+                        run_id: RunId(run_id),
                         wave,
                         conflicts: merge_conflicts,
                     },
@@ -501,18 +475,14 @@ impl PipelineRunner {
             // Always clean up ALL worktrees, even after merge conflict
             for dir in &worktree_paths {
                 if let Err(e) = task_runner.cleanup_worktree(dir).await {
-                    eprintln!(
-                        "[pipeline] Failed to clean up worktree {}: {:#}",
-                        dir.display(),
-                        e
-                    );
+                    warn!(path = %dir.display(), error = %e, "Failed to clean up worktree");
                 }
             }
 
             broadcast_message(
                 tx,
                 &WsMessage::WaveCompleted {
-                    run_id,
+                    run_id: RunId(run_id),
                     team_id: team.id,
                     wave,
                     success_count,
@@ -553,7 +523,7 @@ impl PipelineRunner {
             broadcast_message(
                 tx,
                 &WsMessage::PipelineError {
-                    run_id,
+                    run_id: RunId(run_id),
                     message: format!("Failed to auto-generate phases: {:#}", e),
                 },
             );
@@ -564,15 +534,12 @@ impl PipelineRunner {
             let timeout = match SandboxConfig::load(std::path::Path::new(project_path)) {
                 Ok(config) => config.timeout,
                 Err(e) => {
-                    eprintln!(
-                        "[pipeline] run_id={}: Failed to load sandbox config, using default timeout (1800s): {:#}",
-                        run_id, e
-                    );
+                    warn!(run_id, error = %e, "Failed to load sandbox config, using default timeout (1800s)");
                     1800
                 }
             };
             execute_pipeline_docker(
-                run_id,
+                RunId(run_id),
                 project_path,
                 issue_title,
                 issue_description,
@@ -585,7 +552,7 @@ impl PipelineRunner {
             .await
         } else {
             execute_pipeline_streaming(
-                run_id,
+                RunId(run_id),
                 project_path,
                 issue_title,
                 issue_description,
@@ -631,15 +598,12 @@ impl PipelineRunner {
         {
             let need_move = issue.column != IssueColumn::InProgress;
             let run = db
-                .update_pipeline_run(run_id, &PipelineStatus::Running, None, None)
+                .update_pipeline_run(RunId(run_id), &PipelineStatus::Running, None, None)
                 .await?;
             if need_move
                 && let Err(e) = db.move_issue(issue_id, &IssueColumn::InProgress, 0).await
             {
-                eprintln!(
-                    "[pipeline] run_id={}: failed to move issue to InProgress: {:#}",
-                    run_id, e
-                );
+                error!(run_id, error = %e, "Failed to move issue to InProgress");
             }
             broadcast_message(&tx, &WsMessage::PipelineStarted { run });
             if issue.column != IssueColumn::InProgress {
@@ -669,33 +633,27 @@ impl PipelineRunner {
                     Ok(name) => {
                         // Store branch name in DB and broadcast
                         if let Err(e) = db
-                            .update_pipeline_branch(run_id, &name)
+                            .update_pipeline_branch(RunId(run_id), &name)
                             .await
                         {
-                            eprintln!(
-                                "[pipeline] run_id={}: failed to update pipeline branch: {:#}",
-                                run_id, e
-                            );
+                            error!(run_id, error = %e, "Failed to update pipeline branch");
                         }
                         broadcast_message(
                             &tx,
                             &WsMessage::PipelineBranchCreated {
-                                run_id,
+                                run_id: RunId(run_id),
                                 branch_name: name.clone(),
                             },
                         );
                         Some(name)
                     }
                     Err(e) => {
-                        eprintln!(
-                            "[pipeline] run_id={}: failed to create git branch: {:#}. Continuing without branch isolation.",
-                            run_id, e
-                        );
+                        warn!(run_id, error = %e, "Failed to create git branch, continuing without branch isolation");
                         broadcast_message(
                             &tx,
                             &WsMessage::AgentSignal {
-                                run_id,
-                                task_id: 0,
+                                run_id: RunId(run_id),
+                                task_id: TaskId(0),
                                 signal_type: SignalType::Blocker,
                                 content: format!(
                                     "[pipeline] Git branch creation failed, continuing without branch isolation: {}",
@@ -709,14 +667,11 @@ impl PipelineRunner {
             };
 
             // Construct real planner and task runner for the agent team
-            eprintln!(
-                "[pipeline] run_id={}: starting planner for project at {}",
-                run_id, project_path
-            );
+            debug!(run_id, project_path, "Starting planner");
             broadcast_message(
                 &tx,
                 &WsMessage::PipelineOutput {
-                    run_id,
+                    run_id: RunId(run_id),
                     content: "Analyzing codebase and planning tasks...".to_string(),
                 },
             );
@@ -740,14 +695,14 @@ impl PipelineRunner {
             )
             .await;
 
-            eprintln!(
-                "[pipeline] run_id={}: planner returned: {}",
+            debug!(
                 run_id,
-                match &team_result {
-                    Ok(PlanOutcome::TeamExecuted(_)) => "TeamExecuted".to_string(),
-                    Ok(PlanOutcome::FallbackToForge) => "FallbackToForge".to_string(),
-                    Err(e) => format!("Error: {:#}", e),
-                }
+                outcome = match &team_result {
+                    Ok(PlanOutcome::TeamExecuted(_)) => "TeamExecuted",
+                    Ok(PlanOutcome::FallbackToForge) => "FallbackToForge",
+                    Err(_) => "Error",
+                },
+                "Planner returned"
             );
             let result = match team_result {
                 Ok(PlanOutcome::TeamExecuted(summary)) => {
@@ -755,14 +710,11 @@ impl PipelineRunner {
                     Ok(summary)
                 }
                 Ok(PlanOutcome::FallbackToForge) => {
-                    eprintln!(
-                        "[pipeline] run_id={}: single-task plan, using forge pipeline",
-                        run_id
-                    );
+                    debug!(run_id, "Single-task plan, using forge pipeline");
                     broadcast_message(
                         &tx,
                         &WsMessage::PipelineOutput {
-                            run_id,
+                            run_id: RunId(run_id),
                             content: "Running single-task pipeline...".to_string(),
                         },
                     );
@@ -780,15 +732,12 @@ impl PipelineRunner {
                     .await
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[pipeline] run_id={}: agent team failed unexpectedly: {:#}",
-                        run_id, e
-                    );
+                    error!(run_id, error = %e, "Agent team failed unexpectedly");
                     broadcast_message(
                         &tx,
                         &WsMessage::AgentSignal {
-                            run_id,
-                            task_id: 0,
+                            run_id: RunId(run_id),
+                            task_id: TaskId(0),
                             signal_type: SignalType::Blocker,
                             content: format!(
                                 "[pipeline] Agent team execution failed, falling back to sequential pipeline: {}",
@@ -820,32 +769,26 @@ impl PipelineRunner {
             // Check if already cancelled (e.g., by cancel() call)
             {
                 let is_cancelled = match db
-                    .get_pipeline_run(run_id)
+                    .get_pipeline_run(RunId(run_id))
                     .await
                     .map(|r| r.is_some_and(|r| r.status == PipelineStatus::Cancelled))
                 {
                     Ok(cancelled) => cancelled,
                     Err(e) => {
-                        eprintln!(
-                            "[pipeline] run_id={}: DB error checking cancellation: {:#}",
-                            run_id, e
-                        );
+                        error!(run_id, error = %e, "DB error checking cancellation");
                         // Attempt to mark the run as failed so it doesn't stay stuck in "Running"
                         let error_msg = format!("DB error during cancellation check: {e:#}");
                         if let Err(e2) = db.update_pipeline_run(
-                            run_id,
+                            RunId(run_id),
                             &PipelineStatus::Failed,
                             None,
                             Some(&error_msg),
                         ).await {
-                            eprintln!(
-                                "[pipeline] run_id={}: CRITICAL: also failed to mark run as failed: {:#}",
-                                run_id, e2
-                            );
+                            error!(run_id, error = %e2, "CRITICAL: also failed to mark run as failed");
                             // Last resort: broadcast so UI doesn't show "running" forever
                             broadcast_message(&tx, &WsMessage::AgentSignal {
-                                run_id,
-                                task_id: 0,
+                                run_id: RunId(run_id),
+                                task_id: TaskId(0),
                                 signal_type: SignalType::Blocker,
                                 content: format!("[pipeline] Run failed but could not persist status: {error_msg}"),
                             });
@@ -877,47 +820,38 @@ impl PipelineRunner {
                         match pr_result {
                             Ok(pr_url) => {
                                 if let Err(e) = db
-                                    .update_pipeline_pr_url(run_id, &pr_url)
+                                    .update_pipeline_pr_url(RunId(run_id), &pr_url)
                                     .await
                                 {
-                                    eprintln!(
-                                        "[pipeline] run_id={}: failed to update pipeline PR URL: {:#}",
-                                        run_id, e
-                                    );
+                                    error!(run_id, error = %e, "Failed to update pipeline PR URL");
                                 }
                                 broadcast_message(
                                     &tx,
-                                    &WsMessage::PipelinePrCreated { run_id, pr_url },
+                                    &WsMessage::PipelinePrCreated { run_id: RunId(run_id), pr_url },
                                 );
                             }
                             Err(e) => {
-                                eprintln!(
-                                    "[pipeline] run_id={}: PR creation failed (pipeline still completed): {:#}",
-                                    run_id, e
-                                );
+                                warn!(run_id, error = %e, "PR creation failed (pipeline still completed)");
                             }
                         }
                     }
 
                     if let Err(e) = db.move_issue(issue_id, &IssueColumn::InReview, 0).await {
-                        eprintln!("[pipeline] run_id={}: failed to move issue to InReview: {:#}", run_id, e);
+                        error!(run_id, error = %e, "Failed to move issue to InReview");
                     }
                     match db.update_pipeline_run(
-                        run_id,
+                        RunId(run_id),
                         &PipelineStatus::Completed,
                         Some(&summary),
                         None,
                     ).await {
                         Ok(run) => broadcast_message(&tx, &WsMessage::PipelineCompleted { run }),
                         Err(e) => {
-                            eprintln!(
-                                "[pipeline] run_id={}: CRITICAL: completed but failed to update DB: {:#}",
-                                run_id, e
-                            );
+                            error!(run_id, error = %e, "CRITICAL: completed but failed to update DB");
                             // Still broadcast completion so UI doesn't show "running" forever
                             broadcast_message(&tx, &WsMessage::AgentSignal {
-                                run_id,
-                                task_id: 0,
+                                run_id: RunId(run_id),
+                                task_id: TaskId(0),
                                 signal_type: SignalType::Blocker,
                                 content: format!("[pipeline] Pipeline completed but failed to persist status: {}", e),
                             });
@@ -937,7 +871,7 @@ impl PipelineRunner {
                     let error_msg = format!("{:#}", e);
                     match db
                         .update_pipeline_run(
-                            run_id,
+                            RunId(run_id),
                             &PipelineStatus::Failed,
                             None,
                             Some(&error_msg),
@@ -946,16 +880,13 @@ impl PipelineRunner {
                     {
                         Ok(run) => broadcast_message(&tx, &WsMessage::PipelineFailed { run }),
                         Err(e) => {
-                            eprintln!(
-                                "[pipeline] run_id={}: CRITICAL: failed but could not update DB: {:#}",
-                                run_id, e
-                            );
+                            error!(run_id, error = %e, "CRITICAL: failed but could not update DB");
                             // Still broadcast failure so UI doesn't show "running" forever
                             broadcast_message(
                                 &tx,
                                 &WsMessage::AgentSignal {
-                                    run_id,
-                                    task_id: 0,
+                                    run_id: RunId(run_id),
+                                    task_id: TaskId(0),
                                     signal_type: SignalType::Blocker,
                                     content: format!(
                                         "[pipeline] Pipeline failed but could not persist error status: {}",
@@ -1092,7 +1023,7 @@ mod tests {
 
         let runner = PipelineRunner::new("/tmp/nonexistent", None);
         runner
-            .start_run(run.id, &issue, db.clone(), tx)
+            .start_run(run.id.0, &issue, db.clone(), tx)
             .await
             .unwrap();
 
@@ -1125,7 +1056,7 @@ mod tests {
 
         let runner = PipelineRunner::new("/tmp", None);
         runner
-            .start_run(run.id, &issue, db.clone(), tx)
+            .start_run(run.id.0, &issue, db.clone(), tx)
             .await
             .unwrap();
 
@@ -1168,7 +1099,7 @@ mod tests {
 
         let runner = PipelineRunner::new(tmp_path, None);
         runner
-            .start_run(run.id, &issue, db.clone(), tx.clone())
+            .start_run(run.id.0, &issue, db.clone(), tx.clone())
             .await
             .unwrap();
 
@@ -1176,20 +1107,20 @@ mod tests {
         for _ in 0..100 {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             let processes = runner.running_processes.lock().await;
-            if processes.contains_key(&run.id) {
+            if processes.contains_key(&run.id.0) {
                 tracked = true;
                 break;
             }
         }
         assert!(tracked, "Process should be tracked within 10 seconds");
 
-        let cancelled_run = runner.cancel(run.id, &db, &tx).await.unwrap();
+        let cancelled_run = runner.cancel(run.id.0, &db, &tx).await.unwrap();
         assert_eq!(cancelled_run.status, PipelineStatus::Cancelled);
 
         {
             let processes = runner.running_processes.lock().await;
             assert!(
-                !processes.contains_key(&run.id),
+                !processes.contains_key(&run.id.0),
                 "Process should be removed after cancel"
             );
         }
@@ -1223,7 +1154,7 @@ mod tests {
 
         let runner = PipelineRunner::new(tmp_path, None);
         runner
-            .start_run(run.id, &issue, db.clone(), tx)
+            .start_run(run.id.0, &issue, db.clone(), tx)
             .await
             .unwrap();
 
@@ -1231,7 +1162,7 @@ mod tests {
         for _ in 0..100 {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             let processes = runner.running_processes.lock().await;
-            if !processes.contains_key(&run.id) {
+            if !processes.contains_key(&run.id.0) {
                 cleaned = true;
                 break;
             }
@@ -1388,7 +1319,7 @@ mod tests {
     impl TaskRunner for MockTaskRunner {
         async fn setup_worktree(
             &self,
-            _run_id: i64,
+            _run_id: RunId,
             task: &AgentTask,
             _base_branch: &str,
         ) -> Result<(PathBuf, String)> {
@@ -1405,7 +1336,7 @@ mod tests {
 
         async fn run_task(
             &self,
-            _run_id: i64,
+            _run_id: RunId,
             task: &AgentTask,
             _use_team: bool,
             _working_dir: &Path,
@@ -1448,7 +1379,7 @@ mod tests {
         db.update_pipeline_run(run.id, &PipelineStatus::Running, None, None)
             .await
             .unwrap();
-        (db, run.id)
+        (db, run.id.0)
     }
 
     // ── FallbackToForge decision tests ──────────────────────────────

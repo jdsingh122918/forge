@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use std::path::PathBuf;
+use tracing::warn;
 
 use super::super::Cli;
 
@@ -455,8 +456,8 @@ pub async fn run_orchestrator(
                     {
                         Ok(answer) => answer,
                         Err(e) => {
-                            eprintln!(
-                                "Warning: Could not display blocker confirmation dialog: {}. \
+                            warn!(
+                                "Could not display blocker confirmation dialog: {}. \
                                  Stopping. Re-run with --yes to auto-continue past blockers.",
                                 e
                             );

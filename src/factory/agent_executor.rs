@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::collections::HashMap;
+use tracing::{self, error, warn};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -9,7 +10,7 @@ use tokio::process::Command;
 use tokio::sync::{Mutex, broadcast};
 
 use crate::factory::db::DbHandle;
-use crate::factory::models::{AgentEventType, AgentTask, AgentTaskStatus, FileAction, SignalType};
+use crate::factory::models::{AgentEventType, AgentTask, AgentTaskStatus, FileAction, RunId, SignalType, TaskId};
 use crate::factory::pipeline::{StreamJsonEvent, extract_file_change, parse_stream_json_line};
 use crate::factory::ws::{WsMessage, broadcast_message};
 
@@ -19,7 +20,7 @@ use crate::factory::ws::{WsMessage, broadcast_message};
 pub trait TaskRunner: Send + Sync {
     async fn setup_worktree(
         &self,
-        run_id: i64,
+        run_id: RunId,
         task: &AgentTask,
         base_branch: &str,
     ) -> Result<(PathBuf, String)>;
@@ -28,7 +29,7 @@ pub trait TaskRunner: Send + Sync {
 
     async fn run_task(
         &self,
-        run_id: i64,
+        run_id: RunId,
         task: &AgentTask,
         use_team: bool,
         working_dir: &Path,
@@ -52,7 +53,7 @@ pub struct AgentExecutor {
     project_path: String,
     db: DbHandle,
     tx: broadcast::Sender<String>,
-    running: Arc<Mutex<HashMap<i64, AgentHandle>>>,
+    running: Arc<Mutex<HashMap<TaskId, AgentHandle>>>,
 }
 
 /// Parsed output event from agent stdout
@@ -187,7 +188,7 @@ impl AgentExecutor {
     /// Set up worktree for a task
     pub async fn setup_worktree(
         &self,
-        run_id: i64,
+        run_id: RunId,
         task: &AgentTask,
         base_branch: &str,
     ) -> Result<(PathBuf, String)> {
@@ -262,7 +263,7 @@ impl AgentExecutor {
     /// process failed (status updated in DB), or Err on infrastructure failures.
     pub async fn run_task(
         &self,
-        run_id: i64,
+        run_id: RunId,
         task: &AgentTask,
         use_team: bool,
         working_dir: &Path,
@@ -332,7 +333,7 @@ impl AgentExecutor {
 
             // Channel-based event batching for DB writes
             let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<(
-                i64,
+                TaskId,
                 String,
                 String,
                 Option<serde_json::Value>,
@@ -341,18 +342,18 @@ impl AgentExecutor {
             let db_writer = self.db.clone();
             let flush_interval = std::time::Duration::from_secs(2);
             let writer_task = tokio::spawn(async move {
-                let mut batch: Vec<(i64, String, String, Option<serde_json::Value>)> = Vec::new();
+                let mut batch: Vec<(TaskId, String, String, Option<serde_json::Value>)> = Vec::new();
 
                 async fn flush_events(
                     db: &DbHandle,
-                    batch: &mut Vec<(i64, String, String, Option<serde_json::Value>)>,
+                    batch: &mut Vec<(TaskId, String, String, Option<serde_json::Value>)>,
                 ) {
                     for (task_id, event_type, content, metadata) in batch.drain(..) {
                         if let Err(e) = db
                             .create_agent_event(task_id, &event_type, &content, metadata.as_ref())
                             .await
                         {
-                            eprintln!("[agent] Failed to write event: {e:#}");
+                            tracing::error!(error = %e, "Failed to write event");
                         }
                     }
                 }
@@ -404,10 +405,7 @@ impl AgentExecutor {
                         ))
                         .is_err()
                 {
-                    eprintln!(
-                        "[agent] Event channel closed for task {} -- remaining events will not be persisted",
-                        task_id
-                    );
+                    tracing::warn!(task_id = task_id.0, "Event channel closed -- remaining events will not be persisted");
                     channel_closed = true;
                 }
 
@@ -504,10 +502,7 @@ impl AgentExecutor {
 
             drop(event_tx);
             if let Err(e) = writer_task.await {
-                eprintln!(
-                    "[agent] Event writer task for task {} panicked: {}",
-                    task_id, e
-                );
+                tracing::error!(task_id = task_id.0, error = %e, "Event writer task panicked");
             }
 
             if !thinking_buffer.is_empty() {
@@ -588,8 +583,8 @@ impl AgentExecutor {
 
             Ok(success)
         } else {
-            eprintln!(
-                "[agent] BUG: process handle for task {} missing from running map",
+            error!(
+                "BUG: process handle for task {} missing from running map",
                 task_id
             );
             self.db
@@ -657,8 +652,8 @@ impl AgentExecutor {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!(
-                "[agent] Merge of {} into {} failed: {}",
+            warn!(
+                "Merge of {} into {} failed: {}",
                 task_branch,
                 target_branch,
                 stderr.trim()
@@ -696,8 +691,8 @@ impl AgentExecutor {
                     .output()
                     .await
             {
-                eprintln!(
-                    "[agent] CRITICAL: checkout recovery to {} failed: {}",
+                error!(
+                    "CRITICAL: checkout recovery to {} failed: {}",
                     original_branch, e
                 );
             }
@@ -712,13 +707,13 @@ impl AgentExecutor {
         let mut running = self.running.lock().await;
         for (task_id, mut handle) in running.drain() {
             if let Err(e) = handle.process.kill().await {
-                eprintln!("[agent] Failed to kill task {}: {}", task_id, e);
+                error!("Failed to kill task {}: {}", task_id, e);
             }
             if let Some(path) = &handle.worktree_path
                 && let Err(e) = self.cleanup_worktree(path).await
             {
-                eprintln!(
-                    "[agent] Failed to clean up worktree for task {}: {}",
+                warn!(
+                    "Failed to clean up worktree for task {}: {}",
                     task_id, e
                 );
             }
@@ -731,8 +726,8 @@ impl AgentExecutor {
                 )
                 .await
             {
-                eprintln!(
-                    "[agent] Failed to mark task {} as cancelled: {}",
+                error!(
+                    "Failed to mark task {} as cancelled: {}",
                     task_id, e
                 );
             }
@@ -744,7 +739,7 @@ impl AgentExecutor {
 impl TaskRunner for AgentExecutor {
     async fn setup_worktree(
         &self,
-        run_id: i64,
+        run_id: RunId,
         task: &AgentTask,
         base_branch: &str,
     ) -> Result<(PathBuf, String)> {
@@ -757,7 +752,7 @@ impl TaskRunner for AgentExecutor {
 
     async fn run_task(
         &self,
-        run_id: i64,
+        run_id: RunId,
         task: &AgentTask,
         use_team: bool,
         working_dir: &Path,

@@ -3,6 +3,9 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use tracing::warn;
+
+use crate::factory::models::IssueId;
 
 /// Convert a title to a URL-safe slug, limited to `max_len` characters.
 pub fn slugify(title: &str, max_len: usize) -> String {
@@ -48,8 +51,8 @@ impl GitLockMap {
         let canonical = match tokio::fs::canonicalize(&project_path).await {
             Ok(p) => p.to_string_lossy().to_string(),
             Err(e) => {
-                eprintln!(
-                    "[pipeline] Failed to canonicalize '{}': {}. Using raw path for git lock.",
+                warn!(
+                    "Failed to canonicalize '{}': {}. Using raw path for git lock.",
                     project_path, e
                 );
                 project_path.trim_end_matches('/').to_string()
@@ -65,7 +68,7 @@ impl GitLockMap {
 /// Create a git branch for the pipeline run. Returns the branch name.
 pub(crate) async fn create_git_branch(
     project_path: &str,
-    issue_id: i64,
+    issue_id: IssueId,
     issue_title: &str,
 ) -> Result<String> {
     let slug = slugify(issue_title, 40);
