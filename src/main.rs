@@ -33,6 +33,18 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub autonomous: bool,
 
+    /// Log level override (trace, debug, info, warn, error)
+    #[arg(long, global = true)]
+    pub log_level: Option<String>,
+
+    /// Log format override (pretty, json, compact)
+    #[arg(long, global = true)]
+    pub log_format: Option<String>,
+
+    /// OpenTelemetry OTLP endpoint for trace export
+    #[arg(long, global = true)]
+    pub otlp_endpoint: Option<String>,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -285,6 +297,34 @@ async fn main() -> Result<()> {
         Some(dir) => dir,
         None => std::env::current_dir().context("Failed to get current directory")?,
     };
+
+    // Initialize telemetry (logging + tracing)
+    let log_level = cli
+        .log_level
+        .clone()
+        .or_else(|| std::env::var("FORGE_LOG").ok())
+        .unwrap_or_else(|| {
+            if cli.verbose {
+                "debug".to_string()
+            } else {
+                "warn".to_string()
+            }
+        });
+    let log_format = cli
+        .log_format
+        .clone()
+        .or_else(|| std::env::var("FORGE_LOG_FORMAT").ok());
+    let otlp_endpoint = cli
+        .otlp_endpoint
+        .clone()
+        .or_else(|| std::env::var("FORGE_OTLP_ENDPOINT").ok());
+    let forge_dir = project_dir.join(".forge");
+    let _ = forge::telemetry::init_telemetry(&forge::telemetry::TelemetryConfig {
+        log_level,
+        log_format,
+        log_dir: forge_dir.join("logs"),
+        otlp_endpoint,
+    });
 
     match &cli.command {
         Commands::Init { from } => {
