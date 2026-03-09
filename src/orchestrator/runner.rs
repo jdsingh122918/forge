@@ -8,6 +8,7 @@ use crate::skills::SkillsLoader;
 use crate::stream::{ContentBlock, StreamEvent, describe_tool_use, tool_emoji, truncate_thinking};
 use crate::ui::OrchestratorUI;
 use anyhow::{Context, Result};
+use tracing::info;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -270,6 +271,8 @@ impl ClaudeRunner {
 
         let start = Instant::now();
 
+        info!(prompt_chars = prompt.len(), "Invoking Claude CLI");
+
         // Build command
         let mut cmd = Command::new(&self.config.claude_cmd);
         let flags = self.config.claude_flags();
@@ -458,6 +461,13 @@ impl ClaudeRunner {
 
         // Use final_result if available, otherwise accumulated text
         let combined_output = final_result.unwrap_or(accumulated_text);
+
+        info!(
+            output_chars = combined_output.len(),
+            exit_code = exit_code,
+            duration_secs = duration.as_secs_f64(),
+            "Claude CLI completed"
+        );
 
         if is_error && let Some(ref ui) = ui {
             ui.log_step("Claude reported an error");
