@@ -635,7 +635,10 @@ impl PipelineRunner {
             let metrics = MetricsCollector::new(db.clone());
             let run_id_str = run_id.to_string();
             let run_start = Instant::now();
-            if let Err(e) = metrics.record_run_started(&run_id_str, Some(issue_id.0)).await {
+            if let Err(e) = metrics
+                .record_run_started(&run_id_str, Some(issue_id.0))
+                .await
+            {
                 warn!(error = %e, "Failed to record metrics run start");
             }
 
@@ -875,7 +878,10 @@ impl PipelineRunner {
                     {
                         Ok(run) => {
                             let duration = run_start.elapsed().as_secs_f64();
-                            if let Err(e) = metrics.record_run_completed(&run_id_str, true, duration, 0, 0).await {
+                            if let Err(e) = metrics
+                                .record_run_completed(&run_id_str, true, duration, 0, 0)
+                                .await
+                            {
                                 warn!(error = %e, "Failed to record metrics run completion");
                             }
                             broadcast_message(&tx, &WsMessage::PipelineCompleted { run });
@@ -910,7 +916,10 @@ impl PipelineRunner {
                 Err(e) => {
                     let error_msg = format!("{:#}", e);
                     let duration = run_start.elapsed().as_secs_f64();
-                    if let Err(e) = metrics.record_run_completed(&run_id_str, false, duration, 0, 0).await {
+                    if let Err(e) = metrics
+                        .record_run_completed(&run_id_str, false, duration, 0, 0)
+                        .await
+                    {
                         warn!(error = %e, "Failed to record metrics run failure");
                     }
                     match db
