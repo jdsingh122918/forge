@@ -1,8 +1,10 @@
+use crate::council::types::MergeOutcome;
 use anyhow::{Context, Result};
 use git2::Repository;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 
 pub struct WorktreeManager {
     repo: Repository,
@@ -125,10 +127,7 @@ impl WorktreeManager {
 
         self.git_stdout(
             output,
-            format!(
-                "Git diff generation failed for {}",
-                worktree_path.display()
-            ),
+            format!("Git diff generation failed for {}", worktree_path.display()),
         )
     }
 
@@ -268,9 +267,193 @@ fn parse_diff_header_path(header: &str) -> Result<String> {
     Ok(path.to_string())
 }
 
+pub fn apply_patch(repo_path: &Path, patch: &str) -> Result<MergeOutcome> {
+    if patch.trim().is_empty() {
+        return Ok(MergeOutcome::Clean(String::new()));
+    }
+
+    let check_output = run_git_with_input(repo_path, ["apply", "--check", "-"], patch)
+        .context("Failed to validate patch with git apply --check")?;
+    if !check_output.status.success() {
+        let existing_diff =
+            git_diff_head(repo_path).context("Failed to inspect working tree for conflicts")?;
+        let conflicts = detect_conflicts(&existing_diff, patch);
+        if !conflicts.is_empty() {
+            return Ok(MergeOutcome::Conflict(conflicts));
+        }
+
+        return Ok(MergeOutcome::Failure(git_error_message(
+            "git apply --check failed",
+            &check_output,
+        )));
+    }
+
+    let apply_output = run_git_with_input(repo_path, ["apply", "-"], patch)
+        .context("Failed to apply patch with git apply")?;
+    if !apply_output.status.success() {
+        return Ok(MergeOutcome::Failure(git_error_message(
+            "git apply failed",
+            &apply_output,
+        )));
+    }
+
+    Ok(MergeOutcome::Clean(patch.to_string()))
+}
+
+pub fn detect_conflicts(patch_a: &str, patch_b: &str) -> Vec<String> {
+    let patch_a_files = parse_patch_regions(patch_a);
+    let patch_b_files = parse_patch_regions(patch_b);
+    let mut conflicts = Vec::new();
+
+    for file_a in &patch_a_files {
+        for file_b in &patch_b_files {
+            if file_a.path != file_b.path {
+                continue;
+            }
+
+            let overlaps = if file_a.hunks.is_empty() || file_b.hunks.is_empty() {
+                true
+            } else {
+                file_a.hunks.iter().any(|hunk_a| {
+                    file_b
+                        .hunks
+                        .iter()
+                        .any(|hunk_b| hunks_overlap(*hunk_a, *hunk_b))
+                })
+            };
+
+            if overlaps && !conflicts.contains(&file_a.path) {
+                conflicts.push(file_a.path.clone());
+            }
+        }
+    }
+
+    conflicts
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PatchRegions {
+    path: String,
+    hunks: Vec<HunkRange>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HunkRange {
+    start: u32,
+    len: u32,
+}
+
+fn git_diff_head(repo_path: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .args(["diff", "HEAD"])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to generate git diff")?;
+
+    if !output.status.success() {
+        anyhow::bail!("{}", git_error_message("git diff HEAD failed", &output));
+    }
+
+    String::from_utf8(output.stdout).context("git diff HEAD produced invalid UTF-8")
+}
+
+fn run_git_with_input<const N: usize>(
+    repo_path: &Path,
+    args: [&str; N],
+    input: &str,
+) -> Result<Output> {
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(repo_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("Failed to launch git {:?}", args))?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(input.as_bytes())
+            .with_context(|| format!("Failed to write patch input to git {:?}", args))?;
+    }
+
+    child
+        .wait_with_output()
+        .with_context(|| format!("Failed to read git {:?} output", args))
+}
+
+fn git_error_message(prefix: &str, output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    match (stderr.is_empty(), stdout.is_empty()) {
+        (false, true) => format!("{prefix}: {stderr}"),
+        (true, false) => format!("{prefix}: {stdout}"),
+        (false, false) => format!("{prefix}: {stderr}\n{stdout}"),
+        (true, true) => prefix.to_string(),
+    }
+}
+
+fn parse_patch_regions(diff: &str) -> Vec<PatchRegions> {
+    let mut files = Vec::new();
+    let mut current_path: Option<String> = None;
+    let mut current_hunks = Vec::new();
+
+    for line in diff.lines() {
+        if line.starts_with("diff --git ") {
+            if let Some(path) = current_path.take() {
+                files.push(PatchRegions {
+                    path,
+                    hunks: std::mem::take(&mut current_hunks),
+                });
+            }
+
+            current_path = parse_diff_header_path(line).ok();
+            continue;
+        }
+
+        if line.starts_with("@@ ") || line.starts_with("@@ -") {
+            if let Some(range) = parse_hunk_range(line) {
+                current_hunks.push(range);
+            }
+        }
+    }
+
+    if let Some(path) = current_path {
+        files.push(PatchRegions {
+            path,
+            hunks: current_hunks,
+        });
+    }
+
+    files
+}
+
+fn parse_hunk_range(header: &str) -> Option<HunkRange> {
+    let remainder = header.strip_prefix("@@ -")?;
+    let (old_range, _) = remainder.split_once(" +")?;
+    let (start, len) = match old_range.split_once(',') {
+        Some((start, len)) => (start, len),
+        None => (old_range, "1"),
+    };
+
+    Some(HunkRange {
+        start: start.parse().ok()?,
+        len: len.parse().ok()?,
+    })
+}
+
+fn hunks_overlap(a: HunkRange, b: HunkRange) -> bool {
+    let a_end = a.start.saturating_add(a.len.max(1));
+    let b_end = b.start.saturating_add(b.len.max(1));
+
+    a.start < b_end && b.start < a_end
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::council::types::MergeOutcome;
     use std::fs;
     use std::process::Command;
     use tempfile::TempDir;
@@ -529,8 +712,7 @@ mod tests {
             .expect("README.md should be updated");
         fs::write(worktree_path.join("notes.txt"), "council notes\n")
             .expect("notes.txt should be written");
-        fs::write(worktree_path.join("plan.md"), "- ship it\n")
-            .expect("plan.md should be written");
+        fs::write(worktree_path.join("plan.md"), "- ship it\n").expect("plan.md should be written");
         run_git(&worktree_path, ["add", "."]);
 
         let diff = manager
@@ -555,7 +737,10 @@ mod tests {
     fn test_patch_set_parse_empty() {
         let patch_set = PatchSet::parse("").expect("empty diff should parse");
 
-        assert!(patch_set.is_empty(), "empty diff should yield empty patch set");
+        assert!(
+            patch_set.is_empty(),
+            "empty diff should yield empty patch set"
+        );
         assert!(
             patch_set.files_changed().is_empty(),
             "empty diff should not report changed files"
@@ -667,6 +852,237 @@ mod tests {
         assert!(
             !patch_set.is_empty(),
             "non-empty patch set should not report empty"
+        );
+    }
+
+    #[test]
+    fn test_apply_patch_clean_success() {
+        let (_dir, path) = create_test_repo();
+        let manager = WorktreeManager::new(&path).expect("manager should open repo");
+        let source = manager
+            .create_worktree("worker-a")
+            .expect("source worktree should be created");
+        let target = manager
+            .create_worktree("worker-b")
+            .expect("target worktree should be created");
+
+        fs::write(source.join("README.md"), "# Updated Test\n")
+            .expect("README.md should be updated");
+        let patch = manager
+            .generate_diff(&source)
+            .expect("diff generation should succeed");
+
+        let outcome = apply_patch(&target, &patch).expect("patch application should return");
+
+        match outcome {
+            MergeOutcome::Clean(applied_diff) => {
+                assert_eq!(
+                    applied_diff, patch,
+                    "clean apply should return the applied diff"
+                );
+            }
+            other => panic!("expected clean apply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_apply_patch_conflict_detected() {
+        let (_dir, path) = create_test_repo();
+        let manager = WorktreeManager::new(&path).expect("manager should open repo");
+        let worker_a = manager
+            .create_worktree("worker-a")
+            .expect("worker-a worktree should be created");
+        let worker_b = manager
+            .create_worktree("worker-b")
+            .expect("worker-b worktree should be created");
+        let target = manager
+            .create_worktree("target")
+            .expect("target worktree should be created");
+
+        fs::write(worker_a.join("README.md"), "# Worker A\n")
+            .expect("worker-a README.md should be updated");
+        fs::write(worker_b.join("README.md"), "# Worker B\n")
+            .expect("worker-b README.md should be updated");
+
+        let patch_a = manager
+            .generate_diff(&worker_a)
+            .expect("worker-a diff should be generated");
+        let patch_b = manager
+            .generate_diff(&worker_b)
+            .expect("worker-b diff should be generated");
+
+        let first = apply_patch(&target, &patch_a).expect("first patch should return");
+        assert!(
+            matches!(first, MergeOutcome::Clean(_)),
+            "first patch should apply cleanly"
+        );
+
+        let second = apply_patch(&target, &patch_b).expect("second patch should return");
+        match second {
+            MergeOutcome::Conflict(paths) => {
+                assert_eq!(
+                    paths,
+                    vec!["README.md"],
+                    "conflict should report the file path"
+                );
+            }
+            other => panic!("expected conflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_apply_patch_invalid_patch_fails() {
+        let (_dir, path) = create_test_repo();
+
+        let outcome = apply_patch(&path, "this is not a patch")
+            .expect("invalid patch should still return a merge outcome");
+
+        match outcome {
+            MergeOutcome::Failure(message) => {
+                assert!(
+                    !message.is_empty(),
+                    "failure outcome should include an error message"
+                );
+            }
+            other => panic!("expected failure outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_apply_patch_empty_patch_noop() {
+        let (_dir, path) = create_test_repo();
+
+        let outcome = apply_patch(&path, "").expect("empty patch should return a merge outcome");
+
+        match outcome {
+            MergeOutcome::Clean(applied_diff) => {
+                assert_eq!(applied_diff, "", "empty patch should be a no-op");
+            }
+            other => panic!("expected clean outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_detect_conflicts_no_overlap() {
+        let patch_a = concat!(
+            "diff --git a/README.md b/README.md\n",
+            "--- a/README.md\n",
+            "+++ b/README.md\n",
+            "@@ -1 +1 @@\n",
+            "-# Test\n",
+            "+# Updated Test\n",
+        );
+        let patch_b = concat!(
+            "diff --git a/notes.txt b/notes.txt\n",
+            "--- /dev/null\n",
+            "+++ b/notes.txt\n",
+            "@@ -0,0 +1 @@\n",
+            "+council notes\n",
+        );
+
+        let conflicts = detect_conflicts(patch_a, patch_b);
+
+        assert!(
+            conflicts.is_empty(),
+            "patches touching different files should not conflict"
+        );
+    }
+
+    #[test]
+    fn test_detect_conflicts_same_file_different_hunks() {
+        let patch_a = concat!(
+            "diff --git a/README.md b/README.md\n",
+            "--- a/README.md\n",
+            "+++ b/README.md\n",
+            "@@ -1,2 +1,2 @@\n",
+            "-line 1\n",
+            "+line 1 updated\n",
+        );
+        let patch_b = concat!(
+            "diff --git a/README.md b/README.md\n",
+            "--- a/README.md\n",
+            "+++ b/README.md\n",
+            "@@ -10,2 +10,2 @@\n",
+            "-line 10\n",
+            "+line 10 updated\n",
+        );
+
+        let conflicts = detect_conflicts(patch_a, patch_b);
+
+        assert!(
+            conflicts.is_empty(),
+            "non-overlapping hunks in the same file should not conflict"
+        );
+    }
+
+    #[test]
+    fn test_detect_conflicts_same_file_overlapping_hunks() {
+        let patch_a = concat!(
+            "diff --git a/README.md b/README.md\n",
+            "--- a/README.md\n",
+            "+++ b/README.md\n",
+            "@@ -3,3 +3,3 @@\n",
+            "-line 3\n",
+            "+line 3 updated\n",
+        );
+        let patch_b = concat!(
+            "diff --git a/README.md b/README.md\n",
+            "--- a/README.md\n",
+            "+++ b/README.md\n",
+            "@@ -4,2 +4,2 @@\n",
+            "-line 4\n",
+            "+line 4 updated\n",
+        );
+
+        let conflicts = detect_conflicts(patch_a, patch_b);
+
+        assert_eq!(
+            conflicts,
+            vec!["README.md"],
+            "overlapping hunks should report the shared path"
+        );
+    }
+
+    #[test]
+    fn test_detect_conflicts_empty_patches() {
+        let conflicts = detect_conflicts("", "");
+
+        assert!(conflicts.is_empty(), "empty patches should not conflict");
+    }
+
+    #[test]
+    fn test_apply_then_verify_file_contents() {
+        let (_dir, path) = create_test_repo();
+        let manager = WorktreeManager::new(&path).expect("manager should open repo");
+        let source = manager
+            .create_worktree("worker-a")
+            .expect("source worktree should be created");
+        let target = manager
+            .create_worktree("worker-b")
+            .expect("target worktree should be created");
+
+        fs::write(source.join("README.md"), "# Updated Test\nsecond line\n")
+            .expect("README.md should be updated");
+        fs::write(source.join("notes.txt"), "council notes\n")
+            .expect("notes.txt should be written");
+        run_git(&source, ["add", "notes.txt"]);
+
+        let patch = manager
+            .generate_diff(&source)
+            .expect("diff generation should succeed");
+        let outcome = apply_patch(&target, &patch).expect("patch application should return");
+        assert!(
+            matches!(outcome, MergeOutcome::Clean(_)),
+            "patch should apply cleanly"
+        );
+
+        assert_eq!(
+            fs::read_to_string(target.join("README.md")).expect("README.md should be readable"),
+            "# Updated Test\nsecond line\n"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("notes.txt")).expect("notes.txt should be readable"),
+            "council notes\n"
         );
     }
 }
