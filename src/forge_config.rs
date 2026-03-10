@@ -54,6 +54,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
+use crate::council::config::CouncilConfig;
+
 /// Permission modes for phase execution.
 ///
 /// The mode controls two orthogonal dimensions: which Claude tools are
@@ -616,6 +618,9 @@ pub struct ForgeToml {
     /// Autonomous operation settings
     #[serde(default)]
     pub autonomy: AutonomyConfig,
+    /// Council engine settings
+    #[serde(default)]
+    pub council: Option<CouncilConfig>,
 }
 
 impl ForgeToml {
@@ -895,6 +900,11 @@ impl ForgeConfig {
         self.toml.phase_settings(phase_name)
     }
 
+    /// Get council configuration when the council engine is configured.
+    pub fn council_config(&self) -> Option<&CouncilConfig> {
+        self.toml.council.as_ref()
+    }
+
     /// Get path to spec file.
     pub fn spec_file(&self) -> PathBuf {
         self.forge_dir.join("spec.md")
@@ -1095,6 +1105,101 @@ skip_permissions = false
         assert_eq!(toml.defaults.permission_mode, PermissionMode::Standard); // "strict" maps to Standard
         assert_eq!(toml.defaults.context_limit, "90%");
         assert!(!toml.defaults.skip_permissions);
+    }
+
+    #[test]
+    fn test_forge_toml_parse_without_council_section() {
+        let content = r#"
+[project]
+name = "no-council"
+"#;
+
+        let toml = ForgeToml::parse(content).unwrap();
+
+        assert!(toml.council.is_none());
+    }
+
+    #[test]
+    fn test_forge_toml_parse_with_council_section() {
+        let content = r#"
+[council]
+enabled = true
+"#;
+
+        let toml = ForgeToml::parse(content).unwrap();
+        let council = toml.council.as_ref().unwrap();
+
+        assert!(council.enabled);
+    }
+
+    #[test]
+    fn test_forge_toml_council_workers_parsed() {
+        let content = r#"
+[council]
+enabled = true
+
+[council.workers.claude]
+cmd = "claude"
+role = "reviewer"
+
+[council.workers.codex]
+cmd = "codex"
+model = "gpt-5.4"
+reasoning_effort = "xhigh"
+sandbox = "workspace-write"
+"#;
+
+        let toml = ForgeToml::parse(content).unwrap();
+        let council = toml.council.as_ref().unwrap();
+
+        let claude = council.workers.get("claude").unwrap();
+        assert_eq!(claude.cmd, "claude");
+        assert_eq!(claude.role, "reviewer");
+
+        let codex = council.workers.get("codex").unwrap();
+        assert_eq!(codex.cmd, "codex");
+        assert_eq!(codex.role, "worker");
+        assert_eq!(codex.model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(codex.reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(codex.sandbox.as_deref(), Some("workspace-write"));
+    }
+
+    #[test]
+    fn test_forge_toml_council_defaults_when_partial() {
+        let content = r#"
+[council]
+enabled = true
+"#;
+
+        let toml = ForgeToml::parse(content).unwrap();
+        let council = toml.council.as_ref().unwrap();
+
+        assert!(council.enabled);
+        assert_eq!(council.chairman_model, "gpt-5.4");
+        assert_eq!(council.chairman_reasoning_effort, "xhigh");
+        assert_eq!(council.chairman_retry_budget, 3);
+        assert!(council.anonymize_reviews);
+        assert!(council.workers.is_empty());
+    }
+
+    #[test]
+    fn test_forge_config_council_config_accessor() {
+        let dir = tempdir().unwrap();
+        let forge_dir = dir.path().join(".forge");
+        std::fs::create_dir_all(&forge_dir).unwrap();
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            r#"
+[council]
+enabled = true
+"#,
+        )
+        .unwrap();
+
+        let config = ForgeConfig::new(dir.path().to_path_buf()).unwrap();
+        let council = config.council_config().unwrap();
+
+        assert!(council.enabled);
     }
 
     #[test]
