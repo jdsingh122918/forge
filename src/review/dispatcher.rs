@@ -34,13 +34,12 @@ use crate::review::{
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use tracing::info;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Default timeout for individual review specialist execution.
 const DEFAULT_REVIEW_TIMEOUT_SECS: u64 = 300; // 5 minutes

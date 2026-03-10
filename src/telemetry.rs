@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::io::IsTerminal;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Clone, Default, clap::ValueEnum)]
 pub enum LogFormat {

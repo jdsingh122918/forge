@@ -8,13 +8,12 @@ use crate::skills::SkillsLoader;
 use crate::stream::{ContentBlock, StreamEvent, describe_tool_use, tool_emoji, truncate_thinking};
 use crate::ui::OrchestratorUI;
 use anyhow::{Context, Result};
-use tracing::info;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tracing::warn;
+use tracing::{info, warn};
 
 /// Optional context that can be injected into prompts.
 /// Used for compaction summaries and other context additions.
@@ -210,8 +209,16 @@ fn extract_token_usage(parsed: &serde_json::Value) -> Option<TokenUsage> {
     if parsed.get("type")?.as_str()? == "result" {
         let usage = parsed.get("usage")?;
         Some(TokenUsage {
-            input_tokens: usage.get("input_tokens")?.as_u64()?.try_into().unwrap_or(u32::MAX),
-            output_tokens: usage.get("output_tokens")?.as_u64()?.try_into().unwrap_or(u32::MAX),
+            input_tokens: usage
+                .get("input_tokens")?
+                .as_u64()?
+                .try_into()
+                .unwrap_or(u32::MAX),
+            output_tokens: usage
+                .get("output_tokens")?
+                .as_u64()?
+                .try_into()
+                .unwrap_or(u32::MAX),
         })
     } else {
         None

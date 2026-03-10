@@ -18,8 +18,8 @@ use super::db::{self, DbHandle};
 use super::embedded::Assets;
 use super::pipeline::PipelineRunner;
 use super::sandbox::DockerSandbox;
-use crate::metrics::MetricsCollector;
 use super::ws;
+use crate::metrics::MetricsCollector;
 
 /// Configuration for the factory server.
 pub struct ServerConfig {

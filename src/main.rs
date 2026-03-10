@@ -311,26 +311,35 @@ async fn main() -> Result<()> {
             }
         });
     let log_format = cli.log_format.clone().or_else(|| {
-        std::env::var("FORGE_LOG_FORMAT").ok().and_then(|s| {
-            match s.to_lowercase().as_str() {
+        std::env::var("FORGE_LOG_FORMAT")
+            .ok()
+            .and_then(|s| match s.to_lowercase().as_str() {
                 "json" => Some(forge::telemetry::LogFormat::Json),
                 "compact" => Some(forge::telemetry::LogFormat::Compact),
                 _ => {
-                    eprintln!("[forge] Warning: unknown FORGE_LOG_FORMAT '{}', ignoring", s);
+                    eprintln!(
+                        "[forge] Warning: unknown FORGE_LOG_FORMAT '{}', ignoring",
+                        s
+                    );
                     None
                 }
-            }
-        })
+            })
     });
     let otlp_endpoint = cli
         .otlp_endpoint
         .clone()
         .or_else(|| std::env::var("FORGE_OTLP_ENDPOINT").ok());
     let forge_dir = project_dir.join(".forge");
+    // Avoid creating `.forge/` as a side effect before `forge init` runs.
+    let log_dir = if forge::init::is_initialized(&project_dir) {
+        forge_dir.join("logs")
+    } else {
+        std::env::temp_dir().join("forge-logs")
+    };
     if let Err(e) = forge::telemetry::init_telemetry(&forge::telemetry::TelemetryConfig {
         log_level,
         log_format,
-        log_dir: forge_dir.join("logs"),
+        log_dir,
         otlp_endpoint,
     }) {
         eprintln!("[forge] Warning: failed to initialize telemetry: {:#}", e);

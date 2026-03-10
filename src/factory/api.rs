@@ -375,7 +375,11 @@ async fn list_agents() -> Json<Vec<AgentInfo>> {
             id: st.agent_name(),
             name: st.display_name().to_string(),
             description: st.description().to_string(),
-            focus_areas: st.focus_areas().into_iter().map(|s| s.to_string()).collect(),
+            focus_areas: st
+                .focus_areas()
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect(),
             default_gating: st.default_gating(),
             cli_gating: true, // cmd_swarm forces all CLI-selected reviewers to gating
         })

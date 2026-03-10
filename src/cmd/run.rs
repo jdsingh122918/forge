@@ -261,10 +261,7 @@ pub async fn run_orchestrator(
         let mut any_progress_signaled = false;
         let mut total_pivots: usize = 0;
         for iter in 1..=phase.budget {
-            let _iter_span = info_span!("iteration",
-                iteration = iter,
-                budget = phase.budget,
-            );
+            let _iter_span = info_span!("iteration", iteration = iter, budget = phase.budget,);
 
             // === AUTONOMOUS MODE: Check progress before continuing ===
             if phase.permission_mode == PermissionMode::Autonomous && iter > 1 {
@@ -502,7 +499,11 @@ pub async fn run_orchestrator(
             if should_complete {
                 {
                     let _enter = _iter_span.enter();
-                    info!(outcome = "completed", iterations_used = iter, "Phase completed");
+                    info!(
+                        outcome = "completed",
+                        iterations_used = iter,
+                        "Phase completed"
+                    );
                 }
                 ui.iteration_success(iter);
                 phase_audit.finish(PhaseOutcome::Completed { iteration: iter }, changes.clone());
