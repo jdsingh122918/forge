@@ -1,0 +1,9 @@
+check which files are still unstaged and not commited
+
+---
+
+lets merge the PR
+
+---
+
+yes lets resolve the merge conflicts
