@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -5,7 +6,7 @@ use crate::errors::FactoryError;
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, patch, post},
@@ -218,6 +219,11 @@ pub fn api_router() -> Router<SharedState> {
         .route("/api/github/disconnect", post(github_disconnect))
         .route("/api/screenshots/{*path}", get(serve_screenshot))
         .route("/api/cli-help", get(cli_help_handler))
+        .route("/api/metrics/summary", get(get_metrics_summary))
+        .route("/api/metrics/phases", get(get_metrics_phases))
+        .route("/api/metrics/reviews", get(get_metrics_reviews))
+        .route("/api/metrics/tokens", get(get_metrics_tokens))
+        .route("/api/metrics/runs/recent", get(get_metrics_recent_runs))
         .route("/health", get(health_check))
 }
 
@@ -1345,6 +1351,76 @@ async fn github_disconnect(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to delete token: {}", e)))?;
     Ok(Json(serde_json::json!({"status": "disconnected"})))
+}
+
+// ── Metrics API ──────────────────────────────────────────────────────
+
+async fn get_metrics_summary(
+    State(state): State<SharedState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<crate::metrics::queries::SummaryStats>, StatusCode> {
+    let days = params.get("days").and_then(|d| d.parse().ok()).unwrap_or(30);
+    state
+        .metrics
+        .summary_stats(days)
+        .await
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn get_metrics_phases(
+    State(state): State<SharedState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<crate::metrics::queries::PhaseNameStats>>, StatusCode> {
+    let days = params.get("days").and_then(|d| d.parse().ok()).unwrap_or(30);
+    state
+        .metrics
+        .phase_stats_by_name(days)
+        .await
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn get_metrics_reviews(
+    State(state): State<SharedState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<crate::metrics::queries::ReviewStats>>, StatusCode> {
+    let days = params.get("days").and_then(|d| d.parse().ok()).unwrap_or(30);
+    state
+        .metrics
+        .review_stats(days)
+        .await
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn get_metrics_tokens(
+    State(state): State<SharedState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<crate::metrics::queries::TokenDailyUsage>>, StatusCode> {
+    let days = params.get("days").and_then(|d| d.parse().ok()).unwrap_or(30);
+    state
+        .metrics
+        .token_usage(days)
+        .await
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn get_metrics_recent_runs(
+    State(state): State<SharedState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<crate::metrics::queries::RunSummary>>, StatusCode> {
+    let limit = params
+        .get("limit")
+        .and_then(|l| l.parse().ok())
+        .unwrap_or(20);
+    state
+        .metrics
+        .recent_runs(limit)
+        .await
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────
