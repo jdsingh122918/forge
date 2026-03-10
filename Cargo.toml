@@ -42,14 +42,25 @@ toml = "1"
 regex = "1"
 textwrap = "0.16"
 terminal_size = "0.4"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 libsql = "0.9"
 dotenvy = "0.15"
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 mime_guess = "2"
 bollard = "0.20"
 async-trait = "0.1"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+tracing-appender = "0.2"
+tracing-opentelemetry = { version = "0.28", optional = true }
+opentelemetry = { version = "0.27", optional = true }
+opentelemetry-otlp = { version = "0.27", optional = true }
+opentelemetry_sdk = { version = "0.27", optional = true }
+
+[features]
+default = []
+otlp = ["dep:tracing-opentelemetry", "dep:opentelemetry", "dep:opentelemetry-otlp", "dep:opentelemetry_sdk"]
 
 [dev-dependencies]
 tempfile = "3"

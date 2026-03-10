@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 use tracing;
@@ -6,7 +7,7 @@ use crate::errors::FactoryError;
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, patch, post},
@@ -18,6 +19,7 @@ use super::db::DbHandle;
 use super::models::{IssueColumn, IssueId, ProjectId, RunId, TaskId};
 use super::pipeline::PipelineRunner;
 use super::ws::{WsMessage, broadcast_message};
+use crate::metrics::MetricsCollector;
 
 // ── Shared application state ──────────────────────────────────────────
 
@@ -27,6 +29,7 @@ pub struct AppState {
     pub pipeline_runner: PipelineRunner,
     pub github_client_id: Option<String>,
     pub github_token: Mutex<Option<String>>,
+    pub metrics: MetricsCollector,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -104,6 +107,17 @@ pub struct CliOption {
 pub struct CliHelpResponse {
     pub commands: Vec<CliCommand>,
     pub options: Vec<CliOption>,
+}
+
+#[derive(serde::Serialize)]
+pub struct AgentInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub focus_areas: Vec<String>,
+    pub default_gating: bool,
+    /// CLI `forge swarm --review` always forces gating mode regardless of default.
+    pub cli_gating: bool,
 }
 
 // ── Error handling ────────────────────────────────────────────────────
@@ -216,7 +230,13 @@ pub fn api_router() -> Router<SharedState> {
         .route("/api/github/repos", get(github_list_repos))
         .route("/api/github/disconnect", post(github_disconnect))
         .route("/api/screenshots/{*path}", get(serve_screenshot))
+        .route("/api/agents", get(list_agents))
         .route("/api/cli-help", get(cli_help_handler))
+        .route("/api/metrics/summary", get(get_metrics_summary))
+        .route("/api/metrics/phases", get(get_metrics_phases))
+        .route("/api/metrics/reviews", get(get_metrics_reviews))
+        .route("/api/metrics/tokens", get(get_metrics_tokens))
+        .route("/api/metrics/runs/recent", get(get_metrics_recent_runs))
         .route("/health", get(health_check))
 }
 
@@ -344,6 +364,29 @@ async fn detect_github_repo_from_path(path: &str) -> Option<String> {
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────
+
+/// `GET /api/agents` — return the built-in review specialist agents.
+async fn list_agents() -> Json<Vec<AgentInfo>> {
+    use crate::review::SpecialistType;
+
+    let agents = SpecialistType::all_builtins()
+        .into_iter()
+        .map(|st| AgentInfo {
+            id: st.agent_name(),
+            name: st.display_name().to_string(),
+            description: st.description().to_string(),
+            focus_areas: st
+                .focus_areas()
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect(),
+            default_gating: st.default_gating(),
+            cli_gating: true, // cmd_swarm forces all CLI-selected reviewers to gating
+        })
+        .collect();
+
+    Json(agents)
+}
 
 /// `GET /api/cli-help` — return parsed CLI help (commands and options).
 ///
@@ -1326,6 +1369,113 @@ async fn github_disconnect(
     Ok(Json(serde_json::json!({"status": "disconnected"})))
 }
 
+// ── Metrics API ──────────────────────────────────────────────────────
+
+async fn get_metrics_summary(
+    State(state): State<SharedState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<crate::metrics::queries::SummaryStats>, ApiError> {
+    let days: u32 = match params.get("days") {
+        Some(d) => d
+            .parse()
+            .map_err(|_| ApiError::BadRequest(format!("Invalid 'days' parameter: '{}'", d)))?,
+        None => 30,
+    };
+    state
+        .metrics
+        .summary_stats(days)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "Metrics query failed");
+            ApiError::Internal(format!("Failed to fetch metrics: {}", e))
+        })
+}
+
+async fn get_metrics_phases(
+    State(state): State<SharedState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<crate::metrics::queries::PhaseNameStats>>, ApiError> {
+    let days: u32 = match params.get("days") {
+        Some(d) => d
+            .parse()
+            .map_err(|_| ApiError::BadRequest(format!("Invalid 'days' parameter: '{}'", d)))?,
+        None => 30,
+    };
+    state
+        .metrics
+        .phase_stats_by_name(days)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "Metrics query failed");
+            ApiError::Internal(format!("Failed to fetch metrics: {}", e))
+        })
+}
+
+async fn get_metrics_reviews(
+    State(state): State<SharedState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<crate::metrics::queries::ReviewStats>>, ApiError> {
+    let days: u32 = match params.get("days") {
+        Some(d) => d
+            .parse()
+            .map_err(|_| ApiError::BadRequest(format!("Invalid 'days' parameter: '{}'", d)))?,
+        None => 30,
+    };
+    state
+        .metrics
+        .review_stats(days)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "Metrics query failed");
+            ApiError::Internal(format!("Failed to fetch metrics: {}", e))
+        })
+}
+
+async fn get_metrics_tokens(
+    State(state): State<SharedState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<crate::metrics::queries::TokenDailyUsage>>, ApiError> {
+    let days: u32 = match params.get("days") {
+        Some(d) => d
+            .parse()
+            .map_err(|_| ApiError::BadRequest(format!("Invalid 'days' parameter: '{}'", d)))?,
+        None => 30,
+    };
+    state
+        .metrics
+        .token_usage(days)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "Metrics query failed");
+            ApiError::Internal(format!("Failed to fetch metrics: {}", e))
+        })
+}
+
+async fn get_metrics_recent_runs(
+    State(state): State<SharedState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<crate::metrics::queries::RunSummary>>, ApiError> {
+    let limit: u32 = match params.get("limit") {
+        Some(l) => l
+            .parse()
+            .map_err(|_| ApiError::BadRequest(format!("Invalid 'limit' parameter: '{}'", l)))?,
+        None => 20,
+    };
+    state
+        .metrics
+        .recent_runs(limit)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "Metrics query failed");
+            ApiError::Internal(format!("Failed to fetch metrics: {}", e))
+        })
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1341,11 +1491,12 @@ mod tests {
         let (ws_tx, _) = broadcast::channel(16);
         let pipeline_runner = PipelineRunner::new("/tmp/test", None);
         let state = Arc::new(AppState {
-            db,
+            db: db.clone(),
             ws_tx,
             pipeline_runner,
             github_client_id: None,
             github_token: Mutex::new(None),
+            metrics: MetricsCollector::new(db),
         });
         api_router().with_state(state)
     }
@@ -1898,11 +2049,12 @@ mod tests {
         let (ws_tx, _) = broadcast::channel(16);
         let pipeline_runner = PipelineRunner::new("/tmp/test", None);
         let state = Arc::new(AppState {
-            db,
+            db: db.clone(),
             ws_tx: ws_tx.clone(),
             pipeline_runner,
             github_client_id: None,
             github_token: Mutex::new(None),
+            metrics: MetricsCollector::new(db),
         });
         let app = api_router().with_state(state);
 

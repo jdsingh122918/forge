@@ -4,6 +4,7 @@ pub mod parsing;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 use tokio::sync::broadcast;
@@ -14,6 +15,7 @@ use super::models::*;
 use super::planner::{PlanProvider, PlanResponse, Planner};
 use super::sandbox::{DockerSandbox, SandboxConfig};
 use super::ws::{WsMessage, broadcast_message};
+use crate::metrics::MetricsCollector;
 
 use tracing::{debug, error, info, warn};
 
@@ -630,6 +632,16 @@ impl PipelineRunner {
 
         // Spawn background task for execution
         tokio::spawn(async move {
+            let metrics = MetricsCollector::new(db.clone());
+            let run_id_str = run_id.to_string();
+            let run_start = Instant::now();
+            if let Err(e) = metrics
+                .record_run_started(&run_id_str, Some(issue_id.0))
+                .await
+            {
+                warn!(error = %e, "Failed to record metrics run start");
+            }
+
             // Step 1: Create a git branch for isolation (under project lock)
             let branch_name = {
                 let git_result = {
@@ -864,7 +876,16 @@ impl PipelineRunner {
                         )
                         .await
                     {
-                        Ok(run) => broadcast_message(&tx, &WsMessage::PipelineCompleted { run }),
+                        Ok(run) => {
+                            let duration = run_start.elapsed().as_secs_f64();
+                            if let Err(e) = metrics
+                                .record_run_completed(&run_id_str, true, duration, 0, 0)
+                                .await
+                            {
+                                warn!(error = %e, "Failed to record metrics run completion");
+                            }
+                            broadcast_message(&tx, &WsMessage::PipelineCompleted { run });
+                        }
                         Err(e) => {
                             error!(run_id, error = %e, "CRITICAL: completed but failed to update DB");
                             // Still broadcast completion so UI doesn't show "running" forever
@@ -894,6 +915,13 @@ impl PipelineRunner {
                 }
                 Err(e) => {
                     let error_msg = format!("{:#}", e);
+                    let duration = run_start.elapsed().as_secs_f64();
+                    if let Err(e) = metrics
+                        .record_run_completed(&run_id_str, false, duration, 0, 0)
+                        .await
+                    {
+                        warn!(error = %e, "Failed to record metrics run failure");
+                    }
                     match db
                         .update_pipeline_run(
                             RunId(run_id),

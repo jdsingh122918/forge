@@ -19,6 +19,7 @@ use super::embedded::Assets;
 use super::pipeline::PipelineRunner;
 use super::sandbox::DockerSandbox;
 use super::ws;
+use crate::metrics::MetricsCollector;
 
 /// Configuration for the factory server.
 pub struct ServerConfig {
@@ -158,12 +159,14 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
         }
     };
 
+    let metrics = MetricsCollector::new(db_handle.clone());
     let state = Arc::new(AppState {
         db: db_handle,
         ws_tx,
         pipeline_runner,
         github_client_id,
         github_token: std::sync::Mutex::new(persisted_token),
+        metrics,
     });
 
     let state_for_shutdown = Arc::clone(&state);
@@ -218,11 +221,12 @@ mod tests {
         let (ws_tx, _) = broadcast::channel(16);
         let pipeline_runner = PipelineRunner::new("/tmp/test", None);
         let state = Arc::new(AppState {
-            db,
+            db: db.clone(),
             ws_tx,
             pipeline_runner,
             github_client_id: None,
             github_token: std::sync::Mutex::new(None),
+            metrics: MetricsCollector::new(db),
         });
         build_router(state)
     }

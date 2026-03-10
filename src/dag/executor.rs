@@ -40,7 +40,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio::task::JoinHandle;
-use tracing::{debug, warn};
+use tracing::{debug, info, info_span, warn};
 
 /// Events emitted during DAG execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -272,6 +272,15 @@ impl DagExecutor {
                         sched.mark_running(&phase_number);
                     }
 
+                    let _dag_phase_span = info_span!("dag_phase",
+                        phase = %phase_number,
+                        wave = current_wave,
+                    );
+                    {
+                        let _enter = _dag_phase_span.enter();
+                        info!("DAG phase started");
+                    }
+
                     self.emit_event(PhaseEvent::Started {
                         phase: phase_number.clone(),
                         wave: current_wave,
@@ -320,6 +329,13 @@ impl DagExecutor {
                                 );
                             }
                         }
+
+                        info!(
+                            phase = %phase_number,
+                            success = result.success,
+                            iterations = result.iterations,
+                            "DAG phase completed"
+                        );
 
                         // Emit completion event
                         self.emit_event(PhaseEvent::Completed {

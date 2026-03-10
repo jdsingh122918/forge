@@ -7,3 +7,4 @@ export { default as FloatingActionButton } from './FloatingActionButton';
 export { default as NewIssueModal } from './NewIssueModal';
 export { default as ConfirmDialog } from './ConfirmDialog';
 export { ProjectSetup } from './ProjectSetup';
+export { default as Analytics } from './Analytics';

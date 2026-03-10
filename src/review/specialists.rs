@@ -102,6 +102,38 @@ impl SpecialistType {
         }
     }
 
+    /// Get a short description of what this specialist does.
+    pub fn description(&self) -> &str {
+        match self {
+            Self::SecuritySentinel => {
+                "Examines code for security vulnerabilities, authentication weaknesses, and data exposure risks. Acts as a gating reviewer — issues must be resolved before a phase can complete."
+            }
+            Self::PerformanceOracle => {
+                "Analyzes code for performance bottlenecks, resource inefficiencies, and scalability concerns. Operates in advisory mode — findings are reported but don't block progress."
+            }
+            Self::ArchitectureStrategist => {
+                "Reviews structural design decisions, module boundaries, and dependency relationships. Acts as a gating reviewer — architectural issues must be addressed before proceeding."
+            }
+            Self::SimplicityReviewer => {
+                "Identifies over-engineering, unnecessary complexity, and YAGNI violations. Operates in advisory mode — encourages simplicity without blocking delivery."
+            }
+            Self::Custom(name) => {
+                // Return static str not possible for dynamic, but we use a fallback
+                let _ = name;
+                "Custom review specialist with user-defined focus areas."
+            }
+        }
+    }
+
+    /// Whether this specialist type gates phase completion by default.
+    pub fn default_gating(&self) -> bool {
+        match self {
+            Self::SecuritySentinel | Self::ArchitectureStrategist => true,
+            Self::PerformanceOracle | Self::SimplicityReviewer => false,
+            Self::Custom(_) => false,
+        }
+    }
+
     /// Get the default focus areas for this specialist type.
     ///
     /// Returns a list of specific concerns this specialist should examine.

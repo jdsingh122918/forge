@@ -227,6 +227,49 @@ export interface CliHelpResponse {
   options: CliHelpOption[];
 }
 
+// ── Analytics types ─────────────────────────────────────────────────
+
+export interface SummaryStats {
+  total_runs: number;
+  successful_runs: number;
+  success_rate: number;
+  avg_duration_secs: number;
+  total_phases: number;
+  avg_iterations_per_phase: number;
+}
+
+export interface PhaseNameStats {
+  phase_name: string;
+  run_count: number;
+  avg_iterations: number;
+  avg_duration_secs: number;
+  budget_utilization: number;
+  success_rate: number;
+}
+
+export interface RunSummary {
+  run_id: string;
+  issue_id: number | null;
+  success: boolean;
+  duration_secs: number | null;
+  phases_total: number | null;
+  started_at: string;
+}
+
+export interface ReviewStats {
+  specialist_type: string;
+  review_count: number;
+  pass_rate: number;
+  avg_findings: number;
+}
+
+export interface TokenDailyUsage {
+  date: string;
+  total_input: number;
+  total_output: number;
+  iteration_count: number;
+}
+
 // Column display configuration
 export const COLUMNS: { key: IssueColumn; label: string }[] = [
   { key: 'backlog', label: 'Backlog' },
@@ -289,7 +332,18 @@ export interface EventLogEntry {
 }
 
 /** View mode for the main agent run grid */
-export type ViewMode = 'grid' | 'list';
+export type ViewMode = 'grid' | 'list' | 'analytics' | 'agents';
+
+/** A built-in review specialist agent */
+export interface AgentInfo {
+  id: string;
+  name: string;
+  description: string;
+  focus_areas: string[];
+  default_gating: boolean;
+  /** CLI `forge swarm --review` always forces gating mode regardless of default. */
+  cli_gating: boolean;
+}
 
 /** Status colors mapped to CSS custom property values for the Mission Control theme */
 export const MC_STATUS_COLORS: Record<PipelineStatus, string> = {

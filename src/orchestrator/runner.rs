@@ -1,4 +1,4 @@
-use crate::audit::{ClaudeSession, FileChangeSummary};
+use crate::audit::{ClaudeSession, FileChangeSummary, TokenUsage};
 use crate::config::Config;
 use crate::errors::OrchestratorError;
 use crate::forge_config::tools_for_permission_mode;
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tracing::warn;
+use tracing::{info, warn};
 
 /// Optional context that can be injected into prompts.
 /// Used for compaction summaries and other context additions.
@@ -201,6 +201,30 @@ impl IterationFeedback {
     }
 }
 
+/// Extract token usage from a parsed Claude CLI result event.
+/// Returns `None` if the value is not a `result`-type event or lacks
+/// the expected `usage.input_tokens`/`usage.output_tokens` fields.
+/// Note: token counts are capped at u32::MAX.
+fn extract_token_usage(parsed: &serde_json::Value) -> Option<TokenUsage> {
+    if parsed.get("type")?.as_str()? == "result" {
+        let usage = parsed.get("usage")?;
+        Some(TokenUsage {
+            input_tokens: usage
+                .get("input_tokens")?
+                .as_u64()?
+                .try_into()
+                .unwrap_or(u32::MAX),
+            output_tokens: usage
+                .get("output_tokens")?
+                .as_u64()?
+                .try_into()
+                .unwrap_or(u32::MAX),
+        })
+    } else {
+        None
+    }
+}
+
 pub struct ClaudeRunner {
     config: Config,
 }
@@ -269,6 +293,8 @@ impl ClaudeRunner {
         ));
 
         let start = Instant::now();
+
+        info!(prompt_chars = prompt.len(), "Invoking Claude CLI");
 
         // Build command
         let mut cmd = Command::new(&self.config.claude_cmd);
@@ -346,6 +372,7 @@ impl ClaudeRunner {
         let mut final_result: Option<String> = None;
         let mut is_error = false;
         let mut captured_session_id: Option<String> = None;
+        let mut extracted_token_usage: Option<TokenUsage> = None;
 
         // Spawn elapsed time updater
         let ui_clone = ui.clone();
@@ -408,6 +435,15 @@ impl ClaudeRunner {
                             is_error: err,
                             ..
                         } => {
+                            // Extract token usage from the raw JSON line
+                            match serde_json::from_str::<serde_json::Value>(&line) {
+                                Ok(parsed) => {
+                                    extracted_token_usage = extract_token_usage(&parsed);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "Failed to re-parse result line for token usage extraction");
+                                }
+                            }
                             final_result = result;
                             is_error = err;
                         }
@@ -459,6 +495,13 @@ impl ClaudeRunner {
         // Use final_result if available, otherwise accumulated text
         let combined_output = final_result.unwrap_or(accumulated_text);
 
+        info!(
+            output_chars = combined_output.len(),
+            exit_code = exit_code,
+            duration_secs = duration.as_secs_f64(),
+            "Claude CLI completed"
+        );
+
         if is_error && let Some(ref ui) = ui {
             ui.log_step("Claude reported an error");
         }
@@ -500,7 +543,7 @@ impl ClaudeRunner {
             output_file: output_file.clone(),
             output_chars: combined_output.len(),
             exit_code,
-            token_usage: None, // TODO: Extract from output if available
+            token_usage: extracted_token_usage,
             session_id: captured_session_id,
         };
 
@@ -1159,5 +1202,39 @@ mod tests {
                 .unwrap()
                 .contains("phase-02-iter-7-output.log")
         );
+    }
+
+    #[test]
+    fn test_extract_token_usage() {
+        let output_line = r#"{"type":"result","subtype":"success","cost_usd":0.05,"duration_ms":3000,"duration_api_ms":2800,"is_error":false,"num_turns":1,"session_id":"abc","usage":{"input_tokens":1500,"output_tokens":800}}"#;
+        let parsed: serde_json::Value = serde_json::from_str(output_line).unwrap();
+        let usage = extract_token_usage(&parsed);
+        assert!(usage.is_some());
+        let usage = usage.unwrap();
+        assert_eq!(usage.input_tokens, 1500);
+        assert_eq!(usage.output_tokens, 800);
+    }
+
+    #[test]
+    fn test_extract_token_usage_missing() {
+        let output_line = r#"{"type":"assistant","content":"hello"}"#;
+        let parsed: serde_json::Value = serde_json::from_str(output_line).unwrap();
+        let usage = extract_token_usage(&parsed);
+        assert!(usage.is_none());
+    }
+
+    #[test]
+    fn test_extract_token_usage_partial() {
+        // Result event with usage missing output_tokens
+        let parsed = serde_json::json!({"type": "result", "usage": {"input_tokens": 100}});
+        let usage = extract_token_usage(&parsed);
+        assert!(usage.is_none());
+    }
+
+    #[test]
+    fn test_extract_token_usage_no_usage() {
+        let parsed = serde_json::json!({"type": "result"});
+        let usage = extract_token_usage(&parsed);
+        assert!(usage.is_none());
     }
 }

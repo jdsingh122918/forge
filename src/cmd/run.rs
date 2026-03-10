@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use std::path::PathBuf;
-use tracing::warn;
+use tracing::{info, info_span, warn};
 
 use super::super::Cli;
 
@@ -134,6 +134,16 @@ pub async fn run_orchestrator(
     let mut previous_changes: Option<FileChangeSummary> = None;
 
     for phase in phases {
+        let phase_span = info_span!("phase",
+            phase_number = %phase.number,
+            phase_name = %phase.name,
+            budget = phase.budget,
+        );
+        {
+            let _enter = phase_span.enter();
+            info!("Phase started");
+        }
+
         // Run OnApproval hooks first (can auto-approve/reject)
         let approval_result = hook_manager
             .run_on_approval(&phase, previous_changes.as_ref())
@@ -251,6 +261,8 @@ pub async fn run_orchestrator(
         let mut any_progress_signaled = false;
         let mut total_pivots: usize = 0;
         for iter in 1..=phase.budget {
+            let _iter_span = info_span!("iteration", iteration = iter, budget = phase.budget,);
+
             // === AUTONOMOUS MODE: Check progress before continuing ===
             if phase.permission_mode == PermissionMode::Autonomous && iter > 1 {
                 if let Some(ref mut auto_strategy) = autonomous_strategy {
@@ -485,6 +497,14 @@ pub async fn run_orchestrator(
             };
 
             if should_complete {
+                {
+                    let _enter = _iter_span.enter();
+                    info!(
+                        outcome = "completed",
+                        iterations_used = iter,
+                        "Phase completed"
+                    );
+                }
                 ui.iteration_success(iter);
                 phase_audit.finish(PhaseOutcome::Completed { iteration: iter }, changes.clone());
                 state.save(&phase.number, iter, "completed")?;
@@ -522,6 +542,10 @@ pub async fn run_orchestrator(
 
             phase_audit.finish(PhaseOutcome::MaxIterationsReached, changes);
             state.save(&phase.number, phase.budget, "max_iterations")?;
+            {
+                let _enter = phase_span.enter();
+                warn!(outcome = "max_iterations_reached", "Phase exhausted budget");
+            }
             ui.phase_failed(&phase.number, "max iterations reached");
 
             // Actionable budget-exhaustion summary

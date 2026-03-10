@@ -39,7 +39,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Default timeout for individual review specialist execution.
 const DEFAULT_REVIEW_TIMEOUT_SECS: u64 = 300; // 5 minutes
@@ -319,6 +319,11 @@ impl ReviewDispatcher {
     /// 4. Returns the dispatch result
     pub async fn dispatch(&self, review_config: PhaseReviewConfig) -> Result<DispatchResult> {
         let start = Instant::now();
+        info!(
+            specialists = review_config.specialists.len(),
+            phase = %review_config.phase,
+            "Review dispatch started"
+        );
 
         if review_config.specialists.is_empty() {
             // No specialists configured, return empty success
@@ -348,6 +353,13 @@ impl ReviewDispatcher {
             .add_reports(reports)
             .with_parallel_execution(self.config.parallel)
             .with_total_duration_ms(start.elapsed().as_millis() as u64);
+
+        info!(
+            total_findings = aggregation.all_findings_count(),
+            reports = aggregation.reports_count(),
+            verdict = %aggregation.overall_verdict(),
+            "Review aggregation complete"
+        );
 
         if self.config.verbose {
             debug!(
