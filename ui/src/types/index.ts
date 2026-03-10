@@ -289,7 +289,7 @@ export interface EventLogEntry {
 }
 
 /** View mode for the main agent run grid */
-export type ViewMode = 'grid' | 'list';
+export type ViewMode = 'grid' | 'list' | 'analytics';
 
 /** Status colors mapped to CSS custom property values for the Mission Control theme */
 export const MC_STATUS_COLORS: Record<PipelineStatus, string> = {
