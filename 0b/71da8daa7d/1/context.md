@@ -1,0 +1,15 @@
+# Session Context
+
+## User Prompts
+
+### Prompt 1
+
+/Users/jdsingh/Library/Application\ Support/Claude/local-agent-mode-sessions/761816a7-837d-4864-8aa8-faa8499e6aef/a93f257c-027e-4b3c-9ae1-97aba2fe0035/local_ff5d85f8-b376-45da-a6c9-bd86226d1ee7/outputs/gsd-claude-code
+
+Using the above in context, lets add the following feature to the application:
+- ability to see the 4 agents embedded in the system in detail with context
+
+### Prompt 2
+
+lets commit the changes to a branch and create a PR
+

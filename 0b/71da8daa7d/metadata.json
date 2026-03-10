@@ -3,9 +3,14 @@
   "checkpoint_id": "0b71da8daa7d",
   "strategy": "manual-commit",
   "branch": "feat/agents-detail-view",
-  "checkpoints_count": 11,
+  "checkpoints_count": 12,
   "files_touched": [
     "src/factory/api.rs",
+    "src/review/specialists.rs",
+    "ui/src/App.tsx",
+    "ui/src/api/client.ts",
+    "ui/src/components/Agents.tsx",
+    "ui/src/components/StatusBar.tsx",
     "ui/src/types/index.ts"
   ],
   "sessions": [
@@ -15,13 +20,20 @@
       "context": "/0b/71da8daa7d/0/context.md",
       "content_hash": "/0b/71da8daa7d/0/content_hash.txt",
       "prompt": "/0b/71da8daa7d/0/prompt.txt"
+    },
+    {
+      "metadata": "/0b/71da8daa7d/1/metadata.json",
+      "transcript": "/0b/71da8daa7d/1/full.jsonl",
+      "context": "/0b/71da8daa7d/1/context.md",
+      "content_hash": "/0b/71da8daa7d/1/content_hash.txt",
+      "prompt": "/0b/71da8daa7d/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 93,
-    "cache_creation_tokens": 87564,
-    "cache_read_tokens": 4029589,
-    "output_tokens": 25531,
-    "api_call_count": 58
+    "input_tokens": 123,
+    "cache_creation_tokens": 151124,
+    "cache_read_tokens": 5633140,
+    "output_tokens": 34378,
+    "api_call_count": 84
   }
 }
