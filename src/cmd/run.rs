@@ -134,13 +134,15 @@ pub async fn run_orchestrator(
     let mut previous_changes: Option<FileChangeSummary> = None;
 
     for phase in phases {
-        let _phase_span = info_span!("phase",
+        let phase_span = info_span!("phase",
             phase_number = %phase.number,
             phase_name = %phase.name,
             budget = phase.budget,
-        )
-        .entered();
-        info!("Phase started");
+        );
+        {
+            let _enter = phase_span.enter();
+            info!("Phase started");
+        }
 
         // Run OnApproval hooks first (can auto-approve/reject)
         let approval_result = hook_manager
@@ -262,8 +264,7 @@ pub async fn run_orchestrator(
             let _iter_span = info_span!("iteration",
                 iteration = iter,
                 budget = phase.budget,
-            )
-            .entered();
+            );
 
             // === AUTONOMOUS MODE: Check progress before continuing ===
             if phase.permission_mode == PermissionMode::Autonomous && iter > 1 {
@@ -499,7 +500,10 @@ pub async fn run_orchestrator(
             };
 
             if should_complete {
-                info!(outcome = "completed", iterations_used = iter, "Phase completed");
+                {
+                    let _enter = _iter_span.enter();
+                    info!(outcome = "completed", iterations_used = iter, "Phase completed");
+                }
                 ui.iteration_success(iter);
                 phase_audit.finish(PhaseOutcome::Completed { iteration: iter }, changes.clone());
                 state.save(&phase.number, iter, "completed")?;
@@ -537,7 +541,10 @@ pub async fn run_orchestrator(
 
             phase_audit.finish(PhaseOutcome::MaxIterationsReached, changes);
             state.save(&phase.number, phase.budget, "max_iterations")?;
-            warn!(outcome = "max_iterations_reached", "Phase exhausted budget");
+            {
+                let _enter = phase_span.enter();
+                warn!(outcome = "max_iterations_reached", "Phase exhausted budget");
+            }
             ui.phase_failed(&phase.number, "max iterations reached");
 
             // Actionable budget-exhaustion summary

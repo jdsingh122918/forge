@@ -227,6 +227,49 @@ export interface CliHelpResponse {
   options: CliHelpOption[];
 }
 
+// ── Analytics types ─────────────────────────────────────────────────
+
+export interface SummaryStats {
+  total_runs: number;
+  successful_runs: number;
+  success_rate: number;
+  avg_duration_secs: number;
+  total_phases: number;
+  avg_iterations_per_phase: number;
+}
+
+export interface PhaseNameStats {
+  phase_name: string;
+  run_count: number;
+  avg_iterations: number;
+  avg_duration_secs: number;
+  budget_utilization: number;
+  success_rate: number;
+}
+
+export interface RunSummary {
+  run_id: string;
+  issue_id: number | null;
+  success: boolean;
+  duration_secs: number | null;
+  phases_total: number | null;
+  started_at: string;
+}
+
+export interface ReviewStats {
+  specialist_type: string;
+  review_count: number;
+  pass_rate: number;
+  avg_findings: number;
+}
+
+export interface TokenDailyUsage {
+  date: string;
+  total_input: number;
+  total_output: number;
+  iteration_count: number;
+}
+
 // Column display configuration
 export const COLUMNS: { key: IssueColumn; label: string }[] = [
   { key: 'backlog', label: 'Backlog' },

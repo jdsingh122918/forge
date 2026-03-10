@@ -1339,69 +1339,106 @@ async fn github_disconnect(
 async fn get_metrics_summary(
     State(state): State<SharedState>,
     Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<crate::metrics::queries::SummaryStats>, StatusCode> {
-    let days = params.get("days").and_then(|d| d.parse().ok()).unwrap_or(30);
+) -> Result<Json<crate::metrics::queries::SummaryStats>, ApiError> {
+    let days: u32 = match params.get("days") {
+        Some(d) => d
+            .parse()
+            .map_err(|_| ApiError::BadRequest(format!("Invalid 'days' parameter: '{}'", d)))?,
+        None => 30,
+    };
     state
         .metrics
         .summary_stats(days)
         .await
         .map(Json)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        .map_err(|e| {
+            tracing::error!(error = %e, "Metrics query failed");
+            ApiError::Internal(format!("Failed to fetch metrics: {}", e))
+        })
 }
 
 async fn get_metrics_phases(
     State(state): State<SharedState>,
     Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<Vec<crate::metrics::queries::PhaseNameStats>>, StatusCode> {
-    let days = params.get("days").and_then(|d| d.parse().ok()).unwrap_or(30);
+) -> Result<Json<Vec<crate::metrics::queries::PhaseNameStats>>, ApiError> {
+    let days: u32 = match params.get("days") {
+        Some(d) => d
+            .parse()
+            .map_err(|_| ApiError::BadRequest(format!("Invalid 'days' parameter: '{}'", d)))?,
+        None => 30,
+    };
     state
         .metrics
         .phase_stats_by_name(days)
         .await
         .map(Json)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        .map_err(|e| {
+            tracing::error!(error = %e, "Metrics query failed");
+            ApiError::Internal(format!("Failed to fetch metrics: {}", e))
+        })
 }
 
 async fn get_metrics_reviews(
     State(state): State<SharedState>,
     Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<Vec<crate::metrics::queries::ReviewStats>>, StatusCode> {
-    let days = params.get("days").and_then(|d| d.parse().ok()).unwrap_or(30);
+) -> Result<Json<Vec<crate::metrics::queries::ReviewStats>>, ApiError> {
+    let days: u32 = match params.get("days") {
+        Some(d) => d
+            .parse()
+            .map_err(|_| ApiError::BadRequest(format!("Invalid 'days' parameter: '{}'", d)))?,
+        None => 30,
+    };
     state
         .metrics
         .review_stats(days)
         .await
         .map(Json)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        .map_err(|e| {
+            tracing::error!(error = %e, "Metrics query failed");
+            ApiError::Internal(format!("Failed to fetch metrics: {}", e))
+        })
 }
 
 async fn get_metrics_tokens(
     State(state): State<SharedState>,
     Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<Vec<crate::metrics::queries::TokenDailyUsage>>, StatusCode> {
-    let days = params.get("days").and_then(|d| d.parse().ok()).unwrap_or(30);
+) -> Result<Json<Vec<crate::metrics::queries::TokenDailyUsage>>, ApiError> {
+    let days: u32 = match params.get("days") {
+        Some(d) => d
+            .parse()
+            .map_err(|_| ApiError::BadRequest(format!("Invalid 'days' parameter: '{}'", d)))?,
+        None => 30,
+    };
     state
         .metrics
         .token_usage(days)
         .await
         .map(Json)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        .map_err(|e| {
+            tracing::error!(error = %e, "Metrics query failed");
+            ApiError::Internal(format!("Failed to fetch metrics: {}", e))
+        })
 }
 
 async fn get_metrics_recent_runs(
     State(state): State<SharedState>,
     Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<Vec<crate::metrics::queries::RunSummary>>, StatusCode> {
-    let limit = params
-        .get("limit")
-        .and_then(|l| l.parse().ok())
-        .unwrap_or(20);
+) -> Result<Json<Vec<crate::metrics::queries::RunSummary>>, ApiError> {
+    let limit: u32 = match params.get("limit") {
+        Some(l) => l
+            .parse()
+            .map_err(|_| ApiError::BadRequest(format!("Invalid 'limit' parameter: '{}'", l)))?,
+        None => 20,
+    };
     state
         .metrics
         .recent_runs(limit)
         .await
         .map(Json)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        .map_err(|e| {
+            tracing::error!(error = %e, "Metrics query failed");
+            ApiError::Internal(format!("Failed to fetch metrics: {}", e))
+        })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────

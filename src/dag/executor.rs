@@ -275,9 +275,11 @@ impl DagExecutor {
                     let _dag_phase_span = info_span!("dag_phase",
                         phase = %phase_number,
                         wave = current_wave,
-                    )
-                    .entered();
-                    info!("DAG phase started");
+                    );
+                    {
+                        let _enter = _dag_phase_span.enter();
+                        info!("DAG phase started");
+                    }
 
                     self.emit_event(PhaseEvent::Started {
                         phase: phase_number.clone(),

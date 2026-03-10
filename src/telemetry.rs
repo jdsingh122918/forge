@@ -2,9 +2,16 @@ use anyhow::{Context, Result};
 use std::io::IsTerminal;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+#[derive(Debug, Clone, Default, clap::ValueEnum)]
+pub enum LogFormat {
+    Json,
+    #[default]
+    Compact,
+}
+
 pub struct TelemetryConfig {
     pub log_level: String,
-    pub log_format: Option<String>,
+    pub log_format: Option<LogFormat>,
     pub log_dir: std::path::PathBuf,
     pub otlp_endpoint: Option<String>,
 }
@@ -21,15 +28,26 @@ impl Default for TelemetryConfig {
 }
 
 pub fn init_telemetry(config: &TelemetryConfig) -> Result<()> {
-    let env_filter =
-        EnvFilter::try_new(&config.log_level).unwrap_or_else(|_| EnvFilter::new("warn"));
+    let env_filter = EnvFilter::try_new(&config.log_level).unwrap_or_else(|e| {
+        eprintln!(
+            "[forge] Warning: invalid log level '{}' ({}), defaulting to 'warn'",
+            config.log_level, e
+        );
+        EnvFilter::new("warn")
+    });
 
     let is_tty = std::io::stderr().is_terminal();
-    let use_json = match config.log_format.as_deref() {
-        Some("json") => true,
-        Some("pretty") | Some("compact") => false,
-        _ => !is_tty,
+    let use_json = match &config.log_format {
+        Some(LogFormat::Json) => true,
+        Some(_) => false,
+        None => !is_tty,
     };
+
+    if config.otlp_endpoint.is_some() {
+        eprintln!(
+            "[forge] Warning: --otlp-endpoint is not yet implemented; traces will not be exported"
+        );
+    }
 
     // File layer — always-on JSON appender
     std::fs::create_dir_all(&config.log_dir).context("Failed to create log directory")?;
@@ -58,21 +76,26 @@ pub fn init_telemetry(config: &TelemetryConfig) -> Result<()> {
                 .compact()
                 .with_writer(std::io::stderr)
                 .with_target(false)
-                .with_ansi(true),
+                .with_ansi(is_tty),
         )
     } else {
         None
     };
 
-    tracing_subscriber::registry()
+    match tracing_subscriber::registry()
         .with(env_filter)
         .with(file_layer)
         .with(json_stderr)
         .with(compact_stderr)
         .try_init()
-        .ok(); // ok() because tests may call this multiple times
-
-    Ok(())
+    {
+        Ok(()) => Ok(()),
+        Err(e) if e.to_string().contains("already been set") => Ok(()),
+        Err(e) => Err(anyhow::anyhow!(
+            "Failed to initialize tracing subscriber: {}",
+            e
+        )),
+    }
 }
 
 #[cfg(test)]

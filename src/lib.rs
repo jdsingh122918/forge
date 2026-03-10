@@ -22,9 +22,9 @@ pub mod skills;
 pub mod stream;
 pub mod subphase;
 pub mod swarm;
+pub mod telemetry;
 pub mod tracker;
 pub mod ui;
-pub mod telemetry;
 pub mod util;
 
 // Re-export from phase for backward compatibility

@@ -37,9 +37,9 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub log_level: Option<String>,
 
-    /// Log format override (pretty, json, compact)
+    /// Log format override (json, compact)
     #[arg(long, global = true)]
-    pub log_format: Option<String>,
+    pub log_format: Option<forge::telemetry::LogFormat>,
 
     /// OpenTelemetry OTLP endpoint for trace export
     #[arg(long, global = true)]
@@ -310,21 +310,31 @@ async fn main() -> Result<()> {
                 "warn".to_string()
             }
         });
-    let log_format = cli
-        .log_format
-        .clone()
-        .or_else(|| std::env::var("FORGE_LOG_FORMAT").ok());
+    let log_format = cli.log_format.clone().or_else(|| {
+        std::env::var("FORGE_LOG_FORMAT").ok().and_then(|s| {
+            match s.to_lowercase().as_str() {
+                "json" => Some(forge::telemetry::LogFormat::Json),
+                "compact" => Some(forge::telemetry::LogFormat::Compact),
+                _ => {
+                    eprintln!("[forge] Warning: unknown FORGE_LOG_FORMAT '{}', ignoring", s);
+                    None
+                }
+            }
+        })
+    });
     let otlp_endpoint = cli
         .otlp_endpoint
         .clone()
         .or_else(|| std::env::var("FORGE_OTLP_ENDPOINT").ok());
     let forge_dir = project_dir.join(".forge");
-    let _ = forge::telemetry::init_telemetry(&forge::telemetry::TelemetryConfig {
+    if let Err(e) = forge::telemetry::init_telemetry(&forge::telemetry::TelemetryConfig {
         log_level,
         log_format,
         log_dir: forge_dir.join("logs"),
         otlp_endpoint,
-    });
+    }) {
+        eprintln!("[forge] Warning: failed to initialize telemetry: {:#}", e);
+    }
 
     match &cli.command {
         Commands::Init { from } => {

@@ -1,34 +1,6 @@
 /** Analytics dashboard — summary stats, phase performance, and recent runs. */
 import { useState, useEffect, useCallback } from 'react';
-
-// ── Types ───────────────────────────────────────────────────────────
-
-interface SummaryStats {
-  total_runs: number;
-  successful_runs: number;
-  success_rate: number;
-  avg_duration_secs: number;
-  total_phases: number;
-  avg_iterations_per_phase: number;
-}
-
-interface PhaseNameStats {
-  phase_name: string;
-  run_count: number;
-  avg_iterations: number;
-  avg_duration_secs: number;
-  budget_utilization: number;
-  success_rate: number;
-}
-
-interface RunSummary {
-  run_id: string;
-  issue_id: number | null;
-  success: boolean;
-  duration_secs: number | null;
-  phases_total: number | null;
-  started_at: string;
-}
+import type { SummaryStats, PhaseNameStats, RunSummary } from '../types';
 
 type TimeRange = 7 | 30 | 90;
 
@@ -95,7 +67,6 @@ export default function Analytics() {
     fetchData(timeRange);
   }, [timeRange, fetchData]);
 
-  // Loading state
   if (loading) {
     return (
       <div style={{
@@ -118,7 +89,6 @@ export default function Analytics() {
     );
   }
 
-  // Error state
   if (error) {
     return (
       <div style={{
@@ -134,7 +104,6 @@ export default function Analytics() {
     );
   }
 
-  // Empty state
   if (!summary || summary.total_runs === 0) {
     return (
       <div style={{
