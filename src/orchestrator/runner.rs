@@ -1,4 +1,4 @@
-use crate::audit::{ClaudeSession, FileChangeSummary};
+use crate::audit::{ClaudeSession, FileChangeSummary, TokenUsage};
 use crate::config::Config;
 use crate::errors::OrchestratorError;
 use crate::forge_config::tools_for_permission_mode;
@@ -201,6 +201,23 @@ impl IterationFeedback {
     }
 }
 
+/// Extract token usage from a parsed JSON line of Claude CLI output.
+///
+/// Claude CLI result events include a `usage` object with `input_tokens` and
+/// `output_tokens`. This function defensively extracts those values, returning
+/// `None` if the line is not a result event or the usage fields are missing.
+fn extract_token_usage(parsed: &serde_json::Value) -> Option<TokenUsage> {
+    if parsed.get("type")?.as_str()? == "result" {
+        let usage = parsed.get("usage")?;
+        Some(TokenUsage {
+            input_tokens: usage.get("input_tokens")?.as_u64()? as u32,
+            output_tokens: usage.get("output_tokens")?.as_u64()? as u32,
+        })
+    } else {
+        None
+    }
+}
+
 pub struct ClaudeRunner {
     config: Config,
 }
@@ -348,6 +365,7 @@ impl ClaudeRunner {
         let mut final_result: Option<String> = None;
         let mut is_error = false;
         let mut captured_session_id: Option<String> = None;
+        let mut extracted_token_usage: Option<TokenUsage> = None;
 
         // Spawn elapsed time updater
         let ui_clone = ui.clone();
@@ -410,6 +428,10 @@ impl ClaudeRunner {
                             is_error: err,
                             ..
                         } => {
+                            // Extract token usage from the raw JSON line
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) {
+                                extracted_token_usage = extract_token_usage(&parsed);
+                            }
                             final_result = result;
                             is_error = err;
                         }
@@ -509,7 +531,7 @@ impl ClaudeRunner {
             output_file: output_file.clone(),
             output_chars: combined_output.len(),
             exit_code,
-            token_usage: None, // TODO: Extract from output if available
+            token_usage: extracted_token_usage,
             session_id: captured_session_id,
         };
 
@@ -1168,5 +1190,24 @@ mod tests {
                 .unwrap()
                 .contains("phase-02-iter-7-output.log")
         );
+    }
+
+    #[test]
+    fn test_extract_token_usage() {
+        let output_line = r#"{"type":"result","subtype":"success","cost_usd":0.05,"duration_ms":3000,"duration_api_ms":2800,"is_error":false,"num_turns":1,"session_id":"abc","usage":{"input_tokens":1500,"output_tokens":800}}"#;
+        let parsed: serde_json::Value = serde_json::from_str(output_line).unwrap();
+        let usage = extract_token_usage(&parsed);
+        assert!(usage.is_some());
+        let usage = usage.unwrap();
+        assert_eq!(usage.input_tokens, 1500);
+        assert_eq!(usage.output_tokens, 800);
+    }
+
+    #[test]
+    fn test_extract_token_usage_missing() {
+        let output_line = r#"{"type":"assistant","content":"hello"}"#;
+        let parsed: serde_json::Value = serde_json::from_str(output_line).unwrap();
+        let usage = extract_token_usage(&parsed);
+        assert!(usage.is_none());
     }
 }
