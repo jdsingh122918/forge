@@ -116,6 +116,22 @@ impl WorktreeManager {
         Ok(())
     }
 
+    pub fn generate_diff(&self, worktree_path: &Path) -> Result<String> {
+        let output = Command::new("git")
+            .args(["diff", "HEAD"])
+            .current_dir(worktree_path)
+            .output()
+            .context("Failed to generate git diff")?;
+
+        self.git_stdout(
+            output,
+            format!(
+                "Git diff generation failed for {}",
+                worktree_path.display()
+            ),
+        )
+    }
+
     fn worktree_root(&self) -> PathBuf {
         self.repo_path.join(".forge").join("council-worktrees")
     }
@@ -159,6 +175,17 @@ impl WorktreeManager {
         Ok(())
     }
 
+    fn git_stdout(&self, output: std::process::Output, message: String) -> Result<String> {
+        let _ = &self.repo;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            anyhow::bail!("{message}: {}\n{}", stderr.trim(), stdout.trim())
+        }
+
+        String::from_utf8(output.stdout).context(message)
+    }
+
     fn ensure_git_success(&self, output: std::process::Output, message: String) -> Result<()> {
         let _ = &self.repo;
         if output.status.success() {
@@ -169,6 +196,76 @@ impl WorktreeManager {
         let stdout = String::from_utf8_lossy(&output.stdout);
         anyhow::bail!("{message}: {}\n{}", stderr.trim(), stdout.trim())
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PatchSet {
+    files: Vec<FilePatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FilePatch {
+    path: String,
+    diff: String,
+}
+
+impl PatchSet {
+    pub fn parse(diff: &str) -> Result<Self> {
+        if diff.trim().is_empty() {
+            return Ok(Self::default());
+        }
+
+        let mut files = Vec::new();
+        let mut current_path: Option<String> = None;
+        let mut current_diff = String::new();
+
+        for chunk in diff.split_inclusive('\n') {
+            if chunk.starts_with("diff --git ") {
+                if let Some(path) = current_path.take() {
+                    files.push(FilePatch {
+                        path,
+                        diff: std::mem::take(&mut current_diff),
+                    });
+                } else if !current_diff.trim().is_empty() {
+                    anyhow::bail!("Malformed diff: content found before first file header");
+                }
+
+                current_path = Some(parse_diff_header_path(chunk.trim_end())?);
+            }
+
+            current_diff.push_str(chunk);
+        }
+
+        if let Some(path) = current_path {
+            files.push(FilePatch {
+                path,
+                diff: current_diff,
+            });
+        } else {
+            anyhow::bail!("Malformed diff: missing diff --git file header");
+        }
+
+        Ok(Self { files })
+    }
+
+    pub fn files_changed(&self) -> Vec<&str> {
+        self.files.iter().map(|file| file.path.as_str()).collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+}
+
+fn parse_diff_header_path(header: &str) -> Result<String> {
+    let remainder = header
+        .strip_prefix("diff --git ")
+        .with_context(|| format!("Malformed diff header: {header}"))?;
+    let (_, path) = remainder
+        .rsplit_once(" b/")
+        .with_context(|| format!("Malformed diff header: {header}"))?;
+
+    Ok(path.to_string())
 }
 
 #[cfg(test)]
@@ -347,6 +444,229 @@ mod tests {
         assert!(
             worktree_b.join("README.md").exists(),
             "worktree-b should still have HEAD content"
+        );
+    }
+
+    #[test]
+    fn test_generate_diff_empty_worktree() {
+        let (_dir, path) = create_test_repo();
+        let manager = WorktreeManager::new(&path).expect("manager should open repo");
+        let worktree_path = manager
+            .create_worktree("worker-a")
+            .expect("worktree should be created");
+
+        let diff = manager
+            .generate_diff(&worktree_path)
+            .expect("diff generation should succeed");
+
+        assert!(diff.is_empty(), "unchanged worktree should have empty diff");
+    }
+
+    #[test]
+    fn test_generate_diff_single_file_added() {
+        let (_dir, path) = create_test_repo();
+        let manager = WorktreeManager::new(&path).expect("manager should open repo");
+        let worktree_path = manager
+            .create_worktree("worker-a")
+            .expect("worktree should be created");
+
+        let new_file = worktree_path.join("notes.txt");
+        fs::write(&new_file, "council notes\n").expect("new file should be written");
+        run_git(&worktree_path, ["add", "notes.txt"]);
+
+        let diff = manager
+            .generate_diff(&worktree_path)
+            .expect("diff generation should succeed");
+
+        assert!(
+            diff.contains("diff --git a/notes.txt b/notes.txt"),
+            "diff should include the new file header"
+        );
+        assert!(
+            diff.contains("+council notes"),
+            "diff should include added file contents"
+        );
+    }
+
+    #[test]
+    fn test_generate_diff_single_file_modified() {
+        let (_dir, path) = create_test_repo();
+        let manager = WorktreeManager::new(&path).expect("manager should open repo");
+        let worktree_path = manager
+            .create_worktree("worker-a")
+            .expect("worktree should be created");
+
+        fs::write(worktree_path.join("README.md"), "# Updated Test\n")
+            .expect("README.md should be updated");
+
+        let diff = manager
+            .generate_diff(&worktree_path)
+            .expect("diff generation should succeed");
+
+        assert!(
+            diff.contains("diff --git a/README.md b/README.md"),
+            "diff should include the modified file header"
+        );
+        assert!(
+            diff.contains("-# Test"),
+            "diff should include removed content"
+        );
+        assert!(
+            diff.contains("+# Updated Test"),
+            "diff should include added content"
+        );
+    }
+
+    #[test]
+    fn test_generate_diff_multiple_files() {
+        let (_dir, path) = create_test_repo();
+        let manager = WorktreeManager::new(&path).expect("manager should open repo");
+        let worktree_path = manager
+            .create_worktree("worker-a")
+            .expect("worktree should be created");
+
+        fs::write(worktree_path.join("README.md"), "# Updated Test\n")
+            .expect("README.md should be updated");
+        fs::write(worktree_path.join("notes.txt"), "council notes\n")
+            .expect("notes.txt should be written");
+        fs::write(worktree_path.join("plan.md"), "- ship it\n")
+            .expect("plan.md should be written");
+        run_git(&worktree_path, ["add", "."]);
+
+        let diff = manager
+            .generate_diff(&worktree_path)
+            .expect("diff generation should succeed");
+
+        assert!(
+            diff.contains("diff --git a/README.md b/README.md"),
+            "diff should include modified tracked files"
+        );
+        assert!(
+            diff.contains("diff --git a/notes.txt b/notes.txt"),
+            "diff should include the first added file"
+        );
+        assert!(
+            diff.contains("diff --git a/plan.md b/plan.md"),
+            "diff should include the second added file"
+        );
+    }
+
+    #[test]
+    fn test_patch_set_parse_empty() {
+        let patch_set = PatchSet::parse("").expect("empty diff should parse");
+
+        assert!(patch_set.is_empty(), "empty diff should yield empty patch set");
+        assert!(
+            patch_set.files_changed().is_empty(),
+            "empty diff should not report changed files"
+        );
+    }
+
+    #[test]
+    fn test_patch_set_parse_single_file() {
+        let diff = concat!(
+            "diff --git a/README.md b/README.md\n",
+            "index dab306f..92d252f 100644\n",
+            "--- a/README.md\n",
+            "+++ b/README.md\n",
+            "@@ -1 +1 @@\n",
+            "-# Test\n",
+            "+# Updated Test\n",
+        );
+
+        let patch_set = PatchSet::parse(diff).expect("single-file diff should parse");
+
+        assert_eq!(
+            patch_set.files_changed(),
+            vec!["README.md"],
+            "single-file patch set should report the changed file"
+        );
+        assert!(
+            !patch_set.is_empty(),
+            "single-file patch set should not be empty"
+        );
+    }
+
+    #[test]
+    fn test_patch_set_parse_multi_file() {
+        let diff = concat!(
+            "diff --git a/README.md b/README.md\n",
+            "index dab306f..92d252f 100644\n",
+            "--- a/README.md\n",
+            "+++ b/README.md\n",
+            "@@ -1 +1 @@\n",
+            "-# Test\n",
+            "+# Updated Test\n",
+            "diff --git a/notes.txt b/notes.txt\n",
+            "new file mode 100644\n",
+            "index 0000000..0f22871\n",
+            "--- /dev/null\n",
+            "+++ b/notes.txt\n",
+            "@@ -0,0 +1 @@\n",
+            "+council notes\n",
+        );
+
+        let patch_set = PatchSet::parse(diff).expect("multi-file diff should parse");
+
+        assert_eq!(
+            patch_set.files_changed(),
+            vec!["README.md", "notes.txt"],
+            "multi-file patch set should preserve all changed files"
+        );
+    }
+
+    #[test]
+    fn test_patch_set_files_changed() {
+        let diff = concat!(
+            "diff --git a/README.md b/README.md\n",
+            "index dab306f..92d252f 100644\n",
+            "--- a/README.md\n",
+            "+++ b/README.md\n",
+            "@@ -1 +1 @@\n",
+            "-# Test\n",
+            "+# Updated Test\n",
+            "diff --git a/notes.txt b/notes.txt\n",
+            "new file mode 100644\n",
+            "index 0000000..0f22871\n",
+            "--- /dev/null\n",
+            "+++ b/notes.txt\n",
+            "@@ -0,0 +1 @@\n",
+            "+council notes\n",
+        );
+
+        let patch_set = PatchSet::parse(diff).expect("diff should parse");
+
+        assert_eq!(
+            patch_set.files_changed(),
+            vec!["README.md", "notes.txt"],
+            "files_changed should list changed paths in diff order"
+        );
+    }
+
+    #[test]
+    fn test_patch_set_is_empty_true() {
+        let patch_set = PatchSet::parse("").expect("empty diff should parse");
+
+        assert!(patch_set.is_empty(), "empty patch set should report empty");
+    }
+
+    #[test]
+    fn test_patch_set_is_empty_false() {
+        let diff = concat!(
+            "diff --git a/README.md b/README.md\n",
+            "index dab306f..92d252f 100644\n",
+            "--- a/README.md\n",
+            "+++ b/README.md\n",
+            "@@ -1 +1 @@\n",
+            "-# Test\n",
+            "+# Updated Test\n",
+        );
+
+        let patch_set = PatchSet::parse(diff).expect("diff should parse");
+
+        assert!(
+            !patch_set.is_empty(),
+            "non-empty patch set should not report empty"
         );
     }
 }
