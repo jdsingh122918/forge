@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod compaction;
 pub mod config;
+pub mod council;
 pub mod dag;
 pub mod decomposition;
 pub mod errors;
