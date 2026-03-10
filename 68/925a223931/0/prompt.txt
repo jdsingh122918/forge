@@ -1,0 +1,1 @@
+lets commit these docs and then spit out detailed instructions/prompts for each
