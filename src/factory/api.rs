@@ -19,6 +19,7 @@ use super::db::FactoryDb;
 use super::models::IssueColumn;
 use super::pipeline::PipelineRunner;
 use super::ws::{WsMessage, broadcast_message};
+use crate::metrics::MetricsCollector;
 
 // ── Shared application state ──────────────────────────────────────────
 
@@ -28,6 +29,7 @@ pub struct AppState {
     pub pipeline_runner: PipelineRunner,
     pub github_client_id: Option<String>,
     pub github_token: Mutex<Option<String>>,
+    pub metrics: MetricsCollector,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -1359,12 +1361,14 @@ mod tests {
         let db = FactoryDb::new_in_memory().unwrap();
         let (ws_tx, _) = broadcast::channel(16);
         let pipeline_runner = PipelineRunner::new("/tmp/test", None);
+        let db_handle = DbHandle::new(db);
         let state = Arc::new(AppState {
-            db: DbHandle::new(db),
+            db: db_handle.clone(),
             ws_tx,
             pipeline_runner,
             github_client_id: None,
             github_token: Mutex::new(None),
+            metrics: MetricsCollector::new(db_handle),
         });
         api_router().with_state(state)
     }
@@ -1916,12 +1920,14 @@ mod tests {
         let db = FactoryDb::new_in_memory().unwrap();
         let (ws_tx, _) = broadcast::channel(16);
         let pipeline_runner = PipelineRunner::new("/tmp/test", None);
+        let db_handle = DbHandle::new(db);
         let state = Arc::new(AppState {
-            db: DbHandle::new(db),
+            db: db_handle.clone(),
             ws_tx: ws_tx.clone(),
             pipeline_runner,
             github_client_id: None,
             github_token: Mutex::new(None),
+            metrics: MetricsCollector::new(db_handle),
         });
         let app = api_router().with_state(state);
 
