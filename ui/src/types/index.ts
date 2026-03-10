@@ -341,6 +341,8 @@ export interface AgentInfo {
   description: string;
   focus_areas: string[];
   default_gating: boolean;
+  /** CLI `forge swarm --review` always forces gating mode regardless of default. */
+  cli_gating: boolean;
 }
 
 /** Status colors mapped to CSS custom property values for the Mission Control theme */

@@ -149,12 +149,13 @@ export default function Agents() {
                   {theme.icon}
                 </span>
 
-                {/* Name + gating badge */}
+                {/* Name + gating badges */}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{
                     display: 'flex',
                     alignItems: 'center',
                     gap: '8px',
+                    flexWrap: 'wrap',
                   }}>
                     <span style={{
                       fontSize: '15px',
@@ -178,6 +179,19 @@ export default function Agents() {
                     }}>
                       {agent.default_gating ? 'gating' : 'advisory'}
                     </span>
+                    {agent.cli_gating && !agent.default_gating && (
+                      <span style={{
+                        fontSize: '10px',
+                        padding: '2px 6px',
+                        backgroundColor: 'rgba(210, 153, 34, 0.15)',
+                        color: 'var(--color-warning)',
+                        fontWeight: 600,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.5px',
+                      }}>
+                        cli: gating
+                      </span>
+                    )}
                   </div>
                   <div style={{
                     fontSize: '11px',
@@ -246,6 +260,22 @@ export default function Agents() {
                       </span>
                     ))}
                   </div>
+
+                  {/* CLI override note */}
+                  {agent.cli_gating && !agent.default_gating && (
+                    <div style={{
+                      marginTop: '12px',
+                      padding: '8px 10px',
+                      backgroundColor: 'rgba(210, 153, 34, 0.06)',
+                      border: '1px solid rgba(210, 153, 34, 0.25)',
+                      fontSize: '11px',
+                      color: 'var(--color-warning)',
+                      lineHeight: '1.5',
+                    }}>
+                      Advisory by default, but <span style={{ fontWeight: 600 }}>forge swarm --review</span> forces
+                      all selected reviewers to gating mode. Findings will block phase completion when invoked via CLI.
+                    </div>
+                  )}
 
                   {/* Usage hint */}
                   <div style={{

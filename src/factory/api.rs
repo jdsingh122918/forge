@@ -116,6 +116,8 @@ pub struct AgentInfo {
     pub description: String,
     pub focus_areas: Vec<String>,
     pub default_gating: bool,
+    /// CLI `forge swarm --review` always forces gating mode regardless of default.
+    pub cli_gating: bool,
 }
 
 // ── Error handling ────────────────────────────────────────────────────
@@ -375,6 +377,7 @@ async fn list_agents() -> Json<Vec<AgentInfo>> {
             description: st.description().to_string(),
             focus_areas: st.focus_areas().into_iter().map(|s| s.to_string()).collect(),
             default_gating: st.default_gating(),
+            cli_gating: true, // cmd_swarm forces all CLI-selected reviewers to gating
         })
         .collect();
 
