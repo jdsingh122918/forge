@@ -130,6 +130,20 @@ export default function StatusBar({
         >
           list
         </button>
+        <button
+          onClick={() => onViewModeChange('analytics')}
+          style={{
+            padding: '4px 8px',
+            background: viewMode === 'analytics' ? 'var(--color-border)' : 'transparent',
+            border: '1px solid var(--color-border)',
+            color: 'var(--color-text-primary)',
+            cursor: 'pointer',
+            fontSize: '12px',
+          }}
+          title="Analytics view"
+        >
+          analytics
+        </button>
       </div>
 
       {/* Uptime + WS status */}
