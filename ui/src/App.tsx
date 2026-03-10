@@ -11,6 +11,7 @@ import NewIssueModal from './components/NewIssueModal';
 import ConfirmDialog from './components/ConfirmDialog';
 import { ProjectSetup } from './components/ProjectSetup';
 import Analytics from './components/Analytics';
+import Agents from './components/Agents';
 import { api } from './api/client';
 
 /**
@@ -195,6 +196,10 @@ function MissionControl() {
         {viewMode === 'analytics' ? (
           <div style={{ flex: 1, overflow: 'hidden' }}>
             <Analytics />
+          </div>
+        ) : viewMode === 'agents' ? (
+          <div style={{ flex: 1, overflow: 'hidden' }}>
+            <Agents />
           </div>
         ) : (
           <div style={{

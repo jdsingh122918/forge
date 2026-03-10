@@ -332,7 +332,16 @@ export interface EventLogEntry {
 }
 
 /** View mode for the main agent run grid */
-export type ViewMode = 'grid' | 'list' | 'analytics';
+export type ViewMode = 'grid' | 'list' | 'analytics' | 'agents';
+
+/** A built-in review specialist agent */
+export interface AgentInfo {
+  id: string;
+  name: string;
+  description: string;
+  focus_areas: string[];
+  default_gating: boolean;
+}
 
 /** Status colors mapped to CSS custom property values for the Mission Control theme */
 export const MC_STATUS_COLORS: Record<PipelineStatus, string> = {

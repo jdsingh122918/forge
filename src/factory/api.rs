@@ -109,6 +109,15 @@ pub struct CliHelpResponse {
     pub options: Vec<CliOption>,
 }
 
+#[derive(serde::Serialize)]
+pub struct AgentInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub focus_areas: Vec<String>,
+    pub default_gating: bool,
+}
+
 // ── Error handling ────────────────────────────────────────────────────
 
 pub enum ApiError {
@@ -219,6 +228,7 @@ pub fn api_router() -> Router<SharedState> {
         .route("/api/github/repos", get(github_list_repos))
         .route("/api/github/disconnect", post(github_disconnect))
         .route("/api/screenshots/{*path}", get(serve_screenshot))
+        .route("/api/agents", get(list_agents))
         .route("/api/cli-help", get(cli_help_handler))
         .route("/api/metrics/summary", get(get_metrics_summary))
         .route("/api/metrics/phases", get(get_metrics_phases))
@@ -352,6 +362,24 @@ async fn detect_github_repo_from_path(path: &str) -> Option<String> {
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────
+
+/// `GET /api/agents` — return the built-in review specialist agents.
+async fn list_agents() -> Json<Vec<AgentInfo>> {
+    use crate::review::SpecialistType;
+
+    let agents = SpecialistType::all_builtins()
+        .into_iter()
+        .map(|st| AgentInfo {
+            id: st.agent_name(),
+            name: st.display_name().to_string(),
+            description: st.description().to_string(),
+            focus_areas: st.focus_areas().into_iter().map(|s| s.to_string()).collect(),
+            default_gating: st.default_gating(),
+        })
+        .collect();
+
+    Json(agents)
+}
 
 /// `GET /api/cli-help` — return parsed CLI help (commands and options).
 ///

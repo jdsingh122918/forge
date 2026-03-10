@@ -95,6 +95,9 @@ export const api = {
       method: 'POST',
     }),
 
+  // Agents
+  listAgents: () => request<import('../types').AgentInfo[]>('/agents'),
+
   // CLI Help
   cliHelp: () => request<import('../types').CliHelpResponse>('/cli-help'),
 };
