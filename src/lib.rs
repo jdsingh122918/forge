@@ -12,6 +12,7 @@ pub mod hooks;
 pub mod implement;
 pub mod init;
 pub mod interview;
+pub mod metrics;
 pub mod orchestrator;
 pub mod patterns;
 pub mod phase;
