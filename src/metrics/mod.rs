@@ -180,7 +180,14 @@ impl MetricsCollector {
             .execute(
                 "INSERT INTO metrics_reviews (run_id, phase_number, specialist_type, verdict, \
                  findings_count, critical_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                libsql::params![run_id, phase_number, specialist_type, verdict, findings_count, critical_count],
+                libsql::params![
+                    run_id,
+                    phase_number,
+                    specialist_type,
+                    verdict,
+                    findings_count,
+                    critical_count
+                ],
             )
             .await
             .context("Failed to insert metrics_review")?;
@@ -202,7 +209,14 @@ impl MetricsCollector {
             .execute(
                 "INSERT INTO metrics_compactions (run_id, phase_number, iterations_compacted, \
                  original_chars, summary_chars, compression_ratio) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                libsql::params![run_id, phase_number, iterations_compacted, original_chars, summary_chars, compression_ratio],
+                libsql::params![
+                    run_id,
+                    phase_number,
+                    iterations_compacted,
+                    original_chars,
+                    summary_chars,
+                    compression_ratio
+                ],
             )
             .await
             .context("Failed to insert metrics_compaction")?;
@@ -227,7 +241,10 @@ impl MetricsCollector {
             .await
             .context("Failed to query summary stats")?;
 
-        let row = rows.next().await?.context("No row returned for summary stats")?;
+        let row = rows
+            .next()
+            .await?
+            .context("No row returned for summary stats")?;
         let total_runs: i64 = row.get(0)?;
         let successful_runs: i64 = row.get(1)?;
         let avg_duration: f64 = row.get(2)?;
@@ -245,7 +262,10 @@ impl MetricsCollector {
             .await
             .context("Failed to query phase stats")?;
 
-        let phase_row = phase_rows.next().await?.context("No row returned for phase stats")?;
+        let phase_row = phase_rows
+            .next()
+            .await?
+            .context("No row returned for phase stats")?;
         let total_phases: i64 = phase_row.get(0)?;
         let avg_iters: f64 = phase_row.get(1)?;
 
@@ -473,12 +493,34 @@ mod tests {
             .await
             .unwrap();
         mc.record_iteration(
-            "run-003", 1, 1, 30.0, 5000, 3000, Some(1500), Some(800), Some(50), 0, 0, false,
+            "run-003",
+            1,
+            1,
+            30.0,
+            5000,
+            3000,
+            Some(1500),
+            Some(800),
+            Some(50),
+            0,
+            0,
+            false,
         )
         .await
         .unwrap();
         mc.record_iteration(
-            "run-003", 1, 2, 25.0, 4000, 2500, Some(1200), Some(600), Some(80), 1, 0, true,
+            "run-003",
+            1,
+            2,
+            25.0,
+            4000,
+            2500,
+            Some(1200),
+            Some(600),
+            Some(80),
+            1,
+            0,
+            true,
         )
         .await
         .unwrap();
@@ -644,13 +686,35 @@ mod tests {
             .unwrap();
         metrics
             .record_iteration(
-                "tok-run", 1, 1, 10.0, 5000, 3000, Some(1500), Some(800), Some(50), 0, 0, false,
+                "tok-run",
+                1,
+                1,
+                10.0,
+                5000,
+                3000,
+                Some(1500),
+                Some(800),
+                Some(50),
+                0,
+                0,
+                false,
             )
             .await
             .unwrap();
         metrics
             .record_iteration(
-                "tok-run", 1, 2, 8.0, 4000, 2500, Some(1200), Some(600), Some(60), 0, 0, false,
+                "tok-run",
+                1,
+                2,
+                8.0,
+                4000,
+                2500,
+                Some(1200),
+                Some(600),
+                Some(60),
+                0,
+                0,
+                false,
             )
             .await
             .unwrap();
