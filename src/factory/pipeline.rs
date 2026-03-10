@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
+use tracing::{error, info};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::broadcast;
 
@@ -814,6 +815,7 @@ impl PipelineRunner {
                     Ok(run)
                 })
                 .await?;
+            info!(run_id = run_id, issue_id = issue_id, "Pipeline started");
             broadcast_message(&tx, &WsMessage::PipelineStarted { run });
             if issue.column != IssueColumn::InProgress {
                 broadcast_message(
@@ -1076,7 +1078,10 @@ impl PipelineRunner {
                             Ok(run)
                         }
                     }).await {
-                        Ok(run) => broadcast_message(&tx, &WsMessage::PipelineCompleted { run }),
+                        Ok(run) => {
+                            info!(run_id = run_id, "Pipeline completed successfully");
+                            broadcast_message(&tx, &WsMessage::PipelineCompleted { run });
+                        }
                         Err(e) => {
                             eprintln!(
                                 "[pipeline] run_id={}: CRITICAL: completed but failed to update DB: {:#}",
@@ -1103,6 +1108,7 @@ impl PipelineRunner {
                 }
                 Err(e) => {
                     let error_msg = format!("{:#}", e);
+                    error!(run_id = run_id, error = %error_msg, "Pipeline failed");
                     match db
                         .call({
                             let error_msg = error_msg.clone();
