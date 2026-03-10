@@ -167,7 +167,7 @@ mod tests {
         let (_db, conn) = test_db().await;
         run_migrations(&conn).await.unwrap();
         let version = get_schema_version(&conn).await.unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
     }
 
     #[tokio::test]
@@ -177,7 +177,7 @@ mod tests {
         // Running again should be a no-op
         run_migrations(&conn).await.unwrap();
         let version = get_schema_version(&conn).await.unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
     }
 
     #[tokio::test]
@@ -193,7 +193,7 @@ mod tests {
         // Now run_migrations should pick up from 3
         run_migrations(&conn).await.unwrap();
         let version = get_schema_version(&conn).await.unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
     }
 
     #[tokio::test]
@@ -272,12 +272,12 @@ mod tests {
         conn.execute_batch(MIGRATIONS[1].1).await.unwrap();
 
         // Run the full migration system — should bootstrap at version 2,
-        // then apply migrations 3-6
+        // then apply migrations 3-7
         run_migrations(&conn).await.unwrap();
 
         // Verify final version
         let version = get_schema_version(&conn).await.unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
 
         // Verify tables from migrations 3-6 exist and are usable
         // First, set up FK prerequisites: insert a project, issue, and pipeline_run

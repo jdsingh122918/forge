@@ -635,7 +635,7 @@ impl PipelineRunner {
             let metrics = MetricsCollector::new(db.clone());
             let run_id_str = run_id.to_string();
             let run_start = Instant::now();
-            if let Err(e) = metrics.record_run_started(&run_id_str, Some(issue_id)).await {
+            if let Err(e) = metrics.record_run_started(&run_id_str, Some(issue_id.0)).await {
                 warn!(error = %e, "Failed to record metrics run start");
             }
 
