@@ -1,4 +1,5 @@
 pub mod events;
+pub mod queries;
 
 use anyhow::{Context, Result};
 use crate::factory::db::DbHandle;
@@ -129,6 +130,150 @@ impl MetricsCollector {
             Ok(())
         }).await
     }
+
+    pub async fn summary_stats(&self, days: u32) -> Result<queries::SummaryStats> {
+        let days = days as i64;
+        self.db.call(move |db| {
+            let row = db.conn.query_row(
+                "SELECT \
+                    COUNT(*) as total_runs, \
+                    COALESCE(SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END), 0) as successful_runs, \
+                    COALESCE(AVG(duration_secs), 0.0) as avg_duration \
+                 FROM metrics_runs \
+                 WHERE started_at >= datetime('now', '-' || ?1 || ' days')",
+                params![days],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, f64>(2)?)),
+            )?;
+
+            let (total_phases, avg_iters): (i64, f64) = db.conn.query_row(
+                "SELECT COUNT(*), COALESCE(AVG(iterations_used), 0.0) \
+                 FROM metrics_phases mp \
+                 JOIN metrics_runs mr ON mp.run_id = mr.run_id \
+                 WHERE mr.started_at >= datetime('now', '-' || ?1 || ' days')",
+                params![days],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+
+            let success_rate = if row.0 > 0 { row.1 as f64 / row.0 as f64 } else { 0.0 };
+
+            Ok(queries::SummaryStats {
+                total_runs: row.0,
+                successful_runs: row.1,
+                success_rate,
+                avg_duration_secs: row.2,
+                total_phases,
+                avg_iterations_per_phase: avg_iters,
+            })
+        }).await
+    }
+
+    pub async fn phase_stats_by_name(&self, days: u32) -> Result<Vec<queries::PhaseNameStats>> {
+        let days = days as i64;
+        self.db.call(move |db| {
+            let mut stmt = db.conn.prepare(
+                "SELECT \
+                    phase_name, \
+                    COUNT(*) as run_count, \
+                    COALESCE(AVG(CAST(iterations_used AS REAL)), 0.0) as avg_iterations, \
+                    COALESCE(AVG(duration_secs), 0.0) as avg_duration, \
+                    COALESCE(AVG(CAST(iterations_used AS REAL) / CAST(budget AS REAL)), 0.0) as budget_util, \
+                    COALESCE(AVG(CASE WHEN outcome = 'completed' THEN 1.0 ELSE 0.0 END), 0.0) as success_rate \
+                 FROM metrics_phases mp \
+                 JOIN metrics_runs mr ON mp.run_id = mr.run_id \
+                 WHERE mr.started_at >= datetime('now', '-' || ?1 || ' days') \
+                 GROUP BY phase_name \
+                 ORDER BY run_count DESC"
+            )?;
+            let rows = stmt.query_map(params![days], |row| {
+                Ok(queries::PhaseNameStats {
+                    phase_name: row.get(0)?,
+                    run_count: row.get(1)?,
+                    avg_iterations: row.get(2)?,
+                    avg_duration_secs: row.get(3)?,
+                    budget_utilization: row.get(4)?,
+                    success_rate: row.get(5)?,
+                })
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+        }).await
+    }
+
+    pub async fn review_stats(&self, days: u32) -> Result<Vec<queries::ReviewStats>> {
+        let days = days as i64;
+        self.db.call(move |db| {
+            let mut stmt = db.conn.prepare(
+                "SELECT \
+                    specialist_type, \
+                    COUNT(*) as total_reviews, \
+                    COALESCE(AVG(CASE WHEN verdict = 'pass' THEN 1.0 ELSE 0.0 END), 0.0) as pass_rate, \
+                    COALESCE(AVG(CAST(findings_count AS REAL)), 0.0) as avg_findings, \
+                    COALESCE(AVG(CAST(critical_count AS REAL)), 0.0) as avg_critical \
+                 FROM metrics_reviews mr2 \
+                 JOIN metrics_runs mr ON mr2.run_id = mr.run_id \
+                 WHERE mr.started_at >= datetime('now', '-' || ?1 || ' days') \
+                 GROUP BY specialist_type \
+                 ORDER BY total_reviews DESC"
+            )?;
+            let rows = stmt.query_map(params![days], |row| {
+                Ok(queries::ReviewStats {
+                    specialist_type: row.get(0)?,
+                    total_reviews: row.get(1)?,
+                    pass_rate: row.get(2)?,
+                    avg_findings: row.get(3)?,
+                    avg_critical: row.get(4)?,
+                })
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+        }).await
+    }
+
+    pub async fn recent_runs(&self, limit: u32) -> Result<Vec<queries::RunSummary>> {
+        let limit = limit as i64;
+        self.db.call(move |db| {
+            let mut stmt = db.conn.prepare(
+                "SELECT run_id, issue_id, success, duration_secs, phases_total, started_at \
+                 FROM metrics_runs \
+                 ORDER BY started_at DESC \
+                 LIMIT ?1"
+            )?;
+            let rows = stmt.query_map(params![limit], |row| {
+                Ok(queries::RunSummary {
+                    run_id: row.get(0)?,
+                    issue_id: row.get(1)?,
+                    success: row.get::<_, i32>(2)? != 0,
+                    duration_secs: row.get(3)?,
+                    phases_total: row.get(4)?,
+                    started_at: row.get(5)?,
+                })
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+        }).await
+    }
+
+    pub async fn token_usage(&self, days: u32) -> Result<Vec<queries::TokenDailyUsage>> {
+        let days = days as i64;
+        self.db.call(move |db| {
+            let mut stmt = db.conn.prepare(
+                "SELECT \
+                    date(mr.started_at) as date, \
+                    COALESCE(SUM(mi.input_tokens), 0) as total_input, \
+                    COALESCE(SUM(mi.output_tokens), 0) as total_output \
+                 FROM metrics_iterations mi \
+                 JOIN metrics_runs mr ON mi.run_id = mr.run_id \
+                 WHERE mr.started_at >= datetime('now', '-' || ?1 || ' days') \
+                 GROUP BY date(mr.started_at) \
+                 ORDER BY date"
+            )?;
+            let rows = stmt.query_map(params![days], |row| {
+                Ok(queries::TokenDailyUsage {
+                    date: row.get(0)?,
+                    total_input_tokens: row.get(1)?,
+                    total_output_tokens: row.get(2)?,
+                })
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+        }).await
+    }
 }
 
 #[cfg(test)]
@@ -218,5 +363,42 @@ mod tests {
             ).map_err(Into::into)
         }).await.unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_summary_stats_empty() {
+        let db = test_db();
+        let mc = MetricsCollector::new(db);
+        let stats = mc.summary_stats(30).await.unwrap();
+        assert_eq!(stats.total_runs, 0);
+        assert_eq!(stats.success_rate, 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_summary_stats_with_data() {
+        let db = test_db();
+        let mc = MetricsCollector::new(db);
+
+        mc.record_run_started("run-s1", None).await.unwrap();
+        mc.record_run_completed("run-s1", true, 60.0, 2, 2).await.unwrap();
+        mc.record_run_started("run-s2", None).await.unwrap();
+        mc.record_run_completed("run-s2", false, 30.0, 2, 1).await.unwrap();
+
+        let stats = mc.summary_stats(30).await.unwrap();
+        assert_eq!(stats.total_runs, 2);
+        assert_eq!(stats.successful_runs, 1);
+        assert!((stats.success_rate - 0.5).abs() < 0.01);
+    }
+
+    #[tokio::test]
+    async fn test_recent_runs() {
+        let db = test_db();
+        let mc = MetricsCollector::new(db);
+
+        mc.record_run_started("run-r1", Some(1)).await.unwrap();
+        mc.record_run_started("run-r2", Some(2)).await.unwrap();
+
+        let runs = mc.recent_runs(10).await.unwrap();
+        assert_eq!(runs.len(), 2);
     }
 }
