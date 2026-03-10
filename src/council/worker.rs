@@ -2,10 +2,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::path::Path;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicU32, Ordering},
 };
 use std::time::Duration;
+use tokio::time::sleep;
 
 use crate::council::types::{ReviewResult, ReviewScores, ReviewVerdict, WorkerResult};
 use crate::phase::Phase;
@@ -34,8 +35,12 @@ pub struct MockWorker {
     name: String,
     execute_result: Option<WorkerResult>,
     review_result: Option<ReviewResult>,
+    review_error: Option<String>,
+    review_delay: Duration,
     execute_count: Arc<AtomicU32>,
     review_count: Arc<AtomicU32>,
+    last_review_diff: Arc<Mutex<Option<String>>>,
+    last_review_candidate_label: Arc<Mutex<Option<String>>>,
 }
 
 impl MockWorker {
@@ -44,8 +49,12 @@ impl MockWorker {
             name: name.to_string(),
             execute_result: None,
             review_result: None,
+            review_error: None,
+            review_delay: Duration::ZERO,
             execute_count: Arc::new(AtomicU32::new(0)),
             review_count: Arc::new(AtomicU32::new(0)),
+            last_review_diff: Arc::new(Mutex::new(None)),
+            last_review_candidate_label: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -59,12 +68,36 @@ impl MockWorker {
         self
     }
 
+    pub fn with_review_error(mut self, error: impl Into<String>) -> Self {
+        self.review_error = Some(error.into());
+        self
+    }
+
+    pub fn with_review_delay(mut self, delay: Duration) -> Self {
+        self.review_delay = delay;
+        self
+    }
+
     pub fn execute_count(&self) -> u32 {
         self.execute_count.load(Ordering::Relaxed)
     }
 
     pub fn review_count(&self) -> u32 {
         self.review_count.load(Ordering::Relaxed)
+    }
+
+    pub fn last_review_diff(&self) -> Option<String> {
+        self.last_review_diff
+            .lock()
+            .expect("mutex poisoned")
+            .clone()
+    }
+
+    pub fn last_review_candidate_label(&self) -> Option<String> {
+        self.last_review_candidate_label
+            .lock()
+            .expect("mutex poisoned")
+            .clone()
     }
 
     fn default_execute_result(&self) -> WorkerResult {
@@ -120,10 +153,25 @@ impl Worker for MockWorker {
     async fn review(
         &self,
         _phase: &Phase,
-        _diff: &str,
+        diff: &str,
         candidate_label: &str,
     ) -> Result<ReviewResult> {
         self.review_count.fetch_add(1, Ordering::Relaxed);
+
+        *self.last_review_diff.lock().expect("mutex poisoned") = Some(diff.to_string());
+        *self
+            .last_review_candidate_label
+            .lock()
+            .expect("mutex poisoned") = Some(candidate_label.to_string());
+
+        if !self.review_delay.is_zero() {
+            sleep(self.review_delay).await;
+        }
+
+        if let Some(error) = &self.review_error {
+            anyhow::bail!("{error}");
+        }
+
         Ok(self
             .review_result
             .clone()

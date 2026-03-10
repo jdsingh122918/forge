@@ -1,6 +1,7 @@
 pub mod config;
 pub mod merge;
 pub mod prompts;
+pub mod reviewer;
 pub mod types;
 pub mod worker;
 
