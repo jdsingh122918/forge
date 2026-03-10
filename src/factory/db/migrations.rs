@@ -12,6 +12,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         6,
         include_str!("migrations/006_soft_deletes_and_indexes.sql"),
     ),
+    (7, include_str!("migrations/007_metrics.sql")),
 ];
 
 /// Run all pending migrations.
