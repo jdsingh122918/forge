@@ -399,7 +399,6 @@ fn try_auto_update(forge_dir: &Path) -> Result<()> {
     }
 
     // Perform the update (self_update handles download + atomic replace)
-    let target = crate::cmd_target_triple();
     let result = self_update::backends::github::Update::configure()
         .repo_owner("jdsingh122918")
         .repo_name("forge")
@@ -439,7 +438,7 @@ fn print_update_notice(latest: &str) {
 }
 ```
 
-Note: `crate::cmd_target_triple()` won't exist yet in lib.rs — the TARGET constant will be defined in `src/cmd/update.rs` and also needs to be accessible. To avoid circular dependencies, we'll move the target triple to `update_check.rs` as well. Add this before the `spawn_update_check` function:
+The `TARGET` and `VERSION` constants should be placed before `spawn_update_check` in the file. Add them right after the `use fs2::FileExt;` import:
 
 ```rust
 /// Build-time target triple for release asset matching.
@@ -461,8 +460,6 @@ pub const TARGET: &str = {
     { "unknown" }
 };
 ```
-
-And update the `try_auto_update` function to use `TARGET` instead of `crate::cmd_target_triple()`.
 
 - [ ] **Step 2: Verify it compiles**
 
