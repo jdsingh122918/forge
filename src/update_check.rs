@@ -1,6 +1,7 @@
 //! Background version check and update configuration.
 
 use anyhow::Result;
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -109,6 +110,153 @@ pub fn is_newer(current: &str, latest: &str) -> bool {
         (Some(c), Some(l)) => l > c,
         _ => false,
     }
+}
+
+/// Build-time target triple for release asset matching.
+pub const TARGET: &str = {
+    #[cfg(all(target_arch = "x86_64", target_os = "macos"))]
+    { "x86_64-apple-darwin" }
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    { "aarch64-apple-darwin" }
+    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+    { "x86_64-unknown-linux-gnu" }
+    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+    { "aarch64-unknown-linux-gnu" }
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_os = "macos"),
+        all(target_arch = "aarch64", target_os = "macos"),
+        all(target_arch = "x86_64", target_os = "linux"),
+        all(target_arch = "aarch64", target_os = "linux"),
+    )))]
+    { "unknown" }
+};
+
+/// Current binary version from Cargo.toml.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Spawn a non-blocking background version check as a concurrent task.
+/// Returns a JoinHandle that, when awaited, prints a notification if a newer
+/// version exists. The handle should be awaited after the main command completes.
+pub fn spawn_update_check() -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async {
+        let _ = try_update_check().await;
+    })
+}
+
+async fn try_update_check() -> Result<()> {
+    let forge_dir = global_forge_dir()?;
+    let config = load_update_config(&forge_dir)?;
+
+    // Check cache first — if fresh, skip network call entirely
+    if let Some(cache) = read_cache(&forge_dir)? {
+        if is_cache_fresh(&cache, config.check_interval) {
+            if is_newer(VERSION, &cache.latest_version) {
+                if config.auto {
+                    try_auto_update(&forge_dir)?;
+                } else {
+                    print_update_notice(&cache.latest_version);
+                }
+            }
+            return Ok(());
+        }
+    }
+
+    // Fetch latest from GitHub (with timeout)
+    let latest = fetch_latest_version().await?;
+
+    // Write cache
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    write_cache(
+        &forge_dir,
+        &UpdateCache {
+            timestamp: now,
+            latest_version: latest.clone(),
+        },
+    )?;
+
+    if is_newer(VERSION, &latest) {
+        if config.auto {
+            try_auto_update(&forge_dir)?;
+        } else {
+            print_update_notice(&latest);
+        }
+    }
+
+    Ok(())
+}
+
+/// Fetch the latest release version from GitHub API. Returns version without "v" prefix.
+pub async fn fetch_latest_version() -> Result<String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+    let resp = client
+        .get("https://api.github.com/repos/jdsingh122918/forge/releases/latest")
+        .header("User-Agent", "forge-update-check")
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!("GitHub API returned {}", resp.status());
+    }
+
+    let body: serde_json::Value = resp.json().await?;
+    let tag = body["tag_name"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing tag_name"))?;
+    Ok(tag.strip_prefix('v').unwrap_or(tag).to_string())
+}
+
+/// Attempt auto-update with a lockfile to prevent concurrent updates.
+fn try_auto_update(forge_dir: &Path) -> Result<()> {
+    let lock_path = forge_dir.join("update.lock");
+    std::fs::create_dir_all(forge_dir)?;
+    let lock_file = std::fs::File::create(&lock_path)?;
+
+    // Try to acquire exclusive lock — if another process holds it, skip silently
+    if lock_file.try_lock_exclusive().is_err() {
+        return Ok(());
+    }
+
+    // Perform the update (self_update handles download + atomic replace)
+    let result = self_update::backends::github::Update::configure()
+        .repo_owner("jdsingh122918")
+        .repo_name("forge")
+        .bin_name("forge")
+        .target(TARGET)
+        .current_version(VERSION)
+        .no_confirm(true)
+        .show_output(false)
+        .show_download_progress(false)
+        .build()?
+        .update();
+
+    // Release lock (explicit, though drop would also release it)
+    let _ = lock_file.unlock();
+    let _ = std::fs::remove_file(&lock_path);
+
+    match result {
+        Ok(status) if status.updated() => {
+            eprintln!(
+                "\nForge auto-updated: v{} -> v{}. The new version will be used on next run.\n",
+                VERSION,
+                status.version()
+            );
+        }
+        _ => {} // Silently ignore failures
+    }
+
+    Ok(())
+}
+
+fn print_update_notice(latest: &str) {
+    eprintln!(
+        "\nA new version of forge is available: v{} (current: v{})",
+        latest, VERSION
+    );
+    eprintln!("Run `forge update` to upgrade.\n");
 }
 
 #[cfg(test)]
