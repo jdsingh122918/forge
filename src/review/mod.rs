@@ -84,6 +84,7 @@
 pub mod arbiter;
 pub mod dispatcher;
 pub mod findings;
+pub mod prompt_loader;
 pub mod specialists;
 
 // Re-export main types
@@ -95,4 +96,5 @@ pub use dispatcher::{DispatchResult, DispatcherConfig, PhaseReviewConfig, Review
 pub use findings::{
     FindingSeverity, ReviewAggregation, ReviewFinding, ReviewReport, ReviewVerdict,
 };
+pub use prompt_loader::{PromptConfig, PromptLoader, PromptMode};
 pub use specialists::{ReviewSpecialist, SpecialistType};
