@@ -1,0 +1,2 @@
+[build.env]
+passthrough = ["FORGE_SKIP_UI_BUILD", "OPENSSL_STATIC"]

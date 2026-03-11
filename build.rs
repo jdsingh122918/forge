@@ -1,4 +1,9 @@
 fn main() {
+    // Skip UI build entirely (e.g. cross-compilation where npm is unavailable)
+    if std::env::var("FORGE_SKIP_UI_BUILD").is_ok() {
+        return;
+    }
+
     // Only build frontend in release mode or when FORGE_BUILD_UI=1
     if std::env::var("PROFILE").unwrap_or_default() == "release"
         || std::env::var("FORGE_BUILD_UI").is_ok()

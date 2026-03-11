@@ -74,8 +74,8 @@ jobs:
       - name: Build binary
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            # Use vendored OpenSSL for cross-compilation (avoids missing headers)
-            OPENSSL_STATIC=1 cross build --release --target ${{ matrix.target }} --features openssl-vendored
+            # UI already built on host; skip npm in Docker container
+            FORGE_SKIP_UI_BUILD=1 OPENSSL_STATIC=1 cross build --release --target ${{ matrix.target }} --features openssl-vendored
           else
             cargo build --release --target ${{ matrix.target }}
           fi
