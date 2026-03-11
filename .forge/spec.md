@@ -1,22 +1,25 @@
-# Implementation Spec: Extract Hardcoded Prompts into Config Files
+# Implementation Spec: Extract Hardcoded Review Prompts into Config Files
 
 > Generated from: docs/superpowers/specs/autoresearch-tasks/T02-extract-prompt-files.md
-> Generated at: 2026-03-11T21:54:59.728765+00:00
+> Generated at: 2026-03-11T22:07:11.992902+00:00
 
 ## Goal
 
-Extract the 4 built-in specialist review prompts from hardcoded Rust code into standalone .md files at .forge/autoresearch/prompts/, with YAML frontmatter and markdown body sections. Files must produce identical PromptConfig results when loaded via PromptLoader as the hardcoded fallbacks, establishing a clean baseline for autoresearch experiments.
+Extract the 4 built-in specialist review prompts from hardcoded Rust code into standalone `.md` files at `.forge/autoresearch/prompts/`, each with YAML frontmatter (specialist name, mode) and markdown body (Role, Focus Areas, Instructions, Output Format sections). Focus area strings must be character-for-character identical to `SpecialistType::focus_areas()` output. Add extraction tests to `prompt_loader.rs` that validate the files load correctly via `PromptLoader` and match hardcoded `SpecialistType` data.
 
 ## Components
 
 | Component | Description | Complexity | Dependencies |
 |-----------|-------------|------------|--------------|
-| Extraction Tests | Test module in prompt_loader.rs that validates the 4 extracted prompt files load correctly via PromptLoader, with focus areas matching SpecialistType::focus_areas() character-for-character, modes matching default_gating(), and required markdown sections present. Note: PromptLoader::load() is the correct method (not load_specialist_prompt()), and specialist_name comes from display_name() e.g. 'Security Sentinel' with space. | medium | - |
-| Prompt Files | Four .md files (security-sentinel.md, performance-oracle.md, architecture-strategist.md, simplicity-reviewer.md) in .forge/autoresearch/prompts/ with YAML frontmatter (specialist, mode with informational comment) and markdown body containing ## Role, ## Focus Areas (with exact focus_areas() strings as bullet items), ## Instructions, and ## Output Format sections. | medium | Extraction Tests |
+| Extraction Tests | Test module in prompt_loader.rs that validates the 4 extracted prompt files exist, have required markdown sections, and produce PromptConfig values matching SpecialistType hardcoded data (focus areas, mode, specialist name, frontmatter validity). Tests read from the real .forge/ directory, not tempdir. | medium | - |
+| Prompt File: security-sentinel.md | Extracted prompt file for SecuritySentinel specialist with YAML frontmatter (specialist: SecuritySentinel, mode: gating) and markdown body with Role, Focus Areas (8 items matching SpecialistType::SecuritySentinel.focus_areas()), Instructions, and Output Format sections. | low | Extraction Tests |
+| Prompt File: performance-oracle.md | Extracted prompt file for PerformanceOracle specialist with YAML frontmatter (specialist: PerformanceOracle, mode: advisory) and markdown body with Role, Focus Areas (8 items matching SpecialistType::PerformanceOracle.focus_areas()), Instructions, and Output Format sections. | low | Extraction Tests |
+| Prompt File: architecture-strategist.md | Extracted prompt file for ArchitectureStrategist specialist with YAML frontmatter (specialist: ArchitectureStrategist, mode: gating) and markdown body with Role, Focus Areas (8 items matching SpecialistType::ArchitectureStrategist.focus_areas()), Instructions, and Output Format sections. | low | Extraction Tests |
+| Prompt File: simplicity-reviewer.md | Extracted prompt file for SimplicityReviewer specialist with YAML frontmatter (specialist: SimplicityReviewer, mode: advisory) and markdown body with Role, Focus Areas (8 items matching SpecialistType::SimplicityReviewer.focus_areas()), Instructions, and Output Format sections. | low | Extraction Tests |
 
 ## Code Patterns
 
-### Prompt file frontmatter
+### Prompt File YAML Frontmatter
 
 ```
 ---
@@ -25,50 +28,85 @@ mode: gating  # informational only -- gating controlled by SpecialistType::defau
 ---
 ```
 
-### Focus areas markdown format
+### Prompt File Body Structure
 
 ```
+## Role
+You are a code review specialist focused on **Security Sentinel** concerns.
+
 ## Focus Areas
 
 Examine the code for these specific concerns:
 - SQL injection vulnerabilities
 - Cross-site scripting (XSS)
+...
+
+## Instructions
+
+1. Examine the code changes carefully
+2. Check for issues in your focus areas
+3. For each issue found:
+   - Identify the specific file and line number
+   - Describe the issue clearly
+   - Suggest how to fix it
+   - Classify severity: error (critical), warning (should fix), info (nice to fix), note (observation)
+
+## Output Format
+
+Respond with a JSON object containing your review findings:
+...
 ```
 
-### PromptLoader file loading
+### PromptLoader File Loading
 
 ```
 let loader = PromptLoader::new(project_root().join(".forge"));
 let config = loader.load(&SpecialistType::SecuritySentinel);
+assert_eq!(config.specialist_name, "Security Sentinel");
+assert!(matches!(config.mode, PromptMode::Gating));
 ```
 
-### Focus areas extraction parser
+### Focus Area Extraction from Markdown
 
 ```
-// extract_focus_areas() in prompt_loader.rs parses '- ' prefixed lines
-// between '## Focus Areas' heading and next '## ' heading.
-// Non-bullet lines (like 'Examine the code...') are ignored.
+// PromptLoader::extract_focus_areas() parses bullet points under ## Focus Areas
+// Focus areas must be character-for-character identical to SpecialistType::focus_areas()
+let hardcoded = specialist_type.focus_areas(); // Vec<&'static str>
+let loaded = config.focus_areas; // Vec<String> from file
+assert_eq!(loaded, hardcoded.iter().map(String::from).collect::<Vec<_>>());
 ```
 
-### Frontmatter YAML comment handling
+### Extraction Test Helper Pattern
 
 ```
-// YAML treats # as comment start, so:
-// mode: gating  # informational only
-// parses mode as "gating" (serde_yaml handles this correctly)
+fn forge_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".forge")
+}
+
+fn loader() -> PromptLoader {
+    PromptLoader::new(forge_dir())
+}
+
+fn assert_config_matches_specialist(specialist: &SpecialistType) {
+    let config = loader().load(specialist);
+    let expected_focus: Vec<String> = specialist.focus_areas().into_iter().map(String::from).collect();
+    assert_eq!(config.focus_areas, expected_focus);
+}
 ```
 
 ## Acceptance Criteria
 
-- [ ] All 4 prompt files exist at .forge/autoresearch/prompts/{agent-name}.md
-- [ ] Each file has valid YAML frontmatter with specialist and mode fields
-- [ ] Each file body contains ## Role, ## Focus Areas, ## Instructions, and ## Output Format sections
-- [ ] Focus areas in each file are character-for-character identical to SpecialistType::focus_areas() output
-- [ ] Mode in each file matches SpecialistType::default_gating() (gating for SecuritySentinel/ArchitectureStrategist, advisory for PerformanceOracle/SimplicityReviewer)
-- [ ] PromptLoader::load() returns correct PromptConfig for each specialist when loading from file
-- [ ] All extraction tests pass: cargo test -p forge review::prompt_loader::extraction_tests
-- [ ] All existing T01 tests still pass: cargo test -p forge review::prompt_loader
-- [ ] cargo check -p forge succeeds with no errors
+- [ ] File `.forge/autoresearch/prompts/security-sentinel.md` exists with specialist: SecuritySentinel, mode: gating, and 8 focus areas matching SpecialistType::SecuritySentinel.focus_areas() character-for-character
+- [ ] File `.forge/autoresearch/prompts/performance-oracle.md` exists with specialist: PerformanceOracle, mode: advisory, and 8 focus areas matching SpecialistType::PerformanceOracle.focus_areas() character-for-character
+- [ ] File `.forge/autoresearch/prompts/architecture-strategist.md` exists with specialist: ArchitectureStrategist, mode: gating, and 8 focus areas matching SpecialistType::ArchitectureStrategist.focus_areas() character-for-character
+- [ ] File `.forge/autoresearch/prompts/simplicity-reviewer.md` exists with specialist: SimplicityReviewer, mode: advisory, and 8 focus areas matching SpecialistType::SimplicityReviewer.focus_areas() character-for-character
+- [ ] Each prompt file has valid YAML frontmatter parseable by serde_yaml with specialist and mode fields
+- [ ] Each prompt file body contains ## Role, ## Focus Areas, ## Instructions, and ## Output Format sections
+- [ ] PromptLoader.load() returns PromptConfig from file (not hardcoded defaults) for all 4 built-in specialists
+- [ ] YAML inline comments (# informational only) do not break frontmatter parsing
+- [ ] All extraction_tests in prompt_loader.rs pass: `cargo test -p forge review::prompt_loader::extraction_tests`
+- [ ] All existing T01 tests still pass: `cargo test -p forge review::prompt_loader::tests`
+- [ ] `cargo check -p forge` succeeds with no errors
 
 ---
 *This spec was auto-generated from a design document.*

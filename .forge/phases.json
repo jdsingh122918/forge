@@ -1,13 +1,13 @@
 {
-  "spec_hash": "bf24a088f7af",
-  "generated_at": "2026-03-11T21:54:59.729097+00:00",
+  "spec_hash": "eef668c67f52",
+  "generated_at": "2026-03-11T22:07:11.993299+00:00",
   "phases": [
     {
       "number": "01",
       "name": "Write extraction tests for prompt files",
       "promise": "EXTRACTION TESTS WRITTEN",
-      "budget": 5,
-      "reasoning": "Add extraction_tests module to src/review/prompt_loader.rs with 6 tests: file existence for all specialists, SecuritySentinel loads via PromptLoader, focus areas match hardcoded values character-for-character, mode matches default_gating(), body contains required ## sections, specialist_name matches display_name(). CRITICAL: Use loader.load() not load_specialist_prompt(), and expect specialist_name='Security Sentinel' (with space) not 'SecuritySentinel'. Tests should use CARGO_MANIFEST_DIR to locate project root. All tests will initially fail (RED) since prompt files don't exist yet.",
+      "budget": 4,
+      "reasoning": "Add extraction_tests module to prompt_loader.rs with tests covering: file existence for all 4 specialists, required markdown sections (## Role, ## Focus Areas, ## Instructions, ## Output Format), PromptConfig correctness (specialist_name, mode, focus_areas match hardcoded), YAML frontmatter validity, and verification that configs load from file not defaults. Tests use real .forge/ directory via env!(CARGO_MANIFEST_DIR). All tests should fail RED since prompt files don't exist yet.",
       "depends_on": [],
       "skills": [],
       "permission_mode": "standard",
@@ -18,7 +18,7 @@
       "name": "Create 4 extracted prompt files",
       "promise": "PROMPT FILES EXTRACTED",
       "budget": 10,
-      "reasoning": "Create .forge/autoresearch/prompts/ directory and write 4 files: security-sentinel.md (mode: gating), performance-oracle.md (mode: advisory), architecture-strategist.md (mode: gating), simplicity-reviewer.md (mode: advisory). Each with YAML frontmatter and markdown body matching the build_review_prompt() template structure from dispatcher.rs. Focus area strings MUST be copied character-for-character from SpecialistType::focus_areas() in specialists.rs. Verify all extraction tests pass (GREEN). Also verify T01 tests still pass and cargo check succeeds. If YAML inline comment causes parse issues, move comment to separate line or adjust frontmatter format.",
+      "reasoning": "Create .forge/autoresearch/prompts/ directory and write 4 .md files (security-sentinel.md, performance-oracle.md, architecture-strategist.md, simplicity-reviewer.md). Each file has YAML frontmatter with specialist name and mode (with '# informational only' comment), and markdown body with ## Role, ## Focus Areas (bullet items character-for-character matching SpecialistType::focus_areas()), ## Instructions, and ## Output Format sections. Gating specialists: SecuritySentinel, ArchitectureStrategist. Advisory specialists: PerformanceOracle, SimplicityReviewer. Verify YAML comment doesn't break serde_yaml parsing. All extraction tests must pass GREEN.",
       "depends_on": [
         "01"
       ],
