@@ -13,6 +13,7 @@
 //! | `compact`       | `Compact`                                          |
 //! | `swarm`         | `Swarm`                                            |
 //! | `factory`       | `Factory`                                          |
+//! | `update`        | `Update`                                           |
 
 pub mod compact;
 pub mod config;
