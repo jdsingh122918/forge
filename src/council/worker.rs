@@ -12,7 +12,7 @@ use tokio::process::Command;
 use tokio::time::sleep;
 
 use crate::audit::TokenUsage;
-use crate::council::config::WorkerConfig;
+use crate::council::config::{CouncilConfig, WorkerConfig};
 use crate::council::prompts::review_prompt;
 use crate::council::types::{ReviewResult, ReviewScores, ReviewVerdict, WorkerResult};
 use crate::phase::Phase;
@@ -692,6 +692,63 @@ impl Worker for CodexWorker {
     }
 }
 
+pub fn create_workers(config: &CouncilConfig) -> Result<Vec<Arc<dyn Worker>>> {
+    let mut worker_entries = config.workers.iter().collect::<Vec<_>>();
+    worker_entries.sort_by(|(left_name, _), (right_name, _)| left_name.cmp(right_name));
+
+    worker_entries
+        .into_iter()
+        .map(|(name, worker_config)| {
+            create_worker(worker_config)
+                .with_context(|| format!("failed to create council worker `{name}`"))
+        })
+        .collect()
+}
+
+pub fn create_chairman_worker(config: &CouncilConfig) -> Result<Arc<dyn Worker>> {
+    let mut codex_entries = config
+        .workers
+        .iter()
+        .filter(|(_, worker_config)| worker_command(&worker_config.cmd) == "codex")
+        .collect::<Vec<_>>();
+    codex_entries.sort_by(|(left_name, _), (right_name, _)| left_name.cmp(right_name));
+
+    let mut chairman_config = codex_entries
+        .into_iter()
+        .map(|(_, worker_config)| worker_config.clone())
+        .next()
+        .unwrap_or_else(|| WorkerConfig {
+            cmd: "codex".to_string(),
+            role: "chairman".to_string(),
+            flags: Vec::new(),
+            model: None,
+            reasoning_effort: None,
+            sandbox: None,
+            approval_policy: None,
+        });
+
+    chairman_config.role = "chairman".to_string();
+    chairman_config.model = Some(config.chairman_model.clone());
+    chairman_config.reasoning_effort = Some(config.chairman_reasoning_effort.clone());
+
+    create_worker(&chairman_config).context("failed to create chairman worker")
+}
+
+fn create_worker(config: &WorkerConfig) -> Result<Arc<dyn Worker>> {
+    match worker_command(&config.cmd) {
+        "claude" => Ok(Arc::new(ClaudeWorker::new(config))),
+        "codex" => Ok(Arc::new(CodexWorker::new(config))),
+        other => anyhow::bail!("unknown worker command `{other}`"),
+    }
+}
+
+fn worker_command(cmd: &str) -> &str {
+    std::path::Path::new(cmd)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(cmd)
+}
+
 #[derive(Debug, Clone)]
 pub struct MockWorker {
     name: String,
@@ -908,6 +965,7 @@ impl Worker for MockWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::council::config::CouncilConfig;
     use crate::council::config::WorkerConfig;
     use crate::council::types::{ReviewResult, ReviewScores, ReviewVerdict, WorkerResult};
     use crate::phase::Phase;
@@ -1081,6 +1139,135 @@ mod tests {
 
         let worker = MockWorker::new("test");
         _accepts_dyn(&worker);
+    }
+
+    mod test_create {
+        use super::*;
+        use std::collections::HashMap;
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        use tempfile::TempDir;
+
+        fn worker_config(cmd: impl Into<String>) -> WorkerConfig {
+            WorkerConfig {
+                cmd: cmd.into(),
+                role: "worker".to_string(),
+                flags: vec![],
+                model: None,
+                reasoning_effort: None,
+                sandbox: Some("workspace-write".to_string()),
+                approval_policy: None,
+            }
+        }
+
+        fn council_config(workers: HashMap<String, WorkerConfig>) -> CouncilConfig {
+            CouncilConfig {
+                workers,
+                ..CouncilConfig::default()
+            }
+        }
+
+        fn fake_codex_script() -> (TempDir, String, std::path::PathBuf) {
+            let temp_dir = TempDir::new().expect("temp dir should be created");
+            let args_path = temp_dir.path().join("args.txt");
+            let script_path = temp_dir.path().join("codex");
+            let script = format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s\\n' '{{\"type\":\"response.completed\",\"response\":{{\"output_text\":\"\"}}}}'\n",
+                args_path.display()
+            );
+
+            fs::write(&script_path, script).expect("script should be written");
+
+            let mut permissions = fs::metadata(&script_path)
+                .expect("script metadata should be readable")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&script_path, permissions).expect("script should be executable");
+
+            (temp_dir, script_path.display().to_string(), args_path)
+        }
+
+        #[test]
+        fn test_create_workers_claude_and_codex() {
+            let workers = create_workers(&council_config(HashMap::from([
+                ("claude".to_string(), worker_config("claude")),
+                ("codex".to_string(), worker_config("codex")),
+            ])))
+            .expect("supported workers should be created");
+
+            let mut names = workers
+                .iter()
+                .map(|worker| worker.name().to_string())
+                .collect::<Vec<_>>();
+            names.sort();
+
+            assert_eq!(workers.len(), 2);
+            assert_eq!(names, vec!["claude".to_string(), "codex".to_string()]);
+        }
+
+        #[test]
+        fn test_create_workers_unknown_cmd_errors() {
+            let error = match create_workers(&council_config(HashMap::from([(
+                "mystery".to_string(),
+                worker_config("unknown"),
+            )]))) {
+                Ok(_) => panic!("unknown worker command should error"),
+                Err(error) => error,
+            };
+            let error_text = format!("{error:#}");
+
+            assert!(error_text.contains("unknown worker command"));
+            assert!(error_text.contains("unknown"));
+        }
+
+        #[test]
+        fn test_create_workers_empty_config() {
+            let workers = create_workers(&CouncilConfig::default())
+                .expect("empty config should create no workers");
+
+            assert!(workers.is_empty());
+        }
+
+        #[test]
+        fn test_create_chairman_worker_uses_chairman_model() {
+            let (_temp_dir, codex_cmd, args_path) = fake_codex_script();
+            let config = CouncilConfig {
+                chairman_model: "gpt-5.4-chairman".to_string(),
+                chairman_reasoning_effort: "xhigh".to_string(),
+                workers: HashMap::from([("codex".to_string(), worker_config(codex_cmd))]),
+                ..CouncilConfig::default()
+            };
+
+            let worker = create_chairman_worker(&config)
+                .expect("chairman worker should be created from config");
+
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime should build")
+                .block_on(async {
+                    worker
+                        .execute(&test_phase(), "chairman prompt", Path::new("/tmp"))
+                        .await
+                })
+                .expect("chairman worker execute should succeed");
+
+            let args = fs::read_to_string(args_path).expect("captured args should be readable");
+            assert!(args.lines().any(|line| line == "--model"));
+            assert!(args.lines().any(|line| line == "gpt-5.4-chairman"));
+        }
+
+        #[test]
+        fn test_create_workers_returns_arc_dyn_worker() {
+            let workers: Vec<Arc<dyn Worker>> = create_workers(&council_config(HashMap::from([(
+                "claude".to_string(),
+                worker_config("claude"),
+            )])))
+            .expect("supported worker should be created");
+
+            assert_eq!(workers.len(), 1);
+            assert_eq!(workers[0].name(), "claude");
+        }
     }
 
     mod test_claude_worker {
