@@ -1,6 +1,6 @@
 {
-  "run_id": "bfbf5878-a822-4885-894b-b9e60b47a7d5",
-  "started_at": "2026-03-11T21:00:43.346976Z",
+  "run_id": "ea51b50e-b8f1-49e0-a59f-44c683ed3f7a",
+  "started_at": "2026-03-11T21:23:19.098257Z",
   "ended_at": null,
   "config": {
     "auto_approve_threshold": 5,
@@ -9,30 +9,5 @@
     "spec_file": "/Users/jdsingh/Projects/AI/forge/.forge/spec.md",
     "project_dir": "/Users/jdsingh/Projects/AI/forge"
   },
-  "phases": [
-    {
-      "phase_number": "01",
-      "description": "Write judge types, prompt, and parsing tests",
-      "promise": "JUDGE TYPES AND PARSING TESTS WRITTEN",
-      "started_at": "2026-03-11T21:00:43.347885Z",
-      "ended_at": "2026-03-11T21:04:22.836014Z",
-      "iterations": [],
-      "outcome": {
-        "Completed": {
-          "iteration": 1
-        }
-      },
-      "file_changes": {
-        "files_added": [
-          "src/cmd/autoresearch/judge.rs"
-        ],
-        "files_modified": [
-          "src/cmd/autoresearch/mod.rs"
-        ],
-        "files_deleted": [],
-        "total_lines_added": 2,
-        "total_lines_removed": 0
-      }
-    }
-  ]
+  "phases": []
 }
