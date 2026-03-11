@@ -44,7 +44,7 @@ textwrap = "0.16"
 terminal_size = "0.4"
 libsql = "0.9"
 dotenvy = "0.15"
-self_update = { version = "0.42", features = ["archive-tar", "compression-flate2"] }
+self_update = { version = "0.42", default-features = false, features = ["archive-tar", "compression-flate2", "rustls"] }
 fs2 = "0.4"
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 mime_guess = "2"
