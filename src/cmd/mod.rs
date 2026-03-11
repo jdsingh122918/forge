@@ -15,6 +15,7 @@
 //! | `factory`       | `Factory`                                          |
 //! | `update`        | `Update`                                           |
 
+pub mod autoresearch;
 pub mod compact;
 pub mod config;
 pub mod factory;
