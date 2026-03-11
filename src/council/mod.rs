@@ -1,3 +1,4 @@
+pub mod chairman;
 pub mod config;
 pub mod merge;
 pub mod prompts;
