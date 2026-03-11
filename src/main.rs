@@ -222,6 +222,11 @@ pub enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Run automated specialist benchmark evaluation
+    Autoresearch {
+        #[command(flatten)]
+        args: cmd::autoresearch::AutoresearchArgs,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -472,6 +477,9 @@ async fn main() -> Result<()> {
         }
         Commands::Update { check, force } => {
             cmd::cmd_update(*check, *force).await?;
+        }
+        Commands::Autoresearch { args } => {
+            cmd::cmd_autoresearch(&project_dir, args).await?;
         }
     }
 
