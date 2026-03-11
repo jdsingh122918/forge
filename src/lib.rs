@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod autoresearch;
 pub mod compaction;
 pub mod config;
 pub mod council;
