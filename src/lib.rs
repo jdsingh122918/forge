@@ -26,6 +26,7 @@ pub mod swarm;
 pub mod telemetry;
 pub mod tracker;
 pub mod ui;
+pub mod update_check;
 pub mod util;
 
 // Re-export from phase for backward compatibility
