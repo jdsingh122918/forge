@@ -1,6 +1,6 @@
 # Forge
 
-AI-powered development orchestrator that breaks specs into phases and runs Claude iteratively until completion. Enables disciplined agentic development with parallel execution, review gates, and checkpoint recovery.
+AI-powered development orchestrator that breaks specs into phases and runs Codex iteratively until completion. Enables disciplined agentic development with parallel execution, review gates, and checkpoint recovery.
 
 ## Quick Reference
 
@@ -20,7 +20,7 @@ Rust (Edition 2024), clap v4, tokio v1, petgraph v0.6, git2 v0.20, axum v0.8, an
 - **Swarm:** Parallel execution via native DAG scheduler (`forge swarm`) with optional review specialists
 - **Permission Modes:** strict | standard | autonomous | readonly
 - **Hooks:** 6 events (PrePhase, PostPhase, PreIteration, PostIteration, OnFailure, OnApproval)
-- **Signals:** `<progress>`, `<blocker>`, `<pivot>` tags parsed from Claude output
+- **Signals:** `<progress>`, `<blocker>`, `<pivot>` tags parsed from Codex output
 - **Reviews:** security, performance, architecture, simplicity — with arbiter resolution
 - **Factory:** Kanban board UI (`forge factory`) with self-implementing issues — triggers pipeline execution, auto-branching, auto-PR, and real-time phase progress via WebSocket
 
@@ -48,7 +48,7 @@ Rust (Edition 2024), clap v4, tokio v1, petgraph v0.6, git2 v0.20, axum v0.8, an
 
 ## Environment
 
-- `CLAUDE_CMD` — Claude CLI command (default: `claude`)
+- `CLAUDE_CMD` — Codex CLI command (default: `codex`)
 - `SKIP_PERMISSIONS` — Skip permission prompts (default: `true`)
 - `FORGE_CMD` — Forge CLI command used by pipeline execution (default: `forge`)
 

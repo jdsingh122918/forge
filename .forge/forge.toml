@@ -16,3 +16,5 @@ global = [
   "context7-integration",
   "agent-review"
 ]
+[council]
+enabled = true
