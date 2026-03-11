@@ -1,13 +1,13 @@
 {
-  "spec_hash": "c4ab46a10777",
-  "generated_at": "2026-03-11T14:09:14.679169+00:00",
+  "spec_hash": "1f19c8ce824a",
+  "generated_at": "2026-03-11T19:49:14.170096+00:00",
   "phases": [
     {
       "number": "01",
-      "name": "Write PromptLoader tests",
-      "promise": "PROMPT LOADER TESTS WRITTEN",
-      "budget": 5,
-      "reasoning": "Write all 10 tests from the design doc: struct field verification, hardcoded defaults for missing files, defaults for all builtins, file override, YAML frontmatter parsing, malformed YAML graceful fallback, empty file fallback, missing focus areas section fallback, serialization roundtrip, and file path resolution. Tests use tempfile for isolated temp directories. Also add serde_yaml to Cargo.toml dependencies since YAML frontmatter parsing is needed. Create the prompt_loader.rs file with test module and stub types (enough for tests to compile but fail).",
+      "name": "Write PromptConfig and PromptMode tests",
+      "promise": "PROMPT CONFIG TYPE TESTS WRITTEN",
+      "budget": 4,
+      "reasoning": "Write test_prompt_config_has_required_fields and test_prompt_config_serialization_roundtrip. These define the PromptConfig struct shape (specialist_name, mode, focus_areas, body), PromptMode enum (Gating, Advisory), and serde requirements. Tests will fail because the types don't exist yet.",
       "depends_on": [],
       "skills": [],
       "permission_mode": "standard",
@@ -15,12 +15,38 @@
     },
     {
       "number": "02",
-      "name": "Implement PromptConfig, PromptMode, and PromptLoader",
-      "promise": "PROMPT LOADER COMPLETE",
-      "budget": 12,
-      "reasoning": "Implement: (1) PromptMode enum with Gating/Advisory variants and serde support, (2) PromptConfig struct with all fields and derives, (3) PromptFrontmatter internal YAML deserialization struct, (4) PromptLoader with new(), prompt_file_path(), load_specialist_prompt(), load_from_file(), build_default_config() methods. Key logic: frontmatter parsing (split on '---' markers, parse YAML), focus area extraction (find '## Focus Areas', parse '- ' bullets until next '##'), fallback chain (file error -> warn + hardcoded defaults). Wire module in src/review/mod.rs with pub mod prompt_loader and re-exports. All 10 tests must pass, cargo check clean, no regressions in existing review tests.",
+      "name": "Implement PromptConfig and PromptMode types",
+      "promise": "PROMPT CONFIG TYPES COMPLETE",
+      "budget": 8,
+      "reasoning": "Create src/review/prompt_loader.rs with PromptConfig struct (specialist_name: String, mode: PromptMode, focus_areas: Vec<String>, body: String) deriving Debug, Clone, Serialize, Deserialize. Create PromptMode enum (Gating, Advisory) with serde rename_all lowercase, deriving Debug, Clone, PartialEq, Eq, Serialize, Deserialize. Create PromptFrontmatter internal struct. Add pub mod prompt_loader to mod.rs and re-export types. Phase 01 tests must pass.",
       "depends_on": [
         "01"
+      ],
+      "skills": [],
+      "permission_mode": "standard",
+      "phase_type": "implement"
+    },
+    {
+      "number": "03",
+      "name": "Write PromptLoader tests",
+      "promise": "PROMPT LOADER TESTS WRITTEN",
+      "budget": 5,
+      "reasoning": "Write the remaining 8 tests: test_load_prompt_returns_hardcoded_default_when_no_file, test_load_prompt_returns_defaults_for_all_builtin_specialists, test_load_prompt_from_file_overrides_default, test_load_prompt_parses_yaml_frontmatter_and_body, test_load_prompt_handles_malformed_yaml_gracefully, test_load_prompt_handles_empty_file_gracefully, test_load_prompt_file_without_focus_areas_section, test_prompt_loader_resolves_correct_file_path. These define PromptLoader::new(), load_specialist_prompt(), prompt_file_path(), frontmatter parsing, focus area extraction, and all fallback behaviors. Tests will fail because PromptLoader doesn't exist yet.",
+      "depends_on": [
+        "02"
+      ],
+      "skills": [],
+      "permission_mode": "standard",
+      "phase_type": "test"
+    },
+    {
+      "number": "04",
+      "name": "Implement PromptLoader",
+      "promise": "PROMPT LOADER COMPLETE",
+      "budget": 15,
+      "reasoning": "Implement PromptLoader struct with forge_dir: PathBuf. Methods: new(forge_dir) stores path; prompt_file_path(specialist) returns {forge_dir}/autoresearch/prompts/{agent_name}.md; load_specialist_prompt(specialist) tries load_from_file then falls back to build_default_config; load_from_file parses YAML frontmatter (split on --- delimiters, deserialize PromptFrontmatter), extracts body, parses ## Focus Areas bullet points, returns None on any error with tracing::warn; build_default_config constructs from SpecialistType data with body template matching dispatcher.rs format (Role, Focus Areas, Instructions, Output Format sections without phase/context/files sections). All 10 tests must pass, cargo check must succeed, existing review tests must not regress.",
+      "depends_on": [
+        "03"
       ],
       "skills": [],
       "permission_mode": "standard",
