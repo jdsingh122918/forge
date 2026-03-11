@@ -36,12 +36,15 @@ pub struct MockWorker {
     name: String,
     execute_result: Option<WorkerResult>,
     execute_results: Arc<Mutex<VecDeque<WorkerResult>>>,
+    execute_error: Option<String>,
+    execute_delay: Duration,
     review_result: Option<ReviewResult>,
     review_error: Option<String>,
     review_delay: Duration,
     execute_count: Arc<AtomicU32>,
     review_count: Arc<AtomicU32>,
     execute_prompts: Arc<Mutex<Vec<String>>>,
+    last_execute_worktree_path: Arc<Mutex<Option<String>>>,
     last_review_diff: Arc<Mutex<Option<String>>>,
     last_review_candidate_label: Arc<Mutex<Option<String>>>,
 }
@@ -52,12 +55,15 @@ impl MockWorker {
             name: name.to_string(),
             execute_result: None,
             execute_results: Arc::new(Mutex::new(VecDeque::new())),
+            execute_error: None,
+            execute_delay: Duration::ZERO,
             review_result: None,
             review_error: None,
             review_delay: Duration::ZERO,
             execute_count: Arc::new(AtomicU32::new(0)),
             review_count: Arc::new(AtomicU32::new(0)),
             execute_prompts: Arc::new(Mutex::new(Vec::new())),
+            last_execute_worktree_path: Arc::new(Mutex::new(None)),
             last_review_diff: Arc::new(Mutex::new(None)),
             last_review_candidate_label: Arc::new(Mutex::new(None)),
         }
@@ -66,6 +72,16 @@ impl MockWorker {
     pub fn with_execute_result(mut self, result: WorkerResult) -> Self {
         self.execute_result = Some(result);
         self.execute_results.lock().expect("mutex poisoned").clear();
+        self
+    }
+
+    pub fn with_execute_error(mut self, error: impl Into<String>) -> Self {
+        self.execute_error = Some(error.into());
+        self
+    }
+
+    pub fn with_execute_delay(mut self, delay: Duration) -> Self {
+        self.execute_delay = delay;
         self
     }
 
@@ -96,6 +112,13 @@ impl MockWorker {
 
     pub fn execute_prompts(&self) -> Vec<String> {
         self.execute_prompts.lock().expect("mutex poisoned").clone()
+    }
+
+    pub fn last_execute_worktree_path(&self) -> Option<String> {
+        self.last_execute_worktree_path
+            .lock()
+            .expect("mutex poisoned")
+            .clone()
     }
 
     pub fn review_count(&self) -> u32 {
@@ -157,13 +180,25 @@ impl Worker for MockWorker {
         &self,
         _phase: &Phase,
         prompt: &str,
-        _worktree_path: &Path,
+        worktree_path: &Path,
     ) -> Result<WorkerResult> {
         self.execute_count.fetch_add(1, Ordering::Relaxed);
         self.execute_prompts
             .lock()
             .expect("mutex poisoned")
             .push(prompt.to_string());
+        *self
+            .last_execute_worktree_path
+            .lock()
+            .expect("mutex poisoned") = Some(worktree_path.display().to_string());
+
+        if !self.execute_delay.is_zero() {
+            sleep(self.execute_delay).await;
+        }
+
+        if let Some(error) = &self.execute_error {
+            anyhow::bail!("{error}");
+        }
 
         if let Some(result) = self
             .execute_results
