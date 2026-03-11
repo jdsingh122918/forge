@@ -55,3 +55,13 @@ yes
 
 yes
 
+### Prompt 12
+
+Base directory for this skill: /Users/jdsingh/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.0/skills/writing-plans
+
+# Writing Plans
+
+## Overview
+
+Write comprehensive implementation plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commi...
+
