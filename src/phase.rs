@@ -115,6 +115,10 @@ pub struct Phase {
     /// Review specialists configuration for post-phase quality gates
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviews: Option<PhaseReviewSettings>,
+    /// Optional per-phase override for council execution.
+    /// `None` uses the global council setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub council: Option<bool>,
 }
 
 /// Represents a sub-phase that is dynamically spawned from a parent phase.
@@ -212,6 +216,7 @@ impl SubPhase {
             sub_phases: Vec::new(),
             phase_type: parent.phase_type,
             reviews: parent.reviews.clone(),
+            council: parent.council,
         }
     }
 
@@ -252,6 +257,7 @@ impl Phase {
             sub_phases: Vec::new(),
             phase_type: None,
             reviews: None,
+            council: None,
         }
     }
 
@@ -278,6 +284,7 @@ impl Phase {
             sub_phases: Vec::new(),
             phase_type: None,
             reviews: None,
+            council: None,
         }
     }
 
@@ -304,6 +311,7 @@ impl Phase {
             sub_phases: Vec::new(),
             phase_type: None,
             reviews: None,
+            council: None,
         }
     }
 
@@ -424,6 +432,11 @@ impl Phase {
     /// Get the review settings for this phase.
     pub fn review_settings(&self) -> Option<&PhaseReviewSettings> {
         self.reviews.as_ref()
+    }
+
+    /// Resolve whether council should be used for this phase.
+    pub fn use_council(&self, global_enabled: bool) -> bool {
+        self.council.unwrap_or(global_enabled)
     }
 
     /// Get the next sub-phase to execute.
@@ -861,6 +874,96 @@ mod tests {
         assert!(phase.depends_on.is_empty());
         // Permission mode defaults to Standard
         assert_eq!(phase.permission_mode, PermissionMode::Standard);
+    }
+
+    #[test]
+    fn test_phase_council_field_default_none() {
+        let json = r#"{
+            "number": "01",
+            "name": "Test",
+            "promise": "DONE",
+            "budget": 5
+        }"#;
+
+        let phase: Phase = serde_json::from_str(json).unwrap();
+
+        assert_eq!(phase.council, None);
+    }
+
+    #[test]
+    fn test_phase_council_field_deserialize_true() {
+        let json = r#"{
+            "number": "01",
+            "name": "Test",
+            "promise": "DONE",
+            "budget": 5,
+            "council": true
+        }"#;
+
+        let phase: Phase = serde_json::from_str(json).unwrap();
+
+        assert_eq!(phase.council, Some(true));
+    }
+
+    #[test]
+    fn test_phase_council_field_deserialize_false() {
+        let json = r#"{
+            "number": "01",
+            "name": "Test",
+            "promise": "DONE",
+            "budget": 5,
+            "council": false
+        }"#;
+
+        let phase: Phase = serde_json::from_str(json).unwrap();
+
+        assert_eq!(phase.council, Some(false));
+    }
+
+    #[test]
+    fn test_phase_council_field_absent_in_json() {
+        let json = r#"{
+            "number": "07",
+            "name": "Database migration",
+            "promise": "MIGRATION COMPLETE",
+            "budget": 12,
+            "permission_mode": "standard"
+        }"#;
+
+        let phase: Phase = serde_json::from_str(json).unwrap();
+
+        assert_eq!(phase.number, "07");
+        assert_eq!(phase.council, None);
+    }
+
+    #[test]
+    fn test_phase_use_council_none_global_true() {
+        let phase = Phase::new("01", "Test", "DONE", 5, "reason", vec![]);
+
+        assert!(phase.use_council(true));
+    }
+
+    #[test]
+    fn test_phase_use_council_none_global_false() {
+        let phase = Phase::new("01", "Test", "DONE", 5, "reason", vec![]);
+
+        assert!(!phase.use_council(false));
+    }
+
+    #[test]
+    fn test_phase_use_council_some_true_global_false() {
+        let mut phase = Phase::new("01", "Test", "DONE", 5, "reason", vec![]);
+        phase.council = Some(true);
+
+        assert!(phase.use_council(false));
+    }
+
+    #[test]
+    fn test_phase_use_council_some_false_global_true() {
+        let mut phase = Phase::new("01", "Test", "DONE", 5, "reason", vec![]);
+        phase.council = Some(false);
+
+        assert!(!phase.use_council(true));
     }
 
     #[test]
