@@ -445,3 +445,237 @@ Check for performance issues.
         );
     }
 }
+
+/// Tests that validate the 4 extracted prompt files in `.forge/autoresearch/prompts/`
+/// load correctly via `PromptLoader` and produce results matching `SpecialistType` data.
+///
+/// These tests read from the actual project `.forge/` directory (not tempdir),
+/// ensuring the extracted files stay in sync with the hardcoded specialist definitions.
+#[cfg(test)]
+mod extraction_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Returns the project's `.forge` directory path.
+    fn forge_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".forge")
+    }
+
+    /// Returns a `PromptLoader` pointing at the real `.forge` directory.
+    fn loader() -> PromptLoader {
+        PromptLoader::new(forge_dir())
+    }
+
+    /// Helper: assert that a prompt file exists for the given specialist.
+    fn assert_prompt_file_exists(specialist: &SpecialistType) {
+        let l = loader();
+        let path = l.prompt_path(specialist);
+        assert!(
+            path.exists(),
+            "Prompt file missing: {}",
+            path.display()
+        );
+    }
+
+    /// Helper: load a prompt file's raw content and verify required markdown sections.
+    fn assert_required_sections(specialist: &SpecialistType) {
+        let l = loader();
+        let path = l.prompt_path(specialist);
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+
+        let required = ["## Role", "## Focus Areas", "## Instructions", "## Output Format"];
+        for section in &required {
+            assert!(
+                content.contains(section),
+                "Prompt file {} missing required section '{section}'",
+                path.display()
+            );
+        }
+    }
+
+    /// Helper: validate that a loaded PromptConfig matches SpecialistType data exactly.
+    fn assert_config_matches_specialist(specialist: &SpecialistType) {
+        let config = loader().load(specialist);
+        let expected_focus: Vec<String> = specialist
+            .focus_areas()
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let expected_mode = if specialist.default_gating() {
+            PromptMode::Gating
+        } else {
+            PromptMode::Advisory
+        };
+
+        assert_eq!(
+            config.specialist_name,
+            specialist.display_name(),
+            "specialist_name mismatch for {}",
+            specialist.agent_name()
+        );
+        assert_eq!(
+            config.mode, expected_mode,
+            "mode mismatch for {}",
+            specialist.agent_name()
+        );
+        assert_eq!(
+            config.focus_areas, expected_focus,
+            "focus_areas mismatch for {}",
+            specialist.agent_name()
+        );
+    }
+
+    // --- File existence tests ---
+
+    #[test]
+    fn test_extraction_security_sentinel_file_exists() {
+        assert_prompt_file_exists(&SpecialistType::SecuritySentinel);
+    }
+
+    #[test]
+    fn test_extraction_performance_oracle_file_exists() {
+        assert_prompt_file_exists(&SpecialistType::PerformanceOracle);
+    }
+
+    #[test]
+    fn test_extraction_architecture_strategist_file_exists() {
+        assert_prompt_file_exists(&SpecialistType::ArchitectureStrategist);
+    }
+
+    #[test]
+    fn test_extraction_simplicity_reviewer_file_exists() {
+        assert_prompt_file_exists(&SpecialistType::SimplicityReviewer);
+    }
+
+    // --- Required sections tests ---
+
+    #[test]
+    fn test_extraction_security_sentinel_has_required_sections() {
+        assert_required_sections(&SpecialistType::SecuritySentinel);
+    }
+
+    #[test]
+    fn test_extraction_performance_oracle_has_required_sections() {
+        assert_required_sections(&SpecialistType::PerformanceOracle);
+    }
+
+    #[test]
+    fn test_extraction_architecture_strategist_has_required_sections() {
+        assert_required_sections(&SpecialistType::ArchitectureStrategist);
+    }
+
+    #[test]
+    fn test_extraction_simplicity_reviewer_has_required_sections() {
+        assert_required_sections(&SpecialistType::SimplicityReviewer);
+    }
+
+    // --- PromptConfig correctness tests ---
+
+    #[test]
+    fn test_extraction_security_sentinel_config_matches() {
+        assert_config_matches_specialist(&SpecialistType::SecuritySentinel);
+    }
+
+    #[test]
+    fn test_extraction_performance_oracle_config_matches() {
+        assert_config_matches_specialist(&SpecialistType::PerformanceOracle);
+    }
+
+    #[test]
+    fn test_extraction_architecture_strategist_config_matches() {
+        assert_config_matches_specialist(&SpecialistType::ArchitectureStrategist);
+    }
+
+    #[test]
+    fn test_extraction_simplicity_reviewer_config_matches() {
+        assert_config_matches_specialist(&SpecialistType::SimplicityReviewer);
+    }
+
+    // --- YAML frontmatter validation tests ---
+
+    #[test]
+    fn test_extraction_security_sentinel_frontmatter_valid() {
+        let l = loader();
+        let path = l.prompt_path(&SpecialistType::SecuritySentinel);
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+
+        let (fm, _body) = parse_frontmatter(&content)
+            .unwrap_or_else(|e| panic!("Frontmatter parse failed for {}: {e}", path.display()));
+        assert_eq!(fm.specialist.as_deref(), Some("SecuritySentinel"));
+    }
+
+    #[test]
+    fn test_extraction_performance_oracle_frontmatter_valid() {
+        let l = loader();
+        let path = l.prompt_path(&SpecialistType::PerformanceOracle);
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+
+        let (fm, _body) = parse_frontmatter(&content)
+            .unwrap_or_else(|e| panic!("Frontmatter parse failed for {}: {e}", path.display()));
+        assert_eq!(fm.specialist.as_deref(), Some("PerformanceOracle"));
+    }
+
+    #[test]
+    fn test_extraction_architecture_strategist_frontmatter_valid() {
+        let l = loader();
+        let path = l.prompt_path(&SpecialistType::ArchitectureStrategist);
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+
+        let (fm, _body) = parse_frontmatter(&content)
+            .unwrap_or_else(|e| panic!("Frontmatter parse failed for {}: {e}", path.display()));
+        assert_eq!(fm.specialist.as_deref(), Some("ArchitectureStrategist"));
+    }
+
+    #[test]
+    fn test_extraction_simplicity_reviewer_frontmatter_valid() {
+        let l = loader();
+        let path = l.prompt_path(&SpecialistType::SimplicityReviewer);
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+
+        let (fm, _body) = parse_frontmatter(&content)
+            .unwrap_or_else(|e| panic!("Frontmatter parse failed for {}: {e}", path.display()));
+        assert_eq!(fm.specialist.as_deref(), Some("SimplicityReviewer"));
+    }
+
+    // --- All builtins covered test ---
+
+    #[test]
+    fn test_extraction_all_builtins_have_prompt_files() {
+        for specialist in SpecialistType::all_builtins() {
+            assert_prompt_file_exists(&specialist);
+        }
+    }
+
+    #[test]
+    fn test_extraction_all_builtins_load_from_file_not_defaults() {
+        let l = loader();
+        for specialist in SpecialistType::all_builtins() {
+            let path = l.prompt_path(&specialist);
+            let content = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+
+            // Verify the loaded body comes from the file, not the hardcoded default.
+            // The hardcoded default starts with "# {DisplayName} Review\n",
+            // while extracted files should have "## Role" as first section.
+            let config = l.load(&specialist);
+            assert!(
+                config.body.contains("## Role"),
+                "Config for {} appears to be using hardcoded default (no ## Role section in body)",
+                specialist.agent_name()
+            );
+
+            // Also verify file content is non-trivial
+            assert!(
+                content.len() > 50,
+                "Prompt file for {} is suspiciously short ({} bytes)",
+                specialist.agent_name(),
+                content.len()
+            );
+        }
+    }
+}
