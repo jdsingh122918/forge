@@ -1,6 +1,6 @@
 {
-  "run_id": "b6a4911f-3880-43e2-b2cc-3c1c7b691495",
-  "started_at": "2026-03-11T21:42:04.305369Z",
+  "run_id": "7db0b5c5-57ec-4950-9d57-2bc35c295b37",
+  "started_at": "2026-03-11T21:49:26.135842Z",
   "ended_at": null,
   "config": {
     "auto_approve_threshold": 5,
@@ -9,30 +9,5 @@
     "spec_file": "/Users/jdsingh/Projects/AI/forge/.forge/spec.md",
     "project_dir": "/Users/jdsingh/Projects/AI/forge"
   },
-  "phases": [
-    {
-      "phase_number": "01",
-      "description": "Write autoresearch CLI tests",
-      "promise": "AUTORESEARCH CLI TESTS WRITTEN",
-      "started_at": "2026-03-11T21:42:04.305619Z",
-      "ended_at": "2026-03-11T21:46:16.598808Z",
-      "iterations": [],
-      "outcome": {
-        "Completed": {
-          "iteration": 1
-        }
-      },
-      "file_changes": {
-        "files_added": [],
-        "files_modified": [
-          "src/cmd/autoresearch/mod.rs",
-          "src/cmd/mod.rs",
-          "src/main.rs"
-        ],
-        "files_deleted": [],
-        "total_lines_added": 218,
-        "total_lines_removed": 0
-      }
-    }
-  ]
+  "phases": []
 }

@@ -1,13 +1,13 @@
 {
-  "spec_hash": "9563a9586508",
-  "generated_at": "2026-03-11T21:42:04.285842+00:00",
+  "spec_hash": "ef07edf802b4",
+  "generated_at": "2026-03-11T21:49:26.113059+00:00",
   "phases": [
     {
       "number": "01",
-      "name": "Write autoresearch CLI tests",
-      "promise": "AUTORESEARCH CLI TESTS WRITTEN",
+      "name": "Write BudgetTracker tests",
+      "promise": "BUDGET TRACKER TESTS WRITTEN",
       "budget": 5,
-      "reasoning": "Create all 7 tests in src/cmd/autoresearch/mod.rs: test_autoresearch_args_default_values, test_autoresearch_args_custom_values, test_expand_specialists_all, test_expand_specialists_custom_list, test_expand_specialists_empty_string, test_generate_tag_format, test_cli_recognizes_autoresearch. These cover default arg parsing, explicit arg parsing, specialist expansion (all, custom, empty), tag format validation, and smoke test. Tests will initially fail since the struct/functions don't exist yet. Must preserve existing judge.rs submodule.",
+      "reasoning": "Create src/cmd/autoresearch/budget.rs with all 12+ tests: defaults, pricing math (Claude/GPT/zero), can_afford (within/exceeds/after-spending), record_cost updates, record_cost rejects over-budget, remaining floor, restore_from_experiment_count, JSON roundtrip, save/load, load nonexistent. Include minimal struct definitions and method signatures (returning todo!() or unimplemented!()) so tests compile but fail.",
       "depends_on": [],
       "skills": [],
       "permission_mode": "standard",
@@ -15,10 +15,10 @@
     },
     {
       "number": "02",
-      "name": "Implement autoresearch CLI registration",
-      "promise": "AUTORESEARCH CLI REGISTRATION COMPLETE",
+      "name": "Implement BudgetTracker",
+      "promise": "BUDGET TRACKER COMPLETE",
       "budget": 10,
-      "reasoning": "Implement AutoresearchArgs struct with 8 clap fields and defaults, expand_specialists() and generate_default_tag() helpers, async cmd_autoresearch placeholder in src/cmd/autoresearch/mod.rs. Wire Commands::Autoresearch variant into src/main.rs enum with match arm. Add pub use autoresearch::cmd_autoresearch to src/cmd/mod.rs. Update module table comment. Run cargo clippy, fix any lints. Verify all tests pass with cargo test --lib cmd::autoresearch and cargo build is clean.",
+      "reasoning": "Implement ModelPricing (claude_sonnet, gpt_5_4, estimate_cost), CostRecord, and BudgetTracker (new, can_afford, remaining, record_cost with budget rejection, restore_from_experiment_count, to_json/from_json, save/load). Wire pub mod budget in autoresearch/mod.rs. Run cargo clippy and ensure all 12+ tests pass.",
       "depends_on": [
         "01"
       ],
