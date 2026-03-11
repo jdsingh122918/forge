@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "40e7b625b2e1",
+  "session_id": "a6d4f38c-221d-4ab6-87f3-e382f2160a88",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-11T15:45:13.592693Z",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "docs/superpowers/plans/2026-03-11-installation-and-self-update.md"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "db6f26aca752",
+  "checkpoint_transcript_start": 161,
+  "transcript_lines_at_start": 161,
+  "token_usage": {
+    "input_tokens": 31,
+    "cache_creation_tokens": 53525,
+    "cache_read_tokens": 1760248,
+    "output_tokens": 20511,
+    "api_call_count": 24
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-11T15:45:13.352715Z",
+    "agent_lines": 1084,
+    "human_added": 0,
+    "human_modified": 1,
+    "human_removed": 3,
+    "total_committed": 1085,
+    "agent_percentage": 99.90783410138249
+  }
+}
