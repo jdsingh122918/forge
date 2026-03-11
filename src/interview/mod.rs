@@ -165,6 +165,10 @@ fn wrap_for_terminal(text: &str) -> String {
         .unwrap_or(80)
         .min(120); // cap at 120 for readability
 
+    wrap_to_width(text, width)
+}
+
+fn wrap_to_width(text: &str, width: usize) -> String {
     let mut result = String::new();
     for line in text.lines() {
         if line.trim().is_empty() {
@@ -187,6 +191,7 @@ fn wrap_for_terminal(text: &str) -> String {
     if result.ends_with('\n') {
         result.pop();
     }
+
     result
 }
 
@@ -838,9 +843,8 @@ End of output
 
     #[test]
     fn test_wrap_breaks_long_line() {
-        // In test/CI, terminal_size returns None -> fallback 80 columns
         let long_line = "word ".repeat(30);
-        let result = wrap_for_terminal(long_line.trim());
+        let result = wrap_to_width(long_line.trim(), 80);
         let lines: Vec<&str> = result.lines().collect();
         assert!(
             lines.len() > 1,
@@ -858,7 +862,7 @@ End of output
     #[test]
     fn test_wrap_indented_long_line_preserves_indent() {
         let text = format!("  {}", "word ".repeat(25));
-        let result = wrap_for_terminal(&text);
+        let result = wrap_to_width(&text, 80);
         let lines: Vec<&str> = result.lines().collect();
         assert!(lines.len() > 1);
         for line in &lines {
