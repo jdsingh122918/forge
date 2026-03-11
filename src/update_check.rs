@@ -152,7 +152,7 @@ async fn try_update_check() -> Result<()> {
         if is_cache_fresh(&cache, config.check_interval) {
             if is_newer(VERSION, &cache.latest_version) {
                 if config.auto {
-                    try_auto_update(&forge_dir)?;
+                    try_auto_update(&forge_dir).await?;
                 } else {
                     print_update_notice(&cache.latest_version);
                 }
@@ -178,7 +178,7 @@ async fn try_update_check() -> Result<()> {
 
     if is_newer(VERSION, &latest) {
         if config.auto {
-            try_auto_update(&forge_dir)?;
+            try_auto_update(&forge_dir).await?;
         } else {
             print_update_notice(&latest);
         }
@@ -210,45 +210,46 @@ pub async fn fetch_latest_version() -> Result<String> {
 }
 
 /// Attempt auto-update with a lockfile to prevent concurrent updates.
-fn try_auto_update(forge_dir: &Path) -> Result<()> {
-    let lock_path = forge_dir.join("update.lock");
-    std::fs::create_dir_all(forge_dir)?;
-    let lock_file = std::fs::File::create(&lock_path)?;
+async fn try_auto_update(forge_dir: &Path) -> Result<()> {
+    let forge_dir = forge_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let lock_path = forge_dir.join("update.lock");
+        std::fs::create_dir_all(&forge_dir)?;
+        let lock_file = std::fs::File::create(&lock_path)?;
 
-    // Try to acquire exclusive lock — if another process holds it, skip silently
-    if lock_file.try_lock_exclusive().is_err() {
-        return Ok(());
-    }
-
-    // Perform the update (self_update handles download + atomic replace)
-    let result = self_update::backends::github::Update::configure()
-        .repo_owner("jdsingh122918")
-        .repo_name("forge")
-        .bin_name("forge")
-        .target(TARGET)
-        .current_version(VERSION)
-        .no_confirm(true)
-        .show_output(false)
-        .show_download_progress(false)
-        .build()?
-        .update();
-
-    // Release lock (explicit, though drop would also release it)
-    let _ = lock_file.unlock();
-    let _ = std::fs::remove_file(&lock_path);
-
-    match result {
-        Ok(status) if status.updated() => {
-            eprintln!(
-                "\nForge auto-updated: v{} -> v{}. The new version will be used on next run.\n",
-                VERSION,
-                status.version()
-            );
+        if lock_file.try_lock_exclusive().is_err() {
+            return Ok(());
         }
-        _ => {} // Silently ignore failures
-    }
 
-    Ok(())
+        let result = self_update::backends::github::Update::configure()
+            .repo_owner("jdsingh122918")
+            .repo_name("forge")
+            .bin_name("forge")
+            .target(TARGET)
+            .current_version(VERSION)
+            .no_confirm(true)
+            .show_output(false)
+            .show_download_progress(false)
+            .build()?
+            .update();
+
+        let _ = lock_file.unlock();
+        let _ = std::fs::remove_file(&lock_path);
+
+        match result {
+            Ok(status) if status.updated() => {
+                eprintln!(
+                    "\nForge auto-updated: v{} -> v{}. The new version will be used on next run.\n",
+                    VERSION,
+                    status.version()
+                );
+            }
+            _ => {}
+        }
+
+        Ok(())
+    })
+    .await?
 }
 
 fn print_update_notice(latest: &str) {

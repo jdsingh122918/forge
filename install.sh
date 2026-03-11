@@ -151,6 +151,7 @@ configure_path() {
             ;;
         fish)
             FISH_CONFIG="${HOME}/.config/fish/config.fish"
+            RC_FILE="$FISH_CONFIG"
             if [ -f "$FISH_CONFIG" ] && ! grep -q "${INSTALL_DIR}" "$FISH_CONFIG" 2>/dev/null; then
                 echo "fish_add_path ${INSTALL_DIR}" >> "$FISH_CONFIG"
                 echo "Added ${INSTALL_DIR} to ${FISH_CONFIG}"

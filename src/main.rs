@@ -438,10 +438,12 @@ async fn main() -> Result<()> {
                 match subcmd {
                     SwarmCommands::Status => {
                         cmd::cmd_swarm_status(&project_dir)?;
+                        let _ = update_handle.await;
                         return Ok(());
                     }
                     SwarmCommands::Abort => {
                         cmd::cmd_swarm_abort(&project_dir)?;
+                        let _ = update_handle.await;
                         return Ok(());
                     }
                 }
