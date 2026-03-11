@@ -13,4 +13,4 @@ pub use engine::CouncilEngine;
 pub use merge::{PatchSet, WorktreeManager, apply_patch, detect_conflicts};
 pub use reviewer::{PeerReviewEngine, ReviewRound};
 pub use types::*;
-pub use worker::{MockWorker, Worker};
+pub use worker::{ClaudeWorker, MockWorker, Worker};
