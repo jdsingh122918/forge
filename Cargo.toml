@@ -50,6 +50,7 @@ rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 mime_guess = "2"
 bollard = "0.20"
 async-trait = "0.1"
+openssl = { version = "0.10", optional = true }
 
 # Observability
 tracing = "0.1"
@@ -62,6 +63,7 @@ opentelemetry_sdk = { version = "0.27", optional = true }
 
 [features]
 default = []
+openssl-vendored = ["openssl/vendored"]
 otlp = ["dep:tracing-opentelemetry", "dep:opentelemetry", "dep:opentelemetry-otlp", "dep:opentelemetry_sdk"]
 
 [dev-dependencies]

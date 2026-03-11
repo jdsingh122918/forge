@@ -52,6 +52,14 @@ jobs:
       - name: Build UI
         run: cd ui && npm ci && npm run build
 
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux' && !matrix.cross
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install openssl@3 pkg-config
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -64,7 +72,8 @@ jobs:
       - name: Build binary
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }}
+            # Use vendored OpenSSL for cross-compilation (avoids missing headers)
+            OPENSSL_STATIC=1 cross build --release --target ${{ matrix.target }} --features openssl-vendored
           else
             cargo build --release --target ${{ matrix.target }}
           fi
