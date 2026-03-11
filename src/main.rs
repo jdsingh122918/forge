@@ -212,6 +212,16 @@ pub enum Commands {
         #[arg(long)]
         fail_fast: bool,
     },
+    /// Check for updates and self-update the binary
+    Update {
+        /// Only check for updates, don't download
+        #[arg(long)]
+        check: bool,
+
+        /// Force re-download even if on latest version
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -345,6 +355,9 @@ async fn main() -> Result<()> {
         eprintln!("[forge] Warning: failed to initialize telemetry: {:#}", e);
     }
 
+    // Spawn background update check — runs concurrently, never blocks the command
+    let update_handle = forge::update_check::spawn_update_check();
+
     match &cli.command {
         Commands::Init { from } => {
             cmd::cmd_init(&project_dir, from.as_deref())?;
@@ -455,7 +468,13 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
+        Commands::Update { check, force } => {
+            cmd::cmd_update(*check, *force).await?;
+        }
     }
+
+    // Wait for background update check to finish (prints notice if newer version exists)
+    let _ = update_handle.await;
 
     Ok(())
 }
