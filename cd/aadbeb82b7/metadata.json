@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "cdaadbeb82b7",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "docs/superpowers/specs/2026-03-11-installation-and-self-update-design.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/cd/aadbeb82b7/0/metadata.json",
+      "transcript": "/cd/aadbeb82b7/0/full.jsonl",
+      "context": "/cd/aadbeb82b7/0/context.md",
+      "content_hash": "/cd/aadbeb82b7/0/content_hash.txt",
+      "prompt": "/cd/aadbeb82b7/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 7,
+    "cache_creation_tokens": 38587,
+    "cache_read_tokens": 137684,
+    "output_tokens": 1252,
+    "api_call_count": 5
+  }
+}
