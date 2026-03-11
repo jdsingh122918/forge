@@ -59,6 +59,56 @@ pub struct CouncilPhaseResult {
     pub merge_attempts: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CouncilAuditData {
+    pub workers_used: Vec<String>,
+    pub review_verdicts: Vec<(String, String)>,
+    pub merge_attempts: u32,
+    pub chairman_decision: String,
+    pub winning_worker: Option<String>,
+}
+
+impl CouncilPhaseResult {
+    pub fn to_audit_data(&self) -> CouncilAuditData {
+        let winning_worker = self.infer_winning_worker();
+
+        CouncilAuditData {
+            workers_used: self
+                .worker_results
+                .iter()
+                .map(|worker| worker.worker_name.clone())
+                .collect(),
+            review_verdicts: self
+                .review_results
+                .iter()
+                .map(|review| {
+                    (
+                        review.reviewer_name.clone(),
+                        review_verdict_to_audit_string(&review.verdict),
+                    )
+                })
+                .collect(),
+            merge_attempts: self.merge_attempts,
+            chairman_decision: chairman_decision_for_result(&self.merge_outcome, &winning_worker),
+            winning_worker,
+        }
+    }
+
+    fn infer_winning_worker(&self) -> Option<String> {
+        if self.worker_results.len() == 1 {
+            return self
+                .worker_results
+                .first()
+                .map(|worker| worker.worker_name.clone());
+        }
+
+        self.worker_results
+            .iter()
+            .find(|worker| worker.diff_text == self.winning_diff)
+            .map(|worker| worker.worker_name.clone())
+    }
+}
+
 #[derive(Debug, Clone, Error)]
 pub enum CouncilError {
     #[error("worker execution failed")]
@@ -71,6 +121,26 @@ pub enum CouncilError {
     BudgetExhausted,
     #[error("human escalation required")]
     EscalationRequired,
+}
+
+fn review_verdict_to_audit_string(verdict: &ReviewVerdict) -> String {
+    match verdict {
+        ReviewVerdict::Approve => "approve".to_string(),
+        ReviewVerdict::RequestChanges(message) => format!("request_changes: {message}"),
+        ReviewVerdict::Abstain => "abstain".to_string(),
+    }
+}
+
+fn chairman_decision_for_result(
+    merge_outcome: &MergeOutcome,
+    winning_worker: &Option<String>,
+) -> String {
+    match merge_outcome {
+        MergeOutcome::Clean(_) if winning_worker.is_some() => "winner_takes_all".to_string(),
+        MergeOutcome::Clean(_) => "merged_patch".to_string(),
+        MergeOutcome::Conflict(_) => "conflict".to_string(),
+        MergeOutcome::Failure(_) => "failure".to_string(),
+    }
 }
 
 mod duration_serde {
@@ -299,10 +369,16 @@ mod tests {
 
     #[test]
     fn test_council_error_display_messages() {
-        assert_eq!(CouncilError::WorkerFailed.to_string(), "worker execution failed");
+        assert_eq!(
+            CouncilError::WorkerFailed.to_string(),
+            "worker execution failed"
+        );
         assert_eq!(CouncilError::ReviewFailed.to_string(), "peer review failed");
         assert_eq!(CouncilError::MergeFailed.to_string(), "merge failed");
-        assert_eq!(CouncilError::BudgetExhausted.to_string(), "council budget exhausted");
+        assert_eq!(
+            CouncilError::BudgetExhausted.to_string(),
+            "council budget exhausted"
+        );
         assert_eq!(
             CouncilError::EscalationRequired.to_string(),
             "human escalation required"
@@ -313,5 +389,108 @@ mod tests {
     fn test_council_error_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<CouncilError>();
+    }
+
+    #[test]
+    fn test_council_audit_data_construction() {
+        let audit_data = CouncilAuditData {
+            workers_used: vec!["claude".to_string(), "codex".to_string()],
+            review_verdicts: vec![
+                ("claude".to_string(), "approve".to_string()),
+                (
+                    "codex".to_string(),
+                    "request_changes: missing tests".to_string(),
+                ),
+            ],
+            merge_attempts: 2,
+            chairman_decision: "winner_takes_all".to_string(),
+            winning_worker: Some("codex".to_string()),
+        };
+
+        assert_eq!(audit_data.workers_used, vec!["claude", "codex"]);
+        assert_eq!(audit_data.review_verdicts.len(), 2);
+        assert_eq!(audit_data.merge_attempts, 2);
+        assert_eq!(audit_data.chairman_decision, "winner_takes_all");
+        assert_eq!(audit_data.winning_worker.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn test_council_audit_data_from_council_phase_result() {
+        let council_result = CouncilPhaseResult {
+            winning_diff: "diff --git a/src/lib.rs b/src/lib.rs\n+winner\n".to_string(),
+            worker_results: vec![
+                WorkerResult {
+                    worker_name: "claude".to_string(),
+                    diff_text: "diff --git a/src/lib.rs b/src/lib.rs\n+claude\n".to_string(),
+                    exit_code: 0,
+                    duration: Duration::from_secs(3),
+                    token_usage: None,
+                    raw_output: "claude output".to_string(),
+                    signals: vec![],
+                },
+                WorkerResult {
+                    worker_name: "codex".to_string(),
+                    diff_text: "diff --git a/src/lib.rs b/src/lib.rs\n+winner\n".to_string(),
+                    exit_code: 0,
+                    duration: Duration::from_secs(4),
+                    token_usage: None,
+                    raw_output: "codex output".to_string(),
+                    signals: vec![],
+                },
+            ],
+            review_results: vec![
+                ReviewResult {
+                    reviewer_name: "claude".to_string(),
+                    candidate_label: "Candidate Alpha".to_string(),
+                    verdict: ReviewVerdict::Approve,
+                    scores: ReviewScores {
+                        correctness: 9.0,
+                        completeness: 8.5,
+                        style: 8.0,
+                        performance: 8.0,
+                        overall: 8.4,
+                    },
+                    issues: vec![],
+                    summary: "Looks good".to_string(),
+                    duration: Duration::from_secs(2),
+                },
+                ReviewResult {
+                    reviewer_name: "codex".to_string(),
+                    candidate_label: "Candidate Beta".to_string(),
+                    verdict: ReviewVerdict::RequestChanges("missing tests".to_string()),
+                    scores: ReviewScores {
+                        correctness: 6.0,
+                        completeness: 6.5,
+                        style: 7.0,
+                        performance: 7.5,
+                        overall: 6.75,
+                    },
+                    issues: vec!["add unit tests".to_string()],
+                    summary: "Needs more coverage".to_string(),
+                    duration: Duration::from_secs(2),
+                },
+            ],
+            merge_outcome: MergeOutcome::Clean(
+                "diff --git a/src/lib.rs b/src/lib.rs\n+winner\n".to_string(),
+            ),
+            merge_attempts: 2,
+        };
+
+        let audit_data = council_result.to_audit_data();
+
+        assert_eq!(audit_data.workers_used, vec!["claude", "codex"]);
+        assert_eq!(
+            audit_data.review_verdicts,
+            vec![
+                ("claude".to_string(), "approve".to_string()),
+                (
+                    "codex".to_string(),
+                    "request_changes: missing tests".to_string(),
+                ),
+            ]
+        );
+        assert_eq!(audit_data.merge_attempts, 2);
+        assert_eq!(audit_data.chairman_decision, "winner_takes_all");
+        assert_eq!(audit_data.winning_worker.as_deref(), Some("codex"));
     }
 }

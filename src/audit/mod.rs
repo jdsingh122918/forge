@@ -1,3 +1,4 @@
+use crate::council::types::CouncilAuditData;
 use crate::signals::IterationSignals;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -298,6 +299,8 @@ pub struct IterationAudit {
     /// Progress signals extracted from this iteration (progress %, blockers, pivots)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signals: Option<IterationSignals>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub council_data: Option<CouncilAuditData>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -371,6 +374,40 @@ pub use logger::AuditLogger;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::council::types::CouncilAuditData;
+    use chrono::Utc;
+
+    fn sample_iteration_audit(council_data: Option<CouncilAuditData>) -> IterationAudit {
+        IterationAudit {
+            iteration: 1,
+            started_at: Utc::now(),
+            duration_secs: 1.5,
+            claude_session: ClaudeSession {
+                prompt_file: PathBuf::from("prompt.md"),
+                prompt_chars: 100,
+                output_file: PathBuf::from("output.log"),
+                output_chars: 250,
+                exit_code: 0,
+                token_usage: Some(TokenUsage {
+                    input_tokens: 120,
+                    output_tokens: 80,
+                }),
+                session_id: Some("session-123".to_string()),
+            },
+            git_snapshot_before: "abc123".to_string(),
+            git_snapshot_after: Some("def456".to_string()),
+            file_diffs: vec![FileDiff {
+                path: PathBuf::from("src/lib.rs"),
+                change_type: ChangeType::Modified,
+                lines_added: 10,
+                lines_removed: 2,
+                diff_content: "@@ -1 +1 @@".to_string(),
+            }],
+            promise_found: true,
+            signals: Some(IterationSignals::default()),
+            council_data,
+        }
+    }
 
     #[test]
     fn test_audit_run_new() {
@@ -448,5 +485,73 @@ mod tests {
         let session: ClaudeSession = serde_json::from_str(json).unwrap();
         assert!(session.session_id.is_none());
         assert_eq!(session.prompt_chars, 100);
+    }
+
+    #[test]
+    fn test_iteration_audit_council_data_default_none() {
+        let iteration = sample_iteration_audit(None);
+
+        assert!(iteration.council_data.is_none());
+    }
+
+    #[test]
+    fn test_iteration_audit_council_data_serialization() {
+        let iteration = sample_iteration_audit(Some(CouncilAuditData {
+            workers_used: vec!["claude".to_string(), "codex".to_string()],
+            review_verdicts: vec![("claude".to_string(), "approve".to_string())],
+            merge_attempts: 2,
+            chairman_decision: "merged_patch".to_string(),
+            winning_worker: None,
+        }));
+
+        let json = serde_json::to_string(&iteration).unwrap();
+
+        assert!(json.contains("\"council_data\""));
+        assert!(json.contains("\"workers_used\""));
+        assert!(json.contains("\"chairman_decision\":\"merged_patch\""));
+    }
+
+    #[test]
+    fn test_iteration_audit_backward_compat_no_council_field() {
+        let json = r#"{
+            "iteration": 1,
+            "started_at": "2026-03-10T15:30:00Z",
+            "duration_secs": 1.5,
+            "claude_session": {
+                "prompt_file": "prompt.md",
+                "prompt_chars": 100,
+                "output_file": "output.log",
+                "output_chars": 250,
+                "exit_code": 0,
+                "token_usage": {
+                    "input_tokens": 120,
+                    "output_tokens": 80
+                },
+                "session_id": "session-123"
+            },
+            "git_snapshot_before": "abc123",
+            "git_snapshot_after": "def456",
+            "file_diffs": [
+                {
+                    "path": "src/lib.rs",
+                    "change_type": "Modified",
+                    "lines_added": 10,
+                    "lines_removed": 2,
+                    "diff_content": "@@ -1 +1 @@"
+                }
+            ],
+            "promise_found": true,
+            "signals": {
+                "progress": [],
+                "blockers": [],
+                "pivots": [],
+                "sub_phase_spawns": []
+            }
+        }"#;
+
+        let iteration: IterationAudit = serde_json::from_str(json).unwrap();
+
+        assert!(iteration.council_data.is_none());
+        assert_eq!(iteration.iteration, 1);
     }
 }
