@@ -1,85 +1,83 @@
-# Implementation Spec: PromptConfig Type + PromptLoader with File-Exists Fallback
+# Implementation Spec: Benchmark Types and Loader
 
-> Generated from: docs/superpowers/specs/autoresearch-tasks/T01-prompt-config-and-loader.md
-> Generated at: 2026-03-11T19:49:14.169632+00:00
+> Generated from: docs/superpowers/specs/autoresearch-tasks/T04-benchmark-types-and-loader.md
+> Generated at: 2026-03-11T19:59:35.818611+00:00
 
 ## Goal
 
-Create a PromptConfig struct and PromptLoader that loads specialist review prompts from .forge/autoresearch/prompts/<specialist>.md files, falling back to hardcoded defaults derived from SpecialistType data when no file exists. This is foundational infrastructure for the autoresearch experiment loop which will mutate these .md files and reload them.
+Create foundational serde types (Expected, ExpectedFinding, MustNotFlag, BenchmarkCase, BenchmarkSuite) and a directory-based loader that reads benchmark cases from .forge/autoresearch/benchmarks/<specialist>/<case-name>/{code.rs, context.md, expected.json}, wired into src/cmd/autoresearch/.
 
 ## Components
 
 | Component | Description | Complexity | Dependencies |
 |-----------|-------------|------------|--------------|
-| PromptConfig and PromptMode types | PromptConfig struct (specialist_name, mode, focus_areas, body) with Serialize/Deserialize/Clone/Debug derives. PromptMode enum (Gating, Advisory) that is informational only — never controls actual gating behavior. PromptFrontmatter internal struct for YAML deserialization. | low | - |
-| PromptLoader | Loader struct holding a forge_dir PathBuf. Resolves specialist prompts from {forge_dir}/autoresearch/prompts/{agent_name}.md files. Parses YAML frontmatter (specialist, mode) and markdown body (extracts ## Focus Areas bullet points). Falls back to hardcoded defaults from SpecialistType::focus_areas(), display_name(), and default_gating() on any error (missing file, malformed YAML, empty file, missing sections). Uses tracing::warn for fallback logging. | medium | PromptConfig and PromptMode types |
-| Module wiring | Add pub mod prompt_loader to src/review/mod.rs and re-export PromptConfig, PromptLoader, PromptMode. | low | PromptLoader |
+| Benchmark Types | Serde-serializable types: ExpectedFinding (id, severity, description, location), MustNotFlag (id, description, optional location), Expected (must_find vec, must_not_flag vec), BenchmarkCase (name, code, context, expected), BenchmarkSuite (specialist, cases vec) | low | - |
+| BenchmarkCase Loader | BenchmarkCase::load(dir) reads code.rs, context.md, expected.json from a directory. Derives name from directory basename. Returns anyhow errors with context mentioning the benchmark name and missing file. | low | Benchmark Types |
+| BenchmarkSuite Loader | BenchmarkSuite::load(forge_dir, specialist) discovers all subdirectories under .forge/autoresearch/benchmarks/<specialist>/, skips non-directories, loads each as BenchmarkCase, sorts by name for deterministic ordering. Returns empty suite if directory is empty or missing. | low | BenchmarkCase Loader |
+| Module Wiring | Create src/cmd/autoresearch/mod.rs exporting benchmarks module, add pub mod autoresearch to src/cmd/mod.rs. Add BenchmarkSuite::specialist_names() returning known specialist types. | low | BenchmarkSuite Loader |
 
 ## Code Patterns
 
-### YAML frontmatter parsing
+### Expected JSON format
 
 ```
----
-specialist: SecuritySentinel
-mode: gating
----
-
-## Role
-You are a security review specialist...
-
-## Focus Areas
-- SQL injection vulnerabilities
-- XSS
+{
+  "must_find": [
+    {
+      "id": "race-condition-1",
+      "severity": "critical",
+      "description": "TOCTOU race in create_issue",
+      "location": "issues.rs:48-62"
+    }
+  ],
+  "must_not_flag": [
+    {
+      "id": "fp-1",
+      "description": "Using conn.last_insert_rowid() inside a transaction is correct",
+      "location": "issues.rs:70"
+    }
+  ]
+}
 ```
 
-### File path resolution
+### Directory-based case loading
 
 ```
-{forge_dir}/autoresearch/prompts/{agent_name}.md
-// e.g., .forge/autoresearch/prompts/security-sentinel.md
+impl BenchmarkCase {
+    pub fn load(dir: &Path) -> Result<Self> {
+        let name = dir.file_name().context("no name")?.to_string_lossy().to_string();
+        let code = std::fs::read_to_string(dir.join("code.rs")).with_context(|| format!("Failed to read code.rs in benchmark '{}'", name))?;
+        let context = std::fs::read_to_string(dir.join("context.md")).with_context(|| ...)?;
+        let expected: Expected = serde_json::from_str(&std::fs::read_to_string(dir.join("expected.json"))?)?;
+        Ok(Self { name, code, context, expected })
+    }
+}
 ```
 
-### Default body template structure
+### Suite discovery with sorting
 
 ```
-# {display_name} Review
-
-You are a code review specialist focused on **{display_name}** concerns.
-
-## Focus Areas
-{focus_list}
-
-## Review Instructions
-1. Examine the code changes carefully
-2. Check for issues in your focus areas
-3. For each issue found: identify file/line, describe, suggest fix, classify severity
-
-## Output Format
-JSON with verdict, summary, findings array
-```
-
-### Focus area extraction from markdown
-
-```
-// Find ## Focus Areas section, parse bullet points (- ) until next ## heading or EOF
-// If no Focus Areas section found, fall back to SpecialistType::focus_areas()
+let mut entries: Vec<_> = std::fs::read_dir(&benchmarks_dir)?
+    .filter_map(|e| e.ok())
+    .filter(|e| e.path().is_dir())
+    .collect();
+entries.sort_by_key(|e| e.file_name());
 ```
 
 ## Acceptance Criteria
 
-- [ ] Loading from a temp dir with no prompt files returns hardcoded defaults matching SpecialistType::focus_areas() for all 4 built-in specialists
-- [ ] src/review/prompt_loader.rs exists with PromptConfig, PromptMode, PromptLoader structs
-- [ ] src/review/mod.rs declares pub mod prompt_loader and re-exports PromptConfig, PromptLoader, PromptMode
-- [ ] Loading from a valid .md file returns the file's focus areas and body, not hardcoded defaults
-- [ ] Malformed files (bad YAML, empty file, missing sections) fall back to hardcoded defaults without panicking
-- [ ] File path resolution uses {forge_dir}/autoresearch/prompts/{agent_name}.md pattern
-- [ ] PromptConfig implements Serialize + Deserialize + Clone + Debug
-- [ ] PromptMode field is informational only — never influences gating decisions
-- [ ] All 10 tests in prompt_loader::tests pass
-- [ ] cargo check -p forge succeeds with no errors
-- [ ] Existing review tests (cargo test -p forge review::) still pass with no regressions
+- [ ] ExpectedFinding, MustNotFlag, Expected parse from JSON with serde (MustNotFlag.location is Option<String>)
+- [ ] BenchmarkCase::load() reads code.rs, context.md, expected.json from a directory and derives name from dir basename
+- [ ] BenchmarkCase::load() returns descriptive error mentioning 'code.rs' when file is missing
+- [ ] BenchmarkCase::load() returns error on invalid expected.json
+- [ ] BenchmarkSuite::load() discovers all subdirectories, skips non-directory entries
+- [ ] BenchmarkSuite::load() sorts cases by name for deterministic ordering
+- [ ] BenchmarkSuite::load() returns empty suite for empty directory
+- [ ] All types derive Debug, Clone, Serialize, Deserialize as appropriate
+- [ ] src/cmd/mod.rs contains pub mod autoresearch
+- [ ] cargo test --lib cmd::autoresearch::benchmarks::tests passes all 6 tests
+- [ ] cargo clippy has no warnings for the new code
 
 ---
 *This spec was auto-generated from a design document.*
-*Original design: docs/superpowers/specs/autoresearch-tasks/T01-prompt-config-and-loader.md*
+*Original design: docs/superpowers/specs/autoresearch-tasks/T04-benchmark-types-and-loader.md*

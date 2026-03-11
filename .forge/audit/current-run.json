@@ -1,6 +1,6 @@
 {
-  "run_id": "9654c31c-cbcf-4e2e-9c84-a9dd229c3445",
-  "started_at": "2026-03-11T19:49:14.193195Z",
+  "run_id": "1ab563da-76bf-4ab1-8e18-7f206506c98d",
+  "started_at": "2026-03-11T19:59:35.838140Z",
   "ended_at": null,
   "config": {
     "auto_approve_threshold": 5,
@@ -9,72 +9,5 @@
     "spec_file": "/Users/jdsingh/Projects/AI/forge/.forge/spec.md",
     "project_dir": "/Users/jdsingh/Projects/AI/forge"
   },
-  "phases": [
-    {
-      "phase_number": "01",
-      "description": "Write PromptConfig and PromptMode tests",
-      "promise": "PROMPT CONFIG TYPE TESTS WRITTEN",
-      "started_at": "2026-03-11T19:49:14.193693Z",
-      "ended_at": "2026-03-11T19:54:24.001683Z",
-      "iterations": [],
-      "outcome": {
-        "Completed": {
-          "iteration": 1
-        }
-      },
-      "file_changes": {
-        "files_added": [
-          "src/review/prompt_loader.rs"
-        ],
-        "files_modified": [
-          "Cargo.lock",
-          "Cargo.toml",
-          "src/review/mod.rs"
-        ],
-        "files_deleted": [],
-        "total_lines_added": 23,
-        "total_lines_removed": 0
-      }
-    },
-    {
-      "phase_number": "02",
-      "description": "Implement PromptConfig and PromptMode types",
-      "promise": "PROMPT CONFIG TYPES COMPLETE",
-      "started_at": "2026-03-11T19:54:29.003683Z",
-      "ended_at": "2026-03-11T19:56:01.608181Z",
-      "iterations": [],
-      "outcome": {
-        "Completed": {
-          "iteration": 1
-        }
-      },
-      "file_changes": {
-        "files_added": [],
-        "files_modified": [],
-        "files_deleted": [],
-        "total_lines_added": 0,
-        "total_lines_removed": 0
-      }
-    },
-    {
-      "phase_number": "03",
-      "description": "Write PromptLoader tests",
-      "promise": "PROMPT LOADER TESTS WRITTEN",
-      "started_at": "2026-03-11T19:56:06.610724Z",
-      "ended_at": "2026-03-11T19:57:17.090074Z",
-      "iterations": [],
-      "outcome": {
-        "Completed": {
-          "iteration": 1
-        }
-      },
-      "file_changes": {
-        "files_added": [],
-        "files_modified": [],
-        "files_deleted": [],
-        "total_lines_added": 0,
-        "total_lines_removed": 0
-      }
-    }
-  ]
+  "phases": []
 }

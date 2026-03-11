@@ -1,13 +1,13 @@
 {
-  "spec_hash": "1f19c8ce824a",
-  "generated_at": "2026-03-11T19:49:14.170096+00:00",
+  "spec_hash": "44e2c94c5175",
+  "generated_at": "2026-03-11T19:59:35.818909+00:00",
   "phases": [
     {
       "number": "01",
-      "name": "Write PromptConfig and PromptMode tests",
-      "promise": "PROMPT CONFIG TYPE TESTS WRITTEN",
-      "budget": 4,
-      "reasoning": "Write test_prompt_config_has_required_fields and test_prompt_config_serialization_roundtrip. These define the PromptConfig struct shape (specialist_name, mode, focus_areas, body), PromptMode enum (Gating, Advisory), and serde requirements. Tests will fail because the types don't exist yet.",
+      "name": "Write benchmark types and loader tests",
+      "promise": "BENCHMARK TESTS WRITTEN",
+      "budget": 5,
+      "reasoning": "Write all 6 tests from the TDD sequence: expected JSON parsing, load case from directory, discover suite cases, empty dir handling, missing file errors, and skip non-directories. Create src/cmd/autoresearch/benchmarks.rs with test module and src/cmd/autoresearch/mod.rs, wire into src/cmd/mod.rs. Tests will not compile yet since types don't exist.",
       "depends_on": [],
       "skills": [],
       "permission_mode": "standard",
@@ -15,38 +15,12 @@
     },
     {
       "number": "02",
-      "name": "Implement PromptConfig and PromptMode types",
-      "promise": "PROMPT CONFIG TYPES COMPLETE",
+      "name": "Implement benchmark types and loader",
+      "promise": "BENCHMARK TYPES AND LOADER COMPLETE",
       "budget": 8,
-      "reasoning": "Create src/review/prompt_loader.rs with PromptConfig struct (specialist_name: String, mode: PromptMode, focus_areas: Vec<String>, body: String) deriving Debug, Clone, Serialize, Deserialize. Create PromptMode enum (Gating, Advisory) with serde rename_all lowercase, deriving Debug, Clone, PartialEq, Eq, Serialize, Deserialize. Create PromptFrontmatter internal struct. Add pub mod prompt_loader to mod.rs and re-export types. Phase 01 tests must pass.",
+      "reasoning": "Implement ExpectedFinding, MustNotFlag, Expected, BenchmarkCase, BenchmarkSuite types with serde derives. Implement BenchmarkCase::load() to read code.rs/context.md/expected.json with anyhow context errors. Implement BenchmarkSuite::load() with directory discovery, non-dir filtering, and name sorting. Add BenchmarkSuite::specialist_names() helper. All 6 tests must pass, cargo clippy must be clean.",
       "depends_on": [
         "01"
-      ],
-      "skills": [],
-      "permission_mode": "standard",
-      "phase_type": "implement"
-    },
-    {
-      "number": "03",
-      "name": "Write PromptLoader tests",
-      "promise": "PROMPT LOADER TESTS WRITTEN",
-      "budget": 5,
-      "reasoning": "Write the remaining 8 tests: test_load_prompt_returns_hardcoded_default_when_no_file, test_load_prompt_returns_defaults_for_all_builtin_specialists, test_load_prompt_from_file_overrides_default, test_load_prompt_parses_yaml_frontmatter_and_body, test_load_prompt_handles_malformed_yaml_gracefully, test_load_prompt_handles_empty_file_gracefully, test_load_prompt_file_without_focus_areas_section, test_prompt_loader_resolves_correct_file_path. These define PromptLoader::new(), load_specialist_prompt(), prompt_file_path(), frontmatter parsing, focus area extraction, and all fallback behaviors. Tests will fail because PromptLoader doesn't exist yet.",
-      "depends_on": [
-        "02"
-      ],
-      "skills": [],
-      "permission_mode": "standard",
-      "phase_type": "test"
-    },
-    {
-      "number": "04",
-      "name": "Implement PromptLoader",
-      "promise": "PROMPT LOADER COMPLETE",
-      "budget": 15,
-      "reasoning": "Implement PromptLoader struct with forge_dir: PathBuf. Methods: new(forge_dir) stores path; prompt_file_path(specialist) returns {forge_dir}/autoresearch/prompts/{agent_name}.md; load_specialist_prompt(specialist) tries load_from_file then falls back to build_default_config; load_from_file parses YAML frontmatter (split on --- delimiters, deserialize PromptFrontmatter), extracts body, parses ## Focus Areas bullet points, returns None on any error with tracing::warn; build_default_config constructs from SpecialistType data with body template matching dispatcher.rs format (Role, Focus Areas, Instructions, Output Format sections without phase/context/files sections). All 10 tests must pass, cargo check must succeed, existing review tests must not regress.",
-      "depends_on": [
-        "03"
       ],
       "skills": [],
       "permission_mode": "standard",
