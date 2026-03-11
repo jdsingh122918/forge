@@ -1,5 +1,7 @@
 use crate::audit::{ClaudeSession, FileChangeSummary, TokenUsage};
 use crate::config::Config;
+use crate::council::worker::{create_chairman_worker, create_workers};
+use crate::council::{CouncilEngine, CouncilPhaseResult};
 use crate::errors::OrchestratorError;
 use crate::forge_config::tools_for_permission_mode;
 use crate::phase::Phase;
@@ -225,6 +227,59 @@ fn extract_token_usage(parsed: &serde_json::Value) -> Option<TokenUsage> {
     }
 }
 
+fn aggregate_council_token_usage(council_result: &CouncilPhaseResult) -> Option<TokenUsage> {
+    let mut input_tokens = 0u64;
+    let mut output_tokens = 0u64;
+    let mut saw_usage = false;
+
+    for usage in council_result
+        .worker_results
+        .iter()
+        .filter_map(|worker| worker.token_usage.as_ref())
+    {
+        saw_usage = true;
+        input_tokens += u64::from(usage.input_tokens);
+        output_tokens += u64::from(usage.output_tokens);
+    }
+
+    saw_usage.then(|| TokenUsage {
+        input_tokens: input_tokens.min(u64::from(u32::MAX)) as u32,
+        output_tokens: output_tokens.min(u64::from(u32::MAX)) as u32,
+    })
+}
+
+fn council_result_to_iteration_result(
+    council_result: CouncilPhaseResult,
+    phase: &Phase,
+) -> IterationResult {
+    let token_usage = aggregate_council_token_usage(&council_result);
+    let output = council_result.winning_diff;
+    let signal_text = council_result
+        .worker_results
+        .iter()
+        .flat_map(|worker| worker.signals.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let promise_tag = format!("<promise>{}</promise>", phase.promise);
+    let promise_found = output.contains(&promise_tag);
+    let signals = extract_signals(&signal_text);
+
+    IterationResult {
+        session: ClaudeSession {
+            prompt_file: PathBuf::new(),
+            prompt_chars: 0,
+            output_file: PathBuf::new(),
+            output_chars: output.len(),
+            exit_code: 0,
+            token_usage,
+            session_id: None,
+        },
+        promise_found,
+        output,
+        signals,
+    }
+}
+
 pub struct ClaudeRunner {
     config: Config,
 }
@@ -242,6 +297,17 @@ impl ClaudeRunner {
         Self { config }
     }
 
+    pub fn should_use_council(&self, phase: &Phase) -> bool {
+        let global_enabled = self
+            .config
+            .forge_config()
+            .and_then(|forge_config| forge_config.council_config())
+            .map(|config| config.enabled)
+            .unwrap_or(false);
+
+        phase.use_council(global_enabled)
+    }
+
     pub async fn run_iteration(
         &self,
         phase: &Phase,
@@ -250,6 +316,83 @@ impl ClaudeRunner {
     ) -> Result<IterationResult> {
         self.run_iteration_with_context(phase, iteration, ui, None, None, None)
             .await
+    }
+
+    pub async fn run_council_iteration(
+        &self,
+        phase: &Phase,
+        iteration: u32,
+        ui: Option<Arc<OrchestratorUI>>,
+    ) -> Result<IterationResult> {
+        let council_config = self
+            .config
+            .forge_config()
+            .and_then(|forge_config| forge_config.council_config())
+            .cloned()
+            .context("council configuration is not available")?;
+        let prompt = self.generate_prompt(phase);
+        let prompt_file = self.get_prompt_file(&phase.number, iteration);
+
+        if let Some(ref ui) = ui {
+            ui.log_step("Writing council prompt file...");
+        }
+
+        std::fs::write(&prompt_file, &prompt).map_err(|e| {
+            OrchestratorError::PromptWriteFailed {
+                path: prompt_file.clone(),
+                source: e,
+            }
+        })?;
+
+        if let Some(ref ui) = ui {
+            ui.log_step("Creating council engine...");
+        }
+
+        let workers =
+            create_workers(&council_config).context("failed to create council workers")?;
+        let chairman_worker = create_chairman_worker(&council_config)
+            .context("failed to create council chairman worker")?;
+        let engine = CouncilEngine::new(
+            council_config,
+            workers,
+            chairman_worker,
+            self.config.project_dir.clone(),
+        );
+
+        if let Some(ref ui) = ui {
+            ui.log_step("Running council engine...");
+        }
+
+        let council_result = engine.run_phase(phase, &prompt).await?;
+        let mut result = council_result_to_iteration_result(council_result, phase);
+        let output_file = self.get_output_file(&phase.number, iteration);
+
+        std::fs::write(&output_file, &result.output).map_err(|e| {
+            OrchestratorError::OutputWriteFailed {
+                path: output_file.clone(),
+                source: e,
+            }
+        })?;
+
+        result.session.prompt_file = prompt_file;
+        result.session.prompt_chars = prompt.len();
+        result.session.output_file = output_file;
+        result.session.output_chars = result.output.len();
+
+        if let Some(ref ui) = ui {
+            if result.signals.has_signals() {
+                ui.show_signals(&result.signals);
+            }
+
+            if result.promise_found {
+                ui.log_step(&format!(
+                    "Council promise tag found: <promise>{}</promise>",
+                    phase.promise
+                ));
+            }
+        }
+
+        Ok(result)
     }
 
     /// Run an iteration with optional injected context (e.g., compaction summary),
@@ -709,8 +852,10 @@ When complete, output:
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::council::types::{CouncilPhaseResult, MergeOutcome, WorkerResult};
     use crate::phase::Phase;
     use std::fs;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     fn setup_test_config(dir: &std::path::Path, spec_content: &str) -> Config {
@@ -721,6 +866,40 @@ mod tests {
         fs::write(&spec_file, spec_content).unwrap();
 
         Config::new(dir.to_path_buf(), false, 5, Some(spec_file)).unwrap()
+    }
+
+    fn setup_test_config_with_forge_toml(
+        dir: &std::path::Path,
+        spec_content: &str,
+        forge_toml: &str,
+    ) -> Config {
+        let config = setup_test_config(dir, spec_content);
+        let forge_dir = dir.join(".forge");
+        fs::create_dir_all(&forge_dir).unwrap();
+        fs::write(forge_dir.join("forge.toml"), forge_toml).unwrap();
+        Config::new(
+            config.project_dir.clone(),
+            false,
+            5,
+            Some(config.spec_file.clone()),
+        )
+        .unwrap()
+    }
+
+    fn test_phase() -> Phase {
+        Phase::new("01", "Council Phase", "DONE", 5, "reason", vec![])
+    }
+
+    fn worker_result(signals: &[&str]) -> WorkerResult {
+        WorkerResult {
+            worker_name: "worker-a".to_string(),
+            diff_text: "diff --git a/src/lib.rs b/src/lib.rs".to_string(),
+            exit_code: 0,
+            duration: Duration::from_secs(1),
+            token_usage: None,
+            raw_output: "worker output".to_string(),
+            signals: signals.iter().map(|signal| (*signal).to_string()).collect(),
+        }
     }
 
     #[test]
@@ -1236,5 +1415,131 @@ mod tests {
         let parsed = serde_json::json!({"type": "result"});
         let usage = extract_token_usage(&parsed);
         assert!(usage.is_none());
+    }
+
+    #[test]
+    fn test_should_use_council_disabled_globally() {
+        let dir = tempdir().unwrap();
+        let config = setup_test_config_with_forge_toml(
+            dir.path(),
+            "# Spec",
+            r#"
+[council]
+enabled = false
+"#,
+        );
+        let runner = ClaudeRunner::new(config);
+        let phase = test_phase();
+
+        assert!(!runner.should_use_council(&phase));
+    }
+
+    #[test]
+    fn test_should_use_council_enabled_globally() {
+        let dir = tempdir().unwrap();
+        let config = setup_test_config_with_forge_toml(
+            dir.path(),
+            "# Spec",
+            r#"
+[council]
+enabled = true
+"#,
+        );
+        let runner = ClaudeRunner::new(config);
+        let phase = test_phase();
+
+        assert!(runner.should_use_council(&phase));
+    }
+
+    #[test]
+    fn test_should_use_council_phase_override_true() {
+        let dir = tempdir().unwrap();
+        let config = setup_test_config_with_forge_toml(
+            dir.path(),
+            "# Spec",
+            r#"
+[council]
+enabled = false
+"#,
+        );
+        let runner = ClaudeRunner::new(config);
+        let mut phase = test_phase();
+        phase.council = Some(true);
+
+        assert!(runner.should_use_council(&phase));
+    }
+
+    #[test]
+    fn test_should_use_council_phase_override_false() {
+        let dir = tempdir().unwrap();
+        let config = setup_test_config_with_forge_toml(
+            dir.path(),
+            "# Spec",
+            r#"
+[council]
+enabled = true
+"#,
+        );
+        let runner = ClaudeRunner::new(config);
+        let mut phase = test_phase();
+        phase.council = Some(false);
+
+        assert!(!runner.should_use_council(&phase));
+    }
+
+    #[test]
+    fn test_council_iteration_result_has_promise_found() {
+        let phase = test_phase();
+        let result = council_result_to_iteration_result(
+            CouncilPhaseResult {
+                winning_diff: "merged output\n<promise>DONE</promise>".to_string(),
+                worker_results: vec![worker_result(&[])],
+                review_results: Vec::new(),
+                merge_outcome: MergeOutcome::Clean("merged output".to_string()),
+                merge_attempts: 1,
+            },
+            &phase,
+        );
+
+        assert!(result.promise_found);
+    }
+
+    #[test]
+    fn test_council_iteration_result_has_output() {
+        let phase = test_phase();
+        let result = council_result_to_iteration_result(
+            CouncilPhaseResult {
+                winning_diff: "merged diff output".to_string(),
+                worker_results: vec![worker_result(&[])],
+                review_results: Vec::new(),
+                merge_outcome: MergeOutcome::Clean("merged diff output".to_string()),
+                merge_attempts: 1,
+            },
+            &phase,
+        );
+
+        assert_eq!(result.output, "merged diff output");
+    }
+
+    #[test]
+    fn test_council_iteration_result_has_signals() {
+        let phase = test_phase();
+        let result = council_result_to_iteration_result(
+            CouncilPhaseResult {
+                winning_diff: "merged diff output".to_string(),
+                worker_results: vec![worker_result(&[
+                    "<progress>75%</progress>",
+                    "<blocker>Need migration fix</blocker>",
+                ])],
+                review_results: Vec::new(),
+                merge_outcome: MergeOutcome::Clean("merged diff output".to_string()),
+                merge_attempts: 1,
+            },
+            &phase,
+        );
+
+        assert_eq!(result.signals.latest_progress(), Some(75));
+        assert_eq!(result.signals.blockers.len(), 1);
+        assert_eq!(result.signals.blockers[0].description, "Need migration fix");
     }
 }
