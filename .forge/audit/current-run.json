@@ -9,5 +9,28 @@
     "spec_file": "/Users/jdsingh/Projects/AI/forge/.forge/spec.md",
     "project_dir": "/Users/jdsingh/Projects/AI/forge"
   },
-  "phases": []
+  "phases": [
+    {
+      "phase_number": "01",
+      "description": "Write extraction tests for prompt files",
+      "promise": "EXTRACTION TESTS WRITTEN",
+      "started_at": "2026-03-11T22:07:12.014774Z",
+      "ended_at": "2026-03-11T22:09:50.237084Z",
+      "iterations": [],
+      "outcome": {
+        "Completed": {
+          "iteration": 1
+        }
+      },
+      "file_changes": {
+        "files_added": [
+          ".forge/autoresearch/"
+        ],
+        "files_modified": [],
+        "files_deleted": [],
+        "total_lines_added": 0,
+        "total_lines_removed": 0
+      }
+    }
+  ]
 }
