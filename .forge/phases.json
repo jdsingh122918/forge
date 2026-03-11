@@ -1,13 +1,13 @@
 {
-  "spec_hash": "ef07edf802b4",
-  "generated_at": "2026-03-11T21:49:26.113059+00:00",
+  "spec_hash": "bf24a088f7af",
+  "generated_at": "2026-03-11T21:54:59.729097+00:00",
   "phases": [
     {
       "number": "01",
-      "name": "Write BudgetTracker tests",
-      "promise": "BUDGET TRACKER TESTS WRITTEN",
+      "name": "Write extraction tests for prompt files",
+      "promise": "EXTRACTION TESTS WRITTEN",
       "budget": 5,
-      "reasoning": "Create src/cmd/autoresearch/budget.rs with all 12+ tests: defaults, pricing math (Claude/GPT/zero), can_afford (within/exceeds/after-spending), record_cost updates, record_cost rejects over-budget, remaining floor, restore_from_experiment_count, JSON roundtrip, save/load, load nonexistent. Include minimal struct definitions and method signatures (returning todo!() or unimplemented!()) so tests compile but fail.",
+      "reasoning": "Add extraction_tests module to src/review/prompt_loader.rs with 6 tests: file existence for all specialists, SecuritySentinel loads via PromptLoader, focus areas match hardcoded values character-for-character, mode matches default_gating(), body contains required ## sections, specialist_name matches display_name(). CRITICAL: Use loader.load() not load_specialist_prompt(), and expect specialist_name='Security Sentinel' (with space) not 'SecuritySentinel'. Tests should use CARGO_MANIFEST_DIR to locate project root. All tests will initially fail (RED) since prompt files don't exist yet.",
       "depends_on": [],
       "skills": [],
       "permission_mode": "standard",
@@ -15,10 +15,10 @@
     },
     {
       "number": "02",
-      "name": "Implement BudgetTracker",
-      "promise": "BUDGET TRACKER COMPLETE",
+      "name": "Create 4 extracted prompt files",
+      "promise": "PROMPT FILES EXTRACTED",
       "budget": 10,
-      "reasoning": "Implement ModelPricing (claude_sonnet, gpt_5_4, estimate_cost), CostRecord, and BudgetTracker (new, can_afford, remaining, record_cost with budget rejection, restore_from_experiment_count, to_json/from_json, save/load). Wire pub mod budget in autoresearch/mod.rs. Run cargo clippy and ensure all 12+ tests pass.",
+      "reasoning": "Create .forge/autoresearch/prompts/ directory and write 4 files: security-sentinel.md (mode: gating), performance-oracle.md (mode: advisory), architecture-strategist.md (mode: gating), simplicity-reviewer.md (mode: advisory). Each with YAML frontmatter and markdown body matching the build_review_prompt() template structure from dispatcher.rs. Focus area strings MUST be copied character-for-character from SpecialistType::focus_areas() in specialists.rs. Verify all extraction tests pass (GREEN). Also verify T01 tests still pass and cargo check succeeds. If YAML inline comment causes parse issues, move comment to separate line or adjust frontmatter format.",
       "depends_on": [
         "01"
       ],

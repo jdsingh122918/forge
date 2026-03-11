@@ -1,6 +1,6 @@
 {
-  "run_id": "7db0b5c5-57ec-4950-9d57-2bc35c295b37",
-  "started_at": "2026-03-11T21:49:26.135842Z",
+  "run_id": "8df4f976-2181-4079-88ce-f776b3c09766",
+  "started_at": "2026-03-11T21:54:59.750834Z",
   "ended_at": null,
   "config": {
     "auto_approve_threshold": 5,
@@ -9,30 +9,5 @@
     "spec_file": "/Users/jdsingh/Projects/AI/forge/.forge/spec.md",
     "project_dir": "/Users/jdsingh/Projects/AI/forge"
   },
-  "phases": [
-    {
-      "phase_number": "01",
-      "description": "Write BudgetTracker tests",
-      "promise": "BUDGET TRACKER TESTS WRITTEN",
-      "started_at": "2026-03-11T21:49:26.136032Z",
-      "ended_at": "2026-03-11T21:52:30.165499Z",
-      "iterations": [],
-      "outcome": {
-        "Completed": {
-          "iteration": 1
-        }
-      },
-      "file_changes": {
-        "files_added": [
-          "src/cmd/autoresearch/budget.rs"
-        ],
-        "files_modified": [
-          "src/cmd/autoresearch/mod.rs"
-        ],
-        "files_deleted": [],
-        "total_lines_added": 1,
-        "total_lines_removed": 0
-      }
-    }
-  ]
+  "phases": []
 }

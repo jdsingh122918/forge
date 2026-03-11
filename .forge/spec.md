@@ -1,68 +1,75 @@
-# Implementation Spec: Budget Tracker for Autoresearch Experiment Loop
+# Implementation Spec: Extract Hardcoded Prompts into Config Files
 
-> Generated from: docs/superpowers/specs/autoresearch-tasks/T10-budget-tracker.md
-> Generated at: 2026-03-11T21:49:26.112710+00:00
+> Generated from: docs/superpowers/specs/autoresearch-tasks/T02-extract-prompt-files.md
+> Generated at: 2026-03-11T21:54:59.728765+00:00
 
 ## Goal
 
-Implement a BudgetTracker struct that enforces a $25 total spend cap across autoresearch experiments by estimating cost from token counts and model-specific pricing, persisting spend data for resume, and providing a can_afford() gate before each experiment.
+Extract the 4 built-in specialist review prompts from hardcoded Rust code into standalone .md files at .forge/autoresearch/prompts/, with YAML frontmatter and markdown body sections. Files must produce identical PromptConfig results when loaded via PromptLoader as the hardcoded fallbacks, establishing a clean baseline for autoresearch experiments.
 
 ## Components
 
 | Component | Description | Complexity | Dependencies |
 |-----------|-------------|------------|--------------|
-| ModelPricing | Pricing tiers for supported LLM models (Claude Sonnet, GPT 5.4) with per-million-token input/output rates and a cost estimation method | low | - |
-| CostRecord | Data struct capturing a single LLM call's model, token counts, estimated cost, and description for audit trail | low | ModelPricing |
-| BudgetTracker | Core tracker enforcing budget cap with can_afford() gate, record_cost() with rejection on overspend, remaining() floor, restore_from_experiment_count() for resume, and JSON file persistence via save()/load() | medium | ModelPricing, CostRecord |
+| Extraction Tests | Test module in prompt_loader.rs that validates the 4 extracted prompt files load correctly via PromptLoader, with focus areas matching SpecialistType::focus_areas() character-for-character, modes matching default_gating(), and required markdown sections present. Note: PromptLoader::load() is the correct method (not load_specialist_prompt()), and specialist_name comes from display_name() e.g. 'Security Sentinel' with space. | medium | - |
+| Prompt Files | Four .md files (security-sentinel.md, performance-oracle.md, architecture-strategist.md, simplicity-reviewer.md) in .forge/autoresearch/prompts/ with YAML frontmatter (specialist, mode with informational comment) and markdown body containing ## Role, ## Focus Areas (with exact focus_areas() strings as bullet items), ## Instructions, and ## Output Format sections. | medium | Extraction Tests |
 
 ## Code Patterns
 
-### Cost estimation from token counts
+### Prompt file frontmatter
 
 ```
-pub fn estimate_cost(&self, input_tokens: u32, output_tokens: u32) -> f64 {
-    let input_cost = (input_tokens as f64 / 1_000_000.0) * self.input_price_per_mtok;
-    let output_cost = (output_tokens as f64 / 1_000_000.0) * self.output_price_per_mtok;
-    input_cost + output_cost
-}
+---
+specialist: SecuritySentinel
+mode: gating  # informational only -- gating controlled by SpecialistType::default_gating()
+---
 ```
 
-### Budget-guarded cost recording
+### Focus areas markdown format
 
 ```
-pub fn record_cost(&mut self, model: &str, input_tokens: u32, output_tokens: u32, pricing: &ModelPricing, description: &str) -> Result<f64> {
-    let cost = pricing.estimate_cost(input_tokens, output_tokens);
-    if self.total_spent_usd + cost > self.budget_cap_usd {
-        anyhow::bail!("Budget exceeded: ${:.4} would bring total to ${:.4}, cap is ${:.2}", cost, self.total_spent_usd + cost, self.budget_cap_usd);
-    }
-    self.total_spent_usd += cost;
-    self.records.push(CostRecord { ... });
-    Ok(cost)
-}
+## Focus Areas
+
+Examine the code for these specific concerns:
+- SQL injection vulnerabilities
+- Cross-site scripting (XSS)
 ```
 
-### JSON file persistence with Option return
+### PromptLoader file loading
 
 ```
-pub fn load(path: &std::path::Path) -> Result<Option<Self>> {
-    if !path.exists() { return Ok(None); }
-    let content = std::fs::read_to_string(path).context("Failed to read budget tracker file")?;
-    let tracker = Self::from_json(&content)?;
-    Ok(Some(tracker))
-}
+let loader = PromptLoader::new(project_root().join(".forge"));
+let config = loader.load(&SpecialistType::SecuritySentinel);
+```
+
+### Focus areas extraction parser
+
+```
+// extract_focus_areas() in prompt_loader.rs parses '- ' prefixed lines
+// between '## Focus Areas' heading and next '## ' heading.
+// Non-bullet lines (like 'Examine the code...') are ignored.
+```
+
+### Frontmatter YAML comment handling
+
+```
+// YAML treats # as comment start, so:
+// mode: gating  # informational only
+// parses mode as "gating" (serde_yaml handles this correctly)
 ```
 
 ## Acceptance Criteria
 
-- [ ] cargo test --lib cmd::autoresearch::budget passes with 12+ tests green
-- [ ] src/cmd/autoresearch/budget.rs exists with BudgetTracker, ModelPricing, CostRecord structs
-- [ ] BudgetTracker::can_afford() returns false when spend + estimated cost > cap
-- [ ] BudgetTracker::record_cost() returns Err when cost would exceed cap and does NOT update spend
-- [ ] BudgetTracker::save()/load() persist to and restore from JSON files
-- [ ] BudgetTracker::restore_from_experiment_count() allows resume from results.tsv row count
-- [ ] cargo clippy -- -D warnings passes clean
-- [ ] pub mod budget; declared in src/cmd/autoresearch/mod.rs
+- [ ] All 4 prompt files exist at .forge/autoresearch/prompts/{agent-name}.md
+- [ ] Each file has valid YAML frontmatter with specialist and mode fields
+- [ ] Each file body contains ## Role, ## Focus Areas, ## Instructions, and ## Output Format sections
+- [ ] Focus areas in each file are character-for-character identical to SpecialistType::focus_areas() output
+- [ ] Mode in each file matches SpecialistType::default_gating() (gating for SecuritySentinel/ArchitectureStrategist, advisory for PerformanceOracle/SimplicityReviewer)
+- [ ] PromptLoader::load() returns correct PromptConfig for each specialist when loading from file
+- [ ] All extraction tests pass: cargo test -p forge review::prompt_loader::extraction_tests
+- [ ] All existing T01 tests still pass: cargo test -p forge review::prompt_loader
+- [ ] cargo check -p forge succeeds with no errors
 
 ---
 *This spec was auto-generated from a design document.*
-*Original design: docs/superpowers/specs/autoresearch-tasks/T10-budget-tracker.md*
+*Original design: docs/superpowers/specs/autoresearch-tasks/T02-extract-prompt-files.md*
