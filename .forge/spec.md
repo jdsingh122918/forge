@@ -1,111 +1,79 @@
-# Implementation Spec: Cross-Model Judge via Codex CLI
+# Implementation Spec: CLI Registration for forge autoresearch
 
-> Generated from: docs/superpowers/specs/autoresearch-tasks/T07-judge-and-codex-cli.md
-> Generated at: 2026-03-11T21:00:20.967423+00:00
+> Generated from: docs/superpowers/specs/autoresearch-tasks/T09-cli-registration.md
+> Generated at: 2026-03-11T21:42:04.285546+00:00
 
 ## Goal
 
-Implement a cross-model judge module that invokes GPT 5.4 via Codex CLI to classify novel review findings as true_positive/false_positive and rate fix actionability on a 0.0-1.0 scale, with retry-once semantics and safe fallback defaults when the CLI fails or returns unparseable JSON.
+Register the `autoresearch` subcommand in forge's clap CLI with 8 arguments (specialists, budget, max-failures, resume, tag, prompts-dir, benchmarks-dir, dry-run), add helper functions for specialist expansion and tag generation, wire the command into the Commands enum and dispatch, with a placeholder async entry point.
 
 ## Components
 
 | Component | Description | Complexity | Dependencies |
 |-----------|-------------|------------|--------------|
-| JudgeResult Types | Data types for judge output: JudgeResult, Classification, ClassificationVerdict (TruePositive/FalsePositive), ActionabilityScore. JudgeResult includes a fallback() constructor that returns safe defaults (all true_positive, all 0.5 actionability). | low | - |
-| Judge Prompt Builder | Const JUDGE_PROMPT_TEMPLATE with 5 required sections (Code Under Review, Ground Truth, Specialist Output, Tasks, Output) and build_judge_prompt() that interpolates code, expected JSON, and specialist findings into the template. | low | JudgeResult Types |
-| Judge Response Parser | parse_judge_response() deserializes Codex CLI JSON into JudgeResult with actionability score clamping to [0.0, 1.0]. parse_judge_response_with_fallback() wraps parsing with fallback to JudgeResult::fallback() on any failure. | low | JudgeResult Types |
-| CommandExecutor Trait and TokioExecutor | async CommandExecutor trait for external command execution, enabling mock injection in tests. TokioExecutor is the production impl using tokio::process::Command. | low | - |
-| Judge Struct | Orchestrates evaluation: builds Codex CLI args (--model gpt-5.4-xhigh --quiet --json -p), calls executor, retries once on CLI failure (not on parse failure), falls back on exhaustion. Constructors: new() with TokioExecutor, with_executor() for test injection. | medium | JudgeResult Types, Judge Prompt Builder, Judge Response Parser, CommandExecutor Trait and TokioExecutor |
-| Module Registration | Wire src/cmd/autoresearch/mod.rs with pub mod judge and register autoresearch in src/cmd/mod.rs. | low | Judge Struct |
+| AutoresearchArgs | Clap Args struct with 8 fields: specialists (String, default all four), budget (f64, default 25.0), max_failures (u32, default 3), resume (bool), tag (Option<String>), prompts_dir (Option<PathBuf>), benchmarks_dir (Option<PathBuf>), dry_run (bool) | low | - |
+| expand_specialists helper | Pure function that splits comma-separated specialists string into Vec<String>, with 'all' expanding to the four built-in specialists | low | - |
+| generate_default_tag helper | Pure function that generates a YYYYMMDD-HHMMSS timestamp tag using chrono::Utc | low | - |
+| cmd_autoresearch entry point | Async placeholder function matching cmd_factory/cmd_swarm pattern: takes &Path and &AutoresearchArgs, returns Result<()>, prints 'not yet implemented' | low | AutoresearchArgs |
+| CLI wiring | Add Commands::Autoresearch variant to main.rs enum with #[command(flatten)] args, add match arm dispatching to cmd::cmd_autoresearch, add pub use in cmd/mod.rs | low | AutoresearchArgs, cmd_autoresearch entry point |
 
 ## Code Patterns
 
-### Prompt template interpolation
+### Clap Args struct with defaults
 
 ```
-JUDGE_PROMPT_TEMPLATE
-    .replace("{code_sample}", code_sample)
-    .replace("{expected_json}", expected_json)
-    .replace("{specialist_findings_json}", specialist_findings_json)
-```
-
-### Codex CLI args
-
-```
-vec!["--model".to_string(), self.model.clone(), "--quiet".to_string(), "--json".to_string(), "-p".to_string(), prompt.to_string()]
-```
-
-### Retry-once with fallback
-
-```
-// Attempt 1
-match self.executor.execute(&self.codex_cmd, &args).await {
-    Ok(output) => {
-        if let Ok(result) = parse_judge_response(&output) { return Ok(result); }
-        return Ok(JudgeResult::fallback(finding_ids)); // no retry for parse failures
-    }
-    Err(e) => { tracing::warn!("attempt 1 failed: {:#}", e); }
-}
-// Attempt 2 (retry)
-match self.executor.execute(&self.codex_cmd, &args).await { ... }
-```
-
-### Fallback result builder
-
-```
-pub fn fallback(finding_ids: &[String]) -> Self {
-    Self {
-        classifications: finding_ids.iter().map(|id| Classification {
-            finding_id: id.clone(), verdict: ClassificationVerdict::TruePositive,
-        }).collect(),
-        actionability_scores: finding_ids.iter().map(|id| ActionabilityScore {
-            finding_id: id.clone(), score: 0.5,
-        }).collect(),
-    }
+#[derive(Debug, Clone, Args)]
+pub struct AutoresearchArgs {
+    #[arg(long, default_value = "security,performance,architecture,simplicity")]
+    pub specialists: String,
+    #[arg(long, default_value = "25.0")]
+    pub budget: f64,
+    #[arg(long, default_value = "3")]
+    pub max_failures: u32,
+    #[arg(long)]
+    pub resume: bool,
+    #[arg(long)]
+    pub tag: Option<String>,
+    #[arg(long)]
+    pub prompts_dir: Option<PathBuf>,
+    #[arg(long)]
+    pub benchmarks_dir: Option<PathBuf>,
+    #[arg(long)]
+    pub dry_run: bool,
 }
 ```
 
-### Actionability score clamping
+### Command dispatch pattern
 
 ```
-for score in &mut result.actionability_scores {
-    score.score = score.score.clamp(0.0, 1.0);
+Commands::Autoresearch { args } => {
+    cmd::cmd_autoresearch(&project_dir, &args).await?;
 }
 ```
 
-### Mock CommandExecutor for tests
+### Test wrapper for clap Args parsing
 
 ```
-#[async_trait::async_trait]
-trait CommandExecutor: Send + Sync {
-    async fn execute(&self, cmd: &str, args: &[String]) -> anyhow::Result<String>;
+use clap::Parser;
+#[derive(Parser)]
+struct Wrapper {
+    #[command(flatten)]
+    args: AutoresearchArgs,
 }
-
-struct MockExecutor { response: String }
-
-#[async_trait::async_trait]
-impl CommandExecutor for MockExecutor {
-    async fn execute(&self, _cmd: &str, _args: &[String]) -> anyhow::Result<String> {
-        Ok(self.response.clone())
-    }
-}
+let w = Wrapper::try_parse_from(["test"]).expect("default args must parse");
 ```
 
 ## Acceptance Criteria
 
-- [ ] build_judge_prompt() produces a prompt containing all 5 required sections: Code Under Review, Ground Truth, Specialist Output, Tasks, Output (JSON only)
-- [ ] parse_judge_response() correctly deserializes valid JudgeResult JSON with classifications and actionability scores
-- [ ] Malformed or unparseable responses trigger fallback (actionability=0.5, all classified as true_positive)
-- [ ] Actionability scores are clamped to [0.0, 1.0]
-- [ ] Codex CLI is invoked with args: --model gpt-5.4-xhigh --quiet --json -p "<prompt>"
-- [ ] On CLI failure, retries once then falls back (total of 2 attempts)
-- [ ] On CLI success but JSON parse failure, falls back immediately (no retry)
-- [ ] src/cmd/autoresearch/judge.rs exports Judge, JudgeResult, Classification, ClassificationVerdict, ActionabilityScore, CommandExecutor, TokioExecutor
-- [ ] src/cmd/autoresearch/mod.rs exports pub mod judge
-- [ ] src/cmd/mod.rs registers pub mod autoresearch
-- [ ] All 11 tests pass (7 sync + 4 async)
-- [ ] cargo check succeeds with no warnings in judge.rs
+- [ ] cargo test --lib cmd::autoresearch passes with 6+ tests green
+- [ ] cargo build compiles without errors or warnings
+- [ ] cargo clippy -- -D warnings passes clean
+- [ ] src/cmd/autoresearch/mod.rs contains AutoresearchArgs, cmd_autoresearch, expand_specialists, generate_default_tag
+- [ ] Commands::Autoresearch variant exists in src/main.rs and dispatches to cmd::cmd_autoresearch
+- [ ] src/cmd/mod.rs re-exports cmd_autoresearch via pub use
+- [ ] cargo run -- autoresearch --help shows help text
+- [ ] cargo run -- autoresearch prints placeholder message
 
 ---
 *This spec was auto-generated from a design document.*
-*Original design: docs/superpowers/specs/autoresearch-tasks/T07-judge-and-codex-cli.md*
+*Original design: docs/superpowers/specs/autoresearch-tasks/T09-cli-registration.md*

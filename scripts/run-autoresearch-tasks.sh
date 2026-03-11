@@ -21,6 +21,13 @@ run_task() {
     local task_name
     task_name=$(basename "$task_file" .md)
     local log_file="$LOG_DIR/${task_name}.log"
+    local done_marker="$LOG_DIR/${task_name}.done"
+
+    # Skip already-completed tasks
+    if [[ -f "$done_marker" ]]; then
+        echo -e "${GREEN}━━━ Skipping (already done): ${task_name} ━━━${NC}"
+        return 0
+    fi
 
     echo -e "${CYAN}━━━ Starting: ${task_name} ━━━${NC}"
 
@@ -38,6 +45,7 @@ run_task() {
     # Step 3: Execute
     echo -e "  ${YELLOW}[3/3]${NC} Running phases..."
     if $FORGE run --autonomous --yes >> "$log_file" 2>&1; then
+        touch "$done_marker"
         echo -e "  ${GREEN}✓ DONE${NC}: ${task_name}"
     else
         echo -e "  ${RED}✗ FAILED${NC}: ${task_name}. See: $log_file"
@@ -51,6 +59,7 @@ run_wave() {
     local wave_num="$1"
     shift
     local tasks=("$@")
+    local skipped=0
 
     echo -e "${CYAN}══════════════════════════════════════${NC}"
     echo -e "${CYAN}  Wave ${wave_num} (${#tasks[@]} tasks)${NC}"
@@ -58,13 +67,22 @@ run_wave() {
     echo ""
 
     for task in "${tasks[@]}"; do
+        local name
+        name=$(basename "$task" .md)
+        if [[ -f "$LOG_DIR/${name}.done" ]]; then
+            skipped=$((skipped + 1))
+        fi
         run_task "${task}" || {
             echo -e "${RED}Wave ${wave_num} halted due to failure in ${task}${NC}"
             exit 1
         }
     done
 
-    echo -e "${GREEN}Wave ${wave_num} complete.${NC}"
+    if [[ $skipped -eq ${#tasks[@]} ]]; then
+        echo -e "${GREEN}Wave ${wave_num} — all tasks already complete, skipped.${NC}"
+    else
+        echo -e "${GREEN}Wave ${wave_num} complete. (${skipped}/${#tasks[@]} skipped)${NC}"
+    fi
     echo ""
 }
 

@@ -1,13 +1,13 @@
 {
-  "spec_hash": "e8b1975baeff",
-  "generated_at": "2026-03-11T21:00:20.968743+00:00",
+  "spec_hash": "9563a9586508",
+  "generated_at": "2026-03-11T21:42:04.285842+00:00",
   "phases": [
     {
       "number": "01",
-      "name": "Write judge types, prompt, and parsing tests",
-      "promise": "JUDGE TYPES AND PARSING TESTS WRITTEN",
+      "name": "Write autoresearch CLI tests",
+      "promise": "AUTORESEARCH CLI TESTS WRITTEN",
       "budget": 5,
-      "reasoning": "Write 7 synchronous tests covering: prompt section verification (test_judge_prompt_contains_all_required_sections), valid JSON parsing (test_parse_judge_response_valid_json), malformed response fallback (test_parse_judge_response_malformed_falls_back), partial JSON fallback (test_parse_judge_response_partial_json_falls_back), Judge defaults (test_judge_new_defaults), fallback result builder (test_fallback_judge_result), and actionability clamping (test_actionability_score_clamped). These establish the contract for all data types and pure functions before implementation.",
+      "reasoning": "Create all 7 tests in src/cmd/autoresearch/mod.rs: test_autoresearch_args_default_values, test_autoresearch_args_custom_values, test_expand_specialists_all, test_expand_specialists_custom_list, test_expand_specialists_empty_string, test_generate_tag_format, test_cli_recognizes_autoresearch. These cover default arg parsing, explicit arg parsing, specialist expansion (all, custom, empty), tag format validation, and smoke test. Tests will initially fail since the struct/functions don't exist yet. Must preserve existing judge.rs submodule.",
       "depends_on": [],
       "skills": [],
       "permission_mode": "standard",
@@ -15,38 +15,12 @@
     },
     {
       "number": "02",
-      "name": "Implement judge types, prompt builder, and parser",
-      "promise": "JUDGE TYPES AND PARSING COMPLETE",
+      "name": "Implement autoresearch CLI registration",
+      "promise": "AUTORESEARCH CLI REGISTRATION COMPLETE",
       "budget": 10,
-      "reasoning": "Implement all data types (JudgeResult, Classification, ClassificationVerdict, ActionabilityScore with serde derives), the const JUDGE_PROMPT_TEMPLATE with 5 sections, build_judge_prompt() with string interpolation, parse_judge_response() with clamping, parse_judge_response_with_fallback(), and JudgeResult::fallback(). Also implement Judge struct with new(), build_codex_args(). All 7 sync tests from phase 01 must pass. Create src/cmd/autoresearch/judge.rs and register the module in mod.rs and cmd/mod.rs.",
+      "reasoning": "Implement AutoresearchArgs struct with 8 clap fields and defaults, expand_specialists() and generate_default_tag() helpers, async cmd_autoresearch placeholder in src/cmd/autoresearch/mod.rs. Wire Commands::Autoresearch variant into src/main.rs enum with match arm. Add pub use autoresearch::cmd_autoresearch to src/cmd/mod.rs. Update module table comment. Run cargo clippy, fix any lints. Verify all tests pass with cargo test --lib cmd::autoresearch and cargo build is clean.",
       "depends_on": [
         "01"
-      ],
-      "skills": [],
-      "permission_mode": "standard",
-      "phase_type": "implement"
-    },
-    {
-      "number": "03",
-      "name": "Write judge evaluation async tests",
-      "promise": "JUDGE EVALUATION TESTS WRITTEN",
-      "budget": 4,
-      "reasoning": "Write 4 tests covering the async evaluate() flow with mock executors: test_judge_invocation_builds_correct_codex_command (sync, verifying CLI arg construction), test_judge_evaluate_with_mock_success (async, successful end-to-end), test_judge_evaluate_with_mock_failure_retries_then_falls_back (async, verifying retry-once + fallback with call counter), and test_judge_evaluate_with_mock_malformed_json_falls_back (async, verifying no retry on parse failure). These require the CommandExecutor trait and mock implementations.",
-      "depends_on": [
-        "02"
-      ],
-      "skills": [],
-      "permission_mode": "standard",
-      "phase_type": "test"
-    },
-    {
-      "number": "04",
-      "name": "Implement judge evaluation with retry and fallback",
-      "promise": "JUDGE EVALUATION COMPLETE",
-      "budget": 10,
-      "reasoning": "Implement CommandExecutor trait, TokioExecutor production impl, Judge::with_executor() constructor, and the evaluate() method with retry-once-on-CLI-failure / no-retry-on-parse-failure semantics. Wire tracing::warn! calls. Ensure all 11 tests pass (7 sync + 4 async). Run cargo check for zero warnings and cargo test for no regressions.",
-      "depends_on": [
-        "03"
       ],
       "skills": [],
       "permission_mode": "standard",
