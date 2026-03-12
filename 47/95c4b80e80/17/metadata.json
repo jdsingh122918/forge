@@ -1,0 +1,51 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "4795c4b80e80",
+  "session_id": "8cd522bc-f60d-4874-95cc-574c6c99b1b1",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-12T15:05:41.482259Z",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "src/cmd/run.rs",
+    "src/cmd/update.rs",
+    ".forge/audit/current-run.json",
+    "docs/context-graph-file-deps.md",
+    "docs/context-graph.md",
+    "src/cmd/autoresearch/git_ops.rs",
+    "src/cmd/autoresearch/judge.rs",
+    "src/cmd/autoresearch/loop_runner.rs",
+    "src/cmd/mod.rs",
+    "src/update_check.rs",
+    "src/autoresearch/benchmarks.rs",
+    "src/cmd/autoresearch/experiment.rs",
+    "src/cmd/autoresearch/runner.rs",
+    "src/cmd/autoresearch/scorer.rs",
+    "src/review/prompt_loader.rs",
+    ".forge/state",
+    ".github/workflows/release.yml",
+    "src/review/dispatcher.rs",
+    ".github/workflows/ci.yml",
+    "src/cmd/autoresearch/results.rs"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "405036211fc6",
+  "checkpoint_transcript_start": 29,
+  "transcript_lines_at_start": 29,
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-12T15:05:41.451473Z",
+    "agent_lines": 0,
+    "human_added": 339,
+    "human_modified": 297,
+    "human_removed": 0,
+    "total_committed": 340,
+    "agent_percentage": 0
+  }
+}
