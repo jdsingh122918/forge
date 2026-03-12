@@ -167,6 +167,7 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
         github_client_id,
         github_token: std::sync::Mutex::new(persisted_token),
         metrics,
+        config_store: super::config_store::ProjectConfigStore::new(),
     });
 
     // After orphan recovery, dispatch any queued runs that may have been left behind
@@ -239,6 +240,7 @@ mod tests {
             github_client_id: None,
             github_token: std::sync::Mutex::new(None),
             metrics: MetricsCollector::new(db),
+            config_store: crate::factory::config_store::ProjectConfigStore::new(),
         });
         build_router(state)
     }

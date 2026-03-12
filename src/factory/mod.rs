@@ -62,6 +62,7 @@
 
 pub mod agent_executor;
 pub mod api;
+pub mod config_store;
 pub mod db;
 pub mod dispatch;
 pub mod embedded;

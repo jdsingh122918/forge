@@ -15,6 +15,7 @@ use axum::{
 use serde::Deserialize;
 use tokio::sync::broadcast;
 
+use super::config_store::ProjectConfigStore;
 use super::db::DbHandle;
 use super::models::{IssueColumn, IssueId, ProjectId, RunId, TaskId};
 use super::pipeline::PipelineRunner;
@@ -30,6 +31,7 @@ pub struct AppState {
     pub github_client_id: Option<String>,
     pub github_token: Mutex<Option<String>>,
     pub metrics: MetricsCollector,
+    pub config_store: ProjectConfigStore,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -198,6 +200,7 @@ impl From<FactoryError> for ApiError {
 /// | GET    | `/api/github/repos`             | List user's GitHub repos  |
 /// | POST   | `/api/github/disconnect`        | Remove GitHub token       |
 /// | DELETE | `/api/projects/:id`             | Delete a project          |
+/// | POST   | `/api/projects/:id/config/reload`| Reload project config    |
 /// | GET    | `/api/screenshots/*path`        | Serve screenshot file     |
 /// | GET    | `/api/cli-help`                 | Parsed CLI help data      |
 /// | GET    | `/health`                       | Liveness probe            |
@@ -238,6 +241,10 @@ pub fn api_router() -> Router<SharedState> {
         .route("/api/metrics/tokens", get(get_metrics_tokens))
         .route("/api/metrics/runs/recent", get(get_metrics_recent_runs))
         .route("/api/reconcile", post(reconcile_handler))
+        .route(
+            "/api/projects/{id}/config/reload",
+            post(reload_project_config),
+        )
         .route("/health", get(health_check))
 }
 
@@ -1547,6 +1554,63 @@ async fn reconcile_handler(
     Ok(Json(report))
 }
 
+// ── Config reload ─────────────────────────────────────────────────────
+
+async fn reload_project_config(
+    Path(id): Path<i64>,
+    State(state): State<SharedState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project_id = ProjectId(id);
+
+    // Fetch project from DB to get its path
+    let project = state
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::from(FactoryError::ProjectNotFound { id }))?;
+
+    // Attempt reload
+    match state
+        .config_store
+        .reload_project_config(id, &project.path)
+    {
+        Ok(changed) => {
+            // Broadcast success via WebSocket
+            broadcast_message(
+                &state.ws_tx,
+                &WsMessage::ConfigReloaded {
+                    project_id,
+                    settings: changed.clone(),
+                },
+            );
+
+            Ok(Json(serde_json::json!({
+                "status": "ok",
+                "project_id": id,
+                "changed_settings": changed,
+            })))
+        }
+        Err(e) => {
+            let error_msg = format!("{:#}", e);
+
+            // Broadcast error via WebSocket
+            broadcast_message(
+                &state.ws_tx,
+                &WsMessage::ConfigReloadError {
+                    project_id,
+                    error: error_msg.clone(),
+                },
+            );
+
+            Err(ApiError::BadRequest(format!(
+                "Config reload failed for project {}: {}",
+                id, error_msg
+            )))
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1568,6 +1632,7 @@ mod tests {
             github_client_id: None,
             github_token: Mutex::new(None),
             metrics: MetricsCollector::new(db),
+            config_store: ProjectConfigStore::new(),
         });
         api_router().with_state(state)
     }
@@ -2126,6 +2191,7 @@ mod tests {
             github_client_id: None,
             github_token: Mutex::new(None),
             metrics: MetricsCollector::new(db),
+            config_store: ProjectConfigStore::new(),
         });
         let app = api_router().with_state(state);
 
@@ -2633,5 +2699,117 @@ mod tests {
         assert_eq!(report["inspected"], 0);
         assert_eq!(report["stalled"], 0);
         assert_eq!(report["failed"], 0);
+    }
+
+    // Config reload endpoint tests
+    #[tokio::test]
+    async fn test_config_reload_project_not_found() {
+        let app = test_app().await;
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/projects/999/config/reload")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_config_reload_success() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let (ws_tx, _) = broadcast::channel(16);
+        let pipeline_runner = PipelineRunner::new("/tmp/test", None);
+
+        // Create a temp directory with a forge.toml
+        let dir = tempfile::tempdir().unwrap();
+        let forge_dir = dir.path().join(".forge");
+        std::fs::create_dir_all(&forge_dir).unwrap();
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            r#"
+[factory.reconciliation]
+stall_timeout_secs = 600
+"#,
+        )
+        .unwrap();
+
+        let state = Arc::new(AppState {
+            db: db.clone(),
+            ws_tx,
+            pipeline_runner,
+            github_client_id: None,
+            github_token: Mutex::new(None),
+            metrics: MetricsCollector::new(db.clone()),
+            config_store: ProjectConfigStore::new(),
+        });
+        let app = api_router().with_state(state);
+
+        // Create a project pointing to the temp dir
+        let project = db
+            .create_project("test-proj", dir.path().to_str().unwrap())
+            .await
+            .unwrap();
+
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/api/projects/{}/config/reload", project.id.0))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body: serde_json::Value = body_json(response.into_body()).await;
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["project_id"], project.id.0);
+        assert!(body["changed_settings"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_config_reload_invalid_toml_returns_error() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let (ws_tx, _) = broadcast::channel(16);
+        let pipeline_runner = PipelineRunner::new("/tmp/test", None);
+
+        // Create a temp directory with invalid forge.toml
+        let dir = tempfile::tempdir().unwrap();
+        let forge_dir = dir.path().join(".forge");
+        std::fs::create_dir_all(&forge_dir).unwrap();
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            "this is [[[not valid toml!!!",
+        )
+        .unwrap();
+
+        let state = Arc::new(AppState {
+            db: db.clone(),
+            ws_tx,
+            pipeline_runner,
+            github_client_id: None,
+            github_token: Mutex::new(None),
+            metrics: MetricsCollector::new(db.clone()),
+            config_store: ProjectConfigStore::new(),
+        });
+        let app = api_router().with_state(state);
+
+        // Create a project pointing to the temp dir
+        let project = db
+            .create_project("bad-toml-proj", dir.path().to_str().unwrap())
+            .await
+            .unwrap();
+
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/api/projects/{}/config/reload", project.id.0))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body: serde_json::Value = body_json(response.into_body()).await;
+        assert!(body["error"].as_str().unwrap().contains("Config reload failed"));
     }
 }

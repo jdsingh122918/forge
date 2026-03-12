@@ -236,6 +236,16 @@ pub enum WsMessage {
     ProjectDeleted {
         project_id: ProjectId,
     },
+
+    // Config reload events
+    ConfigReloaded {
+        project_id: ProjectId,
+        settings: Vec<String>,
+    },
+    ConfigReloadError {
+        project_id: ProjectId,
+        error: String,
+    },
 }
 
 // ── WebSocket handler ────────────────────────────────────────────────
@@ -933,5 +943,53 @@ mod tests {
         assert!(PONG_TIMEOUT > PING_INTERVAL);
         assert_eq!(PING_INTERVAL, Duration::from_secs(30));
         assert_eq!(PONG_TIMEOUT, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_config_reloaded_serialization() {
+        let msg = WsMessage::ConfigReloaded {
+            project_id: ProjectId(5),
+            settings: vec![
+                "defaults.iteration_timeout_secs".to_string(),
+                "factory.tracker.enabled".to_string(),
+            ],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"ConfigReloaded\""));
+        assert!(json.contains("\"project_id\":5"));
+        assert!(json.contains("defaults.iteration_timeout_secs"));
+
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::ConfigReloaded {
+                project_id,
+                settings,
+            } => {
+                assert_eq!(project_id, ProjectId(5));
+                assert_eq!(settings.len(), 2);
+            }
+            _ => panic!("Expected ConfigReloaded"),
+        }
+    }
+
+    #[test]
+    fn test_config_reload_error_serialization() {
+        let msg = WsMessage::ConfigReloadError {
+            project_id: ProjectId(3),
+            error: "Invalid TOML at line 5".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"ConfigReloadError\""));
+        assert!(json.contains("\"project_id\":3"));
+        assert!(json.contains("Invalid TOML"));
+
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::ConfigReloadError { project_id, error } => {
+                assert_eq!(project_id, ProjectId(3));
+                assert!(error.contains("Invalid TOML"));
+            }
+            _ => panic!("Expected ConfigReloadError"),
+        }
     }
 }

@@ -598,6 +598,73 @@ pub fn tools_for_permission_mode(mode: PermissionMode) -> Option<Vec<String>> {
     }
 }
 
+/// Factory-specific configuration section.
+///
+/// Controls Factory subsystem behaviour such as GitHub issue tracker polling
+/// and reconciliation engine parameters.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FactorySection {
+    /// GitHub issue tracker polling configuration.
+    #[serde(default)]
+    pub tracker: FactoryTrackerConfig,
+    /// Reconciliation engine configuration.
+    #[serde(default)]
+    pub reconciliation: FactoryReconciliationConfig,
+}
+
+/// Configuration for the GitHub issue tracker polling.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FactoryTrackerConfig {
+    /// Whether tracker polling is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// GitHub repository owner.
+    #[serde(default)]
+    pub owner: String,
+    /// GitHub repository name.
+    #[serde(default)]
+    pub repo: String,
+    /// Polling interval in seconds.
+    #[serde(default = "default_tracker_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+}
+
+fn default_tracker_poll_interval_secs() -> u64 {
+    300
+}
+
+impl Default for FactoryTrackerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            owner: String::new(),
+            repo: String::new(),
+            poll_interval_secs: default_tracker_poll_interval_secs(),
+        }
+    }
+}
+
+/// Configuration for the reconciliation engine.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FactoryReconciliationConfig {
+    /// Stall timeout in seconds. Runs with no heartbeat for this duration are
+    /// considered stalled.
+    #[serde(default = "default_reconciliation_stall_timeout_secs")]
+    pub stall_timeout_secs: u64,
+}
+
+fn default_reconciliation_stall_timeout_secs() -> u64 {
+    300
+}
+
+impl Default for FactoryReconciliationConfig {
+    fn default() -> Self {
+        Self {
+            stall_timeout_secs: default_reconciliation_stall_timeout_secs(),
+        }
+    }
+}
+
 /// The complete forge.toml configuration structure.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ForgeToml {
@@ -631,6 +698,9 @@ pub struct ForgeToml {
     /// Council engine settings
     #[serde(default)]
     pub council: Option<CouncilConfig>,
+    /// Factory subsystem settings
+    #[serde(default)]
+    pub factory: FactorySection,
 }
 
 impl ForgeToml {
@@ -1949,5 +2019,78 @@ budget = 20
         let toml = ForgeToml::default();
         let settings = toml.phase_settings("any-phase");
         assert!(settings.iteration_timeout_secs.is_none());
+    }
+
+    // =========================================
+    // Factory section tests
+    // =========================================
+
+    #[test]
+    fn test_forge_toml_parse_factory_tracker() {
+        let content = r#"
+[factory.tracker]
+enabled = true
+owner = "myorg"
+repo = "myrepo"
+poll_interval_secs = 60
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+        assert!(toml.factory.tracker.enabled);
+        assert_eq!(toml.factory.tracker.owner, "myorg");
+        assert_eq!(toml.factory.tracker.repo, "myrepo");
+        assert_eq!(toml.factory.tracker.poll_interval_secs, 60);
+    }
+
+    #[test]
+    fn test_forge_toml_parse_factory_reconciliation() {
+        let content = r#"
+[factory.reconciliation]
+stall_timeout_secs = 600
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+        assert_eq!(toml.factory.reconciliation.stall_timeout_secs, 600);
+    }
+
+    #[test]
+    fn test_forge_toml_factory_defaults() {
+        let toml = ForgeToml::parse("").unwrap();
+        assert!(!toml.factory.tracker.enabled);
+        assert_eq!(toml.factory.tracker.owner, "");
+        assert_eq!(toml.factory.tracker.repo, "");
+        assert_eq!(toml.factory.tracker.poll_interval_secs, 300);
+        assert_eq!(toml.factory.reconciliation.stall_timeout_secs, 300);
+    }
+
+    #[test]
+    fn test_forge_toml_factory_partial_tracker() {
+        let content = r#"
+[factory.tracker]
+enabled = true
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+        assert!(toml.factory.tracker.enabled);
+        assert_eq!(toml.factory.tracker.owner, "");
+        assert_eq!(toml.factory.tracker.repo, "");
+        assert_eq!(toml.factory.tracker.poll_interval_secs, 300);
+    }
+
+    #[test]
+    fn test_forge_toml_factory_complete() {
+        let content = r#"
+[factory.tracker]
+enabled = true
+owner = "acme"
+repo = "widgets"
+poll_interval_secs = 120
+
+[factory.reconciliation]
+stall_timeout_secs = 900
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+        assert!(toml.factory.tracker.enabled);
+        assert_eq!(toml.factory.tracker.owner, "acme");
+        assert_eq!(toml.factory.tracker.repo, "widgets");
+        assert_eq!(toml.factory.tracker.poll_interval_secs, 120);
+        assert_eq!(toml.factory.reconciliation.stall_timeout_secs, 900);
     }
 }
