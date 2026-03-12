@@ -1,6 +1,6 @@
 {
-  "run_id": "de6d925a-f3ce-4c27-ada5-9b67cb5f7108",
-  "started_at": "2026-03-11T22:07:12.014535Z",
+  "run_id": "d08baad8-10e7-4809-a328-64e14695f41d",
+  "started_at": "2026-03-12T00:03:03.517698Z",
   "ended_at": null,
   "config": {
     "auto_approve_threshold": 5,
@@ -9,28 +9,5 @@
     "spec_file": "/Users/jdsingh/Projects/AI/forge/.forge/spec.md",
     "project_dir": "/Users/jdsingh/Projects/AI/forge"
   },
-  "phases": [
-    {
-      "phase_number": "01",
-      "description": "Write extraction tests for prompt files",
-      "promise": "EXTRACTION TESTS WRITTEN",
-      "started_at": "2026-03-11T22:07:12.014774Z",
-      "ended_at": "2026-03-11T22:09:50.237084Z",
-      "iterations": [],
-      "outcome": {
-        "Completed": {
-          "iteration": 1
-        }
-      },
-      "file_changes": {
-        "files_added": [
-          ".forge/autoresearch/"
-        ],
-        "files_modified": [],
-        "files_deleted": [],
-        "total_lines_added": 0,
-        "total_lines_removed": 0
-      }
-    }
-  ]
+  "phases": []
 }

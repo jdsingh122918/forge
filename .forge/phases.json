@@ -1,13 +1,13 @@
 {
-  "spec_hash": "eef668c67f52",
-  "generated_at": "2026-03-11T22:07:11.993299+00:00",
+  "spec_hash": "af78acbf4084",
+  "generated_at": "2026-03-12T00:03:03.492489+00:00",
   "phases": [
     {
       "number": "01",
-      "name": "Write extraction tests for prompt files",
-      "promise": "EXTRACTION TESTS WRITTEN",
-      "budget": 4,
-      "reasoning": "Add extraction_tests module to prompt_loader.rs with tests covering: file existence for all 4 specialists, required markdown sections (## Role, ## Focus Areas, ## Instructions, ## Output Format), PromptConfig correctness (specialist_name, mode, focus_areas match hardcoded), YAML frontmatter validity, and verification that configs load from file not defaults. Tests use real .forge/ directory via env!(CARGO_MANIFEST_DIR). All tests should fail RED since prompt files don't exist yet.",
+      "name": "Write security benchmark loader test",
+      "promise": "SECURITY BENCHMARK TEST WRITTEN",
+      "budget": 3,
+      "reasoning": "Add test_security_benchmarks_load test to src/cmd/autoresearch/benchmarks.rs that validates all 5 security benchmark cases load correctly, have non-empty code/context, have must_find entries, and include all expected case names. This test will fail (red) until the benchmark files are created.",
       "depends_on": [],
       "skills": [],
       "permission_mode": "standard",
@@ -15,10 +15,10 @@
     },
     {
       "number": "02",
-      "name": "Create 4 extracted prompt files",
-      "promise": "PROMPT FILES EXTRACTED",
+      "name": "Create all 5 security benchmark cases",
+      "promise": "SECURITY BENCHMARKS COMPLETE",
       "budget": 10,
-      "reasoning": "Create .forge/autoresearch/prompts/ directory and write 4 .md files (security-sentinel.md, performance-oracle.md, architecture-strategist.md, simplicity-reviewer.md). Each file has YAML frontmatter with specialist name and mode (with '# informational only' comment), and markdown body with ## Role, ## Focus Areas (bullet items character-for-character matching SpecialistType::focus_areas()), ## Instructions, and ## Output Format sections. Gating specialists: SecuritySentinel, ArchitectureStrategist. Advisory specialists: PerformanceOracle, SimplicityReviewer. Verify YAML comment doesn't break serde_yaml parsing. All extraction tests must pass GREEN.",
+      "reasoning": "Create 15 files across 5 directories: toctou-race, missing-transaction, production-unwraps, vulnerable-dependencies, command-injection. Each directory gets code.rs (buggy Rust code), context.md (description), and expected.json (must_find/must_not_flag). Content is specified verbatim in the design doc. Validate all JSON files with python3 -m json.tool, verify consistent location format, and run the test from phase 01 to confirm green.",
       "depends_on": [
         "01"
       ],
