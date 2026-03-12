@@ -2,6 +2,7 @@
 
 pub mod budget;
 pub mod judge;
+pub mod results;
 
 // Re-export benchmark types from the library crate for use by future command handlers.
 #[allow(unused_imports)]
