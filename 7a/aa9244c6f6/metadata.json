@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "7aaa9244c6f6",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "src/cmd/autoresearch/experiment.rs",
+    "src/cmd/autoresearch/loop_runner.rs",
+    "src/cmd/autoresearch/mod.rs",
+    "src/council/chairman.rs",
+    "src/council/config.rs",
+    "src/council/engine.rs",
+    "src/council/merge.rs",
+    "src/council/worker.rs",
+    "src/update_check.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/7a/aa9244c6f6/0/metadata.json",
+      "transcript": "/7a/aa9244c6f6/0/full.jsonl",
+      "context": "",
+      "content_hash": "/7a/aa9244c6f6/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}

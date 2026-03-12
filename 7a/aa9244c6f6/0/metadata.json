@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "7aaa9244c6f6",
+  "session_id": "20f2ce35-cfad-4c30-8291-8015fc64cd50",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-12T15:18:18.807551Z",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "src/cmd/autoresearch/mod.rs",
+    "src/council/config.rs",
+    "src/council/merge.rs",
+    "src/update_check.rs",
+    "src/cmd/autoresearch/experiment.rs",
+    "src/cmd/autoresearch/loop_runner.rs",
+    "src/council/chairman.rs",
+    "src/council/engine.rs",
+    "src/council/worker.rs"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "11e77e9178e3",
+  "initial_attribution": {
+    "calculated_at": "2026-03-12T15:18:18.806795Z",
+    "agent_lines": 46,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 46,
+    "agent_percentage": 100
+  }
+}
