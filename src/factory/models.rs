@@ -188,7 +188,9 @@ pub struct Issue {
 /// State machine for a [`PipelineRun`].
 ///
 /// Transitions follow the path: `Queued` → `Running` → `Completed` | `Failed` | `Cancelled`.
-/// Terminal states are identified by [`PipelineStatus::is_terminal`].
+/// A run may also transition to `Stalled` when the reconciliation engine detects no heartbeat
+/// activity within the configured timeout. Terminal states are identified by
+/// [`PipelineStatus::is_terminal`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum PipelineStatus {
@@ -202,6 +204,10 @@ pub enum PipelineStatus {
     Failed,
     /// The run was explicitly cancelled before completion. Terminal state.
     Cancelled,
+    /// The reconciliation engine detected that the run has not emitted a heartbeat
+    /// within the configured stall timeout. Non-terminal — the run may be retried or
+    /// marked as failed on server restart.
+    Stalled,
 }
 
 impl PipelineStatus {
@@ -212,7 +218,14 @@ impl PipelineStatus {
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
+            Self::Stalled => "stalled",
         }
+    }
+}
+
+impl std::fmt::Display for PipelineStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -226,6 +239,7 @@ impl FromStr for PipelineStatus {
             "completed" => Ok(Self::Completed),
             "failed" => Ok(Self::Failed),
             "cancelled" => Ok(Self::Cancelled),
+            "stalled" => Ok(Self::Stalled),
             _ => Err(format!("Invalid pipeline status: {}", s)),
         }
     }
@@ -233,6 +247,7 @@ impl FromStr for PipelineStatus {
 
 impl PipelineStatus {
     /// Returns true for terminal states that indicate the pipeline is no longer running.
+    /// `Stalled` is **not** terminal — it can transition to `Failed` or be retried.
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
     }
@@ -279,6 +294,10 @@ pub struct PipelineRun {
     pub started_at: String,
     /// ISO 8601 timestamp of when the run reached a terminal state, if applicable.
     pub completed_at: Option<String>,
+    /// ISO 8601 timestamp of the most recent heartbeat or event for this run.
+    /// Used by the reconciliation engine to detect stalled pipelines.
+    #[serde(default)]
+    pub last_event_at: Option<String>,
 }
 
 /// Status of a pipeline phase.
@@ -1019,6 +1038,64 @@ mod tests {
             serde_json::from_str::<FileAction>("\"deleted\"").unwrap(),
             FileAction::Deleted
         );
+    }
+
+    #[test]
+    fn test_pipeline_status_stalled_is_not_terminal() {
+        assert!(
+            !PipelineStatus::Stalled.is_terminal(),
+            "Stalled should not be a terminal status"
+        );
+    }
+
+    #[test]
+    fn test_pipeline_status_stalled_serde_roundtrip() {
+        // Serialize
+        let serialized = serde_json::to_string(&PipelineStatus::Stalled).unwrap();
+        assert_eq!(serialized, "\"stalled\"");
+
+        // Deserialize
+        let deserialized: PipelineStatus = serde_json::from_str("\"stalled\"").unwrap();
+        assert_eq!(deserialized, PipelineStatus::Stalled);
+    }
+
+    #[test]
+    fn test_pipeline_status_stalled_from_str() {
+        let parsed: PipelineStatus = "stalled".parse().unwrap();
+        assert_eq!(parsed, PipelineStatus::Stalled);
+        assert_eq!(parsed.as_str(), "stalled");
+    }
+
+    #[test]
+    fn test_pipeline_run_has_last_event_at_field() {
+        let run = PipelineRun {
+            id: RunId(1),
+            issue_id: IssueId(1),
+            status: PipelineStatus::Running,
+            phase_count: None,
+            current_phase: None,
+            iteration: None,
+            summary: None,
+            error: None,
+            branch_name: None,
+            pr_url: None,
+            team_id: None,
+            has_team: false,
+            started_at: "2026-03-12T00:00:00".to_string(),
+            completed_at: None,
+            last_event_at: Some("2026-03-12T01:00:00".to_string()),
+        };
+        assert_eq!(
+            run.last_event_at,
+            Some("2026-03-12T01:00:00".to_string())
+        );
+
+        // Also verify None case
+        let run2 = PipelineRun {
+            last_event_at: None,
+            ..run
+        };
+        assert_eq!(run2.last_event_at, None);
     }
 
     #[test]

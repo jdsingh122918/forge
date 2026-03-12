@@ -403,6 +403,7 @@ mod tests {
             completed_at: None,
             team_id: None,
             has_team: false,
+            last_event_at: None,
         };
         let msg = WsMessage::PipelineStarted { run };
         let json = serde_json::to_string(&msg).unwrap();
@@ -441,6 +442,7 @@ mod tests {
             completed_at: Some("2024-01-02".to_string()),
             team_id: None,
             has_team: false,
+            last_event_at: None,
         };
         let msg = WsMessage::PipelineCompleted { run };
         let json = serde_json::to_string(&msg).unwrap();
@@ -466,6 +468,7 @@ mod tests {
             completed_at: Some("2024-01-02".to_string()),
             team_id: None,
             has_team: false,
+            last_event_at: None,
         };
         let msg = WsMessage::PipelineFailed { run };
         let json = serde_json::to_string(&msg).unwrap();

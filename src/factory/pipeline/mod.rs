@@ -960,7 +960,10 @@ impl PipelineRunner {
 
 /// Check if a pipeline run can be cancelled.
 pub fn is_cancellable(status: &PipelineStatus) -> bool {
-    matches!(status, PipelineStatus::Queued | PipelineStatus::Running)
+    matches!(
+        status,
+        PipelineStatus::Queued | PipelineStatus::Running | PipelineStatus::Stalled
+    )
 }
 
 /// Validate that a pipeline status transition is valid.
@@ -972,6 +975,9 @@ pub fn is_valid_transition(from: &PipelineStatus, to: &PipelineStatus) -> bool {
             | (PipelineStatus::Running, PipelineStatus::Completed)
             | (PipelineStatus::Running, PipelineStatus::Failed)
             | (PipelineStatus::Running, PipelineStatus::Cancelled)
+            | (PipelineStatus::Running, PipelineStatus::Stalled)
+            | (PipelineStatus::Stalled, PipelineStatus::Failed)
+            | (PipelineStatus::Stalled, PipelineStatus::Cancelled)
     )
 }
 

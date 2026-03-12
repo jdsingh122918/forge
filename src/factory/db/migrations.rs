@@ -13,6 +13,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("migrations/006_soft_deletes_and_indexes.sql"),
     ),
     (7, include_str!("migrations/007_metrics.sql")),
+    (8, include_str!("migrations/008_pipeline_stalled.sql")),
 ];
 
 /// Run all pending migrations.
@@ -167,7 +168,7 @@ mod tests {
         let (_db, conn) = test_db().await;
         run_migrations(&conn).await.unwrap();
         let version = get_schema_version(&conn).await.unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[tokio::test]
@@ -177,7 +178,7 @@ mod tests {
         // Running again should be a no-op
         run_migrations(&conn).await.unwrap();
         let version = get_schema_version(&conn).await.unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[tokio::test]
@@ -193,7 +194,7 @@ mod tests {
         // Now run_migrations should pick up from 3
         run_migrations(&conn).await.unwrap();
         let version = get_schema_version(&conn).await.unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[tokio::test]
@@ -277,7 +278,7 @@ mod tests {
 
         // Verify final version
         let version = get_schema_version(&conn).await.unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
 
         // Verify tables from migrations 3-6 exist and are usable
         // First, set up FK prerequisites: insert a project, issue, and pipeline_run

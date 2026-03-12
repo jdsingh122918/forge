@@ -27,10 +27,11 @@ pub(super) fn row_to_pipeline_run(row: &Row) -> Result<PipelineRun> {
         has_team: has_team.map(|v| v != 0).unwrap_or(false),
         started_at: row.get(12)?,
         completed_at: row.get(13)?,
+        last_event_at: row.get(14)?,
     })
 }
 
-pub(super) const RUN_COLS: &str = "id, issue_id, status, phase_count, current_phase, iteration, summary, error, branch_name, pr_url, team_id, has_team, started_at, completed_at";
+pub(super) const RUN_COLS: &str = "id, issue_id, status, phase_count, current_phase, iteration, summary, error, branch_name, pr_url, team_id, has_team, started_at, completed_at, last_event_at";
 
 pub async fn create_pipeline_run(conn: &Connection, issue_id: IssueId) -> Result<PipelineRun> {
     let tx = conn
@@ -96,7 +97,7 @@ pub async fn cancel_pipeline_run(conn: &Connection, id: RunId) -> Result<Pipelin
 
 pub async fn recover_orphaned_runs(conn: &Connection) -> Result<usize> {
     let count = conn.execute(
-        "UPDATE pipeline_runs SET status = 'failed', error = 'Server restarted — pipeline process was lost', completed_at = datetime('now') WHERE status IN ('running', 'queued')",
+        "UPDATE pipeline_runs SET status = 'failed', error = 'Server restarted — pipeline process was lost', completed_at = datetime('now') WHERE status IN ('running', 'queued', 'stalled')",
         (),
     )
     .await
@@ -459,6 +460,83 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(issue_f.column, IssueColumn::Backlog);
+    }
+
+    #[tokio::test]
+    async fn test_last_event_at_persists_through_create_read_cycle() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let conn = db.conn();
+        let project = super::super::projects::create_project(conn, "test", "/tmp/test")
+            .await
+            .unwrap();
+        let issue =
+            super::super::issues::create_issue(conn, project.id, "Test", "", &IssueColumn::Backlog)
+                .await
+                .unwrap();
+
+        // Create a pipeline run — last_event_at should default to NULL
+        let run = create_pipeline_run(conn, issue.id).await.unwrap();
+        assert_eq!(run.last_event_at, None, "last_event_at should default to None");
+
+        // Set last_event_at via direct SQL (simulating a heartbeat update)
+        conn.execute(
+            "UPDATE pipeline_runs SET last_event_at = datetime('now') WHERE id = ?1",
+            [run.id.0],
+        )
+        .await
+        .unwrap();
+
+        // Re-read and verify last_event_at is populated
+        let reloaded = get_pipeline_run(conn, run.id).await.unwrap().unwrap();
+        assert!(
+            reloaded.last_event_at.is_some(),
+            "last_event_at should be set after update"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recover_orphaned_runs_handles_stalled() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let conn = db.conn();
+        let project = super::super::projects::create_project(conn, "test", "/tmp/test")
+            .await
+            .unwrap();
+
+        let issue_stalled = super::super::issues::create_issue(
+            conn,
+            project.id,
+            "Stalled issue",
+            "",
+            &IssueColumn::InProgress,
+        )
+        .await
+        .unwrap();
+
+        // Create a pipeline run and set it to Stalled
+        let run_stalled = create_pipeline_run(conn, issue_stalled.id).await.unwrap();
+        update_pipeline_run(conn, run_stalled.id, &PipelineStatus::Stalled, None, None)
+            .await
+            .unwrap();
+
+        // Recover orphaned runs — should also recover Stalled runs
+        let count = recover_orphaned_runs(conn).await.unwrap();
+        assert!(count >= 1, "Should recover at least the stalled run");
+
+        // Verify stalled run is now failed
+        let recovered = get_pipeline_run(conn, run_stalled.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.status, PipelineStatus::Failed);
+        assert!(recovered.error.is_some());
+        assert!(recovered.completed_at.is_some());
+
+        // Verify the issue was moved back to ready
+        let issue = super::super::issues::get_issue(conn, issue_stalled.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(issue.column, IssueColumn::Ready);
     }
 
     #[tokio::test]
