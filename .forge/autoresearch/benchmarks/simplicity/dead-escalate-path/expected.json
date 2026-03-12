@@ -1,0 +1,39 @@
+{
+    "must_find": [
+        {
+            "id": "dead-escalate-variant",
+            "severity": "high",
+            "description": "ArbiterVerdict::Escalate is dead code: no mechanism exists for human input in the autonomous pipeline, so Escalate behaves identically to a failure",
+            "location": "code.rs:14-18"
+        },
+        {
+            "id": "dead-requires-human",
+            "severity": "medium",
+            "description": "requires_human() method returns true for Escalate but no caller uses this result to pause the pipeline or notify a human",
+            "location": "code.rs:28-30"
+        },
+        {
+            "id": "dead-escalation-summary",
+            "severity": "medium",
+            "description": "escalation_summary field on ArbiterDecision is set but never displayed, logged, or acted upon",
+            "location": "code.rs:55"
+        },
+        {
+            "id": "dead-escalate-constructor",
+            "severity": "medium",
+            "description": "ArbiterDecision::escalate() constructor and the ESCALATE branch in parse_llm_verdict create decisions that are never meaningfully handled",
+            "location": "code.rs:89-99"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-proceed-fix-valid",
+            "description": "Proceed and Fix variants are actively used in the pipeline — they are not dead code",
+            "location": "code.rs:10-12"
+        },
+        {
+            "id": "fp-confidence-field",
+            "description": "The confidence field is used for logging and decision thresholds — it's not dead"
+        }
+    ]
+}

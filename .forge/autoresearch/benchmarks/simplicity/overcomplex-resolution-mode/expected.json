@@ -1,0 +1,39 @@
+{
+    "must_find": [
+        {
+            "id": "unused-manual-variant",
+            "severity": "high",
+            "description": "Manual variant is the Default but never used in practice: no UI exists for human review approval, and all forge.toml configs override it",
+            "location": "code.rs:16-18"
+        },
+        {
+            "id": "dead-escalate-on",
+            "severity": "high",
+            "description": "escalate_on and auto_proceed_on fields in Arbiter variant are never configured in any deployment: dead configuration surface area with associated accessor methods",
+            "location": "code.rs:38-43"
+        },
+        {
+            "id": "over-engineered-enum",
+            "severity": "high",
+            "description": "Three-variant enum can be simplified to a single struct: Auto with optional model field covers all actual use cases, eliminating match arms across 10+ methods",
+            "location": "code.rs:7-47"
+        },
+        {
+            "id": "dead-builder-methods",
+            "severity": "medium",
+            "description": "with_escalate_on and with_auto_proceed_on builder methods are dead code: never called in production",
+            "location": "code.rs:152-165"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-confidence-threshold",
+            "description": "The confidence_threshold field IS used in production for LLM-based decisions — it's not dead",
+            "location": "code.rs:35"
+        },
+        {
+            "id": "fp-display-impl",
+            "description": "The Display implementation is useful for logging and debugging, even if some variants are unused"
+        }
+    ]
+}

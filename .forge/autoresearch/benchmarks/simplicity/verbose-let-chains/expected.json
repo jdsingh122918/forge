@@ -1,0 +1,38 @@
+{
+    "must_find": [
+        {
+            "id": "nested-if-let-delta",
+            "severity": "low",
+            "description": "Verbose nested if/if-let chain for content_block_delta parsing: three levels of indentation can be flattened to one level using let-chain syntax",
+            "location": "code.rs:34-51"
+        },
+        {
+            "id": "nested-if-let-tool-start",
+            "severity": "low",
+            "description": "Three-level nesting for content_block_start tool_use detection: can be a single flat let-chain condition",
+            "location": "code.rs:54-72"
+        },
+        {
+            "id": "nested-if-let-assistant",
+            "severity": "low",
+            "description": "Nested if/if-let for assistant message parsing with tool_use detection: let-chain would reduce indentation",
+            "location": "code.rs:75-93"
+        },
+        {
+            "id": "nested-extract-file-change",
+            "severity": "low",
+            "description": "extract_file_change has unnecessary nesting: conditions can be combined into a single let-chain",
+            "location": "code.rs:99-105"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-match-on-msg-type",
+            "description": "Using msg_type string comparisons is the correct approach for parsing unstructured JSON — a match statement would work but if-chains are equally valid here"
+        },
+        {
+            "id": "fp-unwrap-or-default",
+            "description": "Using .unwrap_or(\"unknown\") for tool names is proper default handling, not a simplicity issue"
+        }
+    ]
+}

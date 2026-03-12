@@ -1,0 +1,33 @@
+{
+    "must_find": [
+        {
+            "id": "dead-strict-variant",
+            "severity": "high",
+            "description": "PermissionMode::Strict has no unique behavior: tools_for_permission_mode and should_auto_approve treat it identically to Standard",
+            "location": "code.rs:20-21"
+        },
+        {
+            "id": "strict-standard-identical",
+            "severity": "high",
+            "description": "Strict | Standard pattern in should_auto_approve proves the variants are interchangeable: Strict should be removed or mapped to Standard",
+            "location": "code.rs:86-88"
+        },
+        {
+            "id": "misleading-documentation",
+            "severity": "medium",
+            "description": "Documentation claims Strict requires manual approval every iteration but no such mechanism exists in the codebase",
+            "location": "code.rs:13"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-readonly-valid",
+            "description": "Readonly mode has unique behavior (restricted tool set) and is actively used — it is not dead code",
+            "location": "code.rs:28-29"
+        },
+        {
+            "id": "fp-autonomous-valid",
+            "description": "Autonomous mode has unique behavior (auto-approve all) and is actively used"
+        }
+    ]
+}

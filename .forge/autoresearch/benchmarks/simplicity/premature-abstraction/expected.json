@@ -1,0 +1,32 @@
+{
+    "must_find": [
+        {
+            "id": "premature-trait-abstraction",
+            "severity": "high",
+            "description": "Four traits (VersionControl, PullRequestProvider, CiProvider, ProviderFactory) each with exactly one implementation: premature abstraction adds indirection without enabling real polymorphism",
+            "location": "code.rs:12-50"
+        },
+        {
+            "id": "unnecessary-dynamic-dispatch",
+            "severity": "medium",
+            "description": "Pipeline stores Box<dyn Trait> for providers that have only one implementation: adds runtime cost of dynamic dispatch and prevents inlining, with no benefit",
+            "location": "code.rs:122-126"
+        },
+        {
+            "id": "yagni-violation",
+            "severity": "medium",
+            "description": "YAGNI violation: traits designed for hypothetical future providers (SVN, GitLab) that are not planned. Extract traits when a second implementation is actually needed",
+            "location": "code.rs:12-50"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-async-trait",
+            "description": "Using async_trait for async methods in traits is the correct Rust pattern — the issue is having the trait at all, not how it's implemented"
+        },
+        {
+            "id": "fp-send-sync-bounds",
+            "description": "Send + Sync bounds on traits are correct for use in async contexts"
+        }
+    ]
+}
