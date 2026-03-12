@@ -8,6 +8,8 @@ use std::fmt;
 
 use forge::autoresearch::benchmarks::{Expected, ExpectedFinding, MustNotFlag};
 
+use super::judge::JudgeResult;
+
 /// A finding produced by a specialist agent.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Finding {
@@ -197,6 +199,45 @@ impl FindingMatcher {
 
         false
     }
+
+    /// Count how many findings match at least one must_not_flag entry.
+    pub fn count_must_not_flag_hits(
+        findings: &[Finding],
+        must_not_flag: &[MustNotFlag],
+    ) -> usize {
+        findings
+            .iter()
+            .filter(|f| {
+                must_not_flag
+                    .iter()
+                    .any(|mnf| Self::matches_must_not_flag(f, mnf))
+            })
+            .count()
+    }
+
+    /// Identify novel findings: those that match neither any must_find nor any
+    /// must_not_flag entry. Returns a set of finding indices.
+    pub fn identify_novel_findings(
+        findings: &[Finding],
+        expected: &Expected,
+    ) -> HashSet<usize> {
+        findings
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| {
+                let matches_must_find = expected
+                    .must_find
+                    .iter()
+                    .any(|ef| Self::matches_expected(f, ef));
+                let matches_must_not = expected
+                    .must_not_flag
+                    .iter()
+                    .any(|mnf| Self::matches_must_not_flag(f, mnf));
+                !matches_must_find && !matches_must_not
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
 }
 
 /// Computes recall, precision, and composite scores.
@@ -208,7 +249,16 @@ impl Scorer {
     /// - `recall` = matched_must_finds / total_must_finds (0 must_finds => 1.0)
     /// - `precision` = 1.0 - false_positives / total_findings (0 findings => 1.0)
     /// - `composite` = 0.4 * recall + 0.3 * precision + 0.3 * actionability
-    pub fn score(findings: &[Finding], expected: &Expected, actionability: f64) -> SpecialistScore {
+    ///
+    /// When `judge_result` is `Some`, actionability is the average of the judge's
+    /// actionability scores, and novel findings classified as false_positive reduce
+    /// precision. When `None`, actionability defaults to 0.5 and novel findings are
+    /// assumed true_positive.
+    pub fn score(
+        findings: &[Finding],
+        expected: &Expected,
+        judge_result: Option<&JudgeResult>,
+    ) -> SpecialistScore {
         let total_must_finds = expected.must_find.len();
         let matched = expected
             .must_find
@@ -225,20 +275,15 @@ impl Scorer {
             matched as f64 / total_must_finds as f64
         };
 
-        let total_findings = findings.len();
-        let false_positives = findings
-            .iter()
-            .filter(|f| {
-                expected
-                    .must_not_flag
-                    .iter()
-                    .any(|mnf| FindingMatcher::matches_must_not_flag(f, mnf))
-            })
-            .count();
-        let precision = if total_findings == 0 {
-            1.0
-        } else {
-            1.0 - false_positives as f64 / total_findings as f64
+        let precision =
+            Self::compute_precision_with_judge(findings, expected, judge_result);
+
+        let actionability = match judge_result {
+            Some(jr) if !jr.actionability_scores.is_empty() => {
+                let sum: f64 = jr.actionability_scores.iter().map(|s| s.score).sum();
+                sum / jr.actionability_scores.len() as f64
+            }
+            _ => 0.5,
         };
 
         let composite = 0.4 * recall + 0.3 * precision + 0.3 * actionability;
@@ -249,6 +294,34 @@ impl Scorer {
             actionability,
             composite,
         }
+    }
+
+    /// Compute precision accounting for judge classifications of novel findings.
+    ///
+    /// False positives come from two sources:
+    /// 1. must_not_flag hits (always counted, regardless of judge)
+    /// 2. Novel findings classified as false_positive by the judge (only when judge present)
+    ///
+    /// TODO: Wire in judge FP classification for novel findings (stub: only counts must_not_flag)
+    fn compute_precision_with_judge(
+        findings: &[Finding],
+        expected: &Expected,
+        _judge_result: Option<&JudgeResult>,
+    ) -> f64 {
+        let total_findings = findings.len();
+        if total_findings == 0 {
+            return 1.0;
+        }
+
+        let must_not_flag_fps =
+            FindingMatcher::count_must_not_flag_hits(findings, &expected.must_not_flag);
+
+        // TODO: Add judge FP counting for novel findings
+        let judge_fps = 0;
+
+        let total_fps = must_not_flag_fps + judge_fps;
+        let precision = 1.0 - (total_fps as f64 / total_findings as f64);
+        precision.max(0.0)
     }
 }
 
@@ -548,7 +621,7 @@ mod tests {
             },
         ];
 
-        let score = Scorer::score(&findings, &expected, 0.5);
+        let score = Scorer::score(&findings, &expected, None);
         assert!(
             (score.recall - 1.0).abs() < 0.01,
             "All found => recall should be 1.0, got {}",
@@ -591,7 +664,7 @@ mod tests {
             suggestion: "".into(),
         }];
 
-        let score = Scorer::score(&findings, &expected, 0.5);
+        let score = Scorer::score(&findings, &expected, None);
         assert!(
             (score.recall - 1.0 / 3.0).abs() < 0.05,
             "1 of 3 found => recall ~0.333, got {}",
@@ -625,7 +698,7 @@ mod tests {
             suggestion: "".into(),
         }];
 
-        let score = Scorer::score(&findings, &expected, 0.5);
+        let score = Scorer::score(&findings, &expected, None);
         assert!(
             (score.precision - 1.0).abs() < 0.01,
             "No FPs => precision should be 1.0, got {}",
@@ -666,7 +739,7 @@ mod tests {
             },
         ];
 
-        let score = Scorer::score(&findings, &expected, 0.5);
+        let score = Scorer::score(&findings, &expected, None);
         // 1 FP out of 2 findings => precision = 1 - 1/2 = 0.5
         assert!(
             (score.precision - 0.5).abs() < 0.01,
@@ -713,7 +786,7 @@ mod tests {
 
         // Find only "a" but not "b" — recall = 0.5
         // No false positives — precision = 1.0
-        // Actionability = 0.7 (provided)
+        // Actionability = 0.5 (default with None)
         let findings = vec![Finding {
             severity: "high".into(),
             file: "code.rs".into(),
@@ -722,11 +795,11 @@ mod tests {
             suggestion: "".into(),
         }];
 
-        let score = Scorer::score(&findings, &expected, 0.7);
-        // composite = 0.4 * 0.5 + 0.3 * 1.0 + 0.3 * 0.7 = 0.20 + 0.30 + 0.21 = 0.71
+        let score = Scorer::score(&findings, &expected, None);
+        // composite = 0.4 * 0.5 + 0.3 * 1.0 + 0.3 * 0.5 = 0.20 + 0.30 + 0.15 = 0.65
         assert!(
-            (score.composite - 0.71).abs() < 0.02,
-            "Expected ~0.71, got {}",
+            (score.composite - 0.65).abs() < 0.02,
+            "Expected ~0.65, got {}",
             score.composite
         );
     }
@@ -741,7 +814,7 @@ mod tests {
         };
         let findings: Vec<Finding> = vec![];
 
-        let score = Scorer::score(&findings, &expected, 0.5);
+        let score = Scorer::score(&findings, &expected, None);
         assert!(
             (score.recall - 1.0).abs() < 0.01,
             "0 must_find with 0 findings => recall = 1.0 (vacuous truth)"
@@ -779,7 +852,7 @@ mod tests {
         };
         let findings: Vec<Finding> = vec![];
 
-        let score = Scorer::score(&findings, &expected, 0.5);
+        let score = Scorer::score(&findings, &expected, None);
         assert!(
             (score.recall - 0.0).abs() < 0.01,
             "3 must_find with 0 findings => recall = 0.0"
@@ -805,5 +878,604 @@ mod tests {
         assert!(display.contains("90.0%"), "Should show precision percentage: {}", display);
         assert!(display.contains("70.0%"), "Should show actionability percentage: {}", display);
         assert!(display.contains("82.0%"), "Should show composite percentage: {}", display);
+    }
+
+    // --- FindingMatcher helper tests ---
+
+    #[test]
+    fn test_count_must_not_flag_hits() {
+        let must_not_flag = vec![MustNotFlag {
+            id: "fp-1".into(),
+            description: "COALESCE MAX position is valid SQL pattern".into(),
+            location: Some("code.rs:20".into()),
+        }];
+        let findings = vec![
+            Finding {
+                severity: "high".into(),
+                file: "code.rs".into(),
+                line: Some(12),
+                issue: "race condition in query".into(),
+                suggestion: "".into(),
+            },
+            Finding {
+                severity: "low".into(),
+                file: "code.rs".into(),
+                line: Some(20),
+                issue: "COALESCE with MAX position pattern looks suspicious".into(),
+                suggestion: "".into(),
+            },
+        ];
+        assert_eq!(
+            FindingMatcher::count_must_not_flag_hits(&findings, &must_not_flag),
+            1
+        );
+    }
+
+    #[test]
+    fn test_count_must_not_flag_hits_none() {
+        let must_not_flag = vec![MustNotFlag {
+            id: "fp-1".into(),
+            description: "COALESCE MAX position is valid SQL pattern".into(),
+            location: None,
+        }];
+        let findings = vec![Finding {
+            severity: "high".into(),
+            file: "code.rs".into(),
+            line: Some(12),
+            issue: "race condition in query".into(),
+            suggestion: "".into(),
+        }];
+        assert_eq!(
+            FindingMatcher::count_must_not_flag_hits(&findings, &must_not_flag),
+            0
+        );
+    }
+
+    #[test]
+    fn test_identify_novel_findings_mixed() {
+        let expected = Expected {
+            must_find: vec![ExpectedFinding {
+                id: "a".into(),
+                severity: "high".into(),
+                description: "race condition in query".into(),
+                location: "code.rs:10".into(),
+            }],
+            must_not_flag: vec![MustNotFlag {
+                id: "fp-1".into(),
+                description: "COALESCE MAX position is valid SQL pattern".into(),
+                location: Some("code.rs:20".into()),
+            }],
+        };
+
+        let findings = vec![
+            // Finding 0: matches must_find "a" (not novel)
+            Finding {
+                severity: "high".into(),
+                file: "code.rs".into(),
+                line: Some(12),
+                issue: "race condition detected in query execution".into(),
+                suggestion: "".into(),
+            },
+            // Finding 1: matches must_not_flag (not novel)
+            Finding {
+                severity: "low".into(),
+                file: "code.rs".into(),
+                line: Some(20),
+                issue: "COALESCE with MAX position pattern looks suspicious".into(),
+                suggestion: "".into(),
+            },
+            // Finding 2: novel (matches neither)
+            Finding {
+                severity: "medium".into(),
+                file: "other.rs".into(),
+                line: Some(99),
+                issue: "completely novel unrelated finding about memory leak".into(),
+                suggestion: "".into(),
+            },
+        ];
+
+        let novel = FindingMatcher::identify_novel_findings(&findings, &expected);
+        assert_eq!(novel.len(), 1);
+        assert!(novel.contains(&2));
+    }
+
+    #[test]
+    fn test_identify_novel_findings_all_expected() {
+        let expected = Expected {
+            must_find: vec![ExpectedFinding {
+                id: "a".into(),
+                severity: "high".into(),
+                description: "race condition in query".into(),
+                location: "code.rs:10".into(),
+            }],
+            must_not_flag: vec![],
+        };
+
+        let findings = vec![Finding {
+            severity: "high".into(),
+            file: "code.rs".into(),
+            line: Some(12),
+            issue: "race condition detected in query execution".into(),
+            suggestion: "".into(),
+        }];
+
+        let novel = FindingMatcher::identify_novel_findings(&findings, &expected);
+        assert!(novel.is_empty(), "All findings matched must_find, none should be novel");
+    }
+
+    #[test]
+    fn test_identify_novel_findings_all_novel() {
+        let expected = Expected {
+            must_find: vec![ExpectedFinding {
+                id: "a".into(),
+                severity: "high".into(),
+                description: "race condition in query".into(),
+                location: "code.rs:10".into(),
+            }],
+            must_not_flag: vec![],
+        };
+
+        let findings = vec![
+            Finding {
+                severity: "low".into(),
+                file: "other.rs".into(),
+                line: Some(99),
+                issue: "completely unrelated memory leak finding".into(),
+                suggestion: "".into(),
+            },
+            Finding {
+                severity: "low".into(),
+                file: "another.rs".into(),
+                line: Some(50),
+                issue: "another unrelated unique finding about buffer overflow".into(),
+                suggestion: "".into(),
+            },
+        ];
+
+        let novel = FindingMatcher::identify_novel_findings(&findings, &expected);
+        assert_eq!(novel.len(), 2);
+        assert!(novel.contains(&0));
+        assert!(novel.contains(&1));
+    }
+
+    // --- Judge-scorer integration tests ---
+
+    use super::super::judge::{
+        ActionabilityScore, Classification, ClassificationVerdict,
+    };
+
+    /// Helper to build a JudgeResult for tests.
+    fn make_judge_result(
+        classifications: Vec<(&str, ClassificationVerdict)>,
+        actionability_scores: Vec<(&str, f64)>,
+    ) -> JudgeResult {
+        JudgeResult {
+            classifications: classifications
+                .into_iter()
+                .map(|(id, verdict)| Classification {
+                    finding_id: id.to_string(),
+                    verdict,
+                })
+                .collect(),
+            actionability_scores: actionability_scores
+                .into_iter()
+                .map(|(id, score)| ActionabilityScore {
+                    finding_id: id.to_string(),
+                    score,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn test_score_with_none_judge_uses_default_actionability() {
+        let expected = Expected {
+            must_find: vec![],
+            must_not_flag: vec![],
+        };
+        let findings: Vec<Finding> = vec![];
+
+        let score = Scorer::score(&findings, &expected, None);
+        assert!(
+            (score.actionability - 0.5).abs() < 0.01,
+            "None judge => actionability should default to 0.5, got {}",
+            score.actionability
+        );
+    }
+
+    #[test]
+    fn test_score_with_judge_uses_average_actionability() {
+        let expected = Expected {
+            must_find: vec![],
+            must_not_flag: vec![],
+        };
+        let findings = vec![
+            Finding {
+                severity: "high".into(),
+                file: "a.rs".into(),
+                line: Some(1),
+                issue: "issue one unique alpha".into(),
+                suggestion: "".into(),
+            },
+            Finding {
+                severity: "high".into(),
+                file: "b.rs".into(),
+                line: Some(2),
+                issue: "issue two unique beta".into(),
+                suggestion: "".into(),
+            },
+        ];
+        let judge = make_judge_result(
+            vec![
+                ("0", ClassificationVerdict::TruePositive),
+                ("1", ClassificationVerdict::TruePositive),
+            ],
+            vec![("0", 0.8), ("1", 0.6)],
+        );
+
+        let score = Scorer::score(&findings, &expected, Some(&judge));
+        // Average of 0.8 and 0.6 = 0.7
+        assert!(
+            (score.actionability - 0.7).abs() < 0.01,
+            "Judge actionability average should be 0.7, got {}",
+            score.actionability
+        );
+    }
+
+    #[test]
+    fn test_score_with_judge_single_actionability_score() {
+        let expected = Expected {
+            must_find: vec![],
+            must_not_flag: vec![],
+        };
+        let findings = vec![Finding {
+            severity: "high".into(),
+            file: "a.rs".into(),
+            line: Some(1),
+            issue: "unique finding alpha".into(),
+            suggestion: "".into(),
+        }];
+        let judge = make_judge_result(
+            vec![("0", ClassificationVerdict::TruePositive)],
+            vec![("0", 0.9)],
+        );
+
+        let score = Scorer::score(&findings, &expected, Some(&judge));
+        assert!(
+            (score.actionability - 0.9).abs() < 0.01,
+            "Single judge score should be used directly, got {}",
+            score.actionability
+        );
+    }
+
+    #[test]
+    fn test_score_with_judge_empty_actionability_falls_back() {
+        let expected = Expected {
+            must_find: vec![],
+            must_not_flag: vec![],
+        };
+        let findings: Vec<Finding> = vec![];
+        let judge = JudgeResult {
+            classifications: vec![],
+            actionability_scores: vec![],
+        };
+
+        let score = Scorer::score(&findings, &expected, Some(&judge));
+        assert!(
+            (score.actionability - 0.5).abs() < 0.01,
+            "Empty judge actionability_scores => fallback to 0.5, got {}",
+            score.actionability
+        );
+    }
+
+    #[test]
+    fn test_precision_judge_fp_on_novel_finding_reduces_precision() {
+        let expected = Expected {
+            must_find: vec![ExpectedFinding {
+                id: "a".into(),
+                severity: "high".into(),
+                description: "race condition in query".into(),
+                location: "code.rs:10".into(),
+            }],
+            must_not_flag: vec![],
+        };
+
+        // Finding 0 matches must_find "a"; Finding 1 is novel
+        let findings = vec![
+            Finding {
+                severity: "high".into(),
+                file: "code.rs".into(),
+                line: Some(12),
+                issue: "race condition detected in query execution".into(),
+                suggestion: "".into(),
+            },
+            Finding {
+                severity: "low".into(),
+                file: "other.rs".into(),
+                line: Some(50),
+                issue: "completely novel unrelated finding about memory leak".into(),
+                suggestion: "".into(),
+            },
+        ];
+
+        // Judge classifies finding 1 as false_positive
+        let judge = make_judge_result(
+            vec![
+                ("0", ClassificationVerdict::TruePositive),
+                ("1", ClassificationVerdict::FalsePositive),
+            ],
+            vec![("0", 0.8), ("1", 0.3)],
+        );
+
+        let score = Scorer::score(&findings, &expected, Some(&judge));
+        // 1 FP (novel finding classified as FP) out of 2 total => precision = 0.5
+        assert!(
+            (score.precision - 0.5).abs() < 0.01,
+            "Novel FP should reduce precision to 0.5, got {}",
+            score.precision
+        );
+    }
+
+    #[test]
+    fn test_precision_judge_tp_on_novel_finding_no_reduction() {
+        let expected = Expected {
+            must_find: vec![ExpectedFinding {
+                id: "a".into(),
+                severity: "high".into(),
+                description: "race condition in query".into(),
+                location: "code.rs:10".into(),
+            }],
+            must_not_flag: vec![],
+        };
+
+        let findings = vec![
+            Finding {
+                severity: "high".into(),
+                file: "code.rs".into(),
+                line: Some(12),
+                issue: "race condition detected in query execution".into(),
+                suggestion: "".into(),
+            },
+            Finding {
+                severity: "low".into(),
+                file: "other.rs".into(),
+                line: Some(50),
+                issue: "completely novel unrelated finding about memory leak".into(),
+                suggestion: "".into(),
+            },
+        ];
+
+        // Judge classifies finding 1 as true_positive
+        let judge = make_judge_result(
+            vec![
+                ("0", ClassificationVerdict::TruePositive),
+                ("1", ClassificationVerdict::TruePositive),
+            ],
+            vec![("0", 0.8), ("1", 0.7)],
+        );
+
+        let score = Scorer::score(&findings, &expected, Some(&judge));
+        // 0 FPs => precision = 1.0
+        assert!(
+            (score.precision - 1.0).abs() < 0.01,
+            "Novel TP should not reduce precision, got {}",
+            score.precision
+        );
+    }
+
+    #[test]
+    fn test_precision_no_judge_novel_findings_assumed_tp() {
+        let expected = Expected {
+            must_find: vec![ExpectedFinding {
+                id: "a".into(),
+                severity: "high".into(),
+                description: "race condition in query".into(),
+                location: "code.rs:10".into(),
+            }],
+            must_not_flag: vec![],
+        };
+
+        let findings = vec![
+            Finding {
+                severity: "high".into(),
+                file: "code.rs".into(),
+                line: Some(12),
+                issue: "race condition detected in query execution".into(),
+                suggestion: "".into(),
+            },
+            Finding {
+                severity: "low".into(),
+                file: "other.rs".into(),
+                line: Some(50),
+                issue: "completely novel unrelated finding about memory leak".into(),
+                suggestion: "".into(),
+            },
+        ];
+
+        let score = Scorer::score(&findings, &expected, None);
+        // No judge => novel findings assumed TP => 0 FPs => precision = 1.0
+        assert!(
+            (score.precision - 1.0).abs() < 0.01,
+            "Without judge, novel findings assumed TP, precision should be 1.0, got {}",
+            score.precision
+        );
+    }
+
+    #[test]
+    fn test_must_not_flag_always_fp_regardless_of_judge() {
+        let expected = Expected {
+            must_find: vec![],
+            must_not_flag: vec![MustNotFlag {
+                id: "fp-1".into(),
+                description: "COALESCE MAX position is valid SQL pattern".into(),
+                location: Some("code.rs:20".into()),
+            }],
+        };
+
+        let findings = vec![Finding {
+            severity: "low".into(),
+            file: "code.rs".into(),
+            line: Some(20),
+            issue: "COALESCE with MAX position pattern looks suspicious".into(),
+            suggestion: "".into(),
+        }];
+
+        // Judge says it's a true positive, but must_not_flag should override
+        let judge = make_judge_result(
+            vec![("0", ClassificationVerdict::TruePositive)],
+            vec![("0", 0.9)],
+        );
+
+        let score = Scorer::score(&findings, &expected, Some(&judge));
+        // must_not_flag hit => FP regardless of judge => precision = 0.0 (1 FP of 1 finding)
+        assert!(
+            (score.precision - 0.0).abs() < 0.01,
+            "must_not_flag should always count as FP, precision should be 0.0, got {}",
+            score.precision
+        );
+    }
+
+    #[test]
+    fn test_must_not_flag_plus_judge_fp_combined() {
+        let expected = Expected {
+            must_find: vec![ExpectedFinding {
+                id: "a".into(),
+                severity: "high".into(),
+                description: "race condition in query".into(),
+                location: "code.rs:10".into(),
+            }],
+            must_not_flag: vec![MustNotFlag {
+                id: "fp-1".into(),
+                description: "COALESCE MAX position is valid SQL pattern".into(),
+                location: Some("code.rs:20".into()),
+            }],
+        };
+
+        let findings = vec![
+            // Finding 0: matches must_find (not novel, not FP)
+            Finding {
+                severity: "high".into(),
+                file: "code.rs".into(),
+                line: Some(12),
+                issue: "race condition detected in query execution".into(),
+                suggestion: "".into(),
+            },
+            // Finding 1: matches must_not_flag (FP from must_not_flag)
+            Finding {
+                severity: "low".into(),
+                file: "code.rs".into(),
+                line: Some(20),
+                issue: "COALESCE with MAX position pattern looks suspicious".into(),
+                suggestion: "".into(),
+            },
+            // Finding 2: novel, judge says FP
+            Finding {
+                severity: "medium".into(),
+                file: "other.rs".into(),
+                line: Some(99),
+                issue: "completely novel unrelated finding about memory leak".into(),
+                suggestion: "".into(),
+            },
+        ];
+
+        // Judge classifies: 0=TP, 1=TP (but must_not_flag overrides), 2=FP
+        let judge = make_judge_result(
+            vec![
+                ("0", ClassificationVerdict::TruePositive),
+                ("1", ClassificationVerdict::TruePositive),
+                ("2", ClassificationVerdict::FalsePositive),
+            ],
+            vec![("0", 0.8), ("1", 0.5), ("2", 0.2)],
+        );
+
+        let score = Scorer::score(&findings, &expected, Some(&judge));
+        // FPs: 1 from must_not_flag + 1 from judge on novel = 2 total
+        // 3 findings total => precision = 1.0 - 2/3 ≈ 0.333
+        assert!(
+            (score.precision - (1.0 / 3.0)).abs() < 0.02,
+            "2 FPs of 3 findings => precision ~0.333, got {}",
+            score.precision
+        );
+    }
+
+    #[test]
+    fn test_composite_with_judge_actionability() {
+        let expected = Expected {
+            must_find: vec![ExpectedFinding {
+                id: "a".into(),
+                severity: "high".into(),
+                description: "issue alpha detected".into(),
+                location: "code.rs:10".into(),
+            }],
+            must_not_flag: vec![],
+        };
+
+        let findings = vec![Finding {
+            severity: "high".into(),
+            file: "code.rs".into(),
+            line: Some(10),
+            issue: "issue alpha detected here".into(),
+            suggestion: "".into(),
+        }];
+
+        let judge = make_judge_result(
+            vec![("0", ClassificationVerdict::TruePositive)],
+            vec![("0", 0.8)],
+        );
+
+        let score = Scorer::score(&findings, &expected, Some(&judge));
+        // recall = 1.0, precision = 1.0, actionability = 0.8
+        // composite = 0.4 * 1.0 + 0.3 * 1.0 + 0.3 * 0.8 = 0.4 + 0.3 + 0.24 = 0.94
+        assert!(
+            (score.composite - 0.94).abs() < 0.02,
+            "Composite with judge actionability should be ~0.94, got {}",
+            score.composite
+        );
+    }
+
+    #[test]
+    fn test_composite_formula_unchanged() {
+        // Verify the composite formula is exactly 0.4*recall + 0.3*precision + 0.3*actionability
+        let expected = Expected {
+            must_find: vec![
+                ExpectedFinding {
+                    id: "a".into(),
+                    severity: "high".into(),
+                    description: "issue alpha detected".into(),
+                    location: "code.rs:10".into(),
+                },
+                ExpectedFinding {
+                    id: "b".into(),
+                    severity: "high".into(),
+                    description: "issue beta found".into(),
+                    location: "code.rs:20".into(),
+                },
+            ],
+            must_not_flag: vec![],
+        };
+
+        // Match only "a" => recall = 0.5
+        // No FPs => precision = 1.0
+        let findings = vec![Finding {
+            severity: "high".into(),
+            file: "code.rs".into(),
+            line: Some(10),
+            issue: "issue alpha detected here".into(),
+            suggestion: "".into(),
+        }];
+
+        // Judge with actionability = 0.6
+        let judge = make_judge_result(
+            vec![("0", ClassificationVerdict::TruePositive)],
+            vec![("0", 0.6)],
+        );
+
+        let score = Scorer::score(&findings, &expected, Some(&judge));
+        // composite = 0.4 * 0.5 + 0.3 * 1.0 + 0.3 * 0.6 = 0.20 + 0.30 + 0.18 = 0.68
+        assert!(
+            (score.composite - 0.68).abs() < 0.02,
+            "Composite should be 0.4*recall + 0.3*precision + 0.3*actionability = 0.68, got {}",
+            score.composite
+        );
     }
 }
