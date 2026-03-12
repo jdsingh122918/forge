@@ -14,6 +14,7 @@ use super::db::DbHandle;
 use super::models::*;
 use super::planner::{PlanProvider, PlanResponse, Planner};
 use super::sandbox::{DockerSandbox, SandboxConfig};
+use super::heartbeat::emit_run_event;
 use super::ws::{WsMessage, broadcast_message};
 use crate::metrics::MetricsCollector;
 
@@ -134,7 +135,7 @@ impl PipelineRunner {
 
         // Update DB status to Cancelled and move issue back to Ready
         let run = db.cancel_pipeline_run(RunId(run_id)).await?;
-        broadcast_message(tx, &WsMessage::PipelineFailed { run: run.clone() });
+        emit_run_event(db, tx, RunId(run_id), &WsMessage::PipelineFailed { run: run.clone() }).await;
 
         // Auto-move issue back to Ready
         let issue_id = run.issue_id;
@@ -223,15 +224,18 @@ impl PipelineRunner {
             Err(e) => {
                 warn!(run_id, error = %e, "Planning failed, falling back to single task");
                 // Broadcast a warning to the UI
-                broadcast_message(
+                emit_run_event(
+                    db,
                     tx,
+                    RunId(run_id),
                     &WsMessage::AgentSignal {
                         run_id: RunId(run_id),
                         task_id: TaskId(0),
                         signal_type: SignalType::Blocker,
                         content: format!("Planning failed, using single-task fallback: {}", e),
                     },
-                );
+                )
+                .await;
                 PlanResponse::fallback(issue_title, issue_description)
             }
         };
@@ -301,8 +305,10 @@ impl PipelineRunner {
         }
 
         // Step 3: Broadcast TeamCreated
-        broadcast_message(
+        emit_run_event(
+            db,
             tx,
+            RunId(run_id),
             &WsMessage::TeamCreated {
                 run_id: RunId(run_id),
                 team_id: team.id,
@@ -311,7 +317,8 @@ impl PipelineRunner {
                 plan_summary: plan.reasoning.clone(),
                 tasks: db_tasks.clone(),
             },
-        );
+        )
+        .await;
 
         // Step 4: Execute wave by wave
         let max_wave = plan.max_wave();
@@ -325,15 +332,18 @@ impl PipelineRunner {
             }
 
             let task_ids: Vec<TaskId> = wave_tasks.iter().map(|t| t.id).collect();
-            broadcast_message(
+            emit_run_event(
+                db,
                 tx,
+                RunId(run_id),
                 &WsMessage::WaveStarted {
                     run_id: RunId(run_id),
                     team_id: team.id,
                     wave,
                     task_ids: task_ids.clone(),
                 },
-            );
+            )
+            .await;
 
             // Set up worktrees for tasks that need isolation
             let mut task_working_dirs: Vec<(AgentTask, std::path::PathBuf, Option<String>)> =
@@ -364,8 +374,10 @@ impl PipelineRunner {
                                 run_id, task_id = task.id.0, task_name = %task.name, error = %e,
                                 "Worktree setup failed, falling back to shared directory (single-task wave)"
                             );
-                            broadcast_message(
+                            emit_run_event(
+                                db,
                                 tx,
+                                RunId(run_id),
                                 &WsMessage::AgentSignal {
                                     run_id: RunId(run_id),
                                     task_id: task.id,
@@ -375,7 +387,8 @@ impl PipelineRunner {
                                         e
                                     ),
                                 },
-                            );
+                            )
+                            .await;
                             (std::path::PathBuf::from(project_path), None)
                         }
                     }
@@ -446,13 +459,16 @@ impl PipelineRunner {
                 let git_lock = git_locks.get(project_path).await;
                 let _guard = git_lock.lock().await;
 
-                broadcast_message(
+                emit_run_event(
+                    db,
                     tx,
+                    RunId(run_id),
                     &WsMessage::MergeStarted {
                         run_id: RunId(run_id),
                         wave,
                     },
-                );
+                )
+                .await;
 
                 let mut merge_conflicts = false;
                 for (_task, _working_dir, task_branch) in &task_working_dirs {
@@ -474,14 +490,17 @@ impl PipelineRunner {
                     }
                 }
 
-                broadcast_message(
+                emit_run_event(
+                    db,
                     tx,
+                    RunId(run_id),
                     &WsMessage::MergeCompleted {
                         run_id: RunId(run_id),
                         wave,
                         conflicts: merge_conflicts,
                     },
-                );
+                )
+                .await;
                 // git lock released at end of block
             }
 
@@ -492,8 +511,10 @@ impl PipelineRunner {
                 }
             }
 
-            broadcast_message(
+            emit_run_event(
+                db,
                 tx,
+                RunId(run_id),
                 &WsMessage::WaveCompleted {
                     run_id: RunId(run_id),
                     team_id: team.id,
@@ -501,7 +522,8 @@ impl PipelineRunner {
                     success_count,
                     failed_count,
                 },
-            );
+            )
+            .await;
 
             // If any task failed, abort
             if failed_count > 0 {
@@ -624,7 +646,7 @@ impl PipelineRunner {
             {
                 error!(run_id, error = %e, "Failed to move issue to InProgress");
             }
-            broadcast_message(&tx, &WsMessage::PipelineStarted { run });
+            emit_run_event(&db, &tx, RunId(run_id), &WsMessage::PipelineStarted { run }).await;
             if issue.column != IssueColumn::InProgress {
                 broadcast_message(
                     &tx,
@@ -664,19 +686,24 @@ impl PipelineRunner {
                         if let Err(e) = db.update_pipeline_branch(RunId(run_id), &name).await {
                             error!(run_id, error = %e, "Failed to update pipeline branch");
                         }
-                        broadcast_message(
+                        emit_run_event(
+                            &db,
                             &tx,
+                            RunId(run_id),
                             &WsMessage::PipelineBranchCreated {
                                 run_id: RunId(run_id),
                                 branch_name: name.clone(),
                             },
-                        );
+                        )
+                        .await;
                         Some(name)
                     }
                     Err(e) => {
                         warn!(run_id, error = %e, "Failed to create git branch, continuing without branch isolation");
-                        broadcast_message(
+                        emit_run_event(
+                            &db,
                             &tx,
+                            RunId(run_id),
                             &WsMessage::AgentSignal {
                                 run_id: RunId(run_id),
                                 task_id: TaskId(0),
@@ -686,7 +713,8 @@ impl PipelineRunner {
                                     e
                                 ),
                             },
-                        );
+                        )
+                        .await;
                         None
                     }
                 }
@@ -694,13 +722,16 @@ impl PipelineRunner {
 
             // Construct real planner and task runner for the agent team
             debug!(run_id, project_path, "Starting planner");
-            broadcast_message(
+            emit_run_event(
+                &db,
                 &tx,
+                RunId(run_id),
                 &WsMessage::PipelineOutput {
                     run_id: RunId(run_id),
                     content: "Analyzing codebase and planning tasks...".to_string(),
                 },
-            );
+            )
+            .await;
             let planner = Planner::new(&project_path);
             let task_runner: Arc<dyn TaskRunner> =
                 Arc::new(AgentExecutor::new(&project_path, db.clone(), tx.clone()));
@@ -737,13 +768,16 @@ impl PipelineRunner {
                 }
                 Ok(PlanOutcome::FallbackToForge) => {
                     debug!(run_id, "Single-task plan, using forge pipeline");
-                    broadcast_message(
+                    emit_run_event(
+                        &db,
                         &tx,
+                        RunId(run_id),
                         &WsMessage::PipelineOutput {
                             run_id: RunId(run_id),
                             content: "Running single-task pipeline...".to_string(),
                         },
-                    );
+                    )
+                    .await;
                     // Expected fallback -- continue to forge pipeline below
                     Self::run_forge_fallback(
                         run_id,
@@ -759,8 +793,10 @@ impl PipelineRunner {
                 }
                 Err(e) => {
                     error!(run_id, error = %e, "Agent team failed unexpectedly");
-                    broadcast_message(
+                    emit_run_event(
+                        &db,
                         &tx,
+                        RunId(run_id),
                         &WsMessage::AgentSignal {
                             run_id: RunId(run_id),
                             task_id: TaskId(0),
@@ -770,7 +806,8 @@ impl PipelineRunner {
                                 e
                             ),
                         },
-                    );
+                    )
+                    .await;
                     // Fall back to forge pipeline
                     Self::run_forge_fallback(
                         run_id,
@@ -858,13 +895,16 @@ impl PipelineRunner {
                                 {
                                     error!(run_id, error = %e, "Failed to update pipeline PR URL");
                                 }
-                                broadcast_message(
+                                emit_run_event(
+                                    &db,
                                     &tx,
+                                    RunId(run_id),
                                     &WsMessage::PipelinePrCreated {
                                         run_id: RunId(run_id),
                                         pr_url,
                                     },
-                                );
+                                )
+                                .await;
                             }
                             Err(e) => {
                                 warn!(run_id, error = %e, "PR creation failed (pipeline still completed)");
@@ -892,7 +932,7 @@ impl PipelineRunner {
                             {
                                 warn!(error = %e, "Failed to record metrics run completion");
                             }
-                            broadcast_message(&tx, &WsMessage::PipelineCompleted { run });
+                            emit_run_event(&db, &tx, RunId(run_id), &WsMessage::PipelineCompleted { run }).await;
                         }
                         Err(e) => {
                             error!(run_id, error = %e, "CRITICAL: completed but failed to update DB");
@@ -939,7 +979,7 @@ impl PipelineRunner {
                         )
                         .await
                     {
-                        Ok(run) => broadcast_message(&tx, &WsMessage::PipelineFailed { run }),
+                        Ok(run) => emit_run_event(&db, &tx, RunId(run_id), &WsMessage::PipelineFailed { run }).await,
                         Err(e) => {
                             error!(run_id, error = %e, "CRITICAL: failed but could not update DB");
                             // Still broadcast failure so UI doesn't show "running" forever

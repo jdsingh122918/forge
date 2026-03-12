@@ -66,6 +66,7 @@ pub mod db;
 pub mod dispatch;
 pub mod embedded;
 pub mod github;
+pub mod heartbeat;
 pub mod models;
 pub mod pipeline;
 pub mod planner;
