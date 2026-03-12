@@ -1,13 +1,13 @@
 {
-  "spec_hash": "7c238abe6ee2",
-  "generated_at": "2026-03-12T02:17:37.657511+00:00",
+  "spec_hash": "22d8b9b001c2",
+  "generated_at": "2026-03-12T02:24:18.031820+00:00",
   "phases": [
     {
       "number": "01",
-      "name": "Write experiment tests",
-      "promise": "EXPERIMENT TESTS WRITTEN",
+      "name": "Write loop_runner tests",
+      "promise": "LOOP RUNNER TESTS WRITTEN",
       "budget": 5,
-      "reasoning": "Create experiment.rs with all types, traits, mock implementations, and 9 tests: type construction (2), keep path, discard path, dry run, mutation failure, benchmark failure, cost estimation, serialization. Tests will fail because run_single_experiment is not yet implemented as a passing function — write the full file structure from the design doc including the function signature but with todo!() body so tests compile but fail.",
+      "reasoning": "Create src/cmd/autoresearch/loop_runner.rs with all type definitions (LoopConfig, LoopOutcome, LoopSummary, LoopGitOps trait), the resolve_prompt_path helper, a stub run_loop function, and all 10+ tests with mock implementations (MockGit, AlwaysMutator, ScriptedExecutor). Tests cover: path resolution, dry run, single keep, consecutive failures triggering specialist switch, budget exhaustion, failure counter reset on keep, baseline advancement, missing prompt file skip, disk persistence, and summary accounting. Tests should compile but fail against the stub.",
       "depends_on": [],
       "skills": [],
       "permission_mode": "standard",
@@ -15,10 +15,10 @@
     },
     {
       "number": "02",
-      "name": "Implement run_single_experiment",
-      "promise": "EXPERIMENT STEP COMPLETE",
-      "budget": 10,
-      "reasoning": "Implement run_single_experiment() with the 7-step flow: read current prompt, call mutator.propose_mutation(), write mutated prompt (skip in dry_run), set placeholder commit SHA, call executor.run_and_judge() (skip in dry_run), determine Keep/Discard outcome based on composite_score vs baseline, compute cost estimate. Register module in mod.rs. Ensure all 9 tests pass, cargo clippy clean.",
+      "name": "Implement run_loop orchestrator",
+      "promise": "LOOP RUNNER COMPLETE",
+      "budget": 15,
+      "reasoning": "Implement the full run_loop() async function: initialize state directories, open/create ResultsLog and BudgetTracker, set up git branch (create or checkout for resume), handle dry run early exit, then run the nested specialist/experiment loop with budget gate (ESTIMATED_EXPERIMENT_COST), failure gate (max_failures), experiment execution via run_single_experiment, keep/discard/error match handling with git commit/reset, baseline advancement, consecutive failure counting, and budget persistence. Wire mod.rs with pub mod loop_runner and connect cmd_autoresearch to call run_loop. Run cargo clippy. All 10+ tests must pass.",
       "depends_on": [
         "01"
       ],
