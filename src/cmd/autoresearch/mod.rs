@@ -21,8 +21,10 @@ use anyhow::Result;
 use chrono::Utc;
 use clap::Args;
 
+use self::git_ops::AutoresearchGitOps;
+use self::loop_runner::{LoopConfig, run_loop};
+
 /// The four built-in review specialists.
-#[allow(dead_code)]
 const BUILT_IN_SPECIALISTS: &[&str] = &["security", "performance", "architecture", "simplicity"];
 
 /// CLI arguments for the `autoresearch` subcommand.
@@ -64,7 +66,6 @@ pub struct AutoresearchArgs {
 /// Expand a comma-separated specialists string into a list of names.
 ///
 /// The special value `"all"` expands to the four built-in specialists.
-#[allow(dead_code)]
 pub fn expand_specialists(input: &str) -> Vec<String> {
     let trimmed = input.trim();
     if trimmed.eq_ignore_ascii_case("all") {
@@ -81,15 +82,102 @@ pub fn expand_specialists(input: &str) -> Vec<String> {
 }
 
 /// Generate a default run tag from the current UTC time (`YYYYMMDD-HHMMSS`).
-#[allow(dead_code)]
 pub fn generate_default_tag() -> String {
     Utc::now().format("%Y%m%d-%H%M%S").to_string()
 }
 
-/// Entry point for the `autoresearch` subcommand (placeholder).
-pub async fn cmd_autoresearch(_project_dir: &Path, _args: &AutoresearchArgs) -> Result<()> {
-    println!("autoresearch: not yet implemented");
+/// Entry point for the `autoresearch` subcommand.
+///
+/// Builds a [`LoopConfig`] from CLI arguments, creates real git operations,
+/// and delegates to [`run_loop`] for the main experiment loop.
+pub async fn cmd_autoresearch(project_dir: &Path, args: &AutoresearchArgs) -> Result<()> {
+    let tag = args.tag.clone().unwrap_or_else(generate_default_tag);
+    let specialists = expand_specialists(&args.specialists);
+    let prompts_dir = args.prompts_dir.clone().unwrap_or_else(|| {
+        project_dir
+            .join(".forge")
+            .join("autoresearch")
+            .join("prompts")
+    });
+
+    let config = LoopConfig {
+        tag: tag.clone(),
+        specialists,
+        budget_cap: args.budget,
+        max_failures: args.max_failures,
+        project_dir: project_dir.to_path_buf(),
+        prompts_dir,
+        dry_run: args.dry_run,
+        resume: args.resume,
+    };
+
+    println!("Autoresearch run: tag={tag}");
+    println!("  Specialists: {}", config.specialists.join(", "));
+    println!("  Budget: ${:.2}", config.budget_cap);
+    println!("  Max failures: {}", config.max_failures);
+    if config.dry_run {
+        println!("  Mode: dry run");
+    }
+    if config.resume {
+        println!("  Resuming previous run");
+    }
+    println!();
+
+    let git = AutoresearchGitOps::new(project_dir);
+
+    // Stub mutator and executor — replaced by real LLM-backed implementations
+    // once the pipeline integration tasks are complete.
+    let mutator = StubMutator;
+    let executor = StubExecutor;
+
+    let summary = run_loop(&config, &git, &mutator, &executor).await?;
+
+    println!("Run complete:");
+    println!("  Outcome: {:?}", summary.outcome);
+    println!("  Experiments: {}", summary.total_experiments);
+    println!(
+        "  Keeps: {} | Discards: {} | Errors: {}",
+        summary.keeps, summary.discards, summary.errors
+    );
+    println!(
+        "  Budget: ${:.2} spent, ${:.2} remaining",
+        summary.budget_spent, summary.budget_remaining
+    );
+
     Ok(())
+}
+
+/// Stub prompt mutator — returns an error until the real LLM integration is wired.
+struct StubMutator;
+
+#[async_trait::async_trait]
+impl experiment::PromptMutator for StubMutator {
+    async fn propose_mutation(
+        &self,
+        _current_prompt: &str,
+        _history: &str,
+        _specialist: &str,
+    ) -> Result<experiment::MutationProposal> {
+        anyhow::bail!(
+            "PromptMutator not yet wired — run with --dry-run or implement the LLM integration"
+        )
+    }
+}
+
+/// Stub benchmark executor — returns an error until the real pipeline is wired.
+struct StubExecutor;
+
+#[async_trait::async_trait]
+impl experiment::BenchmarkExecutor for StubExecutor {
+    async fn run_and_judge(&self) -> Result<experiment::JudgeVerdict> {
+        anyhow::bail!(
+            "BenchmarkExecutor not yet wired — run with --dry-run or implement the pipeline integration"
+        )
+    }
+
+    fn last_run_tokens(&self) -> (u64, u64) {
+        (0, 0)
+    }
 }
 
 #[cfg(test)]
