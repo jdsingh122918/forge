@@ -1,66 +1,97 @@
-# Implementation Spec: Simplicity Benchmark Cases for Autoresearch
+# Implementation Spec: Results TSV Logger
 
-> Generated from: docs/superpowers/specs/autoresearch-tasks/T05d-simplicity-benchmarks.md
-> Generated at: 2026-03-12T00:59:55.717039+00:00
+> Generated from: docs/superpowers/specs/autoresearch-tasks/T12-results-tsv.md
+> Generated at: 2026-03-12T01:14:28.949078+00:00
 
 ## Goal
 
-Create 5 simplicity benchmark cases (4 from real forge git history, 1 synthetic) that test whether the SimplicityReviewer specialist agent can detect needlessly complex code, dead code paths, and verbose patterns. Each case has code.rs, context.md, and expected.json with must_find and must_not_flag entries.
+Implement ResultsLog struct that reads and writes results.tsv — the persistent record of all experiment outcomes in tab-separated format. Each row records commit SHA, composite score, recall, precision, actionability, status (keep/discard/error), specialist, and description. Supports append-with-flush for crash safety and reload across sessions for resume support.
 
 ## Components
 
 | Component | Description | Complexity | Dependencies |
 |-----------|-------------|------------|--------------|
-| overcomplex-resolution-mode benchmark | Benchmark case with over-complex ResolutionMode enum having 3 variants where only Auto is used. Tests detection of unused enum variants, dead configuration fields, and over-engineered type hierarchies. | low | - |
-| dead-escalate-path benchmark | Benchmark case with dead ArbiterVerdict::Escalate variant that has no human-in-the-loop mechanism. Tests detection of dead code paths, unused methods, and unreachable constructors. | low | - |
-| dead-strict-mode benchmark | Benchmark case with PermissionMode::Strict that behaves identically to Standard. Tests detection of dead enum variants with no unique behavior and misleading documentation. | low | - |
-| verbose-let-chains benchmark | Benchmark case with deeply nested if/if-let chains that could use Rust let-chain syntax. Tests detection of verbose conditional patterns that increase indentation without adding clarity. | low | - |
-| premature-abstraction benchmark | Synthetic benchmark with 4 traits each having exactly one implementation. Tests detection of premature trait abstraction, unnecessary dynamic dispatch, and YAGNI violations. | low | - |
+| ExperimentStatus | Enum with Keep, Discard, Error variants and bidirectional string conversion (as_str/from_str) with whitespace trimming | low | - |
+| ResultRow | Struct representing one experiment row with commit, score, recall, precision, actionability, status, specialist, description fields. Provides to_tsv_line() serialization (4-decimal floats) and from_tsv_line() parsing with error handling | low | ExperimentStatus |
+| ResultsLog | File-backed TSV manager with open/load/save/append operations. Provides query methods: rows(), total_experiments(), count_by_status(), best_score_for() (keep-only), last_n(), and history_summary() for LLM context. Append flushes immediately for crash safety. Data survives open/close cycles for resume support | medium | ResultRow, ExperimentStatus |
 
 ## Code Patterns
 
-### Benchmark directory structure
+### TSV header constant
 
 ```
-.forge/autoresearch/benchmarks/simplicity/<case-name>/
-  code.rs      # The code under review
-  context.md   # Background context for the reviewer
-  expected.json # Expected findings with must_find and must_not_flag
+const TSV_HEADER: &str = "commit\tscore\trecall\tprecision\tactionability\tstatus\tspecialist\tdescription";
 ```
 
-### expected.json schema
+### ResultRow TSV serialization
 
 ```
-{
-  "must_find": [
-    { "id": "string", "severity": "low|medium|high", "description": "string", "location": "code.rs:N-M" }
-  ],
-  "must_not_flag": [
-    { "id": "string", "description": "string", "location": "optional" }
-  ]
+format!(
+    "{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{}",
+    self.commit, self.score, self.recall, self.precision,
+    self.actionability, self.status.as_str(), self.specialist, self.description,
+)
+```
+
+### ResultRow TSV parsing
+
+```
+let fields: Vec<&str> = line.split('\t').collect();
+if fields.len() < 8 {
+    anyhow::bail!("Expected 8 tab-separated fields, got {}: '{}'", fields.len(), line);
+}
+// description joins remaining fields with tabs for safety
+description: fields[7..].join("\t")
+```
+
+### Flush-on-write append
+
+```
+pub fn append(&mut self, row: ResultRow) -> Result<()> {
+    self.rows.push(row);
+    self.save()
 }
 ```
 
-### BenchmarkSuite loader usage
+### Best score filter (keep-only)
 
 ```
-let suite = BenchmarkSuite::load(forge_dir, "simplicity").unwrap();
-assert_eq!(suite.specialist, "simplicity");
-assert_eq!(suite.cases.len(), 5);
+self.rows.iter()
+    .filter(|r| r.specialist == specialist && r.status == ExperimentStatus::Keep)
+    .map(|r| r.score)
+    .fold(None, |max, score| Some(max.map_or(score, |m: f64| m.max(score))))
+```
+
+### Test helper sample_row
+
+```
+fn sample_row(commit: &str, score: f64, status: ExperimentStatus, specialist: &str, desc: &str) -> ResultRow {
+    ResultRow {
+        commit: commit.to_string(),
+        score,
+        recall: score * 0.9,
+        precision: score * 1.1,
+        actionability: score * 0.8,
+        status,
+        specialist: specialist.to_string(),
+        description: desc.to_string(),
+    }
+}
 ```
 
 ## Acceptance Criteria
 
-- [ ] 5 benchmark directories exist under .forge/autoresearch/benchmarks/simplicity/
-- [ ] Each directory contains valid code.rs, context.md, and expected.json
-- [ ] All expected.json files parse correctly via serde_json
-- [ ] BenchmarkSuite::load(forge_dir, "simplicity") returns 5 cases
-- [ ] test_simplicity_benchmarks_load test passes
-- [ ] Every expected.json has at least 1 must_find entry with severity and location
-- [ ] Real code cases are based on actual forge commit history (overcomplex-resolution-mode, dead-escalate-path, dead-strict-mode, verbose-let-chains)
-- [ ] Synthetic case (premature-abstraction) contains realistic Rust code with clear simplicity issues
-- [ ] All expected.json files validate with python3 -m json.tool
+- [ ] cargo test --lib cmd::autoresearch::results passes with 14+ tests green
+- [ ] src/cmd/autoresearch/results.rs exists with ResultsLog, ResultRow, ExperimentStatus
+- [ ] ResultRow::to_tsv_line() and ResultRow::from_tsv_line() are exact inverses (roundtrip)
+- [ ] ResultsLog::open() loads existing rows from disk when file exists, starts empty otherwise
+- [ ] ResultsLog::append() writes to disk immediately (flush-on-write for crash safety)
+- [ ] ResultsLog::best_score_for() only considers Keep rows
+- [ ] Data survives across open/close cycles (critical for --resume)
+- [ ] cargo build succeeds
+- [ ] cargo clippy -- -D warnings is clean
+- [ ] pub mod results declared in src/cmd/autoresearch/mod.rs
 
 ---
 *This spec was auto-generated from a design document.*
-*Original design: docs/superpowers/specs/autoresearch-tasks/T05d-simplicity-benchmarks.md*
+*Original design: docs/superpowers/specs/autoresearch-tasks/T12-results-tsv.md*

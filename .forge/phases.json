@@ -1,13 +1,13 @@
 {
-  "spec_hash": "c6824b6607f1",
-  "generated_at": "2026-03-12T00:59:55.717344+00:00",
+  "spec_hash": "87c962a57663",
+  "generated_at": "2026-03-12T01:14:28.949248+00:00",
   "phases": [
     {
       "number": "01",
-      "name": "Write simplicity benchmark loader test",
-      "promise": "SIMPLICITY BENCHMARK TESTS WRITTEN",
-      "budget": 3,
-      "reasoning": "Add test_simplicity_benchmarks_load test that verifies BenchmarkSuite::load returns 5 cases with correct names, non-empty code/context, and at least 1 must_find per case. This test will fail (red) until benchmark files are created.",
+      "name": "Write ExperimentStatus and ResultRow tests",
+      "promise": "CORE TYPE TESTS WRITTEN",
+      "budget": 4,
+      "reasoning": "Write tests for ExperimentStatus roundtrip/trimming, ResultRow TSV roundtrip, and ResultRow parse error handling (too few fields, invalid score, invalid status). These are Steps 2-4 from the design doc. Create results.rs with stub types that compile but fail tests.",
       "depends_on": [],
       "skills": [],
       "permission_mode": "standard",
@@ -15,12 +15,51 @@
     },
     {
       "number": "02",
-      "name": "Create all 5 simplicity benchmark cases",
-      "promise": "SIMPLICITY BENCHMARKS COMPLETE",
-      "budget": 10,
-      "reasoning": "Create 15 files across 5 directories: overcomplex-resolution-mode, dead-escalate-path, dead-strict-mode, verbose-let-chains, and premature-abstraction. Each gets code.rs (Rust source with annotated simplicity issues), context.md (background for reviewer), and expected.json (must_find/must_not_flag entries). Validate all JSON files parse correctly and test passes green.",
+      "name": "Implement ExperimentStatus and ResultRow",
+      "promise": "CORE TYPES COMPLETE",
+      "budget": 8,
+      "reasoning": "Implement ExperimentStatus enum with as_str/from_str (with trim), ResultRow struct with to_tsv_line (4-decimal float formatting) and from_tsv_line (tab splitting, field count validation, parse error context). All 6 core type tests should pass.",
       "depends_on": [
         "01"
+      ],
+      "skills": [],
+      "permission_mode": "standard",
+      "phase_type": "implement"
+    },
+    {
+      "number": "03",
+      "name": "Write ResultsLog tests",
+      "promise": "RESULTS LOG TESTS WRITTEN",
+      "budget": 5,
+      "reasoning": "Write tests for ResultsLog: open new file, append and save, load existing, count_by_status, best_score_for, last_n, history_summary (empty + with data), and reload persistence across sessions. These are Steps 5-12 from the design doc (8 test functions). Uses tempfile for isolated filesystem tests.",
+      "depends_on": [
+        "02"
+      ],
+      "skills": [],
+      "permission_mode": "standard",
+      "phase_type": "test"
+    },
+    {
+      "number": "04",
+      "name": "Implement ResultsLog",
+      "promise": "RESULTS LOG COMPLETE",
+      "budget": 10,
+      "reasoning": "Implement ResultsLog with open (conditional load), load (skip header, parse rows), save (write header + all rows), append (push + save for flush-on-write), and query methods: rows(), total_experiments(), count_by_status(), best_score_for() (keep-only filter), last_n() (saturating_sub slice), history_summary() (formatted string with recent experiments). All 14+ tests should pass.",
+      "depends_on": [
+        "03"
+      ],
+      "skills": [],
+      "permission_mode": "standard",
+      "phase_type": "implement"
+    },
+    {
+      "number": "05",
+      "name": "Wire module and refactor",
+      "promise": "MODULE WIRED AND CLEAN",
+      "budget": 5,
+      "reasoning": "Add pub mod results to src/cmd/autoresearch/mod.rs. Add doc comments to all public items. Run cargo clippy -- -D warnings and fix any lints. Run cargo build to verify full compilation. Run cargo test --lib cmd::autoresearch::results to verify all tests pass.",
+      "depends_on": [
+        "04"
       ],
       "skills": [],
       "permission_mode": "standard",
