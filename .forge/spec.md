@@ -1,78 +1,83 @@
-# Implementation Spec: Architecture Benchmark Cases for Autoresearch
+# Implementation Spec: Performance Benchmark Cases for Autoresearch
 
-> Generated from: docs/superpowers/specs/autoresearch-tasks/T05b-architecture-benchmarks.md
-> Generated at: 2026-03-12T00:39:44.615123+00:00
+> Generated from: docs/superpowers/specs/autoresearch-tasks/T05c-performance-benchmarks.md
+> Generated at: 2026-03-12T00:50:27.794800+00:00
 
 ## Goal
 
-Create 5 architecture benchmark cases (3 mined from real forge git history, 2 synthetic) that test whether the ArchitectureStrategist specialist agent can detect structural problems like god files, monolithic modules, tight coupling, circular dependencies, and SOLID violations. Each case consists of code.rs, context.md, and expected.json files under .forge/autoresearch/benchmarks/architecture/.
+Create 5 performance benchmark cases (2 mined from real forge git history, 3 synthetic) that test whether the PerformanceOracle specialist agent can detect real performance issues. Each benchmark consists of a code.rs with buggy Rust code, context.md explaining the domain, and expected.json defining must_find and must_not_flag entries with severity and location.
 
 ## Components
 
 | Component | Description | Complexity | Dependencies |
 |-----------|-------------|------------|--------------|
-| god-file-pipeline benchmark | Benchmark case representing a 3,163-line god file with 7 distinct concerns (pipeline types, git locks, orchestration, JSON parsing, Docker execution, git operations, progress tracking) in a single module. Based on real commit cf3470a. | medium | - |
-| monolithic-database benchmark | Benchmark case representing a 2,400-line monolithic database module with 8 sections (DbHandle, migrations, project CRUD, issue CRUD, pipeline runs, agent tasks, settings, row mapping). Based on real commit e71c83c. | medium | - |
-| tight-coupling-rusqlite benchmark | Benchmark case showing direct rusqlite dependency throughout the database layer with no abstraction, making driver swaps require rewriting all ~50 functions. Based on real commit 96c6b63. | medium | - |
-| circular-dependency benchmark | Synthetic benchmark case with three modules (executor, phase_manager, reporter) that have circular import dependencies, creating ownership cycles and preventing independent testing. | low | - |
-| solid-violation benchmark | Synthetic benchmark case with a 120+ line god function handling 6 concerns (validation, git ops, phase execution, budget tracking, review handling, PR creation/notification) violating single responsibility principle. | low | - |
-| Benchmark load test | Test that verifies BenchmarkSuite::load(forge_dir, 'architecture') returns all 5 cases with valid code, context, and expected entries. | low | god-file-pipeline benchmark, monolithic-database benchmark, tight-coupling-rusqlite benchmark, circular-dependency benchmark, solid-violation benchmark |
+| Benchmark Loading Test | Test that BenchmarkSuite::load(forge_dir, "performance") returns exactly 5 cases, each with non-empty code, context, and at least one must_find entry. Validates all 5 benchmark names exist. | low | - |
+| sync-event-batching Benchmark | Real benchmark mined from commit 06cd7fe. Code shows synchronous Mutex lock (lock_sync) inside a tokio task blocking the async runtime, lock held during entire batch flush, and no time-based flush. Three must_find entries (critical/high/medium), two must_not_flag entries. | medium | - |
+| non-shared-connection Benchmark | Real benchmark mined from commit 54b9a63. Code shows DbHandle creating a new database connection on every conn() call, causing data isolation for in-memory DBs and connection overhead for file-based DBs. Three must_find entries, two must_not_flag entries. | medium | - |
+| n-plus-one-query Benchmark | Synthetic benchmark showing classic N+1 query pattern in a dashboard builder: nested loops each making individual DB queries instead of JOINs or batch queries. Three must_find entries, two must_not_flag entries. | low | - |
+| blocking-in-async Benchmark | Synthetic benchmark showing blocking std::fs I/O, CPU-intensive hashing, and std::process::Command inside async functions instead of using tokio::fs, spawn_blocking, and tokio::process. Four must_find entries, two must_not_flag entries. | low | - |
+| unnecessary-cloning Benchmark | Synthetic benchmark showing unnecessary .clone() calls on large data structures in hot-path event processing: cloning in filter loops, taking ownership unnecessarily, cloning in aggregation, and chunks().to_vec(). Four must_find entries, two must_not_flag entries. | low | - |
 
 ## Code Patterns
 
-### Benchmark directory structure
+### Benchmark Directory Structure
 
 ```
-.forge/autoresearch/benchmarks/architecture/<case-name>/
-  code.rs      # Representative code excerpt
-  context.md   # Explanation of the codebase context
-  expected.json # Expected findings with must_find and must_not_flag
+.forge/autoresearch/benchmarks/performance/<case-name>/
+  code.rs      — Rust code with performance bugs
+  context.md   — Domain context explaining the code
+  expected.json — Must-find issues and must-not-flag false positives
 ```
 
-### expected.json structure
+### Expected JSON Structure
 
 ```
 {
     "must_find": [
         {
-            "id": "finding-id",
+            "id": "issue-id",
             "severity": "critical|high|medium",
-            "description": "What the agent should detect",
-            "location": "code.rs:1-200"
+            "description": "What the issue is",
+            "location": "code.rs:line-range"
         }
     ],
     "must_not_flag": [
         {
             "id": "fp-id",
-            "description": "Why this should not be flagged as an issue"
+            "description": "Why this is not a problem"
         }
     ]
 }
 ```
 
-### BenchmarkSuite load test
+### Benchmark Suite Load Test
 
 ```
 #[test]
-fn test_architecture_benchmarks_load() {
+fn test_performance_benchmarks_load() {
     let forge_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let suite = BenchmarkSuite::load(forge_dir, "architecture").unwrap();
-    assert_eq!(suite.specialist, "architecture");
+    let suite = BenchmarkSuite::load(forge_dir, "performance").unwrap();
+    assert_eq!(suite.specialist, "performance");
     assert_eq!(suite.cases.len(), 5);
+    for case in &suite.cases {
+        assert!(!case.code.is_empty());
+        assert!(!case.context.is_empty());
+        assert!(!case.expected.must_find.is_empty());
+    }
 }
 ```
 
 ## Acceptance Criteria
 
-- [ ] BenchmarkSuite::load(forge_dir, "architecture") returns 5 cases
-- [ ] 5 directories exist under .forge/autoresearch/benchmarks/architecture/, each with code.rs, context.md, expected.json
-- [ ] Every expected.json has at least 1 must_find entry referencing specific architectural issues
+- [ ] BenchmarkSuite::load(forge_dir, "performance") returns exactly 5 cases
+- [ ] 5 directories exist under .forge/autoresearch/benchmarks/performance/, each with code.rs, context.md, expected.json
+- [ ] Every expected.json has at least 1 must_find entry with severity, description, and location fields
 - [ ] All expected.json files parse correctly via serde_json
-- [ ] Real code cases are based on actual forge commit history (god-file, monolithic-db, tight-coupling)
-- [ ] Synthetic cases (circular-dependency, solid-violation) contain realistic Rust code with clear architectural issues
-- [ ] test_architecture_benchmarks_load test passes
+- [ ] Real code cases (sync-event-batching, non-shared-connection) are based on actual forge commit history
+- [ ] Synthetic cases (n-plus-one-query, blocking-in-async, unnecessary-cloning) contain realistic Rust code with clear performance issues
 - [ ] All expected.json files validate with python3 -m json.tool
+- [ ] cargo test --lib cmd::autoresearch::benchmarks::tests::test_performance_benchmarks_load passes
 
 ---
 *This spec was auto-generated from a design document.*
-*Original design: docs/superpowers/specs/autoresearch-tasks/T05b-architecture-benchmarks.md*
+*Original design: docs/superpowers/specs/autoresearch-tasks/T05c-performance-benchmarks.md*
