@@ -18,6 +18,7 @@ use super::db::{self, DbHandle};
 use super::embedded::Assets;
 use super::pipeline::PipelineRunner;
 use super::sandbox::DockerSandbox;
+use super::tracker::TrackerPollerManager;
 use super::ws;
 use crate::metrics::MetricsCollector;
 
@@ -168,6 +169,7 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
         github_token: std::sync::Mutex::new(persisted_token),
         metrics,
         config_store: super::config_store::ProjectConfigStore::new(),
+        tracker_poller_manager: TrackerPollerManager::new(),
     });
 
     // After orphan recovery, dispatch any queued runs that may have been left behind
@@ -181,6 +183,9 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     {
         warn!("Failed to dispatch pending runs at startup: {e:#}");
     }
+
+    // Start tracker pollers for projects that have polling enabled
+    super::api::start_tracker_pollers_for_projects(&state).await;
 
     let state_for_shutdown = Arc::clone(&state);
     let mut app = build_router(state);
@@ -206,6 +211,9 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("Server error")?;
+
+    // Stop all active tracker pollers
+    state_for_shutdown.tracker_poller_manager.stop_all();
 
     // Stop all active pipeline containers/processes
     state_for_shutdown.pipeline_runner.shutdown().await;
@@ -241,6 +249,7 @@ mod tests {
             github_token: std::sync::Mutex::new(None),
             metrics: MetricsCollector::new(db),
             config_store: crate::factory::config_store::ProjectConfigStore::new(),
+            tracker_poller_manager: TrackerPollerManager::new(),
         });
         build_router(state)
     }

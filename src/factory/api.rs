@@ -19,6 +19,7 @@ use super::config_store::ProjectConfigStore;
 use super::db::DbHandle;
 use super::models::{IssueColumn, IssueId, ProjectId, RunId, TaskId};
 use super::pipeline::PipelineRunner;
+use super::tracker::TrackerPollerManager;
 use super::ws::{WsMessage, broadcast_message};
 use crate::metrics::MetricsCollector;
 
@@ -32,6 +33,7 @@ pub struct AppState {
     pub github_token: Mutex<Option<String>>,
     pub metrics: MetricsCollector,
     pub config_store: ProjectConfigStore,
+    pub tracker_poller_manager: TrackerPollerManager,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -794,6 +796,9 @@ async fn delete_project(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     match deleted {
         true => {
+            // Stop tracker poller if running for this project
+            state.tracker_poller_manager.stop_poller(id);
+
             broadcast_message(
                 &state.ws_tx,
                 &WsMessage::ProjectDeleted {
@@ -1576,6 +1581,12 @@ async fn reload_project_config(
         .reload_project_config(id, &project.path)
     {
         Ok(changed) => {
+            // Check if any tracker settings changed and reconcile the poller
+            let tracker_changed = changed.iter().any(|s| s.starts_with("factory.tracker"));
+            if tracker_changed {
+                reconcile_tracker_poller(&state, id);
+            }
+
             // Broadcast success via WebSocket
             broadcast_message(
                 &state.ws_tx,
@@ -1611,6 +1622,89 @@ async fn reload_project_config(
     }
 }
 
+// ── Tracker poller lifecycle helpers ──────────────────────────────────
+
+/// Reconcile the tracker poller for a project based on its current config.
+///
+/// If `factory.tracker.enabled` is true and owner/repo are set, starts
+/// (or restarts) the poller. Otherwise, stops it.
+fn reconcile_tracker_poller(state: &AppState, project_id: i64) {
+    let config = match state.config_store.get_config(project_id) {
+        Some(c) => c,
+        None => {
+            state.tracker_poller_manager.stop_poller(project_id);
+            return;
+        }
+    };
+
+    let tracker = &config.factory.tracker;
+
+    if tracker.enabled && !tracker.owner.is_empty() && !tracker.repo.is_empty() {
+        // Need a GitHub token to poll
+        let token = state
+            .github_token
+            .lock()
+            .ok()
+            .and_then(|t| t.clone());
+
+        match token {
+            Some(token) => {
+                let poller_config = super::tracker::TrackerPollerConfig {
+                    db: state.db.clone(),
+                    ws_tx: state.ws_tx.clone(),
+                    project_id: ProjectId(project_id),
+                    token,
+                    owner: tracker.owner.clone(),
+                    repo: tracker.repo.clone(),
+                    labels: tracker.labels.clone(),
+                    poll_interval_secs: tracker.poll_interval_secs,
+                };
+                state
+                    .tracker_poller_manager
+                    .start_poller(project_id, poller_config);
+            }
+            None => {
+                tracing::warn!(
+                    project_id,
+                    "Tracker enabled but no GitHub token configured; skipping poller start"
+                );
+                state.tracker_poller_manager.stop_poller(project_id);
+            }
+        }
+    } else {
+        state.tracker_poller_manager.stop_poller(project_id);
+    }
+}
+
+/// Start tracker pollers for all projects that have tracker polling enabled.
+///
+/// Called once during server startup after AppState is constructed.
+pub async fn start_tracker_pollers_for_projects(state: &AppState) {
+    let projects = match state.db.list_projects().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("Failed to list projects for tracker startup: {e:#}");
+            return;
+        }
+    };
+
+    for project in &projects {
+        // Load config for the project
+        if let Err(e) = state
+            .config_store
+            .load_project_config(project.id.0, &project.path)
+        {
+            tracing::warn!(
+                project_id = project.id.0,
+                "Failed to load config for tracker startup: {e:#}"
+            );
+            continue;
+        }
+
+        reconcile_tracker_poller(state, project.id.0);
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1633,6 +1727,7 @@ mod tests {
             github_token: Mutex::new(None),
             metrics: MetricsCollector::new(db),
             config_store: ProjectConfigStore::new(),
+            tracker_poller_manager: TrackerPollerManager::new(),
         });
         api_router().with_state(state)
     }
@@ -2192,6 +2287,7 @@ mod tests {
             github_token: Mutex::new(None),
             metrics: MetricsCollector::new(db),
             config_store: ProjectConfigStore::new(),
+            tracker_poller_manager: TrackerPollerManager::new(),
         });
         let app = api_router().with_state(state);
 
@@ -2743,6 +2839,7 @@ stall_timeout_secs = 600
             github_token: Mutex::new(None),
             metrics: MetricsCollector::new(db.clone()),
             config_store: ProjectConfigStore::new(),
+            tracker_poller_manager: TrackerPollerManager::new(),
         });
         let app = api_router().with_state(state);
 
@@ -2791,6 +2888,7 @@ stall_timeout_secs = 600
             github_token: Mutex::new(None),
             metrics: MetricsCollector::new(db.clone()),
             config_store: ProjectConfigStore::new(),
+            tracker_poller_manager: TrackerPollerManager::new(),
         });
         let app = api_router().with_state(state);
 

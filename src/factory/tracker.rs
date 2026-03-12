@@ -11,6 +11,7 @@
 //! - Restarts when project config reloads (stop current + start new)
 //! - Stops when disabled
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -198,6 +199,73 @@ impl TrackerPoller {
         if let Some(handle) = self.task_handle.take() {
             let _ = handle.await;
         }
+    }
+}
+
+/// Manages active [`TrackerPoller`] instances keyed by project ID.
+///
+/// Provides start/stop/restart semantics for per-project pollers. Thread-safe
+/// via `std::sync::Mutex` — the lock is held only briefly during map operations.
+pub struct TrackerPollerManager {
+    pollers: std::sync::Mutex<HashMap<i64, TrackerPoller>>,
+}
+
+impl TrackerPollerManager {
+    /// Create an empty manager with no active pollers.
+    pub fn new() -> Self {
+        Self {
+            pollers: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Start a poller for the given project. If one is already running,
+    /// it is stopped first.
+    pub fn start_poller(&self, project_id: i64, config: TrackerPollerConfig) {
+        let mut pollers = self.pollers.lock().expect("TrackerPollerManager lock poisoned");
+        // Stop existing poller for this project if present
+        if let Some(old) = pollers.remove(&project_id) {
+            old.stop();
+            // We don't join here to avoid blocking; the old task will exit on its own.
+        }
+        let poller = TrackerPoller::start(config);
+        tracing::info!(project_id, "Tracker poller started");
+        pollers.insert(project_id, poller);
+    }
+
+    /// Stop the poller for a project, if one is running.
+    pub fn stop_poller(&self, project_id: i64) {
+        let mut pollers = self.pollers.lock().expect("TrackerPollerManager lock poisoned");
+        if let Some(poller) = pollers.remove(&project_id) {
+            poller.stop();
+            tracing::info!(project_id, "Tracker poller stopped");
+        }
+    }
+
+    /// Check whether a poller is running for the given project.
+    pub fn is_running(&self, project_id: i64) -> bool {
+        let pollers = self.pollers.lock().expect("TrackerPollerManager lock poisoned");
+        pollers.contains_key(&project_id)
+    }
+
+    /// Stop all active pollers (used during server shutdown).
+    pub fn stop_all(&self) {
+        let mut pollers = self.pollers.lock().expect("TrackerPollerManager lock poisoned");
+        for (project_id, poller) in pollers.drain() {
+            poller.stop();
+            tracing::info!(project_id, "Tracker poller stopped (shutdown)");
+        }
+    }
+
+    /// Returns the number of active pollers.
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.pollers.lock().map(|p| p.len()).unwrap_or(0)
+    }
+}
+
+impl Default for TrackerPollerManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -575,5 +643,132 @@ repo = ""
         assert!(msg2.contains("TrackerPollCompleted"));
         assert!(msg2.contains("\"imported_count\":3"));
         assert!(msg2.contains("\"skipped_count\":7"));
+    }
+
+    // ── TrackerPollerManager tests ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_manager_start_and_stop_poller() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let (ws_tx, _rx) = broadcast::channel::<String>(16);
+
+        let manager = TrackerPollerManager::new();
+        assert_eq!(manager.len(), 0);
+
+        manager.start_poller(
+            1,
+            TrackerPollerConfig {
+                db: db.clone(),
+                ws_tx,
+                project_id: ProjectId(1),
+                token: "fake".to_string(),
+                owner: "org".to_string(),
+                repo: "repo".to_string(),
+                labels: vec![],
+                poll_interval_secs: 60,
+            },
+        );
+
+        assert_eq!(manager.len(), 1);
+        assert!(manager.is_running(1));
+        assert!(!manager.is_running(2));
+
+        manager.stop_poller(1);
+        assert_eq!(manager.len(), 0);
+        assert!(!manager.is_running(1));
+    }
+
+    #[tokio::test]
+    async fn test_manager_restart_replaces_poller() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let (ws_tx, _rx) = broadcast::channel::<String>(16);
+
+        let manager = TrackerPollerManager::new();
+
+        // Start first poller
+        manager.start_poller(
+            1,
+            TrackerPollerConfig {
+                db: db.clone(),
+                ws_tx: ws_tx.clone(),
+                project_id: ProjectId(1),
+                token: "token-v1".to_string(),
+                owner: "org".to_string(),
+                repo: "repo".to_string(),
+                labels: vec![],
+                poll_interval_secs: 60,
+            },
+        );
+        assert_eq!(manager.len(), 1);
+
+        // Start again with different config — should replace
+        manager.start_poller(
+            1,
+            TrackerPollerConfig {
+                db: db.clone(),
+                ws_tx,
+                project_id: ProjectId(1),
+                token: "token-v2".to_string(),
+                owner: "org".to_string(),
+                repo: "repo".to_string(),
+                labels: vec!["bug".to_string()],
+                poll_interval_secs: 120,
+            },
+        );
+        assert_eq!(manager.len(), 1);
+        assert!(manager.is_running(1));
+
+        manager.stop_poller(1);
+        assert_eq!(manager.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_manager_stop_all() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let (ws_tx, _rx) = broadcast::channel::<String>(16);
+
+        let manager = TrackerPollerManager::new();
+
+        manager.start_poller(
+            1,
+            TrackerPollerConfig {
+                db: db.clone(),
+                ws_tx: ws_tx.clone(),
+                project_id: ProjectId(1),
+                token: "t1".to_string(),
+                owner: "o1".to_string(),
+                repo: "r1".to_string(),
+                labels: vec![],
+                poll_interval_secs: 60,
+            },
+        );
+        manager.start_poller(
+            2,
+            TrackerPollerConfig {
+                db: db.clone(),
+                ws_tx,
+                project_id: ProjectId(2),
+                token: "t2".to_string(),
+                owner: "o2".to_string(),
+                repo: "r2".to_string(),
+                labels: vec![],
+                poll_interval_secs: 60,
+            },
+        );
+
+        assert_eq!(manager.len(), 2);
+
+        manager.stop_all();
+        assert_eq!(manager.len(), 0);
+        assert!(!manager.is_running(1));
+        assert!(!manager.is_running(2));
+    }
+
+    #[test]
+    fn test_manager_stop_nonexistent_is_noop() {
+        let manager = TrackerPollerManager::new();
+        // Should not panic
+        manager.stop_poller(999);
+        assert_eq!(manager.len(), 0);
     }
 }
