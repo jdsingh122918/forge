@@ -1,0 +1,21 @@
+{
+    "must_find": [
+        {
+            "id": "missing-tx-insert-rowid",
+            "severity": "high",
+            "description": "INSERT and last_insert_rowid() are not wrapped in a transaction; concurrent inserts can cause last_insert_rowid to return an incorrect ID",
+            "location": "code.rs:10-16"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-update-no-tx",
+            "description": "update_pipeline_run_status is a single atomic UPDATE statement that does not need a transaction wrapper"
+        },
+        {
+            "id": "fp-get-pipeline-run",
+            "description": "get_pipeline_run is a read-only query that does not require transaction protection",
+            "location": "code.rs:22-35"
+        }
+    ]
+}

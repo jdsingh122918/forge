@@ -1,13 +1,13 @@
 {
-  "spec_hash": "af78acbf4084",
-  "generated_at": "2026-03-12T00:03:03.492489+00:00",
+  "spec_hash": "fc36deb91474",
+  "generated_at": "2026-03-12T00:32:19.500339+00:00",
   "phases": [
     {
       "number": "01",
       "name": "Write security benchmark loader test",
       "promise": "SECURITY BENCHMARK TEST WRITTEN",
       "budget": 3,
-      "reasoning": "Add test_security_benchmarks_load test to src/cmd/autoresearch/benchmarks.rs that validates all 5 security benchmark cases load correctly, have non-empty code/context, have must_find entries, and include all expected case names. This test will fail (red) until the benchmark files are created.",
+      "reasoning": "Write test_security_benchmarks_load in src/cmd/autoresearch/benchmarks.rs that asserts BenchmarkSuite::load returns 5 cases with correct names and non-empty fields. This test will fail (red) until the benchmark files are created. Must read benchmarks.rs first to understand existing test module structure and BenchmarkSuite/BenchmarkCase types.",
       "depends_on": [],
       "skills": [],
       "permission_mode": "standard",
@@ -18,7 +18,7 @@
       "name": "Create all 5 security benchmark cases",
       "promise": "SECURITY BENCHMARKS COMPLETE",
       "budget": 10,
-      "reasoning": "Create 15 files across 5 directories: toctou-race, missing-transaction, production-unwraps, vulnerable-dependencies, command-injection. Each directory gets code.rs (buggy Rust code), context.md (description), and expected.json (must_find/must_not_flag). Content is specified verbatim in the design doc. Validate all JSON files with python3 -m json.tool, verify consistent location format, and run the test from phase 01 to confirm green.",
+      "reasoning": "Create 15 files across 5 directories: toctou-race, missing-transaction, production-unwraps, vulnerable-dependencies, command-injection. Each gets code.rs (buggy Rust code), context.md (runtime context description), and expected.json (must_find/must_not_flag arrays). Code for first 3 cases is extracted from real git history commits (d9fcb61, 0c90928, 7272cee). Cases 4-5 are synthetic. All expected.json must be valid JSON with consistent location format. After creating files, validate JSON with python3 -m json.tool and run the test from phase 01 to go green.",
       "depends_on": [
         "01"
       ],

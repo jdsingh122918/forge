@@ -1,0 +1,28 @@
+{
+    "must_find": [
+        {
+            "id": "unwrap-last-name",
+            "severity": "medium",
+            "description": "unwrap() on .last() in production parsing code; should use the owned value before push or handle None gracefully",
+            "location": "code.rs:49"
+        },
+        {
+            "id": "unwrap-last-budget",
+            "severity": "medium",
+            "description": "Second unwrap() on .last() for budget field has the same fragility risk",
+            "location": "code.rs:50"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-regex-new-unwrap",
+            "description": "Regex::new uses ? operator for proper error propagation, not unwrap",
+            "location": "code.rs:72"
+        },
+        {
+            "id": "fp-serde-error-handling",
+            "description": "JSON parse errors are properly handled via match with Err branch logging the error",
+            "location": "code.rs:55-58"
+        }
+    ]
+}

@@ -1,0 +1,22 @@
+{
+    "must_find": [
+        {
+            "id": "toctou-max-position",
+            "severity": "critical",
+            "description": "TOCTOU race: MAX(position) query runs on bare connection outside the transaction, allowing concurrent calls to read the same value and insert duplicate positions",
+            "location": "code.rs:15-26"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-last-insert-rowid",
+            "description": "last_insert_rowid() is called on the transaction handle (tx), which is correct and scoped to this transaction",
+            "location": "code.rs:36"
+        },
+        {
+            "id": "fp-get-issue-after-commit",
+            "description": "Reading the issue after commit via get_issue is a normal read-after-write pattern, not a race condition",
+            "location": "code.rs:38-40"
+        }
+    ]
+}
