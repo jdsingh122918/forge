@@ -520,7 +520,7 @@ mod tests {
 
         // Recover orphaned runs — should also recover Stalled runs
         let count = recover_orphaned_runs(conn).await.unwrap();
-        assert!(count >= 1, "Should recover at least the stalled run");
+        assert_eq!(count, 1, "Should recover exactly the stalled run");
 
         // Verify stalled run is now failed
         let recovered = get_pipeline_run(conn, run_stalled.id)

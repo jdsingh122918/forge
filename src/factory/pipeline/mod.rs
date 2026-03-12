@@ -976,6 +976,7 @@ pub fn is_valid_transition(from: &PipelineStatus, to: &PipelineStatus) -> bool {
             | (PipelineStatus::Running, PipelineStatus::Failed)
             | (PipelineStatus::Running, PipelineStatus::Cancelled)
             | (PipelineStatus::Running, PipelineStatus::Stalled)
+            | (PipelineStatus::Stalled, PipelineStatus::Running)
             | (PipelineStatus::Stalled, PipelineStatus::Failed)
             | (PipelineStatus::Stalled, PipelineStatus::Cancelled)
     )
@@ -1008,6 +1009,7 @@ mod tests {
     fn test_is_cancellable() {
         assert!(is_cancellable(&PipelineStatus::Queued));
         assert!(is_cancellable(&PipelineStatus::Running));
+        assert!(is_cancellable(&PipelineStatus::Stalled));
         assert!(!is_cancellable(&PipelineStatus::Completed));
         assert!(!is_cancellable(&PipelineStatus::Failed));
         assert!(!is_cancellable(&PipelineStatus::Cancelled));
@@ -1033,6 +1035,22 @@ mod tests {
         ));
         assert!(is_valid_transition(
             &PipelineStatus::Running,
+            &PipelineStatus::Cancelled
+        ));
+        assert!(is_valid_transition(
+            &PipelineStatus::Running,
+            &PipelineStatus::Stalled
+        ));
+        assert!(is_valid_transition(
+            &PipelineStatus::Stalled,
+            &PipelineStatus::Running
+        ));
+        assert!(is_valid_transition(
+            &PipelineStatus::Stalled,
+            &PipelineStatus::Failed
+        ));
+        assert!(is_valid_transition(
+            &PipelineStatus::Stalled,
             &PipelineStatus::Cancelled
         ));
     }
@@ -1062,6 +1080,14 @@ mod tests {
         assert!(!is_valid_transition(
             &PipelineStatus::Queued,
             &PipelineStatus::Failed
+        ));
+        assert!(!is_valid_transition(
+            &PipelineStatus::Stalled,
+            &PipelineStatus::Queued
+        ));
+        assert!(!is_valid_transition(
+            &PipelineStatus::Stalled,
+            &PipelineStatus::Completed
         ));
     }
 
