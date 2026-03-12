@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "85be27e81fec",
+  "session_id": "aebe6771-3a41-4a9e-a818-36201c63724b",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-12T13:44:55.632157Z",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "src/audit/mod.rs",
+    "src/cmd/run.rs",
+    "src/council/config.rs",
+    "src/forge_config.rs",
+    "src/orchestrator/runner.rs",
+    "docs/superpowers/plans/2026-03-11-council-integration.md"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "f00f9af008f3",
+  "token_usage": {
+    "input_tokens": 3,
+    "cache_creation_tokens": 30121,
+    "cache_read_tokens": 0,
+    "output_tokens": 406,
+    "api_call_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-12T13:44:55.612298Z",
+    "agent_lines": 1543,
+    "human_added": 9861,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 11404,
+    "agent_percentage": 13.53034023149772
+  }
+}
