@@ -37,6 +37,7 @@ pub struct HotReloadableSettings {
     pub tracker_owner: String,
     pub tracker_repo: String,
     pub tracker_poll_interval_secs: u64,
+    pub tracker_labels: Vec<String>,
     pub reconciliation_stall_timeout_secs: u64,
 }
 
@@ -49,6 +50,7 @@ impl HotReloadableSettings {
             tracker_owner: config.factory.tracker.owner.clone(),
             tracker_repo: config.factory.tracker.repo.clone(),
             tracker_poll_interval_secs: config.factory.tracker.poll_interval_secs,
+            tracker_labels: config.factory.tracker.labels.clone(),
             reconciliation_stall_timeout_secs: config.factory.reconciliation.stall_timeout_secs,
         }
     }
@@ -70,6 +72,9 @@ impl HotReloadableSettings {
         }
         if self.tracker_poll_interval_secs != other.tracker_poll_interval_secs {
             changed.push("factory.tracker.poll_interval_secs".to_string());
+        }
+        if self.tracker_labels != other.tracker_labels {
+            changed.push("factory.tracker.labels".to_string());
         }
         if self.reconciliation_stall_timeout_secs != other.reconciliation_stall_timeout_secs {
             changed.push("factory.reconciliation.stall_timeout_secs".to_string());
@@ -467,6 +472,7 @@ stall_timeout_secs = 500
             tracker_owner: "org".to_string(),
             tracker_repo: "repo".to_string(),
             tracker_poll_interval_secs: 300,
+            tracker_labels: vec![],
             reconciliation_stall_timeout_secs: 300,
         };
 
@@ -476,6 +482,7 @@ stall_timeout_secs = 500
             tracker_owner: "org".to_string(),
             tracker_repo: "repo".to_string(),
             tracker_poll_interval_secs: 300,
+            tracker_labels: vec![],
             reconciliation_stall_timeout_secs: 600,
         };
 

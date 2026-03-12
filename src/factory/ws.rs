@@ -246,6 +246,20 @@ pub enum WsMessage {
         project_id: ProjectId,
         error: String,
     },
+
+    // Tracker polling events
+    TrackerPollStarted {
+        project_id: ProjectId,
+    },
+    TrackerPollCompleted {
+        project_id: ProjectId,
+        imported_count: usize,
+        skipped_count: usize,
+    },
+    TrackerPollError {
+        project_id: ProjectId,
+        error: String,
+    },
 }
 
 // ── WebSocket handler ────────────────────────────────────────────────

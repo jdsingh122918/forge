@@ -74,4 +74,5 @@ pub mod planner;
 pub mod reconciliation;
 pub mod sandbox;
 pub mod server;
+pub mod tracker;
 pub mod ws;

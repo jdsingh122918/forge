@@ -627,6 +627,9 @@ pub struct FactoryTrackerConfig {
     /// Polling interval in seconds.
     #[serde(default = "default_tracker_poll_interval_secs")]
     pub poll_interval_secs: u64,
+    /// Optional label filter — only import issues with these labels.
+    #[serde(default)]
+    pub labels: Vec<String>,
 }
 
 fn default_tracker_poll_interval_secs() -> u64 {
@@ -640,6 +643,7 @@ impl Default for FactoryTrackerConfig {
             owner: String::new(),
             repo: String::new(),
             poll_interval_secs: default_tracker_poll_interval_secs(),
+            labels: Vec::new(),
         }
     }
 }
