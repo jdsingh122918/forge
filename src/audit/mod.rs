@@ -169,6 +169,11 @@ impl PhaseAudit {
         });
     }
 
+    /// Add an iteration audit entry to this phase.
+    pub fn add_iteration(&mut self, iteration: IterationAudit) {
+        self.iterations.push(iteration);
+    }
+
     /// Check if this is a sub-phase audit.
     pub fn is_sub_phase(&self) -> bool {
         self.parent_phase.is_some()

@@ -302,10 +302,33 @@ impl ClaudeRunner {
             .config
             .forge_config()
             .and_then(|forge_config| forge_config.council_config())
-            .map(|config| config.enabled)
+            .map(|config| config.resolve_enabled())
             .unwrap_or(false);
 
         phase.use_council(global_enabled)
+    }
+
+    /// Check if council should be used, with guardrails for misconfiguration.
+    pub fn should_use_council_effective(&self, phase: &Phase) -> bool {
+        if !self.should_use_council(phase) {
+            return false;
+        }
+
+        let has_minimum_workers = self
+            .config
+            .forge_config()
+            .and_then(|forge_config| forge_config.council_config())
+            .map(|config| config.has_minimum_workers())
+            .unwrap_or(false);
+
+        if !has_minimum_workers {
+            warn!(
+                "Council is enabled but fewer than 2 workers are configured. Falling back to single-engine execution. Add at least 2 workers in [council.workers] in forge.toml."
+            );
+            return false;
+        }
+
+        true
     }
 
     pub async fn run_iteration(
@@ -314,8 +337,39 @@ impl ClaudeRunner {
         iteration: u32,
         ui: Option<Arc<OrchestratorUI>>,
     ) -> Result<IterationResult> {
-        self.run_iteration_with_context(phase, iteration, ui, None, None, None)
+        self.run_effective_iteration(phase, iteration, ui, None, None, None)
             .await
+    }
+
+    /// Unified iteration dispatch for sequential execution.
+    pub async fn run_effective_iteration(
+        &self,
+        phase: &Phase,
+        iteration: u32,
+        ui: Option<Arc<OrchestratorUI>>,
+        prompt_context: Option<&PromptContext>,
+        resume_session_id: Option<&str>,
+        append_system_prompt: Option<&str>,
+    ) -> Result<IterationResult> {
+        if self.should_use_council_effective(phase) {
+            if let Some(ref ui) = ui {
+                ui.log_step("Using council mode for this iteration");
+            }
+
+            return self
+                .run_council_iteration(phase, iteration, ui, prompt_context, append_system_prompt)
+                .await;
+        }
+
+        self.run_iteration_with_context(
+            phase,
+            iteration,
+            ui,
+            prompt_context,
+            resume_session_id,
+            append_system_prompt,
+        )
+        .await
     }
 
     pub async fn run_council_iteration(
@@ -323,6 +377,8 @@ impl ClaudeRunner {
         phase: &Phase,
         iteration: u32,
         ui: Option<Arc<OrchestratorUI>>,
+        prompt_context: Option<&PromptContext>,
+        append_system_prompt: Option<&str>,
     ) -> Result<IterationResult> {
         let council_config = self
             .config
@@ -330,7 +386,19 @@ impl ClaudeRunner {
             .and_then(|forge_config| forge_config.council_config())
             .cloned()
             .context("council configuration is not available")?;
-        let prompt = self.generate_prompt(phase);
+        let mut prompt = self.generate_prompt_with_context(phase, prompt_context);
+
+        if let Some(feedback) = append_system_prompt {
+            if let Some(ref ui) = ui {
+                ui.log_step(&format!(
+                    "Council iteration feedback: {} chars",
+                    feedback.len()
+                ));
+            }
+            prompt.push_str("\n\n## ITERATION FEEDBACK\n");
+            prompt.push_str(feedback);
+        }
+
         let prompt_file = self.get_prompt_file(&phase.number, iteration);
 
         if let Some(ref ui) = ui {
@@ -890,6 +958,19 @@ mod tests {
         Phase::new("01", "Council Phase", "DONE", 5, "reason", vec![])
     }
 
+    fn with_council_env_cleared(test: impl FnOnce()) {
+        let _guard = crate::council::config::COUNCIL_ENV_MUTEX.lock().unwrap();
+        let saved = std::env::var("COUNCIL_ENABLED").ok();
+        unsafe { std::env::remove_var("COUNCIL_ENABLED") };
+
+        test();
+
+        match saved {
+            Some(value) => unsafe { std::env::set_var("COUNCIL_ENABLED", value) },
+            None => unsafe { std::env::remove_var("COUNCIL_ENABLED") },
+        }
+    }
+
     fn worker_result(signals: &[&str]) -> WorkerResult {
         WorkerResult {
             worker_name: "worker-a".to_string(),
@@ -1419,23 +1500,178 @@ mod tests {
 
     #[test]
     fn test_should_use_council_disabled_globally() {
-        let dir = tempdir().unwrap();
-        let config = setup_test_config_with_forge_toml(
-            dir.path(),
-            "# Spec",
-            r#"
+        with_council_env_cleared(|| {
+            let dir = tempdir().unwrap();
+            let config = setup_test_config_with_forge_toml(
+                dir.path(),
+                "# Spec",
+                r#"
 [council]
 enabled = false
 "#,
-        );
-        let runner = ClaudeRunner::new(config);
-        let phase = test_phase();
+            );
+            let runner = ClaudeRunner::new(config);
+            let phase = test_phase();
 
-        assert!(!runner.should_use_council(&phase));
+            assert!(!runner.should_use_council(&phase));
+        });
     }
 
     #[test]
     fn test_should_use_council_enabled_globally() {
+        with_council_env_cleared(|| {
+            let dir = tempdir().unwrap();
+            let config = setup_test_config_with_forge_toml(
+                dir.path(),
+                "# Spec",
+                r#"
+[council]
+enabled = true
+"#,
+            );
+            let runner = ClaudeRunner::new(config);
+            let phase = test_phase();
+
+            assert!(runner.should_use_council(&phase));
+        });
+    }
+
+    #[test]
+    fn test_should_use_council_phase_override_true() {
+        with_council_env_cleared(|| {
+            let dir = tempdir().unwrap();
+            let config = setup_test_config_with_forge_toml(
+                dir.path(),
+                "# Spec",
+                r#"
+[council]
+enabled = false
+"#,
+            );
+            let runner = ClaudeRunner::new(config);
+            let mut phase = test_phase();
+            phase.council = Some(true);
+
+            assert!(runner.should_use_council(&phase));
+        });
+    }
+
+    #[test]
+    fn test_should_use_council_phase_override_false() {
+        with_council_env_cleared(|| {
+            let dir = tempdir().unwrap();
+            let config = setup_test_config_with_forge_toml(
+                dir.path(),
+                "# Spec",
+                r#"
+[council]
+enabled = true
+"#,
+            );
+            let runner = ClaudeRunner::new(config);
+            let mut phase = test_phase();
+            phase.council = Some(false);
+
+            assert!(!runner.should_use_council(&phase));
+        });
+    }
+
+    #[test]
+    fn test_should_use_council_effective_enabled_no_workers_falls_back() {
+        with_council_env_cleared(|| {
+            let dir = tempdir().unwrap();
+            let config = setup_test_config_with_forge_toml(
+                dir.path(),
+                "# Spec",
+                r#"
+[council]
+enabled = true
+"#,
+            );
+            let runner = ClaudeRunner::new(config);
+            let phase = test_phase();
+
+            assert!(!runner.should_use_council_effective(&phase));
+        });
+    }
+
+    #[test]
+    fn test_should_use_council_effective_enabled_with_workers() {
+        with_council_env_cleared(|| {
+            let dir = tempdir().unwrap();
+            let config = setup_test_config_with_forge_toml(
+                dir.path(),
+                "# Spec",
+                r#"
+[council]
+enabled = true
+
+[council.workers.claude]
+cmd = "claude"
+
+[council.workers.codex]
+cmd = "codex"
+"#,
+            );
+            let runner = ClaudeRunner::new(config);
+            let phase = test_phase();
+
+            assert!(runner.should_use_council_effective(&phase));
+        });
+    }
+
+    #[test]
+    fn test_should_use_council_effective_disabled() {
+        with_council_env_cleared(|| {
+            let dir = tempdir().unwrap();
+            let config = setup_test_config_with_forge_toml(
+                dir.path(),
+                "# Spec",
+                r#"
+[council]
+enabled = false
+"#,
+            );
+            let runner = ClaudeRunner::new(config);
+            let phase = test_phase();
+
+            assert!(!runner.should_use_council_effective(&phase));
+        });
+    }
+
+    #[test]
+    fn test_should_use_council_env_override_enables() {
+        let _guard = crate::council::config::COUNCIL_ENV_MUTEX.lock().unwrap();
+        let saved = std::env::var("COUNCIL_ENABLED").ok();
+        unsafe { std::env::set_var("COUNCIL_ENABLED", "true") };
+
+        let dir = tempdir().unwrap();
+        let config = setup_test_config_with_forge_toml(
+            dir.path(),
+            "# Spec",
+            r#"
+[council]
+enabled = false
+"#,
+        );
+        let runner = ClaudeRunner::new(config);
+        let phase = test_phase();
+
+        // Config says disabled, but env var overrides to enabled
+        assert!(runner.should_use_council(&phase));
+
+        match saved {
+            Some(value) => unsafe { std::env::set_var("COUNCIL_ENABLED", value) },
+            None => unsafe { std::env::remove_var("COUNCIL_ENABLED") },
+        }
+    }
+
+    #[test]
+    fn test_should_use_council_env_override_disables() {
+        let _guard = crate::council::config::COUNCIL_ENV_MUTEX.lock().unwrap();
+        let saved = std::env::var("COUNCIL_ENABLED").ok();
+        unsafe { std::env::set_var("COUNCIL_ENABLED", "false") };
+
         let dir = tempdir().unwrap();
         let config = setup_test_config_with_forge_toml(
             dir.path(),
@@ -1448,43 +1684,24 @@ enabled = true
         let runner = ClaudeRunner::new(config);
         let phase = test_phase();
 
-        assert!(runner.should_use_council(&phase));
-    }
-
-    #[test]
-    fn test_should_use_council_phase_override_true() {
-        let dir = tempdir().unwrap();
-        let config = setup_test_config_with_forge_toml(
-            dir.path(),
-            "# Spec",
-            r#"
-[council]
-enabled = false
-"#,
-        );
-        let runner = ClaudeRunner::new(config);
-        let mut phase = test_phase();
-        phase.council = Some(true);
-
-        assert!(runner.should_use_council(&phase));
-    }
-
-    #[test]
-    fn test_should_use_council_phase_override_false() {
-        let dir = tempdir().unwrap();
-        let config = setup_test_config_with_forge_toml(
-            dir.path(),
-            "# Spec",
-            r#"
-[council]
-enabled = true
-"#,
-        );
-        let runner = ClaudeRunner::new(config);
-        let mut phase = test_phase();
-        phase.council = Some(false);
-
+        // Config says enabled, but env var overrides to disabled
         assert!(!runner.should_use_council(&phase));
+
+        match saved {
+            Some(value) => unsafe { std::env::set_var("COUNCIL_ENABLED", value) },
+            None => unsafe { std::env::remove_var("COUNCIL_ENABLED") },
+        }
+    }
+
+    #[test]
+    fn test_run_effective_iteration_compiles() {
+        let dir = tempdir().unwrap();
+        let config = setup_test_config_with_forge_toml(dir.path(), "# Spec", "");
+        let runner = ClaudeRunner::new(config);
+        let phase = test_phase();
+
+        let future = runner.run_effective_iteration(&phase, 1, None, None, None, None);
+        std::mem::drop(future);
     }
 
     #[test]

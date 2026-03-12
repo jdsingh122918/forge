@@ -27,7 +27,8 @@ pub async fn run_orchestrator(
     project_dir: PathBuf,
     start_phase: Option<String>,
 ) -> Result<()> {
-    use forge::audit::{AuditLogger, FileChangeSummary, PhaseAudit, PhaseOutcome, RunConfig};
+    use chrono::Utc;
+    use forge::audit::{AuditLogger, FileChangeSummary, IterationAudit, PhaseAudit, PhaseOutcome, RunConfig};
     use forge::compaction::{
         CompactionManager, DEFAULT_MODEL_WINDOW_CHARS, extract_output_summary,
     };
@@ -38,10 +39,16 @@ pub async fn run_orchestrator(
     };
     use forge::hooks::{HookAction, HookManager};
     use forge::init::get_forge_dir;
-    use forge::orchestrator::{ClaudeRunner, IterationFeedback, PromptContext, StateManager};
-    use forge::phase::load_phases_or_default;
+    use forge::orchestrator::{
+        ClaudeRunner, IterationFeedback, PromptContext, ReviewIntegration, ReviewIntegrationConfig,
+        StateManager,
+    };
+    use forge::phase::{PhaseReviewSettings, PhaseSpecialistConfig, load_phases_or_default};
+    use forge::review::ArbiterConfig;
     use forge::tracker::GitTracker;
     use forge::ui::OrchestratorUI;
+    use std::str::FromStr;
+    use std::time::Instant;
 
     check_run_prerequisites(&project_dir).context("Failed to check run prerequisites")?;
 
@@ -94,6 +101,29 @@ pub async fn run_orchestrator(
     // Apply permission modes from config to each phase
     let forge_toml = ForgeToml::load_or_default(&forge_dir)
         .context("Failed to load forge.toml configuration")?;
+    let review_integration = if forge_toml.reviews.enabled {
+        let mut arbiter = ArbiterConfig::default()
+            .with_claude_cmd(&config.claude_cmd)
+            .with_skip_permissions(config.skip_permissions)
+            .with_verbose(cli.verbose)
+            .with_confidence_threshold(forge_toml.reviews.confidence_threshold);
+        arbiter.mode = forge_toml.reviews.mode.to_resolution_mode();
+
+        let mut review_config = ReviewIntegrationConfig::enabled()
+            .with_working_dir(project_dir.clone())
+            .with_claude_cmd(&config.claude_cmd)
+            .with_parallel(forge_toml.reviews.parallel)
+            .with_verbose(cli.verbose);
+        review_config.dispatcher = review_config
+            .dispatcher
+            .clone()
+            .with_skip_permissions(config.skip_permissions)
+            .with_arbiter(arbiter)
+            .with_forge_dir(forge_dir.clone());
+        ReviewIntegration::new(review_config)
+    } else {
+        ReviewIntegration::new(ReviewIntegrationConfig::default())
+    };
     let phases: Vec<_> = all_phases
         .into_iter()
         .filter(|p| p.number.as_str() >= start.as_str())
@@ -104,6 +134,30 @@ pub async fn run_orchestrator(
             // (phases.json can override with explicit permission_mode)
             if p.permission_mode == PermissionMode::Standard {
                 p.permission_mode = settings.permission_mode;
+            }
+            if p.council.is_none() {
+                p.council = settings.council;
+            }
+            if p.reviews.is_none()
+                && forge_toml.reviews.enabled
+                && !forge_toml.reviews.specialists.is_empty()
+            {
+                p.reviews = Some(PhaseReviewSettings {
+                    specialists: forge_toml
+                        .reviews
+                        .specialists
+                        .iter()
+                        .map(|specialist| PhaseSpecialistConfig {
+                            specialist_type: forge::review::SpecialistType::from_str(
+                                &specialist.specialist_type,
+                            )
+                            .unwrap(),
+                            gate: specialist.gate,
+                            focus_areas: specialist.focus_areas.clone(),
+                        })
+                        .collect(),
+                    parallel: forge_toml.reviews.parallel,
+                });
             }
             // Budget is not overridden from config — phases.json is the primary source.
             p
@@ -342,9 +396,12 @@ pub async fn run_orchestrator(
                 previous_feedback = None;
             }
 
+            let iter_started_at = Utc::now();
+            let iter_start_instant = Instant::now();
+
             // Run iteration with optional compaction context, session resumption, and feedback
             let result = runner
-                .run_iteration_with_context(
+                .run_effective_iteration(
                     &phase,
                     iter,
                     Some(ui.clone()),
@@ -422,6 +479,19 @@ pub async fn run_orchestrator(
                 &result.signals,
                 &output_summary,
             );
+
+            phase_audit.add_iteration(IterationAudit {
+                iteration: iter,
+                started_at: iter_started_at,
+                duration_secs: iter_start_instant.elapsed().as_secs_f64(),
+                claude_session: result.session.clone(),
+                git_snapshot_before: snapshot_sha.clone(),
+                git_snapshot_after: tracker.head_sha(),
+                file_diffs: vec![],
+                promise_found: result.promise_found,
+                signals: Some(result.signals.clone()),
+                council_data: None,
+            });
 
             // Show context status in verbose mode
             if cli.verbose && iter > 1 {
@@ -594,6 +664,52 @@ pub async fn run_orchestrator(
             }
 
             ui.phase_complete(&phase.number);
+
+            if review_integration.is_enabled() {
+                if cli.verbose {
+                    println!("  Running post-phase reviews...");
+                }
+
+                let files: Vec<String> = previous_changes
+                    .as_ref()
+                    .map(|changes| {
+                        changes
+                            .files_added
+                            .iter()
+                            .chain(changes.files_modified.iter())
+                            .map(|path| path.to_string_lossy().to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                match review_integration
+                    .run_phase_reviews(&phase, phase_audit.iterations.len() as u32, &files)
+                    .await
+                {
+                    Ok(review_result) => {
+                        let passed = review_result.can_proceed();
+                        let findings = review_result.aggregation.all_findings_count();
+
+                        if cli.verbose {
+                            println!(
+                                "  Reviews: {} ({} findings)",
+                                if passed { "passed" } else { "failed" },
+                                findings
+                            );
+                        }
+
+                        if !passed {
+                            warn!(
+                                "Phase {} reviews failed with {} findings",
+                                phase.number, findings
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Review error for phase {}: {}", phase.number, e);
+                    }
+                }
+            }
         }
 
         audit.add_phase(phase_audit)?;

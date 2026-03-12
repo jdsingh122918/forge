@@ -209,6 +209,9 @@ pub struct PhaseOverride {
     /// Additional skills for matching phases
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Per-phase council override (true = force on, false = force off, None = use global)
+    #[serde(default)]
+    pub council: Option<bool>,
 }
 
 /// Phase override configuration section.
@@ -684,6 +687,7 @@ impl ForgeToml {
             permission_mode: self.defaults.permission_mode,
             context_limit: self.defaults.context_limit.clone(),
             skills: Vec::new(),
+            council: None,
         };
 
         // Apply matching overrides
@@ -703,6 +707,9 @@ impl ForgeToml {
                     if !skills.contains(skill) {
                         skills.push(skill.clone());
                     }
+                }
+                if let Some(council) = override_cfg.council {
+                    settings.council = Some(council);
                 }
             }
         }
@@ -750,6 +757,8 @@ pub struct PhaseSettings {
     pub context_limit: String,
     /// Skills to load for this phase (global + phase-specific)
     pub skills: Vec<String>,
+    /// Council override resolved from matching phase patterns.
+    pub council: Option<bool>,
 }
 
 /// Check if a pattern matches a phase name.
@@ -1225,6 +1234,43 @@ permission_mode = "autonomous"
             Some(PermissionMode::Autonomous)
         );
         assert_eq!(test_override.budget, None);
+        assert_eq!(test_override.council, None);
+    }
+
+    #[test]
+    fn test_phase_override_council_field() {
+        let toml_str = r#"
+[project]
+name = "test"
+
+[phases.overrides."*-scaffold"]
+council = false
+
+[phases.overrides."*-security*"]
+council = true
+"#;
+        let config = ForgeToml::parse(toml_str).unwrap();
+
+        let scaffold_override = config.phases.overrides.get("*-scaffold").unwrap();
+        assert_eq!(scaffold_override.council, Some(false));
+
+        let security_override = config.phases.overrides.get("*-security*").unwrap();
+        assert_eq!(security_override.council, Some(true));
+    }
+
+    #[test]
+    fn test_phase_override_council_field_absent() {
+        let toml_str = r#"
+[project]
+name = "test"
+
+[phases.overrides."*-scaffold"]
+budget = 5
+"#;
+        let config = ForgeToml::parse(toml_str).unwrap();
+
+        let scaffold_override = config.phases.overrides.get("*-scaffold").unwrap();
+        assert_eq!(scaffold_override.council, None);
     }
 
     #[test]
@@ -1233,6 +1279,7 @@ permission_mode = "autonomous"
         let settings = toml.phase_settings("some-phase");
         assert_eq!(settings.budget, 8);
         assert_eq!(settings.permission_mode, PermissionMode::Standard);
+        assert_eq!(settings.council, None);
     }
 
     #[test]
@@ -1250,10 +1297,28 @@ permission_mode = "strict"
         let regular = toml.phase_settings("api-layer");
         assert_eq!(regular.budget, 10);
         assert_eq!(regular.permission_mode, PermissionMode::Standard);
+        assert_eq!(regular.council, None);
 
         let database = toml.phase_settings("database-setup");
         assert_eq!(database.budget, 20);
         assert_eq!(database.permission_mode, PermissionMode::Standard); // "strict" maps to Standard
+        assert_eq!(database.council, None);
+    }
+
+    #[test]
+    fn test_forge_toml_phase_settings_with_council_override() {
+        let content = r#"
+[phases.overrides."security-*"]
+council = true
+
+[phases.overrides."planning-*"]
+council = false
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+
+        assert_eq!(toml.phase_settings("security-audit").council, Some(true));
+        assert_eq!(toml.phase_settings("planning-doc").council, Some(false));
+        assert_eq!(toml.phase_settings("feature-work").council, None);
     }
 
     #[test]

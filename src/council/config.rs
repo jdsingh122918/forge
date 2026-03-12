@@ -33,6 +33,24 @@ fn default_anonymize_reviews() -> bool {
     true
 }
 
+impl CouncilConfig {
+    /// Council requires at least two workers for meaningful peer review.
+    pub fn has_minimum_workers(&self) -> bool {
+        self.workers.len() >= 2
+    }
+
+    /// Resolve whether council is enabled, allowing `COUNCIL_ENABLED` to override config.
+    pub fn resolve_enabled(&self) -> bool {
+        if let Ok(value) = std::env::var("COUNCIL_ENABLED")
+            && let Ok(enabled) = value.to_ascii_lowercase().parse::<bool>()
+        {
+            return enabled;
+        }
+
+        self.enabled
+    }
+}
+
 impl Default for CouncilConfig {
     fn default() -> Self {
         Self {
@@ -68,6 +86,9 @@ fn default_worker_role() -> String {
 }
 
 #[cfg(test)]
+pub(crate) static COUNCIL_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
@@ -88,6 +109,62 @@ mod tests {
     #[test]
     fn test_council_config_enabled_false_by_default() {
         assert!(!CouncilConfig::default().enabled);
+    }
+
+    #[test]
+    fn test_council_config_has_minimum_workers_empty() {
+        let config = CouncilConfig::default();
+        assert!(!config.has_minimum_workers());
+    }
+
+    #[test]
+    fn test_council_config_has_minimum_workers_one() {
+        let mut config = CouncilConfig::default();
+        config.workers.insert(
+            "claude".to_string(),
+            WorkerConfig {
+                cmd: "claude".to_string(),
+                role: default_worker_role(),
+                flags: vec![],
+                model: None,
+                reasoning_effort: None,
+                sandbox: None,
+                approval_policy: None,
+            },
+        );
+
+        assert!(!config.has_minimum_workers());
+    }
+
+    #[test]
+    fn test_council_config_has_minimum_workers_two() {
+        let mut config = CouncilConfig::default();
+        config.workers.insert(
+            "claude".to_string(),
+            WorkerConfig {
+                cmd: "claude".to_string(),
+                role: default_worker_role(),
+                flags: vec![],
+                model: None,
+                reasoning_effort: None,
+                sandbox: None,
+                approval_policy: None,
+            },
+        );
+        config.workers.insert(
+            "codex".to_string(),
+            WorkerConfig {
+                cmd: "codex".to_string(),
+                role: default_worker_role(),
+                flags: vec![],
+                model: None,
+                reasoning_effort: None,
+                sandbox: None,
+                approval_policy: None,
+            },
+        );
+
+        assert!(config.has_minimum_workers());
     }
 
     #[test]
@@ -275,5 +352,71 @@ mod tests {
     #[test]
     fn test_council_config_anonymize_reviews_default_true() {
         assert!(CouncilConfig::default().anonymize_reviews);
+    }
+
+    #[test]
+    fn test_resolve_enabled_no_env_returns_config_value() {
+        let _guard = COUNCIL_ENV_MUTEX.lock().unwrap();
+        let saved = std::env::var("COUNCIL_ENABLED").ok();
+        unsafe { std::env::remove_var("COUNCIL_ENABLED") };
+
+        let mut config = CouncilConfig::default();
+        config.enabled = true;
+        assert!(config.resolve_enabled());
+
+        config.enabled = false;
+        assert!(!config.resolve_enabled());
+
+        match saved {
+            Some(value) => unsafe { std::env::set_var("COUNCIL_ENABLED", value) },
+            None => unsafe { std::env::remove_var("COUNCIL_ENABLED") },
+        }
+    }
+
+    #[test]
+    fn test_resolve_enabled_env_true_overrides() {
+        let _guard = COUNCIL_ENV_MUTEX.lock().unwrap();
+        let saved = std::env::var("COUNCIL_ENABLED").ok();
+        unsafe { std::env::set_var("COUNCIL_ENABLED", "true") };
+
+        let config = CouncilConfig::default();
+        assert!(config.resolve_enabled());
+
+        match saved {
+            Some(value) => unsafe { std::env::set_var("COUNCIL_ENABLED", value) },
+            None => unsafe { std::env::remove_var("COUNCIL_ENABLED") },
+        }
+    }
+
+    #[test]
+    fn test_resolve_enabled_env_false_overrides() {
+        let _guard = COUNCIL_ENV_MUTEX.lock().unwrap();
+        let saved = std::env::var("COUNCIL_ENABLED").ok();
+        unsafe { std::env::set_var("COUNCIL_ENABLED", "false") };
+
+        let mut config = CouncilConfig::default();
+        config.enabled = true;
+        assert!(!config.resolve_enabled());
+
+        match saved {
+            Some(value) => unsafe { std::env::set_var("COUNCIL_ENABLED", value) },
+            None => unsafe { std::env::remove_var("COUNCIL_ENABLED") },
+        }
+    }
+
+    #[test]
+    fn test_resolve_enabled_env_invalid_uses_config() {
+        let _guard = COUNCIL_ENV_MUTEX.lock().unwrap();
+        let saved = std::env::var("COUNCIL_ENABLED").ok();
+        unsafe { std::env::set_var("COUNCIL_ENABLED", "notabool") };
+
+        let mut config = CouncilConfig::default();
+        config.enabled = true;
+        assert!(config.resolve_enabled());
+
+        match saved {
+            Some(value) => unsafe { std::env::set_var("COUNCIL_ENABLED", value) },
+            None => unsafe { std::env::remove_var("COUNCIL_ENABLED") },
+        }
     }
 }
