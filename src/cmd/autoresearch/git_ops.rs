@@ -429,7 +429,182 @@ mod tests {
         );
     }
 
-    // --- Full keep/discard cycle ---
+    // --- LoopGitOps trait implementation tests ---
+    // These tests exercise AutoresearchGitOps through the LoopGitOps trait
+    // interface (Box<dyn LoopGitOps>) to verify the trait contract.
+
+    /// Create a trait object for testing the LoopGitOps interface.
+    fn setup_trait_ops() -> (Box<dyn LoopGitOps>, tempfile::TempDir) {
+        let (ops, dir) = setup_repo();
+        (Box::new(ops), dir)
+    }
+
+    #[test]
+    fn test_trait_head_sha_returns_valid_hex() {
+        let (ops, _dir) = setup_trait_ops();
+        let sha = ops.head_sha().expect("head_sha via trait");
+        assert_eq!(sha.len(), 40);
+        assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_trait_create_branch_and_checkout() {
+        let (ops, _dir) = setup_trait_ops();
+        ops.create_branch("trait-branch").expect("create_branch via trait");
+
+        // HEAD should now be on the new branch — verify via head_sha consistency.
+        let sha = ops.head_sha().expect("head_sha after create");
+        assert_eq!(sha.len(), 40, "HEAD must still be a valid SHA after branch creation");
+    }
+
+    #[test]
+    fn test_trait_commit_returns_new_sha() {
+        let (ops, dir) = setup_trait_ops();
+        ops.create_branch("trait-commit").expect("create_branch");
+
+        let sha_before = ops.head_sha().expect("head before");
+        fs::write(dir.path().join("trait_file.txt"), "trait test\n").expect("write");
+        let commit_sha = ops.commit("trait commit").expect("commit via trait");
+
+        assert_ne!(sha_before, commit_sha, "commit must advance HEAD");
+        assert_eq!(commit_sha.len(), 40);
+        assert_eq!(ops.head_sha().expect("head after"), commit_sha);
+    }
+
+    #[test]
+    fn test_trait_reset_reverts_uncommitted_changes() {
+        let (ops, dir) = setup_trait_ops();
+        ops.create_branch("trait-reset").expect("create_branch");
+
+        // Commit a baseline.
+        let baseline = dir.path().join("baseline.txt");
+        fs::write(&baseline, "stable\n").expect("write baseline");
+        ops.commit("baseline").expect("commit baseline");
+
+        // Make uncommitted changes.
+        fs::write(&baseline, "unstable\n").expect("modify baseline");
+        fs::write(dir.path().join("extra.txt"), "extra\n").expect("write extra");
+
+        ops.reset_to_last_keep().expect("reset via trait");
+
+        assert_eq!(
+            fs::read_to_string(&baseline).expect("read"),
+            "stable\n",
+            "uncommitted changes must be reverted"
+        );
+    }
+
+    #[test]
+    fn test_trait_reset_without_keep_fails() {
+        let (ops, _dir) = setup_trait_ops();
+        let result = ops.reset_to_last_keep();
+        assert!(result.is_err(), "reset must fail when no keep SHA is set");
+    }
+
+    #[test]
+    fn test_trait_checkout_existing_branch() {
+        let (ops, _dir) = setup_trait_ops();
+
+        // Remember HEAD before branching.
+        let _original_sha = ops.head_sha().expect("original sha");
+
+        ops.create_branch("trait-side").expect("create side branch");
+        // create_branch already checks it out, so switch back manually using
+        // a second create_branch call on a different name — but instead let's
+        // just verify checkout_branch works by creating, committing on side,
+        // then checking out the side branch from a state where we know the SHA.
+        let side_sha = ops.head_sha().expect("side sha");
+
+        // Checkout the branch again (idempotent) — should succeed and set keep SHA.
+        ops.checkout_branch("trait-side").expect("checkout via trait");
+        assert_eq!(ops.head_sha().expect("after checkout"), side_sha);
+    }
+
+    #[test]
+    fn test_trait_full_keep_discard_cycle() {
+        let (ops, dir) = setup_trait_ops();
+        ops.create_branch("trait-cycle").expect("create_branch");
+
+        // KEEP: commit a file.
+        let kept = dir.path().join("kept.txt");
+        fs::write(&kept, "kept\n").expect("write kept");
+        let keep_sha = ops.commit("keep").expect("commit keep");
+
+        // DISCARD: write a file but don't commit.
+        let discarded = dir.path().join("discarded.txt");
+        fs::write(&discarded, "gone\n").expect("write discarded");
+        assert!(discarded.exists());
+
+        ops.reset_to_last_keep().expect("reset");
+
+        assert!(kept.exists(), "kept file must survive reset");
+        assert_eq!(ops.head_sha().expect("head"), keep_sha);
+    }
+
+    #[test]
+    fn test_trait_multiple_keep_discard_cycles() {
+        let (ops, dir) = setup_trait_ops();
+        ops.create_branch("trait-multi").expect("create_branch");
+
+        // Cycle 1: keep — commit a tracked file.
+        let tracked = dir.path().join("tracked.txt");
+        fs::write(&tracked, "v1\n").expect("write");
+        let sha1 = ops.commit("iteration 1").expect("commit 1");
+
+        // Cycle 2: discard — modify the tracked file, then reset.
+        fs::write(&tracked, "bad mutation\n").expect("modify");
+        ops.reset_to_last_keep().expect("discard 2");
+        assert_eq!(ops.head_sha().expect("head"), sha1);
+        assert_eq!(fs::read_to_string(&tracked).expect("read"), "v1\n");
+
+        // Cycle 3: keep — update the tracked file and commit.
+        fs::write(&tracked, "v3\n").expect("write v3");
+        let sha3 = ops.commit("iteration 3").expect("commit 3");
+        assert_ne!(sha1, sha3);
+
+        // Cycle 4: discard — modify again, then reset.
+        fs::write(&tracked, "bad mutation 2\n").expect("modify");
+        ops.reset_to_last_keep().expect("discard 4");
+        assert_eq!(ops.head_sha().expect("head"), sha3);
+        assert_eq!(fs::read_to_string(&tracked).expect("read"), "v3\n");
+    }
+
+    #[test]
+    fn test_trait_commit_after_reset_works() {
+        let (ops, dir) = setup_trait_ops();
+        ops.create_branch("trait-recommit").expect("create_branch");
+
+        // Commit, then discard some changes, then commit again.
+        fs::write(dir.path().join("first.txt"), "first\n").expect("write");
+        ops.commit("first keep").expect("commit 1");
+
+        fs::write(dir.path().join("bad.txt"), "discard me\n").expect("write");
+        ops.reset_to_last_keep().expect("reset");
+
+        // New commit after reset should work.
+        fs::write(dir.path().join("second.txt"), "second\n").expect("write");
+        let sha = ops.commit("second keep").expect("commit 2");
+        assert_eq!(ops.head_sha().expect("head"), sha);
+        assert!(dir.path().join("first.txt").exists());
+        assert!(dir.path().join("second.txt").exists());
+    }
+
+    #[test]
+    fn test_trait_create_branch_duplicate_fails() {
+        let (ops, _dir) = setup_trait_ops();
+        ops.create_branch("dup").expect("first create");
+        let result = ops.create_branch("dup");
+        assert!(result.is_err(), "duplicate branch creation must fail via trait");
+    }
+
+    #[test]
+    fn test_trait_checkout_nonexistent_branch_fails() {
+        let (ops, _dir) = setup_trait_ops();
+        let result = ops.checkout_branch("does-not-exist");
+        assert!(result.is_err(), "checkout of nonexistent branch must fail");
+    }
+
+    // --- Full keep/discard cycle (concrete type) ---
 
     #[test]
     fn test_full_keep_discard_cycle() {
