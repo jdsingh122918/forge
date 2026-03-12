@@ -3,7 +3,7 @@
   "checkpoint_id": "85be27e81fec",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 5,
+  "checkpoints_count": 6,
   "files_touched": [
     "docs/superpowers/plans/2026-03-11-council-integration.md",
     "src/audit/mod.rs",
@@ -26,13 +26,20 @@
       "context": "",
       "content_hash": "/85/be27e81fec/1/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "metadata": "/85/be27e81fec/2/metadata.json",
+      "transcript": "/85/be27e81fec/2/full.jsonl",
+      "context": "/85/be27e81fec/2/context.md",
+      "content_hash": "/85/be27e81fec/2/content_hash.txt",
+      "prompt": "/85/be27e81fec/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 615,
-    "cache_creation_tokens": 160063,
-    "cache_read_tokens": 3379036,
-    "output_tokens": 24862,
-    "api_call_count": 40
+    "input_tokens": 782,
+    "cache_creation_tokens": 272614,
+    "cache_read_tokens": 13038893,
+    "output_tokens": 54028,
+    "api_call_count": 183
   }
 }
