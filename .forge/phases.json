@@ -1,13 +1,13 @@
 {
-  "spec_hash": "db99a668fd2b",
-  "generated_at": "2026-03-12T01:38:29.680941+00:00",
+  "spec_hash": "ed146c19618c",
+  "generated_at": "2026-03-12T01:46:21.239611+00:00",
   "phases": [
     {
       "number": "01",
-      "name": "Write dispatcher integration tests",
-      "promise": "DISPATCHER INTEGRATION TESTS WRITTEN",
+      "name": "Write scorer tests",
+      "promise": "SCORER TESTS WRITTEN",
       "budget": 5,
-      "reasoning": "Write all 6 new tests: backward-compat with None, forge_dir with no file falls back, file prompt used when available, advisory file override, malformed file falls back, DispatcherConfig forge_dir field. Also update existing test call sites to pass None as third arg. Tests will fail to compile because build_review_prompt still takes 2 params and DispatcherConfig lacks forge_dir.",
+      "reasoning": "Write all 15+ tests in src/cmd/autoresearch/scorer.rs covering: parse_location (4 tests), keyword_overlap (4 tests), FindingMatcher::matches_expected (3 tests), FindingMatcher::matches_must_not_flag (3 tests), Scorer::score recall (2), precision (2), composite (1), edge cases (2). Add minimal stub types (Finding, SpecialistScore, ParsedLocation) and function signatures that compile but panic/return defaults so tests compile but fail. Register pub mod scorer in mod.rs.",
       "depends_on": [],
       "skills": [],
       "permission_mode": "standard",
@@ -15,10 +15,10 @@
     },
     {
       "number": "02",
-      "name": "Implement PromptLoader.try_load_file_only, DispatcherConfig.forge_dir, build_review_prompt 3-param, build_prompt_from_config",
-      "promise": "DISPATCHER WIRING COMPLETE",
+      "name": "Implement scorer engine",
+      "promise": "SCORER COMPLETE",
       "budget": 12,
-      "reasoning": "Add try_load_file_only() to PromptLoader. Add forge_dir field + Default + builder to DispatcherConfig. Change build_review_prompt signature to 3 params with file-loading logic. Add build_prompt_from_config helper. Update run_single_review call site. Add import for PromptLoader. All 6 new tests and both existing tests must pass. Clippy clean.",
+      "reasoning": "Implement parse_location (regex or manual parsing for file:line-line, file:line, line N-N, empty), tokenize helper (lowercase, split on non-alphanumeric, filter stop words), keyword_overlap (tokenize both, compute intersection/expected_tokens), FindingMatcher::matches_expected (parse location, check file basename match, check line within ±5 tolerance, check keyword overlap >0.50), FindingMatcher::matches_must_not_flag (keyword overlap >0.60 OR location match), Scorer::score (iterate must_finds for recall, iterate findings for false positives/precision, compute composite 0.4R+0.3P+0.3A), Display impl for SpecialistScore. All 15+ tests must pass, cargo clippy clean.",
       "depends_on": [
         "01"
       ],

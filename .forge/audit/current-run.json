@@ -1,6 +1,6 @@
 {
-  "run_id": "5a312c79-7c02-42a6-be12-ee5506870d68",
-  "started_at": "2026-03-12T01:38:29.701817Z",
+  "run_id": "11b84095-583b-4b0d-92e1-9fd27f5b5a00",
+  "started_at": "2026-03-12T01:46:21.260742Z",
   "ended_at": null,
   "config": {
     "auto_approve_threshold": 5,
@@ -9,29 +9,5 @@
     "spec_file": "/Users/jdsingh/Projects/AI/forge/.forge/spec.md",
     "project_dir": "/Users/jdsingh/Projects/AI/forge"
   },
-  "phases": [
-    {
-      "phase_number": "01",
-      "description": "Write dispatcher integration tests",
-      "promise": "DISPATCHER INTEGRATION TESTS WRITTEN",
-      "started_at": "2026-03-12T01:38:29.702002Z",
-      "ended_at": "2026-03-12T01:44:04.478465Z",
-      "iterations": [],
-      "outcome": {
-        "Completed": {
-          "iteration": 1
-        }
-      },
-      "file_changes": {
-        "files_added": [],
-        "files_modified": [
-          "src/review/dispatcher.rs",
-          "src/review/prompt_loader.rs"
-        ],
-        "files_deleted": [],
-        "total_lines_added": 346,
-        "total_lines_removed": 6
-      }
-    }
-  ]
+  "phases": []
 }

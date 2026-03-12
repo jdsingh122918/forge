@@ -1,68 +1,99 @@
-# Implementation Spec: Wire PromptLoader into Review Dispatcher
+# Implementation Spec: FindingMatcher and Scorer for Autoresearch
 
-> Generated from: docs/superpowers/specs/autoresearch-tasks/T03-wire-into-dispatcher.md
-> Generated at: 2026-03-12T01:38:29.680606+00:00
+> Generated from: docs/superpowers/specs/autoresearch-tasks/T06-finding-matcher-and-scorer.md
+> Generated at: 2026-03-12T01:46:21.239193+00:00
 
 ## Goal
 
-Modify build_review_prompt() in dispatcher.rs to accept an optional forge_dir parameter. When provided and a valid prompt file exists, use the file-based prompt body with dynamic context injection. When no file exists or the file is malformed, fall back to the existing hardcoded template with zero behavior change. Add forge_dir field to DispatcherConfig and thread it through the call chain.
+Implement the scoring engine that compares specialist output findings against benchmark ground truth using location proximity and keyword overlap, then computes recall, precision, and weighted composite scores to evaluate whether prompt mutations improved specialist performance.
 
 ## Components
 
 | Component | Description | Complexity | Dependencies |
 |-----------|-------------|------------|--------------|
-| DispatcherConfig forge_dir field | Add optional forge_dir: Option<PathBuf> to DispatcherConfig struct with Default of None and with_forge_dir() builder method | low | - |
-| build_review_prompt signature change | Change build_review_prompt() from 2-param (specialist, config) to 3-param (specialist, config, forge_dir: Option<&Path>). Update all existing call sites to pass None. Add file-loading logic at the top that tries PromptLoader when forge_dir is Some. | medium | DispatcherConfig forge_dir field |
-| build_prompt_from_config helper | New function that takes a file-based PromptConfig body and wraps it with the dispatcher's dynamic context sections (phase, files, gating note, display name). Replaces the hardcoded Role/Focus/Instructions/Output Format block while preserving dynamic context injection. | medium | build_review_prompt signature change |
-| PromptLoader.try_load_file_only method | Add a public try_load_file_only() method to PromptLoader that returns Option<PromptConfig> — None if file doesn't exist or can't parse. Wraps the existing private try_load_from_file() but exposes it as a no-fallback API for the dispatcher's use. | low | - |
-| run_single_review call site update | Update the call site in ReviewDispatcher::run_single_review() to pass self.config.forge_dir.as_deref() as the third argument to build_review_prompt() | low | build_review_prompt signature change, DispatcherConfig forge_dir field |
+| LocationParser | Parses expected finding location strings like 'code.rs:42-45', 'issues.rs:70', 'line 42-45', or '' into a ParsedLocation struct with optional file, start_line, and end_line fields | low | - |
+| KeywordOverlap | Tokenizes two strings (lowercased, split on non-alphanumeric, stop words removed) and computes intersection/expected_tokens ratio. Returns 0.0 when expected has zero non-stop tokens | low | - |
+| FindingMatcher | Compares specialist Finding structs against ExpectedFinding (must_find) and MustNotFlag entries using location proximity (±5 lines) and keyword overlap thresholds (>0.50 for must_find, >0.60 for must_not_flag). Must_not_flag uses OR logic: location match OR keyword match triggers it | medium | LocationParser, KeywordOverlap |
+| Scorer | Computes recall (matched_must_finds/total), precision (1 - false_positives/total_findings), and composite (0.4*recall + 0.3*precision + 0.3*actionability). Handles edge cases: 0 must_finds => recall 1.0, 0 findings => precision 1.0 | medium | FindingMatcher |
 
 ## Code Patterns
 
-### File-first with hardcoded fallback
+### Finding struct
 
 ```
-if let Some(forge_dir) = forge_dir {
-    let loader = PromptLoader::new(forge_dir.to_path_buf());
-    if let Some(prompt_config) = loader.try_load_file_only(&specialist.specialist_type) {
-        return build_prompt_from_config(&prompt_config, specialist, config);
-    }
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Finding {
+    pub severity: String,
+    pub file: String,
+    pub line: Option<u32>,
+    pub issue: String,
+    pub suggestion: String,
 }
-// ... original hardcoded logic unchanged ...
 ```
 
-### Dynamic context injection for file-based prompts
+### SpecialistScore struct
 
 ```
-format!(
-    r#"# {display_name} Review\n\n## Review Context\n- Phase: {phase} - {phase_name}\n- Reviewer Role: {display_name}\n{context_section}\n{gating_note}\n\n## Files to Review\n\n{files_section}\n\n{body}\n"#,
-    display_name = specialist.display_name(),
-    phase = review_config.phase,
-    phase_name = review_config.phase_name,
-    body = prompt_config.body.trim(),
-)
-```
-
-### Builder pattern for forge_dir
-
-```
-pub fn with_forge_dir(mut self, dir: PathBuf) -> Self {
-    self.forge_dir = Some(dir);
-    self
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SpecialistScore {
+    pub recall: f64,
+    pub precision: f64,
+    pub actionability: f64,
+    pub composite: f64,
 }
+```
+
+### ParsedLocation struct
+
+```
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedLocation {
+    pub file: Option<String>,
+    pub start_line: Option<u32>,
+    pub end_line: Option<u32>,
+}
+```
+
+### Scoring formula
+
+```
+composite = 0.4 * recall + 0.3 * precision + 0.3 * actionability
+```
+
+### Stop words constant
+
+```
+const STOP_WORDS: &[&str] = &[
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "in", "on", "at", "to", "for", "of", "with", "and", "or", "but",
+    "not", "this", "that", "it", "its",
+];
+```
+
+### Threshold constants
+
+```
+const LINE_TOLERANCE: u32 = 5;
+const MUST_FIND_OVERLAP_THRESHOLD: f64 = 0.50;
+const MUST_NOT_FLAG_OVERLAP_THRESHOLD: f64 = 0.60;
 ```
 
 ## Acceptance Criteria
 
-- [ ] Existing behavior unchanged when forge_dir is None — existing tests pass with only call signature updated (None added), no assertion changes
-- [ ] When a valid prompt file exists at {forge_dir}/autoresearch/prompts/{specialist}.md, the dispatcher uses the file-based body content
-- [ ] When a prompt file is malformed or missing, the dispatcher falls back to hardcoded defaults silently (with tracing::warn)
-- [ ] Dynamic context (phase number, phase name, files_changed, gating/advisory note) is injected regardless of whether file-based or hardcoded prompt is used
-- [ ] DispatcherConfig has forge_dir: Option<PathBuf> field with Default of None and with_forge_dir() builder
-- [ ] dispatcher.rs imports and uses PromptLoader from prompt_loader.rs
-- [ ] cargo clippy -p forge produces no warnings
-- [ ] All T01 and T02 prompt_loader tests still pass
+- [ ] All 15+ tests pass: location parsing (4), keyword overlap (4), must_find matching (3), must_not_flag matching (3), recall (2), precision (2), composite (1), edge cases (2)
+- [ ] parse_location handles 'file.rs:42-45', 'file.rs:42', 'line 42-45', 'line 42', '' and bare 'file.rs' (no line)
+- [ ] keyword_overlap tokenizes to lowercase, splits on non-alphanumeric, removes stop words, returns intersection/expected_tokens
+- [ ] keyword_overlap returns 0.0 when expected string has zero non-stop tokens
+- [ ] FindingMatcher::matches_expected uses ±5 line tolerance AND >50% keyword overlap (both must pass when location is present)
+- [ ] FindingMatcher::matches_must_not_flag uses >60% keyword overlap OR location match (either triggers)
+- [ ] Scorer::score computes recall = matched_must_finds / total_must_finds (0 must_finds => 1.0)
+- [ ] Scorer::score computes precision = 1.0 - false_positives / total_findings (0 findings => 1.0)
+- [ ] Composite formula is exactly 0.4 * recall + 0.3 * precision + 0.3 * actionability
+- [ ] scorer.rs imports Expected, ExpectedFinding, MustNotFlag from forge::autoresearch::benchmarks
+- [ ] Module registered in src/cmd/autoresearch/mod.rs as pub mod scorer
+- [ ] cargo clippy has no warnings for new code
+- [ ] Display impl for SpecialistScore shows formatted percentages
 
 ---
 *This spec was auto-generated from a design document.*
-*Original design: docs/superpowers/specs/autoresearch-tasks/T03-wire-into-dispatcher.md*
+*Original design: docs/superpowers/specs/autoresearch-tasks/T06-finding-matcher-and-scorer.md*
