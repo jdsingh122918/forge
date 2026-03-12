@@ -1,13 +1,13 @@
 {
-  "spec_hash": "fa593881325d",
-  "generated_at": "2026-03-12T01:58:24.561710+00:00",
+  "spec_hash": "696ad32bff55",
+  "generated_at": "2026-03-12T02:05:02.001195+00:00",
   "phases": [
     {
       "number": "01",
-      "name": "Write BenchmarkRunner tests",
-      "promise": "RUNNER TESTS WRITTEN",
+      "name": "Write judge-scorer integration tests",
+      "promise": "JUDGE-SCORER TESTS WRITTEN",
       "budget": 5,
-      "reasoning": "Write all unit tests from design doc steps 1-6: test_runner_builds_correct_claude_command, test_runner_parses_specialist_json_output, test_runner_parses_direct_json_output, test_runner_handles_unparseable_output, test_runner_handles_partial_json, test_runner_handles_empty_output, test_runner_extracts_json_from_markdown_block, test_runner_builds_review_prompt, test_runner_handles_finding_without_line, test_runner_handles_finding_without_suggestion. Create runner.rs with test module and stub structs/methods that compile but fail tests. Register pub mod runner in mod.rs.",
+      "reasoning": "Write all 6 T08 tests: test_scorer_with_judge_uses_judge_actionability, test_scorer_with_judge_false_positive_reduces_precision, test_scorer_without_judge_uses_neutral_defaults, test_scorer_with_judge_must_not_flag_still_counts, test_scorer_with_judge_empty_actionability_falls_back, test_scorer_with_judge_computes_full_composite. These cover: judge actionability averaging, judge FP reducing precision, backward-compatible None path, must_not_flag precedence over judge, empty actionability fallback, and full composite integration. Tests will not compile yet since score() signature hasn't changed.",
       "depends_on": [],
       "skills": [],
       "permission_mode": "standard",
@@ -15,10 +15,10 @@
     },
     {
       "number": "02",
-      "name": "Implement BenchmarkRunner",
-      "promise": "RUNNER COMPLETE",
+      "name": "Implement judge-scorer wiring",
+      "promise": "JUDGE-SCORER WIRING COMPLETE",
       "budget": 10,
-      "reasoning": "Implement BenchmarkRunner struct with new(), build_review_prompt(), build_command(), parse_output(), and async run(). Implement ConstructedCommand and BenchmarkResult structs. Implement JSON parsing with 4-format handling (direct, wrapped, markdown-extracted, error fallback). Implement extract_json_from_markdown helper. Reuse Finding from scorer.rs. Add internal SpecialistOutput and RawFinding deserialization structs. All 9+ tests must pass, cargo clippy clean.",
+      "reasoning": "Modify scorer.rs: (1) add import for ClassificationVerdict and JudgeResult from judge.rs, (2) change Scorer::score() signature to accept Option<&JudgeResult>, (3) implement actionability computation from judge with 0.5 fallback, (4) add compute_precision_with_judge() incorporating must_not_flag hits + judge FP classifications on novel findings, (5) add count_must_not_flag_hits() and identify_novel_findings() helpers to FindingMatcher, (6) update all existing T06 tests to pass None as third argument, (7) wrap old compute_precision as convenience delegator, (8) run cargo clippy and fix warnings. All changes in single file scorer.rs.",
       "depends_on": [
         "01"
       ],

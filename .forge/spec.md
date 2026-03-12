@@ -1,98 +1,77 @@
-# Implementation Spec: BenchmarkRunner — Claude CLI Specialist Invocation
+# Implementation Spec: Wire Judge into Scorer for Actionability + Novel Finding Classification
 
-> Generated from: docs/superpowers/specs/autoresearch-tasks/T06b-benchmark-runner.md
-> Generated at: 2026-03-12T01:58:24.560746+00:00
+> Generated from: docs/superpowers/specs/autoresearch-tasks/T08-wire-judge-into-scorer.md
+> Generated at: 2026-03-12T02:05:02.000668+00:00
 
 ## Goal
 
-Build a BenchmarkRunner that constructs Claude CLI commands with specialist prompts and benchmark code, executes them as async subprocesses, and parses the JSON output (handling direct, wrapped, markdown-wrapped, and unparseable formats) into structured BenchmarkResult values containing verdict, findings, and error state.
+Modify the Scorer to accept an optional JudgeResult, replacing hardcoded actionability with judge-provided scores and using judge classifications to identify false-positive novel findings that reduce precision, while remaining fully backward-compatible when no judge is provided.
 
 ## Components
 
 | Component | Description | Complexity | Dependencies |
 |-----------|-------------|------------|--------------|
-| BenchmarkResult | Struct holding the result of running a specialist against one benchmark case: case_name, verdict, findings (Vec<Finding>), raw_output, and optional error | low | Finding |
-| ConstructedCommand | Struct representing a constructed CLI command (program + args) for test inspection without execution | low | - |
-| BenchmarkRunner | Main runner struct with configurable claude_cmd. Methods: new(), build_review_prompt(), build_command(), parse_output(), run(). Constructs prompts combining specialist instructions with benchmark code/context, invokes Claude CLI as async subprocess, and parses output | medium | BenchmarkResult, ConstructedCommand, BenchmarkCase, Finding |
-| JSON Output Parser | Internal parsing logic handling 4 output formats: direct JSON, wrapped JSON ({"result": "..."}), markdown-wrapped JSON (```json blocks), and unparseable fallback with error reporting | medium | BenchmarkResult |
+| Scorer signature change | Change Scorer::score() to accept Option<&JudgeResult> as third parameter, importing JudgeResult and ClassificationVerdict from judge.rs | low | - |
+| Actionability computation | Compute actionability as average of judge's actionability_scores when present and non-empty, falling back to 0.5 otherwise | low | Scorer signature change |
+| Precision with judge classifications | Add compute_precision_with_judge() that counts FPs from must_not_flag hits (always) plus novel findings classified as false_positive by judge (only when judge present). must_not_flag takes precedence over judge. | medium | Scorer signature change |
+| FindingMatcher helpers | Add count_must_not_flag_hits() and identify_novel_findings() to FindingMatcher for decomposing precision calculation | low | - |
+| Backward compatibility | Update all existing T06 tests to pass None as third argument; wrap old compute_precision as convenience delegating to compute_precision_with_judge(..., None) | low | Scorer signature change, Precision with judge classifications |
 
 ## Code Patterns
 
-### Claude CLI invocation
+### Actionability from judge with fallback
 
 ```
-claude -p "<prompt>" --output-format json --print
+let actionability = match judge_result {
+    Some(jr) if !jr.actionability_scores.is_empty() => {
+        let sum: f64 = jr.actionability_scores.iter().map(|s| s.score).sum();
+        sum / jr.actionability_scores.len() as f64
+    }
+    _ => 0.5,
+};
 ```
 
-### Specialist JSON output format
+### Precision with judge false positives
 
 ```
-{
-    "verdict": "fail",
-    "findings": [
-        {
-            "severity": "critical",
-            "file": "code.rs",
-            "line": 42,
-            "issue": "TOCTOU race condition",
-            "suggestion": "Move query inside transaction"
-        }
-    ]
-}
+let judge_fps = match judge_result {
+    Some(jr) => {
+        jr.classifications
+            .iter()
+            .filter(|c| {
+                novel_finding_ids.contains(&c.finding_id)
+                    && c.verdict == ClassificationVerdict::FalsePositive
+            })
+            .count()
+    }
+    None => 0,
+};
+let total_fps = must_not_flag_fps + judge_fps;
+let precision = 1.0 - (total_fps as f64 / total);
+precision.max(0.0)
 ```
 
-### Wrapped output format
+### Composite formula
 
 ```
-{
-    "result": "{\"verdict\": \"fail\", \"findings\": [...]}"
-}
-```
-
-### Review prompt template
-
-```
-{specialist_prompt}
-
-## Code Under Review
-
-```rust
-{code}
-```
-
-## Context
-
-{context}
-
-## Output Format
-
-Respond with a JSON object containing:
-- "verdict": one of "pass", "warn", or "fail"
-- "findings": array of finding objects
-```
-
-### Async subprocess execution
-
-```
-let output = tokio::process::Command::new(&self.claude_cmd)
-    .args(["-p", &prompt, "--output-format", "json", "--print"])
-    .output()
-    .await
-    .with_context(|| format!("Failed to run {} for case '{}'", self.claude_cmd, case.name))?;
+let composite = 0.4 * recall + 0.3 * precision + 0.3 * actionability;
 ```
 
 ## Acceptance Criteria
 
-- [ ] All 9+ tests pass covering: command construction, JSON parsing (direct, wrapped, markdown-wrapped), unparseable output handling, empty output, missing fields
-- [ ] BenchmarkRunner::build_review_prompt includes specialist instructions, code, context, and output format specification
-- [ ] BenchmarkRunner::parse_output handles at least 4 output formats (direct JSON, wrapped JSON, markdown JSON, unparseable)
-- [ ] BenchmarkRunner::run is async and uses tokio::process::Command
-- [ ] BenchmarkRunner::build_command returns a ConstructedCommand for test inspection
-- [ ] Finding type is reused from scorer.rs (not duplicated)
-- [ ] BenchmarkResult includes raw_output for debugging
-- [ ] cargo clippy has no warnings for the new code
-- [ ] Module registered in src/cmd/autoresearch/mod.rs as pub mod runner
+- [ ] Scorer::score() accepts Option<&JudgeResult> as third parameter
+- [ ] With Some(judge_result), actionability is the average of judge's actionability_scores
+- [ ] With Some(judge_result), novel findings classified as false_positive by judge reduce precision
+- [ ] With None (no judge), actionability defaults to 0.5
+- [ ] With None (no judge), novel findings are assumed true_positive (do not reduce precision)
+- [ ] must_not_flag hits are always counted as false positives regardless of judge classification
+- [ ] Empty actionability_scores from judge falls back to 0.5
+- [ ] Composite formula remains 0.4 * recall + 0.3 * precision + 0.3 * actionability
+- [ ] All existing T06 tests pass with None (backward compatibility)
+- [ ] scorer.rs imports JudgeResult and ClassificationVerdict from judge.rs
+- [ ] cargo check succeeds with no warnings in scorer.rs
+- [ ] cargo clippy passes with -D warnings
 
 ---
 *This spec was auto-generated from a design document.*
-*Original design: docs/superpowers/specs/autoresearch-tasks/T06b-benchmark-runner.md*
+*Original design: docs/superpowers/specs/autoresearch-tasks/T08-wire-judge-into-scorer.md*
