@@ -633,25 +633,44 @@ async fn execute_single_phase(
             .ok();
         }
 
-        // Run the iteration with session continuity and feedback
-        let result = runner
-            .run_iteration_with_context(
-                phase,
-                iter,
-                None,
-                None,
-                if session_continuity_enabled {
-                    active_session_id.as_deref()
-                } else {
-                    None
-                },
-                if iteration_feedback_enabled {
-                    previous_feedback.as_deref()
-                } else {
-                    None
-                },
-            )
-            .await;
+        // Run the iteration with session continuity and feedback,
+        // wrapped in a per-iteration timeout when configured.
+        let iteration_fut = runner.run_iteration_with_context(
+            phase,
+            iter,
+            None,
+            None,
+            if session_continuity_enabled {
+                active_session_id.as_deref()
+            } else {
+                None
+            },
+            if iteration_feedback_enabled {
+                previous_feedback.as_deref()
+            } else {
+                None
+            },
+        );
+
+        let timeout_duration = runner.resolve_iteration_timeout(phase);
+        let result = match timeout_duration {
+            Some(duration) => match tokio::time::timeout(duration, iteration_fut).await {
+                Ok(inner) => inner,
+                Err(_elapsed) => {
+                    warn!(
+                        phase = %phase.number,
+                        timeout_secs = duration.as_secs(),
+                        "DAG iteration timed out"
+                    );
+                    Err(crate::errors::OrchestratorError::IterationTimeout {
+                        phase: phase.number.clone(),
+                        timeout_secs: duration.as_secs(),
+                    }
+                    .into())
+                }
+            },
+            None => iteration_fut.await,
+        };
 
         match result {
             Ok(output) => {
