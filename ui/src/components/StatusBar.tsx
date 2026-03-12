@@ -12,6 +12,7 @@ export interface StatusBarProps {
     queued: number;
     completed: number;
     failed: number;
+    stalled: number;
   };
   /** Total number of projects loaded */
   projectCount: number;
@@ -85,6 +86,11 @@ export default function StatusBar({
         <span>
           <span style={{ color: 'var(--color-error)' }}>{agentCounts.failed}</span> failed
         </span>
+        {agentCounts.stalled > 0 && (
+          <span>
+            <span style={{ color: 'var(--color-stalled, #f59e0b)' }}>{agentCounts.stalled}</span> stalled
+          </span>
+        )}
         <span>{projectCount} projects</span>
       </div>
 

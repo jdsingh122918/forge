@@ -8,7 +8,7 @@ export interface Project {
 
 export type IssueColumn = 'backlog' | 'ready' | 'in_progress' | 'in_review' | 'done';
 export type Priority = 'low' | 'medium' | 'high' | 'critical';
-export type PipelineStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type PipelineStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'stalled';
 export type AgentTaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type AgentRole = 'planner' | 'coder' | 'tester' | 'reviewer' | 'browser_verifier' | 'test_verifier';
 export type AgentEventType = 'thinking' | 'action' | 'output' | 'signal' | 'error';
@@ -178,8 +178,16 @@ export type WsMessage =
   | { type: 'PipelineFileChanged'; data: PipelineFileChange }
   | { type: 'PipelineOutput'; data: { run_id: number; content: string } }
   | { type: 'PipelineError'; data: { run_id: number; message: string } }
+  | { type: 'PipelineStatusChanged'; data: { run_id: number; issue_id: number; old_status: PipelineStatus; new_status: PipelineStatus; reason: string } }
+  | { type: 'PipelineQueued'; data: { run_id: number; issue_id: number; position: number } }
+  | { type: 'QueuePositionUpdated'; data: { run_id: number; position: number } }
   | { type: 'ProjectCreated'; data: { project: Project } }
-  | { type: 'ProjectDeleted'; data: { project_id: number } };
+  | { type: 'ProjectDeleted'; data: { project_id: number } }
+  | { type: 'ConfigReloaded'; data: { project_id: number; changed_settings: string[] } }
+  | { type: 'ConfigReloadError'; data: { project_id: number; error: string } }
+  | { type: 'TrackerPollStarted'; data: { project_id: number } }
+  | { type: 'TrackerPollCompleted'; data: { project_id: number; imported_count: number; skipped_count: number } }
+  | { type: 'TrackerPollError'; data: { project_id: number; error: string } };
 
 // GitHub OAuth types
 export interface GitHubDeviceCode {
@@ -292,12 +300,13 @@ export const STATUS_COLORS: Record<PipelineStatus, string> = {
   completed: 'text-green-500',
   failed: 'text-red-500',
   cancelled: 'text-gray-400',
+  stalled: 'text-amber-500',
 };
 
 // ── Mission Control view types ──────────────────────────────────────
 
 /** Status filter for the agent run grid. 'all' shows every status. */
-export type RunStatusFilter = 'all' | 'running' | 'queued' | 'completed' | 'failed';
+export type RunStatusFilter = 'all' | 'running' | 'queued' | 'completed' | 'failed' | 'stalled';
 
 /**
  * An agent run card in the grid — combines issue, pipeline run, and project data
@@ -352,4 +361,5 @@ export const MC_STATUS_COLORS: Record<PipelineStatus, string> = {
   completed: 'var(--color-success)',
   failed: 'var(--color-error)',
   cancelled: 'var(--color-text-secondary)',
+  stalled: 'var(--color-stalled, #f59e0b)',
 };

@@ -10,7 +10,7 @@ vi.mock('../contexts/WebSocketContext', () => ({
 
 function renderStatusBar(overrides: Partial<StatusBarProps> = {}) {
   const defaultProps: StatusBarProps = {
-    agentCounts: { running: 2, queued: 1, completed: 5, failed: 0 },
+    agentCounts: { running: 2, queued: 1, completed: 5, failed: 0, stalled: 0 },
     projectCount: 3,
     viewMode: 'grid',
     onViewModeChange: vi.fn(),
@@ -28,25 +28,25 @@ describe('StatusBar', () => {
 
   describe('agent counts', () => {
     it('renders running count', () => {
-      renderStatusBar({ agentCounts: { running: 3, queued: 0, completed: 0, failed: 0 } })
+      renderStatusBar({ agentCounts: { running: 3, queued: 0, completed: 0, failed: 0, stalled: 0 } })
       expect(screen.getByText('3')).toBeInTheDocument()
       expect(screen.getByText('running')).toBeInTheDocument()
     })
 
     it('renders queued count', () => {
-      renderStatusBar({ agentCounts: { running: 0, queued: 4, completed: 0, failed: 0 } })
+      renderStatusBar({ agentCounts: { running: 0, queued: 4, completed: 0, failed: 0, stalled: 0 } })
       expect(screen.getByText('4')).toBeInTheDocument()
       expect(screen.getByText('queued')).toBeInTheDocument()
     })
 
     it('renders completed count', () => {
-      renderStatusBar({ agentCounts: { running: 0, queued: 0, completed: 7, failed: 0 } })
+      renderStatusBar({ agentCounts: { running: 0, queued: 0, completed: 7, failed: 0, stalled: 0 } })
       expect(screen.getByText('7')).toBeInTheDocument()
       expect(screen.getByText('done')).toBeInTheDocument()
     })
 
     it('renders failed count', () => {
-      renderStatusBar({ agentCounts: { running: 0, queued: 0, completed: 0, failed: 2 } })
+      renderStatusBar({ agentCounts: { running: 0, queued: 0, completed: 0, failed: 2, stalled: 0 } })
       expect(screen.getByText('2')).toBeInTheDocument()
       expect(screen.getByText('failed')).toBeInTheDocument()
     })

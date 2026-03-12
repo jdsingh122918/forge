@@ -176,6 +176,7 @@ function MissionControl() {
           queued: statusCounts.queued,
           completed: statusCounts.completed,
           failed: statusCounts.failed,
+          stalled: statusCounts.stalled,
         }}
         projectCount={projects.length}
         viewMode={viewMode}

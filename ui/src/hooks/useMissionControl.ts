@@ -96,10 +96,11 @@ export interface MissionControlReturn {
 /** Status sort order: running first, then queued, failed, completed, cancelled */
 const STATUS_ORDER: Record<string, number> = {
   running: 0,
-  queued: 1,
-  failed: 2,
-  completed: 3,
-  cancelled: 4,
+  stalled: 1,
+  queued: 2,
+  failed: 3,
+  completed: 4,
+  cancelled: 5,
 };
 
 /**
@@ -187,7 +188,7 @@ export default function useMissionControl(): MissionControlReturn {
         const eventMap = new Map<number, AgentEvent[]>();
         for (const [runId, run] of runMap) {
           if (cancelled) return;
-          if (run.status !== 'running' && run.status !== 'queued') continue;
+          if (run.status !== 'running' && run.status !== 'queued' && run.status !== 'stalled') continue;
           try {
             const detail = await api.getRunTeam(runId);
             if (cancelled) return;
@@ -207,7 +208,7 @@ export default function useMissionControl(): MissionControlReturn {
         // Backfill phases for active runs
         for (const [runId, run] of runMap) {
           if (cancelled) return;
-          if (run.status !== 'running' && run.status !== 'queued') continue;
+          if (run.status !== 'running' && run.status !== 'queued' && run.status !== 'stalled') continue;
           try {
             const runPhases = await api.getRunPhases(runId);
             if (cancelled) return;
@@ -503,6 +504,20 @@ export default function useMissionControl(): MissionControlReturn {
         break;
       }
 
+      case 'PipelineStatusChanged': {
+        const { run_id, new_status, reason } = msg.data;
+        setState(prev => {
+          const newRuns = new Map(prev.runs);
+          const existing = newRuns.get(run_id);
+          if (existing) {
+            newRuns.set(run_id, { ...existing, status: new_status });
+          }
+          return { ...prev, runs: newRuns };
+        });
+        addLogEntry('system', `Pipeline status changed to ${new_status}: ${reason}`, undefined, run_id);
+        break;
+      }
+
       case 'ProjectCreated': {
         const project = msg.data.project;
         setState(prev => {
@@ -602,6 +617,7 @@ export default function useMissionControl(): MissionControlReturn {
       queued: runs.filter(r => r.status === 'queued').length,
       completed: runs.filter(r => r.status === 'completed').length,
       failed: runs.filter(r => r.status === 'failed').length,
+      stalled: runs.filter(r => r.status === 'stalled').length,
     };
   }, [state.runs]);
 
