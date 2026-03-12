@@ -240,7 +240,7 @@ pub enum WsMessage {
     // Config reload events
     ConfigReloaded {
         project_id: ProjectId,
-        settings: Vec<String>,
+        changed_settings: Vec<String>,
     },
     ConfigReloadError {
         project_id: ProjectId,
@@ -949,7 +949,7 @@ mod tests {
     fn test_config_reloaded_serialization() {
         let msg = WsMessage::ConfigReloaded {
             project_id: ProjectId(5),
-            settings: vec![
+            changed_settings: vec![
                 "defaults.iteration_timeout_secs".to_string(),
                 "factory.tracker.enabled".to_string(),
             ],
@@ -963,10 +963,10 @@ mod tests {
         match deser {
             WsMessage::ConfigReloaded {
                 project_id,
-                settings,
+                changed_settings,
             } => {
                 assert_eq!(project_id, ProjectId(5));
-                assert_eq!(settings.len(), 2);
+                assert_eq!(changed_settings.len(), 2);
             }
             _ => panic!("Expected ConfigReloaded"),
         }

@@ -165,9 +165,10 @@ impl ProjectConfigStore {
             .lock()
             .map_err(|_| anyhow::anyhow!("Config store lock poisoned"))?;
 
-        let old_settings = store
-            .get(&project_id)
-            .map(|e| HotReloadableSettings::from_config(&e.config));
+        let old_entry = store.get(&project_id);
+        let old_settings = old_entry.map(|e| HotReloadableSettings::from_config(&e.config));
+        // Preserve the current config as last_known_good before overwriting
+        let previous_config = old_entry.map(|e| e.config.clone());
 
         let new_settings = HotReloadableSettings::from_config(&new_config);
 
@@ -184,7 +185,7 @@ impl ProjectConfigStore {
         };
 
         let entry = ProjectConfigEntry {
-            last_known_good: new_config.clone(),
+            last_known_good: previous_config.unwrap_or_else(|| new_config.clone()),
             config: new_config,
             config_path,
         };
@@ -329,6 +330,10 @@ stall_timeout_secs = 900
 
         let updated = store.get_settings(1).unwrap();
         assert_eq!(updated.reconciliation_stall_timeout_secs, 900);
+
+        // Verify last_known_good holds the PREVIOUS config, not the current one
+        let lkg = store.get_last_known_good(1).unwrap();
+        assert_eq!(lkg.factory.reconciliation.stall_timeout_secs, 300);
     }
 
     // ── Test 3: Reloading project A doesn't affect project B ──────────

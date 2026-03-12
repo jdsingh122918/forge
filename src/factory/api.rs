@@ -1581,7 +1581,7 @@ async fn reload_project_config(
                 &state.ws_tx,
                 &WsMessage::ConfigReloaded {
                     project_id,
-                    settings: changed.clone(),
+                    changed_settings: changed.clone(),
                 },
             );
 
