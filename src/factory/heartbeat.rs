@@ -11,11 +11,17 @@
 use tokio::sync::broadcast;
 
 use super::db::DbHandle;
-use super::models::RunId;
+use super::models::{PipelineStatus, RunId};
 use super::ws::{WsMessage, broadcast_message};
 
 /// Emit a run-scoped WebSocket event: updates `last_event_at` in the DB,
-/// then broadcasts the message to all connected clients.
+/// checks for stalled-run recovery, then broadcasts the message to all
+/// connected clients.
+///
+/// **Stalled → Running recovery:** If the run's current status is `Stalled`,
+/// this function transitions it back to `Running` and broadcasts a
+/// `PipelineStatusChanged` message. This is the automatic recovery path —
+/// a stalled run that gets heartbeat activity resumes.
 ///
 /// The DB update is best-effort: if it fails, the error is logged but
 /// the broadcast still happens. This keeps the heartbeat from blocking
@@ -32,6 +38,46 @@ pub async fn emit_run_event(
     if let Err(e) = db.update_last_event_at(run_id).await {
         tracing::warn!(run_id = run_id.0, error = %e, "Failed to update last_event_at");
     }
+
+    // Stalled → Running recovery: if this run is currently Stalled, transition it back
+    match db.get_pipeline_run(run_id).await {
+        Ok(Some(run)) if run.status == PipelineStatus::Stalled => {
+            if let Err(e) = db
+                .update_pipeline_status(run_id, &PipelineStatus::Running)
+                .await
+            {
+                tracing::warn!(
+                    run_id = run_id.0,
+                    error = %e,
+                    "Failed to recover stalled run to Running"
+                );
+            } else {
+                tracing::info!(
+                    run_id = run_id.0,
+                    "Recovered stalled run to Running via heartbeat"
+                );
+                broadcast_message(
+                    tx,
+                    &WsMessage::PipelineStatusChanged {
+                        run_id,
+                        issue_id: run.issue_id,
+                        old_status: PipelineStatus::Stalled,
+                        new_status: PipelineStatus::Running,
+                        reason: "Heartbeat activity resumed".to_string(),
+                    },
+                );
+            }
+        }
+        Ok(_) => {} // Not stalled, nothing to do
+        Err(e) => {
+            tracing::warn!(
+                run_id = run_id.0,
+                error = %e,
+                "Failed to check run status for stall recovery"
+            );
+        }
+    }
+
     broadcast_message(tx, msg);
 }
 

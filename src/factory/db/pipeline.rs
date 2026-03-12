@@ -254,6 +254,32 @@ pub async fn update_last_event_at(conn: &Connection, run_id: RunId) -> Result<()
     Ok(())
 }
 
+/// Update just the status field of a pipeline run (used by reconciliation transitions).
+/// Unlike `update_pipeline_run`, this does NOT touch summary/error fields and sets
+/// `completed_at` only for terminal statuses.
+pub async fn update_pipeline_status(
+    conn: &Connection,
+    run_id: RunId,
+    new_status: &PipelineStatus,
+) -> Result<()> {
+    if new_status.is_terminal() {
+        conn.execute(
+            "UPDATE pipeline_runs SET status = ?1, completed_at = datetime('now') WHERE id = ?2",
+            libsql::params![new_status.as_str(), run_id.0],
+        )
+        .await
+        .context("Failed to update pipeline status")?;
+    } else {
+        conn.execute(
+            "UPDATE pipeline_runs SET status = ?1 WHERE id = ?2",
+            libsql::params![new_status.as_str(), run_id.0],
+        )
+        .await
+        .context("Failed to update pipeline status")?;
+    }
+    Ok(())
+}
+
 pub async fn get_pipeline_phases(conn: &Connection, run_id: RunId) -> Result<Vec<PipelinePhase>> {
     let mut rows = conn
         .query(

@@ -379,6 +379,15 @@ impl DbHandle {
         pipeline::update_last_event_at(conn, run_id).await
     }
 
+    pub async fn update_pipeline_status(
+        &self,
+        run_id: super::models::RunId,
+        new_status: &super::models::PipelineStatus,
+    ) -> Result<()> {
+        let conn = self.conn();
+        pipeline::update_pipeline_status(conn, run_id, new_status).await
+    }
+
     pub async fn get_pipeline_phases(
         &self,
         run_id: super::models::RunId,

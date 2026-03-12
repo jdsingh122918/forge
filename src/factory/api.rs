@@ -237,6 +237,7 @@ pub fn api_router() -> Router<SharedState> {
         .route("/api/metrics/reviews", get(get_metrics_reviews))
         .route("/api/metrics/tokens", get(get_metrics_tokens))
         .route("/api/metrics/runs/recent", get(get_metrics_recent_runs))
+        .route("/api/reconcile", post(reconcile_handler))
         .route("/health", get(health_check))
 }
 
@@ -1511,6 +1512,41 @@ async fn get_metrics_recent_runs(
         })
 }
 
+/// `POST /api/reconcile` — run one reconciliation tick followed by one dispatch tick.
+///
+/// Reconciliation detects stalled and dead pipeline runs, transitioning them
+/// appropriately. Dispatch then picks up any newly-freed capacity to start
+/// queued runs.
+///
+/// **Response:** `200 OK` with a [`ReconciliationReport`] as JSON.
+async fn reconcile_handler(
+    State(state): State<SharedState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let processes = state.pipeline_runner.running_processes();
+    let report = super::reconciliation::reconcile_runs(
+        &state.db,
+        &processes,
+        &state.ws_tx,
+        super::reconciliation::DEFAULT_STALL_TIMEOUT_SECS,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("Reconciliation failed: {}", e)))?;
+
+    // Run dispatch after reconciliation to start queued runs if capacity freed up
+    if let Err(e) = super::dispatch::dispatch_pending_runs(
+        &state.db,
+        &state.pipeline_runner,
+        &state.ws_tx,
+        super::dispatch::DEFAULT_MAX_CONCURRENCY,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "dispatch_pending_runs failed after reconciliation");
+    }
+
+    Ok(Json(report))
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2576,5 +2612,26 @@ mod tests {
             assert!(body["commands"].is_array());
             assert!(body["options"].is_array());
         }
+    }
+
+    // POST /api/reconcile — returns a ReconciliationReport
+    #[tokio::test]
+    async fn test_reconcile_endpoint_returns_report() {
+        let app = test_app().await;
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/reconcile")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let report: serde_json::Value = body_json(response.into_body()).await;
+        // With no runs, inspected/stalled/failed should all be 0
+        assert_eq!(report["inspected"], 0);
+        assert_eq!(report["stalled"], 0);
+        assert_eq!(report["failed"], 0);
     }
 }

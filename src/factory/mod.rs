@@ -70,6 +70,7 @@ pub mod heartbeat;
 pub mod models;
 pub mod pipeline;
 pub mod planner;
+pub mod reconciliation;
 pub mod sandbox;
 pub mod server;
 pub mod ws;

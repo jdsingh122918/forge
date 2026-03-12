@@ -209,6 +209,15 @@ pub enum WsMessage {
         details: serde_json::Value,
     },
 
+    // Reconciliation status transitions
+    PipelineStatusChanged {
+        run_id: RunId,
+        issue_id: IssueId,
+        old_status: PipelineStatus,
+        new_status: PipelineStatus,
+        reason: String,
+    },
+
     // Queue lifecycle
     PipelineQueued {
         run_id: RunId,
