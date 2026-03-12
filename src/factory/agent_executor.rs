@@ -10,11 +10,12 @@ use tokio::sync::{Mutex, broadcast};
 use tracing::{self, error, warn};
 
 use crate::factory::db::DbHandle;
+use crate::factory::heartbeat::emit_run_event;
 use crate::factory::models::{
     AgentEventType, AgentTask, AgentTaskStatus, FileAction, RunId, SignalType, TaskId,
 };
 use crate::factory::pipeline::{StreamJsonEvent, extract_file_change, parse_stream_json_line};
-use crate::factory::ws::{WsMessage, broadcast_message};
+use crate::factory::ws::WsMessage;
 
 /// Abstraction over agent task execution for testability.
 /// Real implementation: `AgentExecutor`. Test double: `MockTaskRunner`.
@@ -200,16 +201,23 @@ impl AgentExecutor {
             task.id,
             crate::factory::pipeline::slugify(&task.name, 30)
         );
-        let worktree_path = PathBuf::from(&self.project_path)
+        let project_root = Path::new(&self.project_path);
+        let worktree_path = project_root
             .join(".worktrees")
             .join(format!("task-{}", task.id));
 
-        let parent = worktree_path
+        // Validate that the derived worktree path is contained within the project root
+        // BEFORE creating any directories or invoking git worktree add.
+        let validated_path =
+            crate::factory::pipeline::validate_path_containment(project_root, &worktree_path)
+                .context("Worktree path containment check failed")?;
+
+        let parent = validated_path
             .parent()
             .context("Worktree path has no parent directory")?;
         tokio::fs::create_dir_all(parent).await?;
 
-        let worktree_str = worktree_path
+        let worktree_str = validated_path
             .to_str()
             .context("Worktree path contains invalid UTF-8")?;
 
@@ -236,7 +244,7 @@ impl AgentExecutor {
             .update_agent_task_isolation(task.id, Some(worktree_str), None, Some(&branch_name))
             .await?;
 
-        Ok((worktree_path, branch_name))
+        Ok((validated_path, branch_name))
     }
 
     /// Clean up worktree after task completes
@@ -266,8 +274,10 @@ impl AgentExecutor {
         working_dir: &Path,
         worktree_path: Option<PathBuf>,
     ) -> Result<bool> {
-        broadcast_message(
+        emit_run_event(
+            &self.db,
             &self.tx,
+            run_id,
             &WsMessage::AgentTaskStarted {
                 run_id,
                 task_id: task.id,
@@ -275,7 +285,8 @@ impl AgentExecutor {
                 role: task.agent_role.clone(),
                 wave: task.wave,
             },
-        );
+        )
+        .await;
 
         self.db
             .update_agent_task_status(task.id, &AgentTaskStatus::Running, None)
@@ -415,14 +426,17 @@ impl AgentExecutor {
                         thinking_buffer.push_str(&parsed.content);
                         thinking_buffer.push('\n');
                         if last_broadcast.elapsed() >= std::time::Duration::from_millis(500) {
-                            broadcast_message(
+                            emit_run_event(
+                                &self.db,
                                 &self.tx,
+                                run_id,
                                 &WsMessage::AgentThinking {
                                     run_id,
                                     task_id,
                                     content: thinking_buffer.clone(),
                                 },
-                            );
+                            )
+                            .await;
                             thinking_buffer.clear();
                             last_broadcast = std::time::Instant::now();
                         }
@@ -442,17 +456,22 @@ impl AgentExecutor {
                                 "deleted" => FileAction::Deleted,
                                 _ => FileAction::Modified,
                             };
-                            broadcast_message(
+                            emit_run_event(
+                                &self.db,
                                 &self.tx,
+                                run_id,
                                 &WsMessage::PipelineFileChanged {
                                     run_id,
                                     file_path: path.to_string(),
                                     action,
                                 },
-                            );
+                            )
+                            .await;
                         }
-                        broadcast_message(
+                        emit_run_event(
+                            &self.db,
                             &self.tx,
+                            run_id,
                             &WsMessage::AgentAction {
                                 run_id,
                                 task_id,
@@ -465,11 +484,14 @@ impl AgentExecutor {
                                 summary: parsed.content.clone(),
                                 metadata: parsed.metadata.clone().unwrap_or(serde_json::json!({})),
                             },
-                        );
+                        )
+                        .await;
                     }
                     AgentEventType::Signal => {
-                        broadcast_message(
+                        emit_run_event(
+                            &self.db,
                             &self.tx,
+                            run_id,
                             &WsMessage::AgentSignal {
                                 run_id,
                                 task_id,
@@ -481,20 +503,24 @@ impl AgentExecutor {
                                     .unwrap_or(SignalType::Progress),
                                 content: parsed.content.clone(),
                             },
-                        );
+                        )
+                        .await;
                     }
                     _ => {
                         if !parsed.content.is_empty()
                             && last_broadcast.elapsed() >= std::time::Duration::from_millis(500)
                         {
-                            broadcast_message(
+                            emit_run_event(
+                                &self.db,
                                 &self.tx,
+                                run_id,
                                 &WsMessage::AgentOutput {
                                     run_id,
                                     task_id,
                                     content: parsed.content.clone(),
                                 },
-                            );
+                            )
+                            .await;
                             last_broadcast = std::time::Instant::now();
                         }
                     }
@@ -507,14 +533,17 @@ impl AgentExecutor {
             }
 
             if !thinking_buffer.is_empty() {
-                broadcast_message(
+                emit_run_event(
+                    &self.db,
                     &self.tx,
+                    run_id,
                     &WsMessage::AgentThinking {
                         run_id,
                         task_id,
                         content: thinking_buffer,
                     },
-                );
+                )
+                .await;
             }
         }
 
@@ -563,23 +592,29 @@ impl AgentExecutor {
             }
 
             if success {
-                broadcast_message(
+                emit_run_event(
+                    &self.db,
                     &self.tx,
+                    run_id,
                     &WsMessage::AgentTaskCompleted {
                         run_id,
                         task_id,
                         success: true,
                     },
-                );
+                )
+                .await;
             } else {
-                broadcast_message(
+                emit_run_event(
+                    &self.db,
                     &self.tx,
+                    run_id,
                     &WsMessage::AgentTaskFailed {
                         run_id,
                         task_id,
                         error: error_msg.unwrap_or_default(),
                     },
-                );
+                )
+                .await;
             }
 
             Ok(success)
@@ -595,14 +630,17 @@ impl AgentExecutor {
                     Some("Internal error: process handle lost"),
                 )
                 .await?;
-            broadcast_message(
+            emit_run_event(
+                &self.db,
                 &self.tx,
+                run_id,
                 &WsMessage::AgentTaskFailed {
                     run_id,
                     task_id,
                     error: "Internal error: process handle lost".to_string(),
                 },
-            );
+            )
+            .await;
             Ok(false)
         }
     }

@@ -2,6 +2,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::factory::db::DbHandle;
+use crate::factory::heartbeat::emit_run_event;
 use crate::factory::models::*;
 use crate::factory::ws::{WsMessage, broadcast_message};
 
@@ -334,15 +335,18 @@ pub(crate) async fn process_phase_event(
                     },
                 );
             }
-            broadcast_message(
+            emit_run_event(
+                db,
                 tx,
+                run_id,
                 &WsMessage::PipelinePhaseStarted {
                     run_id,
                     phase_number: phase.clone(),
                     phase_name: phase.clone(),
                     wave: *wave,
                 },
-            );
+            )
+            .await;
         }
         PhaseEventJson::Progress {
             phase,
@@ -369,15 +373,18 @@ pub(crate) async fn process_phase_event(
                     },
                 );
             }
-            broadcast_message(
+            emit_run_event(
+                db,
                 tx,
+                run_id,
                 &WsMessage::PipelineProgress {
                     run_id,
                     phase: phase.parse::<i32>().unwrap_or(0),
                     iteration: *iteration as i32,
                     percent: percent.map(|p| p.min(100) as u8),
                 },
-            );
+            )
+            .await;
         }
         PhaseEventJson::Completed { phase, result } => {
             let success = result
@@ -401,38 +408,47 @@ pub(crate) async fn process_phase_event(
                     },
                 );
             }
-            broadcast_message(
+            emit_run_event(
+                db,
                 tx,
+                run_id,
                 &WsMessage::PipelinePhaseCompleted {
                     run_id,
                     phase_number: phase.clone(),
                     success,
                 },
-            );
+            )
+            .await;
         }
         PhaseEventJson::ReviewStarted { phase } => {
-            broadcast_message(
+            emit_run_event(
+                db,
                 tx,
+                run_id,
                 &WsMessage::PipelineReviewStarted {
                     run_id,
                     phase_number: phase.clone(),
                 },
-            );
+            )
+            .await;
         }
         PhaseEventJson::ReviewCompleted {
             phase,
             passed,
             findings_count,
         } => {
-            broadcast_message(
+            emit_run_event(
+                db,
                 tx,
+                run_id,
                 &WsMessage::PipelineReviewCompleted {
                     run_id,
                     phase_number: phase.clone(),
                     passed: *passed,
                     findings_count: *findings_count,
                 },
-            );
+            )
+            .await;
         }
         PhaseEventJson::DagCompleted { success: _ } => {
             // Handled by the outer pipeline completion logic

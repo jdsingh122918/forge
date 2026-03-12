@@ -9,6 +9,7 @@ use tokio::sync::broadcast;
 use tracing::warn;
 
 use crate::factory::db::DbHandle;
+use crate::factory::heartbeat::emit_run_event;
 use crate::factory::models::RunId;
 use crate::factory::sandbox::{DockerSandbox, SandboxConfig};
 use crate::factory::ws::{WsMessage, broadcast_message};
@@ -199,16 +200,19 @@ pub(crate) async fn execute_pipeline_streaming(
             // Compute a rough percentage
             let percent = compute_percent(&progress);
 
-            // Broadcast progress event
-            broadcast_message(
+            // Broadcast progress event (with heartbeat)
+            emit_run_event(
+                db,
                 tx,
+                run_id,
                 &WsMessage::PipelineProgress {
                     run_id,
                     phase: progress.phase.unwrap_or(0),
                     iteration: progress.iteration.unwrap_or(0),
                     percent,
                 },
-            );
+            )
+            .await;
         } else if !line.is_empty() {
             let event = parse_stream_json_line(&line);
             match event {
@@ -222,8 +226,10 @@ pub(crate) async fn execute_pipeline_streaming(
                             StreamJsonEvent::Thinking { .. } => "thinking",
                             _ => "text",
                         };
-                        broadcast_message(
+                        emit_run_event(
+                            db,
                             tx,
+                            run_id,
                             &WsMessage::PipelineOutputEvent {
                                 run_id,
                                 content_type: content_type.to_string(),
@@ -231,7 +237,8 @@ pub(crate) async fn execute_pipeline_streaming(
                                 tool_id: None,
                                 input_summary: None,
                             },
-                        );
+                        )
+                        .await;
                         // Also send legacy PipelineOutput for backward compat
                         broadcast_message(
                             tx,
@@ -248,8 +255,10 @@ pub(crate) async fn execute_pipeline_streaming(
                     ref tool_id,
                     ref input_summary,
                 } => {
-                    broadcast_message(
+                    emit_run_event(
+                        db,
                         tx,
+                        run_id,
                         &WsMessage::PipelineOutputEvent {
                             run_id,
                             content_type: "tool_start".to_string(),
@@ -257,7 +266,8 @@ pub(crate) async fn execute_pipeline_streaming(
                             tool_id: Some(tool_id.clone()),
                             input_summary: Some(input_summary.clone()),
                         },
-                    );
+                    )
+                    .await;
                     // Also send legacy PipelineOutput
                     broadcast_message(
                         tx,
@@ -282,14 +292,17 @@ pub(crate) async fn execute_pipeline_streaming(
                         && let Some((file_path, action)) =
                             extract_file_change(tool_name, Some(input_val))
                     {
-                        broadcast_message(
+                        emit_run_event(
+                            db,
                             tx,
+                            run_id,
                             &WsMessage::PipelineFileChanged {
                                 run_id,
                                 file_path,
                                 action,
                             },
-                        );
+                        )
+                        .await;
                     }
                     last_output_broadcast = std::time::Instant::now();
                 }
@@ -297,8 +310,10 @@ pub(crate) async fn execute_pipeline_streaming(
                     ref tool_id,
                     ref output_preview,
                 } => {
-                    broadcast_message(
+                    emit_run_event(
+                        db,
                         tx,
+                        run_id,
                         &WsMessage::PipelineOutputEvent {
                             run_id,
                             content_type: "tool_end".to_string(),
@@ -306,7 +321,8 @@ pub(crate) async fn execute_pipeline_streaming(
                             tool_id: Some(tool_id.clone()),
                             input_summary: None,
                         },
-                    );
+                    )
+                    .await;
                 }
             }
         }
@@ -461,15 +477,18 @@ pub(crate) async fn execute_pipeline_docker(
                 }
 
                 let percent = compute_percent(&progress);
-                broadcast_message(
+                emit_run_event(
+                    db,
                     tx,
+                    run_id,
                     &WsMessage::PipelineProgress {
                         run_id,
                         phase: progress.phase.unwrap_or(0),
                         iteration: progress.iteration.unwrap_or(0),
                         percent,
                     },
-                );
+                )
+                .await;
             }
         }
     })

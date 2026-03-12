@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -25,6 +26,114 @@ pub fn slugify(title: &str, max_len: usize) -> String {
     } else {
         slug
     }
+}
+
+/// Validates that a derived path is contained within the project root.
+///
+/// Canonicalizes both paths and checks that the derived path starts with the
+/// project root. If the derived path does not exist yet, its parent directory
+/// is canonicalized and the final component is appended.
+///
+/// Returns the validated, canonicalized path on success.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The project root cannot be canonicalized (e.g., does not exist)
+/// - The derived path (or its parent) cannot be canonicalized
+/// - The canonicalized derived path does not start with the canonicalized project root
+pub fn validate_path_containment(project_root: &Path, derived_path: &Path) -> Result<PathBuf> {
+    let canonical_root = project_root.canonicalize().with_context(|| {
+        format!(
+            "Failed to canonicalize project root: {}",
+            project_root.display()
+        )
+    })?;
+
+    let canonical_derived = if derived_path.exists() {
+        derived_path.canonicalize().with_context(|| {
+            format!(
+                "Failed to canonicalize derived path: {}",
+                derived_path.display()
+            )
+        })?
+    } else {
+        // Path doesn't exist yet — normalize it logically first (resolve `.` and `..`),
+        // then canonicalize the nearest existing ancestor and append the rest.
+        let normalized = normalize_path(derived_path);
+
+        // Walk up from the normalized path to find an existing ancestor
+        let mut existing_ancestor = normalized.clone();
+        let mut pending_components = Vec::new();
+        while !existing_ancestor.exists() {
+            if let Some(comp) = existing_ancestor.file_name() {
+                pending_components.push(comp.to_os_string());
+            } else {
+                anyhow::bail!(
+                    "Cannot resolve path: no existing ancestor found for {}",
+                    derived_path.display()
+                );
+            }
+            existing_ancestor = existing_ancestor
+                .parent()
+                .context("Derived path has no resolvable ancestor")?
+                .to_path_buf();
+        }
+        let mut canonical_ancestor = existing_ancestor.canonicalize().with_context(|| {
+            format!(
+                "Failed to canonicalize ancestor: {}",
+                existing_ancestor.display()
+            )
+        })?;
+        for comp in pending_components.into_iter().rev() {
+            canonical_ancestor = canonical_ancestor.join(comp);
+        }
+        canonical_ancestor
+    };
+
+    if !canonical_derived.starts_with(&canonical_root) {
+        anyhow::bail!(
+            "Path containment violation: derived path {} is not within project root {}",
+            canonical_derived.display(),
+            canonical_root.display()
+        );
+    }
+
+    Ok(canonical_derived)
+}
+
+/// Logically normalize a path by resolving `.` and `..` components without
+/// touching the filesystem.
+fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                // Pop the last component if there is one (and it's not "..")
+                if !normalized.pop() {
+                    normalized.push("..");
+                }
+            }
+            Component::CurDir => { /* skip */ }
+            other => normalized.push(other),
+        }
+    }
+    normalized
+}
+
+/// Canonicalizes a filesystem path, returning the resolved absolute path.
+///
+/// Used during project creation to normalize project paths so that later
+/// containment checks operate on canonical roots.
+pub fn canonicalize_project_path(path: &str) -> Result<String> {
+    let canonical = Path::new(path)
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize project path: {}", path))?;
+    canonical
+        .to_str()
+        .context("Canonicalized project path contains invalid UTF-8")
+        .map(|s| s.to_string())
 }
 
 pub(crate) fn translate_host_path_to_container(path: &str) -> String {
@@ -265,5 +374,141 @@ mod tests {
             h.await.unwrap();
         }
         assert_eq!(max_concurrent.load(Ordering::SeqCst), 1);
+    }
+
+    // --- Path containment validation tests ---
+
+    #[test]
+    fn test_validate_path_containment_valid_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path();
+        let worktrees_dir = project_root.join(".worktrees");
+        std::fs::create_dir_all(&worktrees_dir).unwrap();
+        let derived = worktrees_dir.join("task-1");
+
+        let result = validate_path_containment(project_root, &derived);
+        assert!(
+            result.is_ok(),
+            "Valid path within project root should be accepted"
+        );
+        let canonical = result.unwrap();
+        assert!(
+            canonical.starts_with(project_root.canonicalize().unwrap()),
+            "Canonical path should start with canonical project root"
+        );
+    }
+
+    #[test]
+    fn test_validate_path_containment_traversal_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path();
+        // Construct a path that traverses out of the project root
+        let escaped = project_root
+            .join(".worktrees")
+            .join("..")
+            .join("..")
+            .join("etc");
+
+        let result = validate_path_containment(project_root, &escaped);
+        assert!(
+            result.is_err(),
+            "Path with ../../ traversal outside project root should be rejected"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Path containment violation"),
+            "Error should mention path containment violation, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_validate_path_containment_symlink_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path();
+        let outside_dir = tempfile::tempdir().unwrap();
+
+        // Create a symlink inside project root that points outside
+        let symlink_path = project_root.join("sneaky-link");
+        std::os::unix::fs::symlink(outside_dir.path(), &symlink_path).unwrap();
+
+        let derived = symlink_path.join("task-1");
+
+        let result = validate_path_containment(project_root, &derived);
+        assert!(
+            result.is_err(),
+            "Symlink resolving outside project root should be rejected"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Path containment violation"),
+            "Error should mention path containment violation, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_validate_path_containment_at_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path();
+
+        // Path exactly at project root boundary (i.e., the project root itself)
+        let result = validate_path_containment(project_root, project_root);
+        assert!(
+            result.is_ok(),
+            "Path exactly at project root boundary should be accepted"
+        );
+    }
+
+    #[test]
+    fn test_validate_path_containment_deeply_nested() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path();
+        let deep_path = project_root
+            .join(".worktrees")
+            .join("run-1")
+            .join("task-42")
+            .join("subtask");
+        // Create intermediate dirs so parent can be canonicalized
+        std::fs::create_dir_all(deep_path.parent().unwrap()).unwrap();
+
+        let result = validate_path_containment(project_root, &deep_path);
+        assert!(
+            result.is_ok(),
+            "Deeply nested valid path should be accepted"
+        );
+    }
+
+    #[test]
+    fn test_validate_path_containment_nonexistent_derived() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path();
+        std::fs::create_dir_all(project_root.join(".worktrees")).unwrap();
+        let derived = project_root.join(".worktrees").join("new-task");
+
+        let result = validate_path_containment(project_root, &derived);
+        assert!(
+            result.is_ok(),
+            "Non-existent derived path with existing parent should be accepted"
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_project_path_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = canonicalize_project_path(dir.path().to_str().unwrap());
+        assert!(result.is_ok());
+        let canonical = result.unwrap();
+        assert!(
+            !canonical.contains(".."),
+            "Canonical path should not contain .."
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_project_path_nonexistent() {
+        let result = canonicalize_project_path("/nonexistent/path/that/does/not/exist");
+        assert!(
+            result.is_err(),
+            "Non-existent path should fail canonicalization"
+        );
     }
 }

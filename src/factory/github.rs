@@ -166,21 +166,50 @@ pub async fn poll_for_token(client_id: &str, device_code: &str) -> anyhow::Resul
 /// List open issues for a repository (excludes pull requests).
 /// Paginates through all pages automatically.
 pub async fn list_issues(token: &str, owner_repo: &str) -> anyhow::Result<Vec<GitHubIssue>> {
-    let client = reqwest::Client::new();
+    fetch_github_issues(token, owner_repo, &[]).await
+}
+
+/// Fetch open issues for a repository with optional label filter.
+///
+/// Uses the GitHub REST API: `GET /repos/{owner_repo}/issues?state=open&labels={labels}`
+/// Filters out pull requests (GitHub issues endpoint includes PRs — check for `pull_request` field).
+/// Paginates through all pages automatically.
+pub async fn fetch_github_issues(
+    token: &str,
+    owner_repo: &str,
+    labels: &[String],
+) -> anyhow::Result<Vec<GitHubIssue>> {
+    fetch_github_issues_with_client(&reqwest::Client::new(), token, owner_repo, labels).await
+}
+
+/// Internal version that accepts a client, for testability with mock servers.
+pub(crate) async fn fetch_github_issues_with_client(
+    client: &reqwest::Client,
+    token: &str,
+    owner_repo: &str,
+    labels: &[String],
+) -> anyhow::Result<Vec<GitHubIssue>> {
     let url = format!("https://api.github.com/repos/{}/issues", owner_repo);
     let mut all_issues = Vec::new();
     let mut page = 1u32;
 
+    let labels_str = labels.join(",");
+
     loop {
+        let mut query_params = vec![
+            ("state", "open".to_string()),
+            ("per_page", "100".to_string()),
+            ("page", page.to_string()),
+        ];
+        if !labels_str.is_empty() {
+            query_params.push(("labels", labels_str.clone()));
+        }
+
         let resp: Vec<GitHubIssue> = client
             .get(&url)
             .header("Authorization", format!("Bearer {}", token))
             .header("User-Agent", "forge-factory")
-            .query(&[
-                ("state", "open"),
-                ("per_page", "100"),
-                ("page", &page.to_string()),
-            ])
+            .query(&query_params)
             .send()
             .await
             .context("Failed to send issues request to GitHub")?

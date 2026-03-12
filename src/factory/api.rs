@@ -15,9 +15,11 @@ use axum::{
 use serde::Deserialize;
 use tokio::sync::broadcast;
 
+use super::config_store::ProjectConfigStore;
 use super::db::DbHandle;
 use super::models::{IssueColumn, IssueId, ProjectId, RunId, TaskId};
 use super::pipeline::PipelineRunner;
+use super::tracker::TrackerPollerManager;
 use super::ws::{WsMessage, broadcast_message};
 use crate::metrics::MetricsCollector;
 
@@ -30,6 +32,8 @@ pub struct AppState {
     pub github_client_id: Option<String>,
     pub github_token: Mutex<Option<String>>,
     pub metrics: MetricsCollector,
+    pub config_store: ProjectConfigStore,
+    pub tracker_poller_manager: TrackerPollerManager,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -198,6 +202,7 @@ impl From<FactoryError> for ApiError {
 /// | GET    | `/api/github/repos`             | List user's GitHub repos  |
 /// | POST   | `/api/github/disconnect`        | Remove GitHub token       |
 /// | DELETE | `/api/projects/:id`             | Delete a project          |
+/// | POST   | `/api/projects/:id/config/reload`| Reload project config    |
 /// | GET    | `/api/screenshots/*path`        | Serve screenshot file     |
 /// | GET    | `/api/cli-help`                 | Parsed CLI help data      |
 /// | GET    | `/health`                       | Liveness probe            |
@@ -237,6 +242,11 @@ pub fn api_router() -> Router<SharedState> {
         .route("/api/metrics/reviews", get(get_metrics_reviews))
         .route("/api/metrics/tokens", get(get_metrics_tokens))
         .route("/api/metrics/runs/recent", get(get_metrics_recent_runs))
+        .route("/api/reconcile", post(reconcile_handler))
+        .route(
+            "/api/projects/{id}/config/reload",
+            post(reload_project_config),
+        )
         .route("/health", get(health_check))
 }
 
@@ -786,6 +796,9 @@ async fn delete_project(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     match deleted {
         true => {
+            // Stop tracker poller if running for this project
+            state.tracker_poller_manager.stop_poller(id);
+
             broadcast_message(
                 &state.ws_tx,
                 &WsMessage::ProjectDeleted {
@@ -988,8 +1001,8 @@ async fn delete_issue(
 
 /// `POST /api/issues/:id/run` — start a Forge pipeline run for an issue.
 ///
-/// Creates a new `PipelineRun` record then spawns pipeline execution in a background
-/// Tokio task. Emits real-time status updates via WebSocket.
+/// Creates a new `PipelineRun` record in Queued status, then calls `dispatch_pending_runs()`
+/// which will start the run if capacity is available. Emits real-time status updates via WebSocket.
 ///
 /// **Response:** `201 Created` with the new `PipelineRun` as JSON.
 ///
@@ -1000,7 +1013,7 @@ async fn trigger_pipeline(
     State(state): State<SharedState>,
     Path(issue_id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let issue = state
+    let _issue = state
         .db
         .get_issue(IssueId(issue_id))
         .await
@@ -1012,21 +1025,39 @@ async fn trigger_pipeline(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    // Start pipeline execution in a background task
     let run_id = run.id;
-    state
-        .pipeline_runner
-        .start_run(run_id.0, &issue, state.db.clone(), state.ws_tx.clone())
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    // Re-fetch the run after start_run (which updates status to Running)
+    // Try to dispatch queued runs (this is the ONLY place that transitions queued -> running)
+    if let Err(e) = super::dispatch::dispatch_pending_runs(
+        &state.db,
+        &state.pipeline_runner,
+        &state.ws_tx,
+        super::dispatch::DEFAULT_MAX_CONCURRENCY,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "dispatch_pending_runs failed after trigger");
+    }
+
+    // If the run is still queued after dispatch attempt, emit PipelineQueued
     let updated_run = state
         .db
         .get_pipeline_run(run_id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::Internal(format!("Pipeline run {} not found", run_id.0)))?;
+
+    if updated_run.status == super::models::PipelineStatus::Queued {
+        let position = state.db.count_queue_position(run_id).await.unwrap_or(1);
+        broadcast_message(
+            &state.ws_tx,
+            &WsMessage::PipelineQueued {
+                run_id,
+                issue_id: IssueId(issue_id),
+                position,
+            },
+        );
+    }
 
     Ok((StatusCode::CREATED, Json(updated_run)))
 }
@@ -1070,6 +1101,19 @@ async fn cancel_pipeline_run(
         .cancel(id, &state.db, &state.ws_tx)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    // After cancellation frees a slot, dispatch next queued run
+    if let Err(e) = super::dispatch::dispatch_pending_runs(
+        &state.db,
+        &state.pipeline_runner,
+        &state.ws_tx,
+        super::dispatch::DEFAULT_MAX_CONCURRENCY,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "dispatch_pending_runs failed after cancel");
+    }
+
     Ok(Json(run))
 }
 
@@ -1476,6 +1520,180 @@ async fn get_metrics_recent_runs(
         })
 }
 
+/// `POST /api/reconcile` — run one reconciliation tick followed by one dispatch tick.
+///
+/// Reconciliation detects stalled and dead pipeline runs, transitioning them
+/// appropriately. Dispatch then picks up any newly-freed capacity to start
+/// queued runs.
+///
+/// **Response:** `200 OK` with a [`ReconciliationReport`] as JSON.
+async fn reconcile_handler(
+    State(state): State<SharedState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let processes = state.pipeline_runner.running_processes();
+    let report = super::reconciliation::reconcile_runs(
+        &state.db,
+        &processes,
+        &state.ws_tx,
+        super::reconciliation::DEFAULT_STALL_TIMEOUT_SECS,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("Reconciliation failed: {}", e)))?;
+
+    // Run dispatch after reconciliation to start queued runs if capacity freed up
+    if let Err(e) = super::dispatch::dispatch_pending_runs(
+        &state.db,
+        &state.pipeline_runner,
+        &state.ws_tx,
+        super::dispatch::DEFAULT_MAX_CONCURRENCY,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "dispatch_pending_runs failed after reconciliation");
+    }
+
+    Ok(Json(report))
+}
+
+// ── Config reload ─────────────────────────────────────────────────────
+
+async fn reload_project_config(
+    Path(id): Path<i64>,
+    State(state): State<SharedState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project_id = ProjectId(id);
+
+    // Fetch project from DB to get its path
+    let project = state
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::from(FactoryError::ProjectNotFound { id }))?;
+
+    // Attempt reload
+    match state.config_store.reload_project_config(id, &project.path) {
+        Ok(changed) => {
+            // Check if any tracker settings changed and reconcile the poller
+            let tracker_changed = changed.iter().any(|s| s.starts_with("factory.tracker"));
+            if tracker_changed {
+                reconcile_tracker_poller(&state, id);
+            }
+
+            // Broadcast success via WebSocket
+            broadcast_message(
+                &state.ws_tx,
+                &WsMessage::ConfigReloaded {
+                    project_id,
+                    changed_settings: changed.clone(),
+                },
+            );
+
+            Ok(Json(serde_json::json!({
+                "status": "ok",
+                "project_id": id,
+                "changed_settings": changed,
+            })))
+        }
+        Err(e) => {
+            let error_msg = format!("{:#}", e);
+
+            // Broadcast error via WebSocket
+            broadcast_message(
+                &state.ws_tx,
+                &WsMessage::ConfigReloadError {
+                    project_id,
+                    error: error_msg.clone(),
+                },
+            );
+
+            Err(ApiError::BadRequest(format!(
+                "Config reload failed for project {}: {}",
+                id, error_msg
+            )))
+        }
+    }
+}
+
+// ── Tracker poller lifecycle helpers ──────────────────────────────────
+
+/// Reconcile the tracker poller for a project based on its current config.
+///
+/// If `factory.tracker.enabled` is true and owner/repo are set, starts
+/// (or restarts) the poller. Otherwise, stops it.
+fn reconcile_tracker_poller(state: &AppState, project_id: i64) {
+    let config = match state.config_store.get_config(project_id) {
+        Some(c) => c,
+        None => {
+            state.tracker_poller_manager.stop_poller(project_id);
+            return;
+        }
+    };
+
+    let tracker = &config.factory.tracker;
+
+    if tracker.enabled && !tracker.owner.is_empty() && !tracker.repo.is_empty() {
+        // Need a GitHub token to poll
+        let token = state.github_token.lock().ok().and_then(|t| t.clone());
+
+        match token {
+            Some(token) => {
+                let poller_config = super::tracker::TrackerPollerConfig {
+                    db: state.db.clone(),
+                    ws_tx: state.ws_tx.clone(),
+                    project_id: ProjectId(project_id),
+                    token,
+                    owner: tracker.owner.clone(),
+                    repo: tracker.repo.clone(),
+                    labels: tracker.labels.clone(),
+                    poll_interval_secs: tracker.poll_interval_secs,
+                };
+                state
+                    .tracker_poller_manager
+                    .start_poller(project_id, poller_config);
+            }
+            None => {
+                tracing::warn!(
+                    project_id,
+                    "Tracker enabled but no GitHub token configured; skipping poller start"
+                );
+                state.tracker_poller_manager.stop_poller(project_id);
+            }
+        }
+    } else {
+        state.tracker_poller_manager.stop_poller(project_id);
+    }
+}
+
+/// Start tracker pollers for all projects that have tracker polling enabled.
+///
+/// Called once during server startup after AppState is constructed.
+pub async fn start_tracker_pollers_for_projects(state: &AppState) {
+    let projects = match state.db.list_projects().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("Failed to list projects for tracker startup: {e:#}");
+            return;
+        }
+    };
+
+    for project in &projects {
+        // Load config for the project
+        if let Err(e) = state
+            .config_store
+            .load_project_config(project.id.0, &project.path)
+        {
+            tracing::warn!(
+                project_id = project.id.0,
+                "Failed to load config for tracker startup: {e:#}"
+            );
+            continue;
+        }
+
+        reconcile_tracker_poller(state, project.id.0);
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1497,6 +1715,8 @@ mod tests {
             github_client_id: None,
             github_token: Mutex::new(None),
             metrics: MetricsCollector::new(db),
+            config_store: ProjectConfigStore::new(),
+            tracker_poller_manager: TrackerPollerManager::new(),
         });
         api_router().with_state(state)
     }
@@ -2055,6 +2275,8 @@ mod tests {
             github_client_id: None,
             github_token: Mutex::new(None),
             metrics: MetricsCollector::new(db),
+            config_store: ProjectConfigStore::new(),
+            tracker_poller_manager: TrackerPollerManager::new(),
         });
         let app = api_router().with_state(state);
 
@@ -2541,5 +2763,141 @@ mod tests {
             assert!(body["commands"].is_array());
             assert!(body["options"].is_array());
         }
+    }
+
+    // POST /api/reconcile — returns a ReconciliationReport
+    #[tokio::test]
+    async fn test_reconcile_endpoint_returns_report() {
+        let app = test_app().await;
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/reconcile")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let report: serde_json::Value = body_json(response.into_body()).await;
+        // With no runs, inspected/stalled/failed should all be 0
+        assert_eq!(report["inspected"], 0);
+        assert_eq!(report["stalled"], 0);
+        assert_eq!(report["failed"], 0);
+    }
+
+    // Config reload endpoint tests
+    #[tokio::test]
+    async fn test_config_reload_project_not_found() {
+        let app = test_app().await;
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/projects/999/config/reload")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_config_reload_success() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let (ws_tx, _) = broadcast::channel(16);
+        let pipeline_runner = PipelineRunner::new("/tmp/test", None);
+
+        // Create a temp directory with a forge.toml
+        let dir = tempfile::tempdir().unwrap();
+        let forge_dir = dir.path().join(".forge");
+        std::fs::create_dir_all(&forge_dir).unwrap();
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            r#"
+[factory.reconciliation]
+stall_timeout_secs = 600
+"#,
+        )
+        .unwrap();
+
+        let state = Arc::new(AppState {
+            db: db.clone(),
+            ws_tx,
+            pipeline_runner,
+            github_client_id: None,
+            github_token: Mutex::new(None),
+            metrics: MetricsCollector::new(db.clone()),
+            config_store: ProjectConfigStore::new(),
+            tracker_poller_manager: TrackerPollerManager::new(),
+        });
+        let app = api_router().with_state(state);
+
+        // Create a project pointing to the temp dir
+        let project = db
+            .create_project("test-proj", dir.path().to_str().unwrap())
+            .await
+            .unwrap();
+
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/api/projects/{}/config/reload", project.id.0))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body: serde_json::Value = body_json(response.into_body()).await;
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["project_id"], project.id.0);
+        assert!(body["changed_settings"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_config_reload_invalid_toml_returns_error() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let (ws_tx, _) = broadcast::channel(16);
+        let pipeline_runner = PipelineRunner::new("/tmp/test", None);
+
+        // Create a temp directory with invalid forge.toml
+        let dir = tempfile::tempdir().unwrap();
+        let forge_dir = dir.path().join(".forge");
+        std::fs::create_dir_all(&forge_dir).unwrap();
+        std::fs::write(forge_dir.join("forge.toml"), "this is [[[not valid toml!!!").unwrap();
+
+        let state = Arc::new(AppState {
+            db: db.clone(),
+            ws_tx,
+            pipeline_runner,
+            github_client_id: None,
+            github_token: Mutex::new(None),
+            metrics: MetricsCollector::new(db.clone()),
+            config_store: ProjectConfigStore::new(),
+            tracker_poller_manager: TrackerPollerManager::new(),
+        });
+        let app = api_router().with_state(state);
+
+        // Create a project pointing to the temp dir
+        let project = db
+            .create_project("bad-toml-proj", dir.path().to_str().unwrap())
+            .await
+            .unwrap();
+
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/api/projects/{}/config/reload", project.id.0))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body: serde_json::Value = body_json(response.into_body()).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("Config reload failed")
+        );
     }
 }

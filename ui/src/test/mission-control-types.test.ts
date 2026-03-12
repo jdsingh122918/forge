@@ -26,8 +26,8 @@ describe('Mission Control types', () => {
   })
 
   it('RunStatusFilter accepts all valid values', () => {
-    const filters: RunStatusFilter[] = ['all', 'running', 'queued', 'completed', 'failed']
-    expect(filters).toHaveLength(5)
+    const filters: RunStatusFilter[] = ['all', 'running', 'queued', 'completed', 'failed', 'stalled']
+    expect(filters).toHaveLength(6)
     filters.forEach(f => expect(typeof f).toBe('string'))
   })
 
@@ -60,7 +60,7 @@ describe('Mission Control types', () => {
   })
 
   it('MC_STATUS_COLORS has entries for all PipelineStatus values', () => {
-    const allStatuses: PipelineStatus[] = ['queued', 'running', 'completed', 'failed', 'cancelled']
+    const allStatuses: PipelineStatus[] = ['queued', 'running', 'completed', 'failed', 'cancelled', 'stalled']
     allStatuses.forEach(status => {
       expect(MC_STATUS_COLORS[status]).toBeDefined()
       expect(typeof MC_STATUS_COLORS[status]).toBe('string')
@@ -72,5 +72,13 @@ describe('Mission Control types', () => {
     expect(MC_STATUS_COLORS.failed).toMatch(/^var\(--color-/)
     expect(MC_STATUS_COLORS.queued).toMatch(/^var\(--color-/)
     expect(MC_STATUS_COLORS.cancelled).toMatch(/^var\(--color-/)
+    expect(MC_STATUS_COLORS.stalled).toMatch(/^var\(--color-/)
+  })
+
+  it('stalled status has a distinct amber/orange color', () => {
+    // Stalled should use a different color variable than running (success) or queued (warning)
+    expect(MC_STATUS_COLORS.stalled).not.toBe(MC_STATUS_COLORS.running)
+    expect(MC_STATUS_COLORS.stalled).not.toBe(MC_STATUS_COLORS.queued)
+    expect(MC_STATUS_COLORS.stalled).toContain('stalled')
   })
 })

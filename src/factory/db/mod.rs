@@ -351,6 +351,35 @@ impl DbHandle {
         .await
     }
 
+    pub async fn list_queued_runs(&self) -> Result<Vec<super::models::PipelineRun>> {
+        let conn = self.conn();
+        pipeline::list_queued_runs(conn).await
+    }
+
+    pub async fn count_queue_position(&self, run_id: super::models::RunId) -> Result<i32> {
+        let conn = self.conn();
+        pipeline::count_queue_position(conn, run_id).await
+    }
+
+    pub async fn list_running_and_stalled_runs(&self) -> Result<Vec<super::models::PipelineRun>> {
+        let conn = self.conn();
+        pipeline::list_running_and_stalled_runs(conn).await
+    }
+
+    pub async fn update_last_event_at(&self, run_id: super::models::RunId) -> Result<()> {
+        let conn = self.conn();
+        pipeline::update_last_event_at(conn, run_id).await
+    }
+
+    pub async fn update_pipeline_status(
+        &self,
+        run_id: super::models::RunId,
+        new_status: &super::models::PipelineStatus,
+    ) -> Result<()> {
+        let conn = self.conn();
+        pipeline::update_pipeline_status(conn, run_id, new_status).await
+    }
+
     pub async fn get_pipeline_phases(
         &self,
         run_id: super::models::RunId,

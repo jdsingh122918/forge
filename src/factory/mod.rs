@@ -62,12 +62,17 @@
 
 pub mod agent_executor;
 pub mod api;
+pub mod config_store;
 pub mod db;
+pub mod dispatch;
 pub mod embedded;
 pub mod github;
+pub mod heartbeat;
 pub mod models;
 pub mod pipeline;
 pub mod planner;
+pub mod reconciliation;
 pub mod sandbox;
 pub mod server;
+pub mod tracker;
 pub mod ws;

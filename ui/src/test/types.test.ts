@@ -55,4 +55,74 @@ describe('TypeScript types', () => {
     }
     expect(msg.type).toBe('VerificationResult')
   })
+
+  it('PipelineRun accepts stalled status', () => {
+    const run: PipelineRun = makePipelineRun({ status: 'stalled' })
+    expect(run.status).toBe('stalled')
+  })
+
+  it('WsMessage union includes PipelineStatusChanged variant', () => {
+    const msg: WsMessage = {
+      type: 'PipelineStatusChanged',
+      data: { run_id: 1, issue_id: 1, old_status: 'running', new_status: 'stalled', reason: 'No heartbeat' },
+    }
+    expect(msg.type).toBe('PipelineStatusChanged')
+    expect(msg.data.new_status).toBe('stalled')
+  })
+
+  it('WsMessage union includes PipelineQueued variant', () => {
+    const msg: WsMessage = {
+      type: 'PipelineQueued',
+      data: { run_id: 1, issue_id: 1, position: 3 },
+    }
+    expect(msg.type).toBe('PipelineQueued')
+  })
+
+  it('WsMessage union includes QueuePositionUpdated variant', () => {
+    const msg: WsMessage = {
+      type: 'QueuePositionUpdated',
+      data: { run_id: 1, position: 2 },
+    }
+    expect(msg.type).toBe('QueuePositionUpdated')
+  })
+
+  it('WsMessage union includes ConfigReloaded variant', () => {
+    const msg: WsMessage = {
+      type: 'ConfigReloaded',
+      data: { project_id: 1, changed_settings: ['timeout'] },
+    }
+    expect(msg.type).toBe('ConfigReloaded')
+  })
+
+  it('WsMessage union includes ConfigReloadError variant', () => {
+    const msg: WsMessage = {
+      type: 'ConfigReloadError',
+      data: { project_id: 1, error: 'Invalid TOML' },
+    }
+    expect(msg.type).toBe('ConfigReloadError')
+  })
+
+  it('WsMessage union includes TrackerPollStarted variant', () => {
+    const msg: WsMessage = {
+      type: 'TrackerPollStarted',
+      data: { project_id: 1 },
+    }
+    expect(msg.type).toBe('TrackerPollStarted')
+  })
+
+  it('WsMessage union includes TrackerPollCompleted variant', () => {
+    const msg: WsMessage = {
+      type: 'TrackerPollCompleted',
+      data: { project_id: 1, imported_count: 3, skipped_count: 1 },
+    }
+    expect(msg.type).toBe('TrackerPollCompleted')
+  })
+
+  it('WsMessage union includes TrackerPollError variant', () => {
+    const msg: WsMessage = {
+      type: 'TrackerPollError',
+      data: { project_id: 1, error: 'Rate limited' },
+    }
+    expect(msg.type).toBe('TrackerPollError')
+  })
 })

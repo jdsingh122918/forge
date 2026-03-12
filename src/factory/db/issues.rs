@@ -274,7 +274,7 @@ pub async fn get_board(conn: &Connection, project_id: ProjectId) -> Result<Board
 
         for iws in &mut col_issues {
             let sql = format!(
-                "SELECT {} FROM pipeline_runs WHERE issue_id = ?1 AND status IN ('queued', 'running') ORDER BY id DESC LIMIT 1",
+                "SELECT {} FROM pipeline_runs WHERE issue_id = ?1 AND status IN ('queued', 'running', 'stalled') ORDER BY id DESC LIMIT 1",
                 RUN_COLS
             );
             let mut rows = conn
@@ -498,6 +498,55 @@ mod tests {
 
         assert_eq!(board.columns[4].issues.len(), 1);
         assert_eq!(board.columns[4].issues[0].issue.id, done_issue.id);
+    }
+
+    #[tokio::test]
+    async fn test_get_board_view_includes_stalled_runs() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let conn = db.conn();
+        let project = super::super::projects::create_project(conn, "stall-proj", "/tmp/stall-proj")
+            .await
+            .unwrap();
+
+        let issue = create_issue(
+            conn,
+            project.id,
+            "Stalled item",
+            "",
+            &IssueColumn::InProgress,
+        )
+        .await
+        .unwrap();
+
+        // Create a pipeline run and set it to Stalled
+        let run = super::super::pipeline::create_pipeline_run(conn, issue.id)
+            .await
+            .unwrap();
+        super::super::pipeline::update_pipeline_run(
+            conn,
+            run.id,
+            &crate::factory::models::PipelineStatus::Stalled,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let board = get_board(conn, project.id).await.unwrap();
+
+        // The in_progress column should contain the issue with a stalled active_run
+        let in_progress_col = &board.columns[2];
+        assert_eq!(in_progress_col.name, IssueColumn::InProgress);
+        assert_eq!(in_progress_col.issues.len(), 1);
+        let active_run = in_progress_col.issues[0]
+            .active_run
+            .as_ref()
+            .expect("stalled run should appear as active_run in board view");
+        assert_eq!(active_run.id, run.id);
+        assert_eq!(
+            active_run.status,
+            crate::factory::models::PipelineStatus::Stalled
+        );
     }
 
     #[tokio::test]

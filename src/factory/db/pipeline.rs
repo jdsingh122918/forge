@@ -27,10 +27,11 @@ pub(super) fn row_to_pipeline_run(row: &Row) -> Result<PipelineRun> {
         has_team: has_team.map(|v| v != 0).unwrap_or(false),
         started_at: row.get(12)?,
         completed_at: row.get(13)?,
+        last_event_at: row.get(14)?,
     })
 }
 
-pub(super) const RUN_COLS: &str = "id, issue_id, status, phase_count, current_phase, iteration, summary, error, branch_name, pr_url, team_id, has_team, started_at, completed_at";
+pub(super) const RUN_COLS: &str = "id, issue_id, status, phase_count, current_phase, iteration, summary, error, branch_name, pr_url, team_id, has_team, started_at, completed_at, last_event_at";
 
 pub async fn create_pipeline_run(conn: &Connection, issue_id: IssueId) -> Result<PipelineRun> {
     let tx = conn
@@ -96,7 +97,7 @@ pub async fn cancel_pipeline_run(conn: &Connection, id: RunId) -> Result<Pipelin
 
 pub async fn recover_orphaned_runs(conn: &Connection) -> Result<usize> {
     let count = conn.execute(
-        "UPDATE pipeline_runs SET status = 'failed', error = 'Server restarted — pipeline process was lost', completed_at = datetime('now') WHERE status IN ('running', 'queued')",
+        "UPDATE pipeline_runs SET status = 'failed', error = 'Server restarted — pipeline process was lost', completed_at = datetime('now') WHERE status IN ('running', 'stalled')",
         (),
     )
     .await
@@ -187,6 +188,92 @@ pub async fn upsert_pipeline_phase(
     )
     .await
     .context("Failed to upsert pipeline phase")?;
+    Ok(())
+}
+
+/// List all queued pipeline runs in FIFO order (by id ascending).
+pub async fn list_queued_runs(conn: &Connection) -> Result<Vec<PipelineRun>> {
+    let sql = format!(
+        "SELECT {} FROM pipeline_runs WHERE status = 'queued' ORDER BY id ASC",
+        RUN_COLS
+    );
+    let mut rows = conn
+        .query(&sql, ())
+        .await
+        .context("Failed to query queued pipeline runs")?;
+    let mut runs = Vec::new();
+    while let Some(row) = rows.next().await? {
+        runs.push(row_to_pipeline_run(&row)?);
+    }
+    Ok(runs)
+}
+
+/// Return the 1-based queue position of a given run among queued runs.
+/// Position = count of queued runs with id <= this run's id.
+pub async fn count_queue_position(conn: &Connection, run_id: RunId) -> Result<i32> {
+    let mut rows = conn
+        .query(
+            "SELECT COUNT(*) FROM pipeline_runs WHERE status = 'queued' AND id <= ?1",
+            [run_id.0],
+        )
+        .await
+        .context("Failed to count queue position")?;
+    let row = rows.next().await?.context("No result from count query")?;
+    let count: i64 = row.get(0)?;
+    Ok(count as i32)
+}
+
+/// List all pipeline runs with status 'running' or 'stalled'.
+pub async fn list_running_and_stalled_runs(conn: &Connection) -> Result<Vec<PipelineRun>> {
+    let sql = format!(
+        "SELECT {} FROM pipeline_runs WHERE status IN ('running', 'stalled') ORDER BY id ASC",
+        RUN_COLS
+    );
+    let mut rows = conn
+        .query(&sql, ())
+        .await
+        .context("Failed to query running/stalled pipeline runs")?;
+    let mut runs = Vec::new();
+    while let Some(row) = rows.next().await? {
+        runs.push(row_to_pipeline_run(&row)?);
+    }
+    Ok(runs)
+}
+
+/// Set last_event_at to current UTC timestamp for a given run.
+pub async fn update_last_event_at(conn: &Connection, run_id: RunId) -> Result<()> {
+    conn.execute(
+        "UPDATE pipeline_runs SET last_event_at = datetime('now') WHERE id = ?1",
+        [run_id.0],
+    )
+    .await
+    .context("Failed to update last_event_at")?;
+    Ok(())
+}
+
+/// Update just the status field of a pipeline run (used by reconciliation transitions).
+/// Unlike `update_pipeline_run`, this does NOT touch summary/error fields and sets
+/// `completed_at` only for terminal statuses.
+pub async fn update_pipeline_status(
+    conn: &Connection,
+    run_id: RunId,
+    new_status: &PipelineStatus,
+) -> Result<()> {
+    if new_status.is_terminal() {
+        conn.execute(
+            "UPDATE pipeline_runs SET status = ?1, completed_at = datetime('now') WHERE id = ?2",
+            libsql::params![new_status.as_str(), run_id.0],
+        )
+        .await
+        .context("Failed to update pipeline status")?;
+    } else {
+        conn.execute(
+            "UPDATE pipeline_runs SET status = ?1 WHERE id = ?2",
+            libsql::params![new_status.as_str(), run_id.0],
+        )
+        .await
+        .context("Failed to update pipeline status")?;
+    }
     Ok(())
 }
 
@@ -392,7 +479,7 @@ mod tests {
 
         // Recover orphaned runs
         let count = recover_orphaned_runs(conn).await.unwrap();
-        assert_eq!(count, 2, "Should recover running + queued runs");
+        assert_eq!(count, 1, "Should recover only the running run (not queued)");
 
         // Verify running run is now failed with error message
         let recovered_running = get_pipeline_run(conn, run_running.id)
@@ -406,17 +493,18 @@ mod tests {
         );
         assert!(recovered_running.completed_at.is_some());
 
-        // Verify queued run is now failed with error message
-        let recovered_queued = get_pipeline_run(conn, run_queued.id)
+        // Verify queued run is NOT marked as failed — it survives restart
+        let surviving_queued = get_pipeline_run(conn, run_queued.id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(recovered_queued.status, PipelineStatus::Failed);
         assert_eq!(
-            recovered_queued.error.as_deref(),
-            Some("Server restarted — pipeline process was lost")
+            surviving_queued.status,
+            PipelineStatus::Queued,
+            "Queued runs should survive recovery and remain queued"
         );
-        assert!(recovered_queued.completed_at.is_some());
+        assert_eq!(surviving_queued.error, None);
+        assert_eq!(surviving_queued.completed_at, None);
 
         // Verify completed run is untouched
         let unchanged_completed = get_pipeline_run(conn, run_completed.id)
@@ -441,11 +529,12 @@ mod tests {
             .unwrap();
         assert_eq!(issue_r.column, IssueColumn::Ready);
 
+        // Queued issue should remain in_progress (not moved by recovery)
         let issue_q = super::super::issues::get_issue(conn, issue_queued.id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(issue_q.column, IssueColumn::Ready);
+        assert_eq!(issue_q.column, IssueColumn::InProgress);
 
         // Verify completed/failed issues' columns are untouched
         let issue_c = super::super::issues::get_issue(conn, issue_completed.id)
@@ -459,6 +548,236 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(issue_f.column, IssueColumn::Backlog);
+    }
+
+    #[tokio::test]
+    async fn test_last_event_at_persists_through_create_read_cycle() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let conn = db.conn();
+        let project = super::super::projects::create_project(conn, "test", "/tmp/test")
+            .await
+            .unwrap();
+        let issue =
+            super::super::issues::create_issue(conn, project.id, "Test", "", &IssueColumn::Backlog)
+                .await
+                .unwrap();
+
+        // Create a pipeline run — last_event_at should default to NULL
+        let run = create_pipeline_run(conn, issue.id).await.unwrap();
+        assert_eq!(
+            run.last_event_at, None,
+            "last_event_at should default to None"
+        );
+
+        // Set last_event_at via direct SQL (simulating a heartbeat update)
+        conn.execute(
+            "UPDATE pipeline_runs SET last_event_at = datetime('now') WHERE id = ?1",
+            [run.id.0],
+        )
+        .await
+        .unwrap();
+
+        // Re-read and verify last_event_at is populated
+        let reloaded = get_pipeline_run(conn, run.id).await.unwrap().unwrap();
+        assert!(
+            reloaded.last_event_at.is_some(),
+            "last_event_at should be set after update"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recover_orphaned_runs_handles_stalled() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let conn = db.conn();
+        let project = super::super::projects::create_project(conn, "test", "/tmp/test")
+            .await
+            .unwrap();
+
+        let issue_stalled = super::super::issues::create_issue(
+            conn,
+            project.id,
+            "Stalled issue",
+            "",
+            &IssueColumn::InProgress,
+        )
+        .await
+        .unwrap();
+
+        // Create a pipeline run and set it to Stalled
+        let run_stalled = create_pipeline_run(conn, issue_stalled.id).await.unwrap();
+        update_pipeline_run(conn, run_stalled.id, &PipelineStatus::Stalled, None, None)
+            .await
+            .unwrap();
+
+        // Recover orphaned runs — should also recover Stalled runs
+        let count = recover_orphaned_runs(conn).await.unwrap();
+        assert_eq!(count, 1, "Should recover exactly the stalled run");
+
+        // Verify stalled run is now failed
+        let recovered = get_pipeline_run(conn, run_stalled.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.status, PipelineStatus::Failed);
+        assert!(recovered.error.is_some());
+        assert!(recovered.completed_at.is_some());
+
+        // Verify the issue was moved back to ready
+        let issue = super::super::issues::get_issue(conn, issue_stalled.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(issue.column, IssueColumn::Ready);
+    }
+
+    #[tokio::test]
+    async fn test_list_queued_runs_fifo_order() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let conn = db.conn();
+        let project = super::super::projects::create_project(conn, "test", "/tmp/test")
+            .await
+            .unwrap();
+
+        // Create 3 issues + runs (all default to Queued)
+        let issue1 =
+            super::super::issues::create_issue(conn, project.id, "A", "", &IssueColumn::Backlog)
+                .await
+                .unwrap();
+        let issue2 =
+            super::super::issues::create_issue(conn, project.id, "B", "", &IssueColumn::Backlog)
+                .await
+                .unwrap();
+        let issue3 =
+            super::super::issues::create_issue(conn, project.id, "C", "", &IssueColumn::Backlog)
+                .await
+                .unwrap();
+
+        let run1 = create_pipeline_run(conn, issue1.id).await.unwrap();
+        let run2 = create_pipeline_run(conn, issue2.id).await.unwrap();
+        let run3 = create_pipeline_run(conn, issue3.id).await.unwrap();
+
+        let queued = list_queued_runs(conn).await.unwrap();
+        assert_eq!(queued.len(), 3);
+        assert_eq!(queued[0].id, run1.id);
+        assert_eq!(queued[1].id, run2.id);
+        assert_eq!(queued[2].id, run3.id);
+
+        // Move first to Running — should no longer appear
+        update_pipeline_run(conn, run1.id, &PipelineStatus::Running, None, None)
+            .await
+            .unwrap();
+        let queued = list_queued_runs(conn).await.unwrap();
+        assert_eq!(queued.len(), 2);
+        assert_eq!(queued[0].id, run2.id);
+    }
+
+    #[tokio::test]
+    async fn test_count_queue_position() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let conn = db.conn();
+        let project = super::super::projects::create_project(conn, "test", "/tmp/test")
+            .await
+            .unwrap();
+
+        let issue1 =
+            super::super::issues::create_issue(conn, project.id, "A", "", &IssueColumn::Backlog)
+                .await
+                .unwrap();
+        let issue2 =
+            super::super::issues::create_issue(conn, project.id, "B", "", &IssueColumn::Backlog)
+                .await
+                .unwrap();
+        let issue3 =
+            super::super::issues::create_issue(conn, project.id, "C", "", &IssueColumn::Backlog)
+                .await
+                .unwrap();
+
+        let run1 = create_pipeline_run(conn, issue1.id).await.unwrap();
+        let run2 = create_pipeline_run(conn, issue2.id).await.unwrap();
+        let run3 = create_pipeline_run(conn, issue3.id).await.unwrap();
+
+        // 1-based positions
+        assert_eq!(count_queue_position(conn, run1.id).await.unwrap(), 1);
+        assert_eq!(count_queue_position(conn, run2.id).await.unwrap(), 2);
+        assert_eq!(count_queue_position(conn, run3.id).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_list_running_and_stalled_runs() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let conn = db.conn();
+        let project = super::super::projects::create_project(conn, "test", "/tmp/test")
+            .await
+            .unwrap();
+
+        let issue1 =
+            super::super::issues::create_issue(conn, project.id, "A", "", &IssueColumn::Backlog)
+                .await
+                .unwrap();
+        let issue2 =
+            super::super::issues::create_issue(conn, project.id, "B", "", &IssueColumn::Backlog)
+                .await
+                .unwrap();
+        let issue3 =
+            super::super::issues::create_issue(conn, project.id, "C", "", &IssueColumn::Backlog)
+                .await
+                .unwrap();
+        let issue4 =
+            super::super::issues::create_issue(conn, project.id, "D", "", &IssueColumn::Backlog)
+                .await
+                .unwrap();
+
+        let run1 = create_pipeline_run(conn, issue1.id).await.unwrap();
+        let run2 = create_pipeline_run(conn, issue2.id).await.unwrap();
+        let run3 = create_pipeline_run(conn, issue3.id).await.unwrap();
+        let _run4 = create_pipeline_run(conn, issue4.id).await.unwrap();
+
+        // run1 = running, run2 = stalled, run3 = completed, run4 = queued
+        update_pipeline_run(conn, run1.id, &PipelineStatus::Running, None, None)
+            .await
+            .unwrap();
+        update_pipeline_run(conn, run2.id, &PipelineStatus::Stalled, None, None)
+            .await
+            .unwrap();
+        update_pipeline_run(
+            conn,
+            run3.id,
+            &PipelineStatus::Completed,
+            Some("done"),
+            None,
+        )
+        .await
+        .unwrap();
+        // run4 stays queued
+
+        let active = list_running_and_stalled_runs(conn).await.unwrap();
+        assert_eq!(active.len(), 2);
+        let ids: Vec<i64> = active.iter().map(|r| r.id.0).collect();
+        assert!(ids.contains(&run1.id.0));
+        assert!(ids.contains(&run2.id.0));
+    }
+
+    #[tokio::test]
+    async fn test_update_last_event_at() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let conn = db.conn();
+        let project = super::super::projects::create_project(conn, "test", "/tmp/test")
+            .await
+            .unwrap();
+        let issue =
+            super::super::issues::create_issue(conn, project.id, "Test", "", &IssueColumn::Backlog)
+                .await
+                .unwrap();
+        let run = create_pipeline_run(conn, issue.id).await.unwrap();
+        assert!(run.last_event_at.is_none());
+
+        update_last_event_at(conn, run.id).await.unwrap();
+
+        let reloaded = get_pipeline_run(conn, run.id).await.unwrap().unwrap();
+        assert!(
+            reloaded.last_event_at.is_some(),
+            "last_event_at should be set after update"
+        );
     }
 
     #[tokio::test]

@@ -19,7 +19,7 @@ const mockIssue: Issue = {
 const mockRun: PipelineRun = {
   id: 100, issue_id: 10, status: 'running', phase_count: 3, current_phase: 1,
   iteration: 1, summary: null, error: null, branch_name: null, pr_url: null,
-  team_id: null, has_team: false, started_at: '2024-01-01T00:00:00Z', completed_at: null,
+  team_id: null, has_team: false, queue_position: null, started_at: '2024-01-01T00:00:00Z', completed_at: null,
 }
 
 function makeBoard(project: Project, issues: { issue: Issue; active_run: PipelineRun | null }[]): BoardView {
@@ -66,7 +66,7 @@ const server = setupServer(
       id: 200, issue_id: Number(params.id), status: 'queued', phase_count: null,
       current_phase: null, iteration: null, summary: null, error: null,
       branch_name: null, pr_url: null, team_id: null, has_team: false,
-      started_at: '2024-01-01', completed_at: null,
+      queue_position: null, started_at: '2024-01-01', completed_at: null,
     }
     return HttpResponse.json(run, { status: 201 })
   }),

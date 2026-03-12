@@ -34,6 +34,7 @@ export const STATUS_DOT_COLORS: Record<PipelineStatus, string> = {
   completed: 'var(--color-success)',
   failed: 'var(--color-error)',
   cancelled: 'var(--color-text-secondary)',
+  stalled: 'var(--color-stalled, #f59e0b)',
 };
 
 /** Human-readable status labels. */
@@ -43,6 +44,7 @@ export const STATUS_LABELS: Record<PipelineStatus, string> = {
   completed: 'DONE',
   failed: 'FAILED',
   cancelled: 'CANCELLED',
+  stalled: 'STALLED',
 };
 
 /** Color mapping for agent event types in the output tab. */
@@ -74,7 +76,7 @@ export default function AgentRunCard({
 
   // Live elapsed timer
   useEffect(() => {
-    if (run.status !== 'running' && run.status !== 'queued') {
+    if (run.status !== 'running' && run.status !== 'queued' && run.status !== 'stalled') {
       if (run.started_at && run.completed_at) {
         const diff = new Date(run.completed_at).getTime() - new Date(run.started_at).getTime();
         const m = Math.floor(diff / 60000);
@@ -146,7 +148,7 @@ export default function AgentRunCard({
         {/* Status dot */}
         <span
           data-testid="status-dot"
-          className={run.status === 'running' ? 'pulse-dot' : undefined}
+          className={run.status === 'running' || run.status === 'stalled' ? 'pulse-dot' : undefined}
           style={{
             width: '8px',
             height: '8px',
@@ -295,7 +297,7 @@ export default function AgentRunCard({
             ))}
 
             {/* Cancel button for running pipelines */}
-            {run.status === 'running' && onCancel && (
+            {(run.status === 'running' || run.status === 'stalled') && onCancel && (
               <button
                 onClick={() => onCancel(run.id)}
                 style={{

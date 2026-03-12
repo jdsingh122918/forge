@@ -25,6 +25,9 @@ impl WorktreeManager {
 
     pub fn create_worktree(&self, name: &str) -> Result<PathBuf> {
         let worktree_path = self.worktree_path(name);
+
+        // Validate the derived worktree path is contained within the repo root
+        // before creating directories or invoking git worktree add.
         let worktree_root = self.worktree_root();
         fs::create_dir_all(&worktree_root).with_context(|| {
             format!(
@@ -33,9 +36,13 @@ impl WorktreeManager {
             )
         })?;
 
+        let validated_path =
+            crate::factory::pipeline::validate_path_containment(&self.repo_path, &worktree_path)
+                .context("Council worktree path containment check failed")?;
+
         let output = Command::new("git")
             .args(["worktree", "add", "--detach"])
-            .arg(&worktree_path)
+            .arg(&validated_path)
             .arg("HEAD")
             .current_dir(&self.repo_path)
             .output()
@@ -45,11 +52,11 @@ impl WorktreeManager {
             output,
             format!(
                 "Git worktree creation failed for {}",
-                worktree_path.display()
+                validated_path.display()
             ),
         )?;
 
-        Ok(worktree_path)
+        Ok(validated_path)
     }
 
     pub fn remove_worktree(&self, name: &str) -> Result<()> {

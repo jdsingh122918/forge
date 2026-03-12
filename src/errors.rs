@@ -37,6 +37,9 @@ pub enum OrchestratorError {
     #[error("Git tracker error: {0}")]
     GitTracker(String),
 
+    #[error("Iteration timed out for phase '{phase}' after {timeout_secs}s")]
+    IterationTimeout { phase: String, timeout_secs: u64 },
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -184,5 +187,69 @@ mod tests {
         assert_std_error(&phase_err);
         let factory_err = FactoryError::LockPoisoned;
         assert_std_error(&factory_err);
+    }
+
+    #[test]
+    fn iteration_timeout_error_displays_phase_and_duration() {
+        let err = OrchestratorError::IterationTimeout {
+            phase: "database-migration".to_string(),
+            timeout_secs: 300,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("database-migration"),
+            "should contain phase name"
+        );
+        assert!(msg.contains("300"), "should contain timeout duration");
+        assert!(msg.contains("timed out"), "should mention timeout");
+    }
+
+    #[test]
+    fn iteration_timeout_error_is_matchable() {
+        let err = OrchestratorError::IterationTimeout {
+            phase: "slow-build".to_string(),
+            timeout_secs: 600,
+        };
+        match &err {
+            OrchestratorError::IterationTimeout {
+                phase,
+                timeout_secs,
+            } => {
+                assert_eq!(phase, "slow-build");
+                assert_eq!(*timeout_secs, 600);
+            }
+            _ => panic!("Expected IterationTimeout variant"),
+        }
+    }
+
+    #[test]
+    fn iteration_timeout_error_implements_std_error() {
+        fn assert_std_error<E: std::error::Error>(_: &E) {}
+        let err = OrchestratorError::IterationTimeout {
+            phase: "test".to_string(),
+            timeout_secs: 60,
+        };
+        assert_std_error(&err);
+    }
+
+    #[test]
+    fn iteration_timeout_converts_to_anyhow_and_back() {
+        let err = OrchestratorError::IterationTimeout {
+            phase: "build-phase".to_string(),
+            timeout_secs: 120,
+        };
+        let anyhow_err: anyhow::Error = err.into();
+        let downcast = anyhow_err.downcast_ref::<OrchestratorError>();
+        assert!(downcast.is_some());
+        match downcast.unwrap() {
+            OrchestratorError::IterationTimeout {
+                phase,
+                timeout_secs,
+            } => {
+                assert_eq!(phase, "build-phase");
+                assert_eq!(*timeout_secs, 120);
+            }
+            _ => panic!("Expected IterationTimeout after downcast"),
+        }
     }
 }

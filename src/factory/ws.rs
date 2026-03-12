@@ -209,12 +209,56 @@ pub enum WsMessage {
         details: serde_json::Value,
     },
 
+    // Reconciliation status transitions
+    PipelineStatusChanged {
+        run_id: RunId,
+        issue_id: IssueId,
+        old_status: PipelineStatus,
+        new_status: PipelineStatus,
+        reason: String,
+    },
+
+    // Queue lifecycle
+    PipelineQueued {
+        run_id: RunId,
+        issue_id: IssueId,
+        position: i32,
+    },
+    QueuePositionUpdated {
+        run_id: RunId,
+        position: i32,
+    },
+
     // Project lifecycle
     ProjectCreated {
         project: Project,
     },
     ProjectDeleted {
         project_id: ProjectId,
+    },
+
+    // Config reload events
+    ConfigReloaded {
+        project_id: ProjectId,
+        changed_settings: Vec<String>,
+    },
+    ConfigReloadError {
+        project_id: ProjectId,
+        error: String,
+    },
+
+    // Tracker polling events
+    TrackerPollStarted {
+        project_id: ProjectId,
+    },
+    TrackerPollCompleted {
+        project_id: ProjectId,
+        imported_count: usize,
+        skipped_count: usize,
+    },
+    TrackerPollError {
+        project_id: ProjectId,
+        error: String,
     },
 }
 
@@ -403,6 +447,7 @@ mod tests {
             completed_at: None,
             team_id: None,
             has_team: false,
+            last_event_at: None,
         };
         let msg = WsMessage::PipelineStarted { run };
         let json = serde_json::to_string(&msg).unwrap();
@@ -441,6 +486,7 @@ mod tests {
             completed_at: Some("2024-01-02".to_string()),
             team_id: None,
             has_team: false,
+            last_event_at: None,
         };
         let msg = WsMessage::PipelineCompleted { run };
         let json = serde_json::to_string(&msg).unwrap();
@@ -466,6 +512,7 @@ mod tests {
             completed_at: Some("2024-01-02".to_string()),
             team_id: None,
             has_team: false,
+            last_event_at: None,
         };
         let msg = WsMessage::PipelineFailed { run };
         let json = serde_json::to_string(&msg).unwrap();
@@ -854,6 +901,55 @@ mod tests {
     }
 
     #[test]
+    fn test_ws_pipeline_queued_serialization() {
+        let msg = WsMessage::PipelineQueued {
+            run_id: RunId(10),
+            issue_id: IssueId(5),
+            position: 3,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"PipelineQueued\""));
+        assert!(json.contains("\"run_id\":10"));
+        assert!(json.contains("\"issue_id\":5"));
+        assert!(json.contains("\"position\":3"));
+
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::PipelineQueued {
+                run_id,
+                issue_id,
+                position,
+            } => {
+                assert_eq!(run_id, RunId(10));
+                assert_eq!(issue_id, IssueId(5));
+                assert_eq!(position, 3);
+            }
+            _ => panic!("Expected PipelineQueued"),
+        }
+    }
+
+    #[test]
+    fn test_ws_queue_position_updated_serialization() {
+        let msg = WsMessage::QueuePositionUpdated {
+            run_id: RunId(7),
+            position: 2,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"QueuePositionUpdated\""));
+        assert!(json.contains("\"run_id\":7"));
+        assert!(json.contains("\"position\":2"));
+
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::QueuePositionUpdated { run_id, position } => {
+                assert_eq!(run_id, RunId(7));
+                assert_eq!(position, 2);
+            }
+            _ => panic!("Expected QueuePositionUpdated"),
+        }
+    }
+
+    #[test]
     fn test_keepalive_constants() {
         // Verify the keepalive timing configuration is sensible:
         // PONG_TIMEOUT must be greater than PING_INTERVAL so we don't
@@ -861,5 +957,53 @@ mod tests {
         assert!(PONG_TIMEOUT > PING_INTERVAL);
         assert_eq!(PING_INTERVAL, Duration::from_secs(30));
         assert_eq!(PONG_TIMEOUT, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_config_reloaded_serialization() {
+        let msg = WsMessage::ConfigReloaded {
+            project_id: ProjectId(5),
+            changed_settings: vec![
+                "defaults.iteration_timeout_secs".to_string(),
+                "factory.tracker.enabled".to_string(),
+            ],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"ConfigReloaded\""));
+        assert!(json.contains("\"project_id\":5"));
+        assert!(json.contains("defaults.iteration_timeout_secs"));
+
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::ConfigReloaded {
+                project_id,
+                changed_settings,
+            } => {
+                assert_eq!(project_id, ProjectId(5));
+                assert_eq!(changed_settings.len(), 2);
+            }
+            _ => panic!("Expected ConfigReloaded"),
+        }
+    }
+
+    #[test]
+    fn test_config_reload_error_serialization() {
+        let msg = WsMessage::ConfigReloadError {
+            project_id: ProjectId(3),
+            error: "Invalid TOML at line 5".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"ConfigReloadError\""));
+        assert!(json.contains("\"project_id\":3"));
+        assert!(json.contains("Invalid TOML"));
+
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::ConfigReloadError { project_id, error } => {
+                assert_eq!(project_id, ProjectId(3));
+                assert!(error.contains("Invalid TOML"));
+            }
+            _ => panic!("Expected ConfigReloadError"),
+        }
     }
 }
