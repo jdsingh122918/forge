@@ -1,7 +1,9 @@
 //! Autoresearch command — automated specialist benchmark evaluation.
 
 pub mod budget;
+pub mod git_ops;
 pub mod judge;
+pub mod loop_runner;
 #[allow(dead_code)]
 pub mod results;
 
