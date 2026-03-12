@@ -1,13 +1,13 @@
 {
-  "spec_hash": "87c962a57663",
-  "generated_at": "2026-03-12T01:14:28.949248+00:00",
+  "spec_hash": "fc3d61bdf0e7",
+  "generated_at": "2026-03-12T01:24:31.968300+00:00",
   "phases": [
     {
       "number": "01",
-      "name": "Write ExperimentStatus and ResultRow tests",
-      "promise": "CORE TYPE TESTS WRITTEN",
-      "budget": 4,
-      "reasoning": "Write tests for ExperimentStatus roundtrip/trimming, ResultRow TSV roundtrip, and ResultRow parse error handling (too few fields, invalid score, invalid status). These are Steps 2-4 from the design doc. Create results.rs with stub types that compile but fail tests.",
+      "name": "Write git_ops tests",
+      "promise": "GIT_OPS TESTS WRITTEN",
+      "budget": 5,
+      "reasoning": "Create git_ops.rs with AutoresearchGitOps struct definition, test helpers (setup_repo, write_and_commit), and all 11 tests: test_new_opens_repo, test_new_fails_on_non_repo, test_create_branch, test_create_branch_already_exists, test_commit, test_reset_to_last_keep, test_reset_without_keep_sha_errors, test_checkout_branch, test_checkout_nonexistent_branch, test_commit_updates_last_keep_sha, test_full_keep_discard_cycle. Add pub mod git_ops to mod.rs. Tests should compile but fail (red phase).",
       "depends_on": [],
       "skills": [],
       "permission_mode": "standard",
@@ -15,10 +15,10 @@
     },
     {
       "number": "02",
-      "name": "Implement ExperimentStatus and ResultRow",
-      "promise": "CORE TYPES COMPLETE",
-      "budget": 8,
-      "reasoning": "Implement ExperimentStatus enum with as_str/from_str (with trim), ResultRow struct with to_tsv_line (4-decimal float formatting) and from_tsv_line (tab splitting, field count validation, parse error context). All 6 core type tests should pass.",
+      "name": "Implement AutoresearchGitOps",
+      "promise": "GIT_OPS COMPLETE",
+      "budget": 10,
+      "reasoning": "Implement all methods on AutoresearchGitOps: new(), head_sha(), open_repo(), create_branch(), checkout_branch(), commit(), reset_to_last_keep(), last_keep_sha(). Use git2 crate directly with anyhow::Context on all operations. Track last_keep_sha across branch creation, checkout, and commit. All 11 tests must pass. Run cargo clippy clean.",
       "depends_on": [
         "01"
       ],
@@ -28,10 +28,10 @@
     },
     {
       "number": "03",
-      "name": "Write ResultsLog tests",
-      "promise": "RESULTS LOG TESTS WRITTEN",
-      "budget": 5,
-      "reasoning": "Write tests for ResultsLog: open new file, append and save, load existing, count_by_status, best_score_for, last_n, history_summary (empty + with data), and reload persistence across sessions. These are Steps 5-12 from the design doc (8 test functions). Uses tempfile for isolated filesystem tests.",
+      "name": "Write LoopGitOps trait impl tests",
+      "promise": "LOOP_GIT_OPS TRAIT TESTS WRITTEN",
+      "budget": 3,
+      "reasoning": "Add tests verifying AutoresearchGitOps implements LoopGitOps trait from loop_runner.rs. Test that the trait object can be used (Box<dyn LoopGitOps>). If trait uses &self, convert last_keep_sha to Mutex<Option<String>> for interior mutability and verify thread safety (Send + Sync bounds).",
       "depends_on": [
         "02"
       ],
@@ -41,25 +41,12 @@
     },
     {
       "number": "04",
-      "name": "Implement ResultsLog",
-      "promise": "RESULTS LOG COMPLETE",
-      "budget": 10,
-      "reasoning": "Implement ResultsLog with open (conditional load), load (skip header, parse rows), save (write header + all rows), append (push + save for flush-on-write), and query methods: rows(), total_experiments(), count_by_status(), best_score_for() (keep-only filter), last_n() (saturating_sub slice), history_summary() (formatted string with recent experiments). All 14+ tests should pass.",
+      "name": "Implement LoopGitOps trait",
+      "promise": "LOOP_GIT_OPS TRAIT COMPLETE",
+      "budget": 8,
+      "reasoning": "Implement LoopGitOps trait for AutoresearchGitOps. If trait uses &self, refactor last_keep_sha to use std::sync::Mutex<Option<String>> for interior mutability. Update all methods accordingly. Ensure Send + Sync. All existing tests plus new trait tests pass. cargo clippy clean. cargo build succeeds.",
       "depends_on": [
         "03"
-      ],
-      "skills": [],
-      "permission_mode": "standard",
-      "phase_type": "implement"
-    },
-    {
-      "number": "05",
-      "name": "Wire module and refactor",
-      "promise": "MODULE WIRED AND CLEAN",
-      "budget": 5,
-      "reasoning": "Add pub mod results to src/cmd/autoresearch/mod.rs. Add doc comments to all public items. Run cargo clippy -- -D warnings and fix any lints. Run cargo build to verify full compilation. Run cargo test --lib cmd::autoresearch::results to verify all tests pass.",
-      "depends_on": [
-        "04"
       ],
       "skills": [],
       "permission_mode": "standard",
