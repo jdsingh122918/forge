@@ -1,77 +1,80 @@
-# Implementation Spec: Wire Judge into Scorer for Actionability + Novel Finding Classification
+# Implementation Spec: Single Experiment Step for Autoresearch Loop
 
-> Generated from: docs/superpowers/specs/autoresearch-tasks/T08-wire-judge-into-scorer.md
-> Generated at: 2026-03-12T02:05:02.000668+00:00
+> Generated from: docs/superpowers/specs/autoresearch-tasks/T11-single-experiment.md
+> Generated at: 2026-03-12T02:17:37.657038+00:00
 
 ## Goal
 
-Modify the Scorer to accept an optional JudgeResult, replacing hardcoded actionability with judge-provided scores and using judge classifications to identify false-positive novel findings that reduce precision, while remaining fully backward-compatible when no judge is provided.
+Implement the run_single_experiment() function — the core unit of the autoresearch loop that proposes a prompt mutation via an LLM, writes it, runs benchmarks, judges outputs, computes cost, and returns a structured ExperimentResult with keep/discard outcome. Uses trait-based abstraction (PromptMutator, BenchmarkExecutor) for testability and to decouple from not-yet-implemented S02/S03 modules.
 
 ## Components
 
 | Component | Description | Complexity | Dependencies |
 |-----------|-------------|------------|--------------|
-| Scorer signature change | Change Scorer::score() to accept Option<&JudgeResult> as third parameter, importing JudgeResult and ClassificationVerdict from judge.rs | low | - |
-| Actionability computation | Compute actionability as average of judge's actionability_scores when present and non-empty, falling back to 0.5 otherwise | low | Scorer signature change |
-| Precision with judge classifications | Add compute_precision_with_judge() that counts FPs from must_not_flag hits (always) plus novel findings classified as false_positive by judge (only when judge present). must_not_flag takes precedence over judge. | medium | Scorer signature change |
-| FindingMatcher helpers | Add count_must_not_flag_hits() and identify_novel_findings() to FindingMatcher for decomposing precision calculation | low | - |
-| Backward compatibility | Update all existing T06 tests to pass None as third argument; wrap old compute_precision as convenience delegating to compute_precision_with_judge(..., None) | low | Scorer signature change, Precision with judge classifications |
+| Core Types | Data structs: BenchmarkScores, JudgeVerdict, ExperimentOutcome (Keep/Discard/Error), ExperimentResult, MutationProposal, ExperimentConfig — all with serde derives for serialization | low | - |
+| PromptMutator Trait | Async trait for proposing prompt mutations. Takes current prompt, history summary, and specialist name; returns MutationProposal with new prompt text, description, and token counts | low | - |
+| BenchmarkExecutor Trait | Async trait for running benchmarks and judging outputs. run_and_judge() returns JudgeVerdict; last_run_tokens() returns token usage for cost tracking | low | - |
+| run_single_experiment Function | Core async function implementing the 7-step flow: read current prompt, propose mutation, write mutated prompt, placeholder commit SHA, run benchmarks+judge, determine keep/discard outcome, estimate cost. Supports dry_run mode that skips file writes and benchmark execution | medium | Core Types, PromptMutator Trait, BenchmarkExecutor Trait |
+| Module Registration | Add pub mod experiment; to src/cmd/autoresearch/mod.rs | low | run_single_experiment Function |
 
 ## Code Patterns
 
-### Actionability from judge with fallback
+### Async trait pattern
 
 ```
-let actionability = match judge_result {
-    Some(jr) if !jr.actionability_scores.is_empty() => {
-        let sum: f64 = jr.actionability_scores.iter().map(|s| s.score).sum();
-        sum / jr.actionability_scores.len() as f64
-    }
-    _ => 0.5,
+#[async_trait::async_trait]
+pub trait PromptMutator: Send + Sync {
+    async fn propose_mutation(
+        &self,
+        current_prompt: &str,
+        history: &str,
+        specialist: &str,
+    ) -> Result<MutationProposal>;
+}
+```
+
+### Cost estimation formula
+
+```
+let cost = (total_input as f64 / 1_000_000.0) * 3.0
+    + (total_output as f64 / 1_000_000.0) * 15.0;
+```
+
+### Dry run guard pattern
+
+```
+if !config.dry_run {
+    std::fs::write(&config.prompt_path, &proposal.new_prompt)
+        .with_context(|| format!("Failed to write mutated prompt: {}", config.prompt_path.display()))?;
+}
+```
+
+### Outcome determination
+
+```
+let outcome = if config.dry_run {
+    ExperimentOutcome::Keep
+} else if verdict.composite_score > config.baseline_score {
+    ExperimentOutcome::Keep
+} else {
+    ExperimentOutcome::Discard
 };
-```
-
-### Precision with judge false positives
-
-```
-let judge_fps = match judge_result {
-    Some(jr) => {
-        jr.classifications
-            .iter()
-            .filter(|c| {
-                novel_finding_ids.contains(&c.finding_id)
-                    && c.verdict == ClassificationVerdict::FalsePositive
-            })
-            .count()
-    }
-    None => 0,
-};
-let total_fps = must_not_flag_fps + judge_fps;
-let precision = 1.0 - (total_fps as f64 / total);
-precision.max(0.0)
-```
-
-### Composite formula
-
-```
-let composite = 0.4 * recall + 0.3 * precision + 0.3 * actionability;
 ```
 
 ## Acceptance Criteria
 
-- [ ] Scorer::score() accepts Option<&JudgeResult> as third parameter
-- [ ] With Some(judge_result), actionability is the average of judge's actionability_scores
-- [ ] With Some(judge_result), novel findings classified as false_positive by judge reduce precision
-- [ ] With None (no judge), actionability defaults to 0.5
-- [ ] With None (no judge), novel findings are assumed true_positive (do not reduce precision)
-- [ ] must_not_flag hits are always counted as false positives regardless of judge classification
-- [ ] Empty actionability_scores from judge falls back to 0.5
-- [ ] Composite formula remains 0.4 * recall + 0.3 * precision + 0.3 * actionability
-- [ ] All existing T06 tests pass with None (backward compatibility)
-- [ ] scorer.rs imports JudgeResult and ClassificationVerdict from judge.rs
-- [ ] cargo check succeeds with no warnings in scorer.rs
-- [ ] cargo clippy passes with -D warnings
+- [ ] cargo test --lib cmd::autoresearch::experiment passes with 9+ tests green
+- [ ] ExperimentResult, ExperimentOutcome, ExperimentConfig, BenchmarkScores, JudgeVerdict, MutationProposal structs exist with serde derives
+- [ ] PromptMutator and BenchmarkExecutor are async_trait traits with Send + Sync bounds
+- [ ] run_single_experiment() implements full 7-step flow: read prompt, propose mutation, write prompt, placeholder commit, run benchmarks, determine outcome, estimate cost
+- [ ] Dry run mode skips file writes and benchmark execution, returns Keep outcome
+- [ ] Mutation failure propagates as error with 'Mutation proposal failed' context
+- [ ] Benchmark failure propagates as error with 'Benchmark execution failed' context
+- [ ] Cost estimation correctly sums mutator + executor tokens using Sonnet pricing ($3/MTok input, $15/MTok output)
+- [ ] ExperimentResult roundtrips through serde_json serialization
+- [ ] Module registered in src/cmd/autoresearch/mod.rs as pub mod experiment
+- [ ] cargo clippy -- -D warnings passes clean
 
 ---
 *This spec was auto-generated from a design document.*
-*Original design: docs/superpowers/specs/autoresearch-tasks/T08-wire-judge-into-scorer.md*
+*Original design: docs/superpowers/specs/autoresearch-tasks/T11-single-experiment.md*

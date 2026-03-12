@@ -8,7 +8,7 @@ use std::fmt;
 
 use forge::autoresearch::benchmarks::{Expected, ExpectedFinding, MustNotFlag};
 
-use super::judge::JudgeResult;
+use super::judge::{ClassificationVerdict, JudgeResult};
 
 /// A finding produced by a specialist agent.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -302,11 +302,10 @@ impl Scorer {
     /// 1. must_not_flag hits (always counted, regardless of judge)
     /// 2. Novel findings classified as false_positive by the judge (only when judge present)
     ///
-    /// TODO: Wire in judge FP classification for novel findings (stub: only counts must_not_flag)
     fn compute_precision_with_judge(
         findings: &[Finding],
         expected: &Expected,
-        _judge_result: Option<&JudgeResult>,
+        judge_result: Option<&JudgeResult>,
     ) -> f64 {
         let total_findings = findings.len();
         if total_findings == 0 {
@@ -316,8 +315,21 @@ impl Scorer {
         let must_not_flag_fps =
             FindingMatcher::count_must_not_flag_hits(findings, &expected.must_not_flag);
 
-        // TODO: Add judge FP counting for novel findings
-        let judge_fps = 0;
+        let judge_fps = match judge_result {
+            Some(jr) => {
+                let novel_indices = FindingMatcher::identify_novel_findings(findings, expected);
+                let novel_finding_ids: HashSet<String> =
+                    novel_indices.iter().map(|i| i.to_string()).collect();
+                jr.classifications
+                    .iter()
+                    .filter(|c| {
+                        novel_finding_ids.contains(&c.finding_id)
+                            && c.verdict == ClassificationVerdict::FalsePositive
+                    })
+                    .count()
+            }
+            None => 0,
+        };
 
         let total_fps = must_not_flag_fps + judge_fps;
         let precision = 1.0 - (total_fps as f64 / total_findings as f64);

@@ -1,6 +1,6 @@
 {
-  "run_id": "50d8eba7-7f62-42f3-a1fc-f64fa6ab060c",
-  "started_at": "2026-03-12T02:05:02.030015Z",
+  "run_id": "e6a98606-0118-4bdd-8663-cf85b36ba927",
+  "started_at": "2026-03-12T02:17:37.682484Z",
   "ended_at": null,
   "config": {
     "auto_approve_threshold": 5,
@@ -9,28 +9,5 @@
     "spec_file": "/Users/jdsingh/Projects/AI/forge/.forge/spec.md",
     "project_dir": "/Users/jdsingh/Projects/AI/forge"
   },
-  "phases": [
-    {
-      "phase_number": "01",
-      "description": "Write judge-scorer integration tests",
-      "promise": "JUDGE-SCORER TESTS WRITTEN",
-      "started_at": "2026-03-12T02:05:02.030293Z",
-      "ended_at": "2026-03-12T02:13:47.236654Z",
-      "iterations": [],
-      "outcome": {
-        "Completed": {
-          "iteration": 1
-        }
-      },
-      "file_changes": {
-        "files_added": [],
-        "files_modified": [
-          "src/cmd/autoresearch/scorer.rs"
-        ],
-        "files_deleted": [],
-        "total_lines_added": 698,
-        "total_lines_removed": 26
-      }
-    }
-  ]
+  "phases": []
 }

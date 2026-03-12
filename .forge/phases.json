@@ -1,13 +1,13 @@
 {
-  "spec_hash": "696ad32bff55",
-  "generated_at": "2026-03-12T02:05:02.001195+00:00",
+  "spec_hash": "7c238abe6ee2",
+  "generated_at": "2026-03-12T02:17:37.657511+00:00",
   "phases": [
     {
       "number": "01",
-      "name": "Write judge-scorer integration tests",
-      "promise": "JUDGE-SCORER TESTS WRITTEN",
+      "name": "Write experiment tests",
+      "promise": "EXPERIMENT TESTS WRITTEN",
       "budget": 5,
-      "reasoning": "Write all 6 T08 tests: test_scorer_with_judge_uses_judge_actionability, test_scorer_with_judge_false_positive_reduces_precision, test_scorer_without_judge_uses_neutral_defaults, test_scorer_with_judge_must_not_flag_still_counts, test_scorer_with_judge_empty_actionability_falls_back, test_scorer_with_judge_computes_full_composite. These cover: judge actionability averaging, judge FP reducing precision, backward-compatible None path, must_not_flag precedence over judge, empty actionability fallback, and full composite integration. Tests will not compile yet since score() signature hasn't changed.",
+      "reasoning": "Create experiment.rs with all types, traits, mock implementations, and 9 tests: type construction (2), keep path, discard path, dry run, mutation failure, benchmark failure, cost estimation, serialization. Tests will fail because run_single_experiment is not yet implemented as a passing function — write the full file structure from the design doc including the function signature but with todo!() body so tests compile but fail.",
       "depends_on": [],
       "skills": [],
       "permission_mode": "standard",
@@ -15,10 +15,10 @@
     },
     {
       "number": "02",
-      "name": "Implement judge-scorer wiring",
-      "promise": "JUDGE-SCORER WIRING COMPLETE",
+      "name": "Implement run_single_experiment",
+      "promise": "EXPERIMENT STEP COMPLETE",
       "budget": 10,
-      "reasoning": "Modify scorer.rs: (1) add import for ClassificationVerdict and JudgeResult from judge.rs, (2) change Scorer::score() signature to accept Option<&JudgeResult>, (3) implement actionability computation from judge with 0.5 fallback, (4) add compute_precision_with_judge() incorporating must_not_flag hits + judge FP classifications on novel findings, (5) add count_must_not_flag_hits() and identify_novel_findings() helpers to FindingMatcher, (6) update all existing T06 tests to pass None as third argument, (7) wrap old compute_precision as convenience delegator, (8) run cargo clippy and fix warnings. All changes in single file scorer.rs.",
+      "reasoning": "Implement run_single_experiment() with the 7-step flow: read current prompt, call mutator.propose_mutation(), write mutated prompt (skip in dry_run), set placeholder commit SHA, call executor.run_and_judge() (skip in dry_run), determine Keep/Discard outcome based on composite_score vs baseline, compute cost estimate. Register module in mod.rs. Ensure all 9 tests pass, cargo clippy clean.",
       "depends_on": [
         "01"
       ],
