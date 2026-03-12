@@ -164,6 +164,9 @@ pub struct DefaultsConfig {
     /// Whether to skip permission prompts for Claude CLI
     #[serde(default = "default_skip_permissions")]
     pub skip_permissions: bool,
+    /// Per-iteration timeout in seconds. None means no timeout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iteration_timeout_secs: Option<u64>,
 }
 
 fn default_budget() -> u32 {
@@ -190,6 +193,7 @@ impl Default for DefaultsConfig {
             permission_mode: PermissionMode::default(),
             context_limit: default_context_limit(),
             skip_permissions: default_skip_permissions(),
+            iteration_timeout_secs: None,
         }
     }
 }
@@ -212,6 +216,9 @@ pub struct PhaseOverride {
     /// Per-phase council override (true = force on, false = force off, None = use global)
     #[serde(default)]
     pub council: Option<bool>,
+    /// Per-phase iteration timeout in seconds. Overrides defaults.iteration_timeout_secs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iteration_timeout_secs: Option<u64>,
 }
 
 /// Phase override configuration section.
@@ -688,6 +695,7 @@ impl ForgeToml {
             context_limit: self.defaults.context_limit.clone(),
             skills: Vec::new(),
             council: None,
+            iteration_timeout_secs: self.defaults.iteration_timeout_secs,
         };
 
         // Apply matching overrides
@@ -710,6 +718,9 @@ impl ForgeToml {
                 }
                 if let Some(council) = override_cfg.council {
                     settings.council = Some(council);
+                }
+                if let Some(timeout) = override_cfg.iteration_timeout_secs {
+                    settings.iteration_timeout_secs = Some(timeout);
                 }
             }
         }
@@ -759,6 +770,8 @@ pub struct PhaseSettings {
     pub skills: Vec<String>,
     /// Council override resolved from matching phase patterns.
     pub council: Option<bool>,
+    /// Per-iteration timeout in seconds (phase override > defaults > None).
+    pub iteration_timeout_secs: Option<u64>,
 }
 
 /// Check if a pattern matches a phase name.
@@ -1840,5 +1853,101 @@ session_continuity = false
             vec!["database-*", "security-*"]
         );
         assert!(!autonomy.auto_promote.promote_on_clean);
+    }
+
+    // =========================================
+    // iteration_timeout_secs config tests
+    // =========================================
+
+    #[test]
+    fn test_iteration_timeout_secs_default_is_none() {
+        let defaults = DefaultsConfig::default();
+        assert!(defaults.iteration_timeout_secs.is_none());
+    }
+
+    #[test]
+    fn test_iteration_timeout_secs_parses_in_defaults() {
+        let content = r#"
+[defaults]
+iteration_timeout_secs = 300
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+        assert_eq!(toml.defaults.iteration_timeout_secs, Some(300));
+    }
+
+    #[test]
+    fn test_iteration_timeout_secs_absent_in_defaults_is_none() {
+        let content = r#"
+[defaults]
+budget = 10
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+        assert!(toml.defaults.iteration_timeout_secs.is_none());
+    }
+
+    #[test]
+    fn test_iteration_timeout_secs_parses_in_phase_override() {
+        let content = r#"
+[phases.overrides."slow-*"]
+iteration_timeout_secs = 600
+budget = 20
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+        let slow_override = toml.phases.overrides.get("slow-*").unwrap();
+        assert_eq!(slow_override.iteration_timeout_secs, Some(600));
+    }
+
+    #[test]
+    fn test_iteration_timeout_secs_absent_in_phase_override_is_none() {
+        let content = r#"
+[phases.overrides."fast-*"]
+budget = 5
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+        let fast_override = toml.phases.overrides.get("fast-*").unwrap();
+        assert!(fast_override.iteration_timeout_secs.is_none());
+    }
+
+    #[test]
+    fn test_iteration_timeout_phase_override_takes_precedence_over_defaults() {
+        let content = r#"
+[defaults]
+iteration_timeout_secs = 300
+
+[phases.overrides."slow-*"]
+iteration_timeout_secs = 900
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+
+        // Non-matching phase gets defaults
+        let regular = toml.phase_settings("fast-phase");
+        assert_eq!(regular.iteration_timeout_secs, Some(300));
+
+        // Matching phase gets override
+        let slow = toml.phase_settings("slow-build");
+        assert_eq!(slow.iteration_timeout_secs, Some(900));
+    }
+
+    #[test]
+    fn test_iteration_timeout_defaults_inherited_when_no_override() {
+        let content = r#"
+[defaults]
+iteration_timeout_secs = 300
+
+[phases.overrides."slow-*"]
+budget = 20
+"#;
+        let toml = ForgeToml::parse(content).unwrap();
+
+        // Override without iteration_timeout_secs still inherits from defaults
+        let slow = toml.phase_settings("slow-build");
+        assert_eq!(slow.iteration_timeout_secs, Some(300));
+    }
+
+    #[test]
+    fn test_iteration_timeout_none_when_no_config() {
+        let toml = ForgeToml::default();
+        let settings = toml.phase_settings("any-phase");
+        assert!(settings.iteration_timeout_secs.is_none());
     }
 }

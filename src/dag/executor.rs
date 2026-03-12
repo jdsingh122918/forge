@@ -796,6 +796,19 @@ async fn execute_single_phase(
                 previous_feedback = feedback_builder.build();
             }
             Err(e) => {
+                // Check for iteration timeout specifically
+                if let Some(timeout_err) = e.downcast_ref::<crate::errors::OrchestratorError>()
+                    && let crate::errors::OrchestratorError::IterationTimeout {
+                        timeout_secs, ..
+                    } = timeout_err
+                {
+                    return PhaseResult::failure(
+                        &phase.number,
+                        &format!("Iteration {} timed out after {}s", iter, timeout_secs),
+                        iter,
+                        timer.elapsed(),
+                    );
+                }
                 return PhaseResult::failure(&phase.number, &e.to_string(), iter, timer.elapsed());
             }
         }
@@ -1354,5 +1367,66 @@ mod tests {
         assert!(json.contains("\"type\":\"sub_task_completed\""));
         assert!(json.contains("\"success\":true"));
         assert!(json.contains("\"iterations\":3"));
+    }
+
+    #[test]
+    fn test_iteration_timeout_error_is_recognized_via_downcast() {
+        // Verify that OrchestratorError::IterationTimeout can be created,
+        // converted to anyhow, and downcast back — the same path the DAG
+        // executor uses to detect timeout failures.
+        use crate::errors::OrchestratorError;
+
+        let err = OrchestratorError::IterationTimeout {
+            phase: "slow-phase".to_string(),
+            timeout_secs: 300,
+        };
+        let anyhow_err: anyhow::Error = err.into();
+
+        let downcast = anyhow_err.downcast_ref::<OrchestratorError>();
+        assert!(downcast.is_some(), "should downcast to OrchestratorError");
+
+        match downcast.unwrap() {
+            OrchestratorError::IterationTimeout {
+                phase,
+                timeout_secs,
+            } => {
+                assert_eq!(phase, "slow-phase");
+                assert_eq!(*timeout_secs, 300);
+            }
+            _ => panic!("Expected IterationTimeout variant"),
+        }
+    }
+
+    #[test]
+    fn test_iteration_timeout_produces_phase_failure_message() {
+        // Simulate the failure message that the DAG executor would produce
+        // when it receives an IterationTimeout.
+        use crate::errors::OrchestratorError;
+
+        let err = OrchestratorError::IterationTimeout {
+            phase: "database-migration".to_string(),
+            timeout_secs: 600,
+        };
+        let anyhow_err: anyhow::Error = err.into();
+
+        // Replicate the DAG executor's logic
+        let failure_msg = if let Some(timeout_err) =
+            anyhow_err.downcast_ref::<OrchestratorError>()
+        {
+            if let OrchestratorError::IterationTimeout {
+                timeout_secs, ..
+            } = timeout_err
+            {
+                format!("Iteration 3 timed out after {}s", timeout_secs)
+            } else {
+                anyhow_err.to_string()
+            }
+        } else {
+            anyhow_err.to_string()
+        };
+
+        assert!(failure_msg.contains("timed out"));
+        assert!(failure_msg.contains("600"));
+        assert!(failure_msg.contains("Iteration 3"));
     }
 }

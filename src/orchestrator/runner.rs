@@ -341,7 +341,24 @@ impl ClaudeRunner {
             .await
     }
 
+    /// Resolve the iteration timeout for a phase from config.
+    ///
+    /// Resolution order: PhaseOverride > DefaultsConfig > None (no timeout).
+    pub fn resolve_iteration_timeout(&self, phase: &Phase) -> Option<Duration> {
+        self.config
+            .forge_config()
+            .map(|fc| fc.phase_settings(&phase.number))
+            .and_then(|settings| settings.iteration_timeout_secs)
+            .map(Duration::from_secs)
+    }
+
     /// Unified iteration dispatch for sequential execution.
+    ///
+    /// This is the single enforcement point for per-iteration timeouts.
+    /// If a timeout is configured (via phase override or defaults), the
+    /// iteration is wrapped in `tokio::time::timeout`. On expiry the
+    /// subprocess is killed and an `OrchestratorError::IterationTimeout`
+    /// is returned.
     pub async fn run_effective_iteration(
         &self,
         phase: &Phase,
@@ -351,25 +368,56 @@ impl ClaudeRunner {
         resume_session_id: Option<&str>,
         append_system_prompt: Option<&str>,
     ) -> Result<IterationResult> {
-        if self.should_use_council_effective(phase) {
-            if let Some(ref ui) = ui {
-                ui.log_step("Using council mode for this iteration");
+        let timeout_duration = self.resolve_iteration_timeout(phase);
+
+        let fut = async {
+            if self.should_use_council_effective(phase) {
+                if let Some(ref ui) = ui {
+                    ui.log_step("Using council mode for this iteration");
+                }
+
+                return self
+                    .run_council_iteration(
+                        phase,
+                        iteration,
+                        ui.clone(),
+                        prompt_context,
+                        append_system_prompt,
+                    )
+                    .await;
             }
 
-            return self
-                .run_council_iteration(phase, iteration, ui, prompt_context, append_system_prompt)
-                .await;
-        }
+            self.run_iteration_with_context(
+                phase,
+                iteration,
+                ui.clone(),
+                prompt_context,
+                resume_session_id,
+                append_system_prompt,
+            )
+            .await
+        };
 
-        self.run_iteration_with_context(
-            phase,
-            iteration,
-            ui,
-            prompt_context,
-            resume_session_id,
-            append_system_prompt,
-        )
-        .await
+        match timeout_duration {
+            Some(duration) => {
+                match tokio::time::timeout(duration, fut).await {
+                    Ok(result) => result,
+                    Err(_elapsed) => {
+                        warn!(
+                            phase = %phase.number,
+                            timeout_secs = duration.as_secs(),
+                            "Iteration timed out"
+                        );
+                        Err(OrchestratorError::IterationTimeout {
+                            phase: phase.number.clone(),
+                            timeout_secs: duration.as_secs(),
+                        }
+                        .into())
+                    }
+                }
+            }
+            None => fut.await,
+        }
     }
 
     pub async fn run_council_iteration(
