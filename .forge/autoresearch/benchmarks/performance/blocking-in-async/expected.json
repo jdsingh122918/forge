@@ -1,0 +1,40 @@
+{
+    "must_find": [
+        {
+            "id": "blocking-fs-read-config",
+            "severity": "critical",
+            "description": "std::fs::read_to_string blocks the tokio runtime thread inside an async function; should use tokio::fs::read_to_string",
+            "location": "code.rs:23-24"
+        },
+        {
+            "id": "cpu-intensive-in-async",
+            "severity": "critical",
+            "description": "CPU-intensive hashing runs on the async runtime thread, blocking other tasks; should use tokio::task::spawn_blocking",
+            "location": "code.rs:49-61"
+        },
+        {
+            "id": "blocking-process-command",
+            "severity": "high",
+            "description": "std::process::Command::output() blocks the runtime thread while waiting for the child process; should use tokio::process::Command",
+            "location": "code.rs:71-75"
+        },
+        {
+            "id": "blocking-metadata-check",
+            "severity": "medium",
+            "description": "std::fs::metadata blocks the runtime thread in an async function; should use tokio::fs::metadata",
+            "location": "code.rs:88"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-format-duration",
+            "description": "format_duration is a synchronous function performing pure computation with no I/O; blocking is not relevant here",
+            "location": "code.rs:92-101"
+        },
+        {
+            "id": "fp-parse-phase-number",
+            "description": "parse_phase_number is a synchronous function doing trivial string parsing; no async context to block",
+            "location": "code.rs:105-107"
+        }
+    ]
+}

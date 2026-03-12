@@ -1,0 +1,34 @@
+{
+    "must_find": [
+        {
+            "id": "new-connection-per-call",
+            "severity": "critical",
+            "description": "conn() creates a new database connection on every call via self.db.connect(); for in-memory databases this creates separate isolated databases causing data loss",
+            "location": "code.rs:60-63"
+        },
+        {
+            "id": "connection-setup-overhead",
+            "severity": "high",
+            "description": "Every convenience method (list_projects, create_issue, etc.) pays full connection setup cost instead of reusing an existing connection",
+            "location": "code.rs:76-99"
+        },
+        {
+            "id": "no-connection-pooling",
+            "severity": "medium",
+            "description": "Connections are created and discarded per-operation with no pooling or caching, wasting file descriptors and memory under load",
+            "location": "code.rs:60-63"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-sync-method",
+            "description": "The sync() method is correctly async and does not create unnecessary connections; it's a no-op for local databases",
+            "location": "code.rs:102-105"
+        },
+        {
+            "id": "fp-arc-clone",
+            "description": "DbHandle uses Arc<Database> for shared ownership which is the correct pattern for a Clone-able handle",
+            "location": "code.rs:13"
+        }
+    ]
+}

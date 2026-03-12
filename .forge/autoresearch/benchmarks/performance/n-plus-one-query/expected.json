@@ -1,0 +1,34 @@
+{
+    "must_find": [
+        {
+            "id": "n-plus-one-nested-loops",
+            "severity": "critical",
+            "description": "Triple-nested loop issues individual queries per project, per issue, per run — classic N+1 (actually N*M*K+1) pattern that should use JOINs or batch queries",
+            "location": "code.rs:80-103"
+        },
+        {
+            "id": "unbounded-data-loading",
+            "severity": "high",
+            "description": "Loads ALL projects, issues, runs, and events into memory with no pagination or limits; causes excessive memory usage for large datasets",
+            "location": "code.rs:79-80"
+        },
+        {
+            "id": "per-iteration-query-overhead",
+            "severity": "medium",
+            "description": "Individual queries inside loops prevent database query planning optimization and efficient index usage across the full dataset",
+            "location": "code.rs:85-93"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-format-dashboard",
+            "description": "format_dashboard operates on already-loaded data in memory and does no database queries; string formatting is appropriate here",
+            "location": "code.rs:115-130"
+        },
+        {
+            "id": "fp-count-total-issues",
+            "description": "count_total_issues iterates over in-memory data with a simple sum; this is O(n) and correct",
+            "location": "code.rs:133-135"
+        }
+    ]
+}

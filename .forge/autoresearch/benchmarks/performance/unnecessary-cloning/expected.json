@@ -1,0 +1,40 @@
+{
+    "must_find": [
+        {
+            "id": "clone-before-filter",
+            "severity": "high",
+            "description": "Clones every AgentEvent before checking the filter condition; should filter on references first, then clone only matching events",
+            "location": "code.rs:32-37"
+        },
+        {
+            "id": "unnecessary-ownership",
+            "severity": "high",
+            "description": "compute_stats takes Vec<AgentEvent> by value instead of &[AgentEvent], forcing callers to clone; also clones event_type strings for HashMap keys unnecessarily",
+            "location": "code.rs:46-65"
+        },
+        {
+            "id": "clone-in-aggregation",
+            "severity": "medium",
+            "description": "Clones all events from all streams into a combined vector; a merge iterator or reference-based sort would avoid N*M clone allocations",
+            "location": "code.rs:73-79"
+        },
+        {
+            "id": "chunks-to-vec",
+            "severity": "medium",
+            "description": "Calls .to_vec() on chunk slices, cloning all events per chunk just to iterate; chunk slices are directly iterable without conversion",
+            "location": "code.rs:89-90"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-count-by-type",
+            "description": "count_by_type correctly uses references (&str keys) and borrows (&[AgentEvent]) — no unnecessary cloning",
+            "location": "code.rs:103-108"
+        },
+        {
+            "id": "fp-latest-timestamp",
+            "description": "latest_timestamp correctly returns a reference and uses iterator adapters without cloning",
+            "location": "code.rs:111-113"
+        }
+    ]
+}

@@ -1,0 +1,34 @@
+{
+    "must_find": [
+        {
+            "id": "sync-lock-in-async",
+            "severity": "critical",
+            "description": "lock_sync() blocks the tokio runtime thread inside an async task; should use async-aware locking or spawn_blocking",
+            "location": "code.rs:73-75"
+        },
+        {
+            "id": "lock-held-during-flush",
+            "severity": "high",
+            "description": "Mutex guard is held for the entire batch flush loop (up to 50 DB writes), starving other tasks that need the database",
+            "location": "code.rs:79-84"
+        },
+        {
+            "id": "no-time-based-flush",
+            "severity": "medium",
+            "description": "Events only flush on batch capacity (50); no time-based flush means events can be buffered indefinitely during low throughput",
+            "location": "code.rs:56-85"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-channel-send",
+            "description": "emit_event uses an unbounded channel send which is non-blocking and appropriate for this fire-and-forget pattern",
+            "location": "code.rs:105-111"
+        },
+        {
+            "id": "fp-broadcast-ws",
+            "description": "broadcast_ws uses tokio broadcast::Sender which is lock-free and appropriate for fan-out messaging",
+            "location": "code.rs:114-117"
+        }
+    ]
+}
