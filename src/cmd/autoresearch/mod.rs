@@ -6,6 +6,7 @@ pub mod judge;
 pub mod loop_runner;
 #[allow(dead_code)]
 pub mod results;
+pub mod scorer;
 
 // Re-export benchmark types from the library crate for use by future command handlers.
 #[allow(unused_imports)]
