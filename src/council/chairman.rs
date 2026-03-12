@@ -219,7 +219,7 @@ fn select_winner(
         reason: format!(
             "selected `{}` after chairman retries were exhausted (verdict={}, overall={:.2})",
             winner.worker.worker_name,
-            verdict_name(&winner.verdict),
+            verdict_name(winner.verdict),
             winner.overall_score
         ),
     })

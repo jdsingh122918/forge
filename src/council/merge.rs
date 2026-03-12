@@ -412,10 +412,10 @@ fn parse_patch_regions(diff: &str) -> Vec<PatchRegions> {
             continue;
         }
 
-        if line.starts_with("@@ ") || line.starts_with("@@ -") {
-            if let Some(range) = parse_hunk_range(line) {
-                current_hunks.push(range);
-            }
+        if (line.starts_with("@@ ") || line.starts_with("@@ -"))
+            && let Some(range) = parse_hunk_range(line)
+        {
+            current_hunks.push(range);
         }
     }
 

@@ -1446,9 +1446,7 @@ mod tests {
         #[test]
         fn test_claude_worker_parse_review_output_request_changes() {
             let worker = claude_worker();
-            let raw = concat!(
-                r#"{"type":"result","subtype":"success","result":"{\"candidate_label\":\"Candidate Beta\",\"verdict\":\"request_changes\",\"request_changes_reason\":\"Missing tests\",\"scores\":{\"correctness\":0.6,\"completeness\":0.5,\"style\":0.75,\"performance\":0.7,\"overall\":0.6375},\"issues\":[\"src/lib.rs:42 add coverage\"],\"summary\":\"Needs tests.\"}","is_error":false}"#
-            );
+            let raw = r#"{"type":"result","subtype":"success","result":"{\"candidate_label\":\"Candidate Beta\",\"verdict\":\"request_changes\",\"request_changes_reason\":\"Missing tests\",\"scores\":{\"correctness\":0.6,\"completeness\":0.5,\"style\":0.75,\"performance\":0.7,\"overall\":0.6375},\"issues\":[\"src/lib.rs:42 add coverage\"],\"summary\":\"Needs tests.\"}","is_error":false}"#;
 
             let result = worker
                 .parse_review_output(raw)
@@ -1627,9 +1625,7 @@ mod tests {
         #[test]
         fn test_codex_worker_parse_review_output_approve() {
             let worker = codex_worker();
-            let raw = concat!(
-                r#"{"type":"response.completed","response":{"output_text":"{\"candidate_label\":\"Candidate Alpha\",\"verdict\":\"approve\",\"request_changes_reason\":null,\"scores\":{\"correctness\":0.95,\"completeness\":0.9,\"style\":0.85,\"performance\":0.8,\"overall\":0.875},\"issues\":[],\"summary\":\"Looks good.\"}"}}"#
-            );
+            let raw = r#"{"type":"response.completed","response":{"output_text":"{\"candidate_label\":\"Candidate Alpha\",\"verdict\":\"approve\",\"request_changes_reason\":null,\"scores\":{\"correctness\":0.95,\"completeness\":0.9,\"style\":0.85,\"performance\":0.8,\"overall\":0.875},\"issues\":[],\"summary\":\"Looks good.\"}"}}"#;
 
             let result = worker
                 .parse_review_output(raw)
@@ -1645,9 +1641,7 @@ mod tests {
         #[test]
         fn test_codex_worker_parse_review_output_request_changes() {
             let worker = codex_worker();
-            let raw = concat!(
-                r#"{"type":"response.completed","response":{"output_text":"{\"candidate_label\":\"Candidate Beta\",\"verdict\":\"request_changes\",\"request_changes_reason\":\"Missing tests\",\"scores\":{\"correctness\":0.6,\"completeness\":0.5,\"style\":0.75,\"performance\":0.7,\"overall\":0.6375},\"issues\":[\"src/lib.rs:42 add coverage\"],\"summary\":\"Needs tests.\"}"}}"#
-            );
+            let raw = r#"{"type":"response.completed","response":{"output_text":"{\"candidate_label\":\"Candidate Beta\",\"verdict\":\"request_changes\",\"request_changes_reason\":\"Missing tests\",\"scores\":{\"correctness\":0.6,\"completeness\":0.5,\"style\":0.75,\"performance\":0.7,\"overall\":0.6375},\"issues\":[\"src/lib.rs:42 add coverage\"],\"summary\":\"Needs tests.\"}"}}"#;
 
             let result = worker
                 .parse_review_output(raw)

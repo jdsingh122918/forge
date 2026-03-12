@@ -1,5 +1,6 @@
 //! Autoresearch command — automated specialist benchmark evaluation.
 
+#[allow(dead_code)]
 pub mod budget;
 pub mod experiment;
 pub mod git_ops;
@@ -9,6 +10,7 @@ pub mod loop_runner;
 pub mod results;
 #[allow(dead_code)]
 pub mod runner;
+#[allow(dead_code)]
 pub mod scorer;
 
 // Re-export benchmark types from the library crate for use by future command handlers.

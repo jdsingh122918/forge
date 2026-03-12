@@ -360,11 +360,16 @@ mod tests {
         let saved = std::env::var("COUNCIL_ENABLED").ok();
         unsafe { std::env::remove_var("COUNCIL_ENABLED") };
 
-        let mut config = CouncilConfig::default();
-        config.enabled = true;
+        let config = CouncilConfig {
+            enabled: true,
+            ..Default::default()
+        };
         assert!(config.resolve_enabled());
 
-        config.enabled = false;
+        let config = CouncilConfig {
+            enabled: false,
+            ..Default::default()
+        };
         assert!(!config.resolve_enabled());
 
         match saved {
@@ -394,8 +399,10 @@ mod tests {
         let saved = std::env::var("COUNCIL_ENABLED").ok();
         unsafe { std::env::set_var("COUNCIL_ENABLED", "false") };
 
-        let mut config = CouncilConfig::default();
-        config.enabled = true;
+        let config = CouncilConfig {
+            enabled: true,
+            ..Default::default()
+        };
         assert!(!config.resolve_enabled());
 
         match saved {
@@ -410,8 +417,10 @@ mod tests {
         let saved = std::env::var("COUNCIL_ENABLED").ok();
         unsafe { std::env::set_var("COUNCIL_ENABLED", "notabool") };
 
-        let mut config = CouncilConfig::default();
-        config.enabled = true;
+        let config = CouncilConfig {
+            enabled: true,
+            ..Default::default()
+        };
         assert!(config.resolve_enabled());
 
         match saved {

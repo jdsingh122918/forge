@@ -159,17 +159,17 @@ async fn try_update_check() -> Result<()> {
     let config = load_update_config(&forge_dir)?;
 
     // Check cache first — if fresh, skip network call entirely
-    if let Some(cache) = read_cache(&forge_dir)? {
-        if is_cache_fresh(&cache, config.check_interval) {
-            if is_newer(VERSION, &cache.latest_version) {
-                if config.auto {
-                    try_auto_update(&forge_dir).await?;
-                } else {
-                    print_update_notice(&cache.latest_version);
-                }
+    if let Some(cache) = read_cache(&forge_dir)?
+        && is_cache_fresh(&cache, config.check_interval)
+    {
+        if is_newer(VERSION, &cache.latest_version) {
+            if config.auto {
+                try_auto_update(&forge_dir).await?;
+            } else {
+                print_update_notice(&cache.latest_version);
             }
-            return Ok(());
         }
+        return Ok(());
     }
 
     // Fetch latest from GitHub (with timeout)

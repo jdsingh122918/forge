@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use futures::future::join_all;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::info;
 
@@ -214,7 +214,7 @@ fn cleanup_worktrees(manager: &WorktreeManager, worktrees: &[WorkerWorktree]) ->
 
 fn hydrate_diff_if_missing(
     manager: &WorktreeManager,
-    worktree_path: &PathBuf,
+    worktree_path: &Path,
     result: &mut WorkerResult,
 ) -> Result<()> {
     if !result.diff_text.trim().is_empty() {
@@ -233,7 +233,7 @@ fn hydrate_diff_if_missing(
 }
 
 fn build_single_worker_result(
-    repo_path: &PathBuf,
+    repo_path: &Path,
     worker_results: Vec<WorkerResult>,
 ) -> Result<CouncilPhaseResult> {
     let winning_diff = worker_patch(&worker_results[0]);

@@ -23,6 +23,7 @@ pub const ESTIMATED_EXPERIMENT_COST: f64 = 0.50;
 /// Methods take `&self` to allow shared ownership; implementations should
 /// use interior mutability (e.g., `Mutex`) for mutable state like
 /// `last_keep_sha`.
+#[allow(dead_code)]
 pub trait LoopGitOps: Send + Sync {
     /// Create a new branch from HEAD and check it out.
     ///

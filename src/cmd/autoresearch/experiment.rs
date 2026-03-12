@@ -148,14 +148,13 @@ pub async fn run_single_experiment(
         None
     };
 
-    // Step 6: Determine outcome
-    let outcome = if config.dry_run {
-        ExperimentOutcome::Keep
-    } else if verdict.as_ref().unwrap().composite_score > config.baseline_score {
-        ExperimentOutcome::Keep
-    } else {
-        ExperimentOutcome::Discard
-    };
+    // Step 6: Determine outcome — keep in dry-run or when score exceeds baseline
+    let outcome =
+        if !config.dry_run && verdict.as_ref().unwrap().composite_score <= config.baseline_score {
+            ExperimentOutcome::Discard
+        } else {
+            ExperimentOutcome::Keep
+        };
 
     // Step 7: Estimate cost (Sonnet pricing: $3/MTok input, $15/MTok output)
     let (exec_input, exec_output) = if !config.dry_run {
