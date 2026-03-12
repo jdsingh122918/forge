@@ -97,7 +97,7 @@ pub async fn cancel_pipeline_run(conn: &Connection, id: RunId) -> Result<Pipelin
 
 pub async fn recover_orphaned_runs(conn: &Connection) -> Result<usize> {
     let count = conn.execute(
-        "UPDATE pipeline_runs SET status = 'failed', error = 'Server restarted — pipeline process was lost', completed_at = datetime('now') WHERE status IN ('running', 'queued', 'stalled')",
+        "UPDATE pipeline_runs SET status = 'failed', error = 'Server restarted — pipeline process was lost', completed_at = datetime('now') WHERE status IN ('running', 'stalled')",
         (),
     )
     .await
@@ -456,7 +456,7 @@ mod tests {
 
         // Recover orphaned runs
         let count = recover_orphaned_runs(conn).await.unwrap();
-        assert_eq!(count, 2, "Should recover running + queued runs");
+        assert_eq!(count, 1, "Should recover only the running run (not queued)");
 
         // Verify running run is now failed with error message
         let recovered_running = get_pipeline_run(conn, run_running.id)
@@ -470,17 +470,18 @@ mod tests {
         );
         assert!(recovered_running.completed_at.is_some());
 
-        // Verify queued run is now failed with error message
-        let recovered_queued = get_pipeline_run(conn, run_queued.id)
+        // Verify queued run is NOT marked as failed — it survives restart
+        let surviving_queued = get_pipeline_run(conn, run_queued.id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(recovered_queued.status, PipelineStatus::Failed);
         assert_eq!(
-            recovered_queued.error.as_deref(),
-            Some("Server restarted — pipeline process was lost")
+            surviving_queued.status,
+            PipelineStatus::Queued,
+            "Queued runs should survive recovery and remain queued"
         );
-        assert!(recovered_queued.completed_at.is_some());
+        assert_eq!(surviving_queued.error, None);
+        assert_eq!(surviving_queued.completed_at, None);
 
         // Verify completed run is untouched
         let unchanged_completed = get_pipeline_run(conn, run_completed.id)
@@ -505,11 +506,12 @@ mod tests {
             .unwrap();
         assert_eq!(issue_r.column, IssueColumn::Ready);
 
+        // Queued issue should remain in_progress (not moved by recovery)
         let issue_q = super::super::issues::get_issue(conn, issue_queued.id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(issue_q.column, IssueColumn::Ready);
+        assert_eq!(issue_q.column, IssueColumn::InProgress);
 
         // Verify completed/failed issues' columns are untouched
         let issue_c = super::super::issues::get_issue(conn, issue_completed.id)

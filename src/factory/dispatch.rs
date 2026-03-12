@@ -12,6 +12,10 @@ use super::models::*;
 use super::pipeline::PipelineRunner;
 use super::ws::{WsMessage, broadcast_message};
 
+/// Default maximum number of concurrent pipeline runs.
+/// Used as the single source of truth across all dispatch call sites.
+pub const DEFAULT_MAX_CONCURRENCY: usize = 1;
+
 /// Dispatch pending queued runs up to the available capacity.
 ///
 /// - Counts running + stalled runs as "active"

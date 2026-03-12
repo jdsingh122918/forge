@@ -1019,7 +1019,7 @@ async fn trigger_pipeline(
         &state.db,
         &state.pipeline_runner,
         &state.ws_tx,
-        1, // default max concurrency
+        super::dispatch::DEFAULT_MAX_CONCURRENCY,
     )
     .await
     {
@@ -1098,7 +1098,7 @@ async fn cancel_pipeline_run(
         &state.db,
         &state.pipeline_runner,
         &state.ws_tx,
-        1,
+        super::dispatch::DEFAULT_MAX_CONCURRENCY,
     )
     .await
     {

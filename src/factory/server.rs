@@ -174,7 +174,7 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
         &state.db,
         &state.pipeline_runner,
         &state.ws_tx,
-        1, // default max concurrency
+        super::dispatch::DEFAULT_MAX_CONCURRENCY,
     )
     .await
     {

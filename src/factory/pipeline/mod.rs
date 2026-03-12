@@ -971,7 +971,7 @@ impl PipelineRunner {
                     &dispatch_db,
                     &dispatch_runner,
                     &dispatch_tx,
-                    1, // default max concurrency
+                    crate::factory::dispatch::DEFAULT_MAX_CONCURRENCY,
                 )
                 .await
                 {
