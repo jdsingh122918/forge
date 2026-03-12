@@ -14,7 +14,7 @@
 //! The inverse recovery (`Stalled → Running`) happens automatically in [`super::heartbeat::emit_run_event`]
 //! when fresh activity arrives for a stalled run.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -62,10 +62,13 @@ pub async fn reconcile_runs(
 
     report.inspected = runs.len();
     let now = Utc::now();
-    let processes = running_processes.lock().await;
+    let process_ids: HashSet<i64> = {
+        let processes = running_processes.lock().await;
+        processes.keys().copied().collect()
+    };
 
     for run in &runs {
-        let has_process = processes.contains_key(&run.id.0);
+        let has_process = process_ids.contains(&run.id.0);
 
         if !has_process {
             // No process handle — the process crashed or was killed
@@ -77,11 +80,6 @@ pub async fn reconcile_runs(
                     "Reconciliation: no process handle, transitioning to Failed"
                 );
 
-                db.update_pipeline_status(run.id, &PipelineStatus::Failed)
-                    .await
-                    .context("Failed to transition run to Failed")?;
-
-                // Also set error message
                 db.update_pipeline_run(
                     run.id,
                     &PipelineStatus::Failed,
