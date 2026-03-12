@@ -518,6 +518,79 @@ export default function useMissionControl(): MissionControlReturn {
         break;
       }
 
+      case 'PipelineQueued': {
+        const { run_id, position } = msg.data;
+        setState(prev => {
+          const newRuns = new Map(prev.runs);
+          const existing = newRuns.get(run_id);
+          if (existing) {
+            newRuns.set(run_id, { ...existing, status: 'queued', queue_position: position });
+          }
+          return { ...prev, runs: newRuns };
+        });
+        addLogEntry('system', `Pipeline queued at position ${position}`, undefined, run_id);
+        break;
+      }
+
+      case 'QueuePositionUpdated': {
+        const { run_id, position } = msg.data;
+        setState(prev => {
+          const newRuns = new Map(prev.runs);
+          const existing = newRuns.get(run_id);
+          if (existing) {
+            newRuns.set(run_id, { ...existing, queue_position: position });
+          }
+          return { ...prev, runs: newRuns };
+        });
+        break;
+      }
+
+      case 'ConfigReloaded': {
+        const { changed_settings } = msg.data;
+        addLogEntry('system', `Config reloaded (${changed_settings.join(', ')})`);
+        break;
+      }
+
+      case 'ConfigReloadError': {
+        addLogEntry('error', `Config reload failed: ${msg.data.error}`);
+        break;
+      }
+
+      case 'TrackerPollStarted': {
+        // Minimal handler — tracker polling is a background operation
+        break;
+      }
+
+      case 'TrackerPollCompleted': {
+        const { project_id, imported_count, skipped_count } = msg.data;
+        if (imported_count > 0) {
+          addLogEntry('system', `Tracker imported ${imported_count} issues (${skipped_count} skipped)`);
+          // Refresh board data to show newly imported issues
+          api.getBoard(project_id).then(board => {
+            if (!mountedRef.current) return;
+            setState(prev => {
+              const newIssues = new Map(prev.issues);
+              const newRuns = new Map(prev.runs);
+              for (const col of board.columns) {
+                for (const item of col.issues) {
+                  newIssues.set(item.issue.id, item.issue);
+                  if (item.active_run) {
+                    newRuns.set(item.active_run.id, item.active_run);
+                  }
+                }
+              }
+              return { ...prev, issues: newIssues, runs: newRuns };
+            });
+          }).catch(() => { /* board refresh failed, issues will appear on next full refresh */ });
+        }
+        break;
+      }
+
+      case 'TrackerPollError': {
+        addLogEntry('error', `Tracker poll failed: ${msg.data.error}`);
+        break;
+      }
+
       case 'ProjectCreated': {
         const project = msg.data.project;
         setState(prev => {
@@ -692,7 +765,7 @@ export default function useMissionControl(): MissionControlReturn {
       }
       const phaseMap = new Map<number, PipelinePhase[]>();
       for (const [runId, run] of runMap) {
-        if (run.status !== 'running' && run.status !== 'queued') continue;
+        if (run.status !== 'running' && run.status !== 'queued' && run.status !== 'stalled') continue;
         try {
           const runPhases = await api.getRunPhases(runId);
           if (runPhases.length > 0) phaseMap.set(runId, runPhases);

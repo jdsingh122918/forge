@@ -44,6 +44,7 @@ export interface PipelineRun {
   pr_url: string | null;
   team_id: number | null;
   has_team: boolean;
+  queue_position: number | null;
   started_at: string;
   completed_at: string | null;
 }

@@ -26,10 +26,10 @@ export const handlers = [
     return new HttpResponse(null, { status: 204 })
   }),
   http.post('/api/issues/:id/run', () => {
-    return HttpResponse.json({ id: 1, issue_id: 1, status: 'queued', phase_count: null, current_phase: null, iteration: null, summary: null, error: null, branch_name: null, pr_url: null, team_id: null, has_team: false, started_at: '2024-01-01', completed_at: null }, { status: 201 })
+    return HttpResponse.json({ id: 1, issue_id: 1, status: 'queued', phase_count: null, current_phase: null, iteration: null, summary: null, error: null, branch_name: null, pr_url: null, team_id: null, has_team: false, queue_position: null, started_at: '2024-01-01', completed_at: null }, { status: 201 })
   }),
   http.post('/api/runs/:id/cancel', () => {
-    return HttpResponse.json({ id: 1, issue_id: 1, status: 'cancelled', phase_count: null, current_phase: null, iteration: null, summary: null, error: null, branch_name: null, pr_url: null, team_id: null, has_team: false, started_at: '2024-01-01', completed_at: '2024-01-01' })
+    return HttpResponse.json({ id: 1, issue_id: 1, status: 'cancelled', phase_count: null, current_phase: null, iteration: null, summary: null, error: null, branch_name: null, pr_url: null, team_id: null, has_team: false, queue_position: null, started_at: '2024-01-01', completed_at: '2024-01-01' })
   }),
   http.get('/api/runs/:id/team', () => {
     return new HttpResponse(null, { status: 404 })

@@ -9,7 +9,7 @@ export function makeIssue(overrides: Partial<Issue> = {}): Issue {
 }
 
 export function makePipelineRun(overrides: Partial<PipelineRun> = {}): PipelineRun {
-  return { id: 1, issue_id: 1, status: 'queued', phase_count: null, current_phase: null, iteration: null, summary: null, error: null, branch_name: null, pr_url: null, team_id: null, has_team: false, started_at: '2024-01-01', completed_at: null, ...overrides }
+  return { id: 1, issue_id: 1, status: 'queued', phase_count: null, current_phase: null, iteration: null, summary: null, error: null, branch_name: null, pr_url: null, team_id: null, has_team: false, queue_position: null, started_at: '2024-01-01', completed_at: null, ...overrides }
 }
 
 export function makePipelinePhase(overrides: Partial<PipelinePhase> = {}): PipelinePhase {
