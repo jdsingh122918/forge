@@ -81,6 +81,7 @@ pub enum RunHandle {
 
 /// Manages pipeline execution for factory issues.
 /// Tracks running child processes so they can be cancelled.
+#[derive(Clone)]
 pub struct PipelineRunner {
     #[allow(dead_code)] // Used by tests; start_run now requires DB project lookup
     project_path: String,
@@ -579,13 +580,23 @@ impl PipelineRunner {
     /// Start a pipeline run for the given issue. Creates a git branch, attempts agent team
     /// execution (planner -> parallel tasks), falls back to forge pipeline on failure,
     /// and creates a PR on success.
-    pub async fn start_run(
+    pub fn start_run(
         &self,
         run_id: i64,
         issue: &Issue,
         db: DbHandle,
         tx: broadcast::Sender<String>,
-    ) -> Result<()> {
+    ) -> impl std::future::Future<Output = Result<()>> + Send + 'static {
+        // Clone all self fields eagerly (no &self borrow in the returned future).
+        let running_processes = Arc::clone(&self.running_processes);
+        let sandbox_clone = self.sandbox.clone();
+        let git_locks = self.git_locks.clone();
+        let runner_clone = self.clone();
+        let issue = issue.clone();
+
+        async move {
+        let issue = &issue;
+
         // Look up the project path from the DB (per-project, not the global default)
         let project_id = issue.project_id;
         let project_path = match db.get_project(project_id).await {
@@ -600,9 +611,6 @@ impl PipelineRunner {
         let issue_title = issue.title.clone();
         let issue_description = issue.description.clone();
         let issue_labels = issue.labels.clone();
-        let running_processes = Arc::clone(&self.running_processes);
-        let sandbox_clone = self.sandbox.clone();
-        let git_locks = self.git_locks.clone();
 
         let from_column = issue.column.as_str().to_string();
 
@@ -952,9 +960,28 @@ impl PipelineRunner {
                     // Issue stays in InProgress on failure (error is visible on the card)
                 }
             }
+
+            // After run completes (success or failure), dispatch next queued run.
+            // Spawn a separate task to avoid the Send issue with recursive start_run.
+            let dispatch_db = db.clone();
+            let dispatch_runner = runner_clone;
+            let dispatch_tx = tx.clone();
+            tokio::spawn(async move {
+                if let Err(e) = crate::factory::dispatch::dispatch_pending_runs(
+                    &dispatch_db,
+                    &dispatch_runner,
+                    &dispatch_tx,
+                    1, // default max concurrency
+                )
+                .await
+                {
+                    warn!(error = %e, "dispatch_pending_runs failed after run completion");
+                }
+            });
         });
 
         Ok(())
+        } // end async move
     }
 }
 

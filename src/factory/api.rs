@@ -988,8 +988,8 @@ async fn delete_issue(
 
 /// `POST /api/issues/:id/run` — start a Forge pipeline run for an issue.
 ///
-/// Creates a new `PipelineRun` record then spawns pipeline execution in a background
-/// Tokio task. Emits real-time status updates via WebSocket.
+/// Creates a new `PipelineRun` record in Queued status, then calls `dispatch_pending_runs()`
+/// which will start the run if capacity is available. Emits real-time status updates via WebSocket.
 ///
 /// **Response:** `201 Created` with the new `PipelineRun` as JSON.
 ///
@@ -1000,7 +1000,7 @@ async fn trigger_pipeline(
     State(state): State<SharedState>,
     Path(issue_id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let issue = state
+    let _issue = state
         .db
         .get_issue(IssueId(issue_id))
         .await
@@ -1012,21 +1012,43 @@ async fn trigger_pipeline(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    // Start pipeline execution in a background task
     let run_id = run.id;
-    state
-        .pipeline_runner
-        .start_run(run_id.0, &issue, state.db.clone(), state.ws_tx.clone())
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    // Re-fetch the run after start_run (which updates status to Running)
+    // Try to dispatch queued runs (this is the ONLY place that transitions queued -> running)
+    if let Err(e) = super::dispatch::dispatch_pending_runs(
+        &state.db,
+        &state.pipeline_runner,
+        &state.ws_tx,
+        1, // default max concurrency
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "dispatch_pending_runs failed after trigger");
+    }
+
+    // If the run is still queued after dispatch attempt, emit PipelineQueued
     let updated_run = state
         .db
         .get_pipeline_run(run_id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::Internal(format!("Pipeline run {} not found", run_id.0)))?;
+
+    if updated_run.status == super::models::PipelineStatus::Queued {
+        let position = state
+            .db
+            .count_queue_position(run_id)
+            .await
+            .unwrap_or(1);
+        broadcast_message(
+            &state.ws_tx,
+            &WsMessage::PipelineQueued {
+                run_id,
+                issue_id: IssueId(issue_id),
+                position,
+            },
+        );
+    }
 
     Ok((StatusCode::CREATED, Json(updated_run)))
 }
@@ -1070,6 +1092,19 @@ async fn cancel_pipeline_run(
         .cancel(id, &state.db, &state.ws_tx)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    // After cancellation frees a slot, dispatch next queued run
+    if let Err(e) = super::dispatch::dispatch_pending_runs(
+        &state.db,
+        &state.pipeline_runner,
+        &state.ws_tx,
+        1,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "dispatch_pending_runs failed after cancel");
+    }
+
     Ok(Json(run))
 }
 

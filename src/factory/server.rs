@@ -169,6 +169,18 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
         metrics,
     });
 
+    // After orphan recovery, dispatch any queued runs that may have been left behind
+    if let Err(e) = super::dispatch::dispatch_pending_runs(
+        &state.db,
+        &state.pipeline_runner,
+        &state.ws_tx,
+        1, // default max concurrency
+    )
+    .await
+    {
+        warn!("Failed to dispatch pending runs at startup: {e:#}");
+    }
+
     let state_for_shutdown = Arc::clone(&state);
     let mut app = build_router(state);
 

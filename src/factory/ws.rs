@@ -209,6 +209,17 @@ pub enum WsMessage {
         details: serde_json::Value,
     },
 
+    // Queue lifecycle
+    PipelineQueued {
+        run_id: RunId,
+        issue_id: IssueId,
+        position: i32,
+    },
+    QueuePositionUpdated {
+        run_id: RunId,
+        position: i32,
+    },
+
     // Project lifecycle
     ProjectCreated {
         project: Project,
@@ -853,6 +864,55 @@ mod tests {
                 assert_eq!(action, FileAction::Modified);
             }
             _ => panic!("Expected PipelineFileChanged"),
+        }
+    }
+
+    #[test]
+    fn test_ws_pipeline_queued_serialization() {
+        let msg = WsMessage::PipelineQueued {
+            run_id: RunId(10),
+            issue_id: IssueId(5),
+            position: 3,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"PipelineQueued\""));
+        assert!(json.contains("\"run_id\":10"));
+        assert!(json.contains("\"issue_id\":5"));
+        assert!(json.contains("\"position\":3"));
+
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::PipelineQueued {
+                run_id,
+                issue_id,
+                position,
+            } => {
+                assert_eq!(run_id, RunId(10));
+                assert_eq!(issue_id, IssueId(5));
+                assert_eq!(position, 3);
+            }
+            _ => panic!("Expected PipelineQueued"),
+        }
+    }
+
+    #[test]
+    fn test_ws_queue_position_updated_serialization() {
+        let msg = WsMessage::QueuePositionUpdated {
+            run_id: RunId(7),
+            position: 2,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"QueuePositionUpdated\""));
+        assert!(json.contains("\"run_id\":7"));
+        assert!(json.contains("\"position\":2"));
+
+        let deser: WsMessage = serde_json::from_str(&json).unwrap();
+        match deser {
+            WsMessage::QueuePositionUpdated { run_id, position } => {
+                assert_eq!(run_id, RunId(7));
+                assert_eq!(position, 2);
+            }
+            _ => panic!("Expected QueuePositionUpdated"),
         }
     }
 
