@@ -1,0 +1,32 @@
+{
+    "must_find": [
+        {
+            "id": "god-file-multiple-concerns",
+            "severity": "critical",
+            "description": "Single file contains 7 distinct concerns (pipeline types, git operations, orchestration, JSON parsing, Docker execution, streaming execution, progress tracking) that should be separated into individual modules",
+            "location": "code.rs:1-300"
+        },
+        {
+            "id": "god-function-run-pipeline",
+            "severity": "high",
+            "description": "PipelineRunner::run_pipeline is documented as 800+ lines handling database lookups, git operations, phase generation, command execution, progress tracking, review handling, and PR creation in a single method",
+            "location": "code.rs:149-170"
+        },
+        {
+            "id": "mixed-abstraction-levels",
+            "severity": "medium",
+            "description": "Low-level concerns (JSON line parsing, XML tag extraction, Docker container lifecycle) mixed with high-level orchestration (pipeline runner, auto-promotion policy) in the same module",
+            "location": "code.rs:1-300"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-promote-decision",
+            "description": "AutoPromotePolicy::decide is a simple pure function with clear logic — it does not need to be in a separate module despite being in a god file"
+        },
+        {
+            "id": "fp-slugify-utility",
+            "description": "The slugify function is a small utility closely related to git branch creation and is reasonably co-located with create_git_branch"
+        }
+    ]
+}

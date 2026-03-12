@@ -1,0 +1,26 @@
+{
+    "must_find": [
+        {
+            "id": "no-driver-abstraction",
+            "severity": "high",
+            "description": "All database functions directly depend on rusqlite types (Connection, params!, Row) with no trait abstraction or repository layer, making driver swaps require rewriting every function",
+            "location": "code.rs:1-210"
+        },
+        {
+            "id": "duplicated-row-mapping",
+            "severity": "medium",
+            "description": "Positional row.get(N) column access is duplicated across get_issue, list_issues, get_issues_by_column, and search_issues with identical mapping logic instead of using a shared row-mapping function",
+            "location": "code.rs:116-210"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-inline-sql",
+            "description": "Inline SQL strings are acceptable for a direct database layer — using an ORM or query builder would add unnecessary complexity for this project's scale"
+        },
+        {
+            "id": "fp-sync-connection",
+            "description": "Using synchronous rusqlite::Connection is intentional — the DbHandle wrapper provides async safety via spawn_blocking, so the inner FactoryDb does not need to be async"
+        }
+    ]
+}

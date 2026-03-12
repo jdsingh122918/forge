@@ -1,0 +1,32 @@
+{
+    "must_find": [
+        {
+            "id": "god-function-six-concerns",
+            "severity": "critical",
+            "description": "Single function run_pipeline_for_issue handles 6 distinct concerns (validation, git ops, phase execution, budget tracking, review handling, PR creation/notification) in ~170 lines, violating single responsibility principle",
+            "location": "code.rs:15-175"
+        },
+        {
+            "id": "excessive-parameters",
+            "severity": "high",
+            "description": "Function takes 8 parameters including boolean flags (notify_slack) and optional values (slack_webhook, github_repo) that control internal branching — a sign the function should be decomposed",
+            "location": "code.rs:15-24"
+        },
+        {
+            "id": "mixed-abstraction-levels",
+            "severity": "medium",
+            "description": "Function mixes high-level orchestration (phase iteration, review coordination) with low-level operations (git command execution, HTTP webhook posting, string slugification)",
+            "location": "code.rs:50-170"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-async-await",
+            "description": "Using async/await for git commands and HTTP calls is correct — the issue is the function's scope, not its async nature"
+        },
+        {
+            "id": "fp-error-handling",
+            "description": "The early-return error handling pattern with bail! and context() is idiomatic Rust and not itself an architectural problem"
+        }
+    ]
+}

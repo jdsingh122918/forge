@@ -1,0 +1,26 @@
+{
+    "must_find": [
+        {
+            "id": "monolithic-impl-block",
+            "severity": "critical",
+            "description": "Single impl block for FactoryDb contains ~50 functions spanning 8 unrelated domain areas (projects, issues, pipelines, agents, settings, migrations, row mapping), violating single responsibility principle",
+            "location": "code.rs:43-310"
+        },
+        {
+            "id": "no-domain-separation",
+            "severity": "high",
+            "description": "Project CRUD, issue CRUD, pipeline runs, agent tasks, and settings are all in one file with no module boundaries, making it impossible to test or modify one domain without touching others",
+            "location": "code.rs:108-290"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-dbhandle-wrapper",
+            "description": "DbHandle wrapping FactoryDb behind Arc<Mutex> with spawn_blocking is a legitimate async-safe pattern for synchronous SQLite — it is not over-engineering"
+        },
+        {
+            "id": "fp-row-mapping-structs",
+            "description": "IssueRow and PipelineRunRow intermediate types for rusqlite row mapping are a standard pattern to handle the impedance mismatch between SQL rows and domain types"
+        }
+    ]
+}

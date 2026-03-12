@@ -1,0 +1,28 @@
+{
+    "must_find": [
+        {
+            "id": "circular-import-cycle",
+            "severity": "critical",
+            "description": "Three-way circular dependency between executor, phase_manager, and reporter modules — each imports from the other two, creating an import cycle that prevents independent compilation and testing",
+            "location": "code.rs:1-155"
+        },
+        {
+            "id": "unsafe-raw-pointers-for-cycle",
+            "severity": "critical",
+            "description": "Raw pointers (*mut Executor, *const PhaseManager) used to break ownership cycles, introducing unsafe code and dangling pointer risk that defeats Rust's safety guarantees",
+            "location": "code.rs:57-58"
+        },
+        {
+            "id": "multi-phase-init",
+            "severity": "high",
+            "description": "Objects require multi-phase initialization with post-construction set_executor/set_phase_manager calls because circular dependencies prevent complete construction in one step",
+            "location": "code.rs:150-160"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-executor-owns-both",
+            "description": "Executor owning both PhaseManager and Reporter is not itself problematic — the issue is the reverse dependencies, not the top-level composition"
+        }
+    ]
+}

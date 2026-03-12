@@ -417,4 +417,65 @@ mod tests {
             }
         }
     }
+
+    // --- Architecture benchmarks integration test ---
+
+    #[test]
+    fn test_architecture_benchmarks_load() {
+        let forge_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(".forge");
+        let suite = BenchmarkSuite::load(&forge_dir, "architecture").unwrap();
+
+        assert_eq!(suite.specialist, "architecture");
+        assert_eq!(suite.cases.len(), 5, "Expected 5 architecture benchmark cases");
+
+        let case_names: Vec<&str> = suite.cases.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            case_names,
+            vec![
+                "circular-dependency",
+                "god-file-pipeline",
+                "monolithic-database",
+                "solid-violation",
+                "tight-coupling-rusqlite",
+            ],
+            "Cases should be sorted alphabetically"
+        );
+
+        // Every case must have non-empty code, context, and at least one must_find entry
+        for case in &suite.cases {
+            assert!(
+                !case.code.is_empty(),
+                "code.rs should not be empty for '{}'",
+                case.name
+            );
+            assert!(
+                !case.context.is_empty(),
+                "context.md should not be empty for '{}'",
+                case.name
+            );
+            assert!(
+                !case.expected.must_find.is_empty(),
+                "must_find should not be empty for '{}'",
+                case.name
+            );
+
+            // Validate must_find entries have required fields
+            for finding in &case.expected.must_find {
+                assert!(!finding.id.is_empty(), "finding id should not be empty in '{}'", case.name);
+                assert!(
+                    ["critical", "high", "medium"].contains(&finding.severity.as_str()),
+                    "severity '{}' is not valid in '{}'",
+                    finding.severity,
+                    case.name
+                );
+                assert!(!finding.description.is_empty(), "finding description should not be empty in '{}'", case.name);
+                assert!(
+                    finding.location.starts_with("code.rs:"),
+                    "location '{}' should start with 'code.rs:' in '{}'",
+                    finding.location,
+                    case.name
+                );
+            }
+        }
+    }
 }
