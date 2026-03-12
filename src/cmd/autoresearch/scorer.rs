@@ -3,6 +3,7 @@
 //! Uses location proximity and keyword overlap to match findings, then computes
 //! recall, precision, and weighted composite scores.
 
+use std::collections::HashSet;
 use std::fmt;
 
 use forge::autoresearch::benchmarks::{Expected, ExpectedFinding, MustNotFlag};
@@ -57,17 +58,70 @@ const STOP_WORDS: &[&str] = &[
     "not", "this", "that", "it", "its",
 ];
 
+/// Parse a line range string like `"42-45"` or `"42"` into start/end line numbers.
+fn parse_line_range(s: &str) -> (Option<u32>, Option<u32>) {
+    if let Some(dash_pos) = s.find('-') {
+        let start = s[..dash_pos].parse::<u32>().ok();
+        let end = s[dash_pos + 1..].parse::<u32>().ok();
+        (start, end)
+    } else {
+        let line = s.parse::<u32>().ok();
+        (line, line)
+    }
+}
+
 /// Parse a location string like `"code.rs:42-45"`, `"code.rs:42"`, `"line 42-45"`,
 /// `"line 42"`, or `""` into a [`ParsedLocation`].
 pub fn parse_location(location: &str) -> ParsedLocation {
-    let _ = location;
-    todo!("implement parse_location")
+    let location = location.trim();
+    if location.is_empty() {
+        return ParsedLocation {
+            file: None,
+            start_line: None,
+            end_line: None,
+        };
+    }
+
+    // "line 42-45" or "line 42"
+    if let Some(line_part) = location.strip_prefix("line ") {
+        let (start, end) = parse_line_range(line_part);
+        return ParsedLocation {
+            file: None,
+            start_line: start,
+            end_line: end,
+        };
+    }
+
+    // "file.rs:42-45" or "file.rs:42"
+    if let Some(colon_pos) = location.rfind(':') {
+        let file = &location[..colon_pos];
+        let line_part = &location[colon_pos + 1..];
+        let (start, end) = parse_line_range(line_part);
+        if start.is_some() {
+            return ParsedLocation {
+                file: Some(file.to_string()),
+                start_line: start,
+                end_line: end,
+            };
+        }
+    }
+
+    // Bare filename
+    ParsedLocation {
+        file: Some(location.to_string()),
+        start_line: None,
+        end_line: None,
+    }
 }
 
 /// Tokenize a string: lowercase, split on non-alphanumeric, remove stop words.
 fn tokenize(s: &str) -> Vec<String> {
-    let _ = s;
-    todo!("implement tokenize")
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .filter(|w| !STOP_WORDS.contains(w))
+        .map(|w| w.to_string())
+        .collect()
 }
 
 /// Compute keyword overlap between an expected description and a finding description.
@@ -75,8 +129,35 @@ fn tokenize(s: &str) -> Vec<String> {
 /// Returns `intersection_count / expected_token_count`, or `0.0` if the expected
 /// string has zero non-stop tokens.
 pub fn keyword_overlap(expected_desc: &str, finding_desc: &str) -> f64 {
-    let _ = (expected_desc, finding_desc);
-    todo!("implement keyword_overlap")
+    let expected_tokens: HashSet<String> = tokenize(expected_desc).into_iter().collect();
+    if expected_tokens.is_empty() {
+        return 0.0;
+    }
+    let finding_tokens: HashSet<String> = tokenize(finding_desc).into_iter().collect();
+    let intersection = expected_tokens.intersection(&finding_tokens).count();
+    intersection as f64 / expected_tokens.len() as f64
+}
+
+/// Check if a finding's file and line match a parsed location within [`LINE_TOLERANCE`].
+fn location_matches(finding: &Finding, loc: &ParsedLocation) -> bool {
+    if let Some(ref expected_file) = loc.file
+        && finding.file != *expected_file
+    {
+        return false;
+    }
+    if let (Some(start), Some(end)) = (loc.start_line, loc.end_line) {
+        match finding.line {
+            Some(finding_line) => {
+                let range_start = start.saturating_sub(LINE_TOLERANCE);
+                let range_end = end.saturating_add(LINE_TOLERANCE);
+                if finding_line < range_start || finding_line > range_end {
+                    return false;
+                }
+            }
+            None => return false,
+        }
+    }
+    true
 }
 
 /// Matches specialist findings against benchmark ground truth.
@@ -86,15 +167,35 @@ impl FindingMatcher {
     /// Check if a finding matches an expected finding using location proximity
     /// (±5 lines) AND keyword overlap (>50%). Both must pass when location is present.
     pub fn matches_expected(finding: &Finding, expected: &ExpectedFinding) -> bool {
-        let _ = (finding, expected);
-        todo!("implement matches_expected")
+        let loc = parse_location(&expected.location);
+        let has_location = loc.file.is_some() || loc.start_line.is_some();
+
+        let overlap = keyword_overlap(&expected.description, &finding.issue);
+        let keyword_match = overlap > MUST_FIND_OVERLAP_THRESHOLD;
+
+        if has_location {
+            location_matches(finding, &loc) && keyword_match
+        } else {
+            keyword_match
+        }
     }
 
     /// Check if a finding matches a must-not-flag entry using keyword overlap (>60%)
     /// OR location match. Either condition triggers a match.
     pub fn matches_must_not_flag(finding: &Finding, must_not: &MustNotFlag) -> bool {
-        let _ = (finding, must_not);
-        todo!("implement matches_must_not_flag")
+        let overlap = keyword_overlap(&must_not.description, &finding.issue);
+        if overlap > MUST_NOT_FLAG_OVERLAP_THRESHOLD {
+            return true;
+        }
+
+        if let Some(ref loc_str) = must_not.location {
+            let loc = parse_location(loc_str);
+            if location_matches(finding, &loc) {
+                return true;
+            }
+        }
+
+        false
     }
 }
 
@@ -108,8 +209,46 @@ impl Scorer {
     /// - `precision` = 1.0 - false_positives / total_findings (0 findings => 1.0)
     /// - `composite` = 0.4 * recall + 0.3 * precision + 0.3 * actionability
     pub fn score(findings: &[Finding], expected: &Expected, actionability: f64) -> SpecialistScore {
-        let _ = (findings, expected, actionability);
-        todo!("implement score")
+        let total_must_finds = expected.must_find.len();
+        let matched = expected
+            .must_find
+            .iter()
+            .filter(|ef| {
+                findings
+                    .iter()
+                    .any(|f| FindingMatcher::matches_expected(f, ef))
+            })
+            .count();
+        let recall = if total_must_finds == 0 {
+            1.0
+        } else {
+            matched as f64 / total_must_finds as f64
+        };
+
+        let total_findings = findings.len();
+        let false_positives = findings
+            .iter()
+            .filter(|f| {
+                expected
+                    .must_not_flag
+                    .iter()
+                    .any(|mnf| FindingMatcher::matches_must_not_flag(f, mnf))
+            })
+            .count();
+        let precision = if total_findings == 0 {
+            1.0
+        } else {
+            1.0 - false_positives as f64 / total_findings as f64
+        };
+
+        let composite = 0.4 * recall + 0.3 * precision + 0.3 * actionability;
+
+        SpecialistScore {
+            recall,
+            precision,
+            actionability,
+            composite,
+        }
     }
 }
 

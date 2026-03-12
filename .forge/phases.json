@@ -1,13 +1,13 @@
 {
-  "spec_hash": "ed146c19618c",
-  "generated_at": "2026-03-12T01:46:21.239611+00:00",
+  "spec_hash": "fa593881325d",
+  "generated_at": "2026-03-12T01:58:24.561710+00:00",
   "phases": [
     {
       "number": "01",
-      "name": "Write scorer tests",
-      "promise": "SCORER TESTS WRITTEN",
+      "name": "Write BenchmarkRunner tests",
+      "promise": "RUNNER TESTS WRITTEN",
       "budget": 5,
-      "reasoning": "Write all 15+ tests in src/cmd/autoresearch/scorer.rs covering: parse_location (4 tests), keyword_overlap (4 tests), FindingMatcher::matches_expected (3 tests), FindingMatcher::matches_must_not_flag (3 tests), Scorer::score recall (2), precision (2), composite (1), edge cases (2). Add minimal stub types (Finding, SpecialistScore, ParsedLocation) and function signatures that compile but panic/return defaults so tests compile but fail. Register pub mod scorer in mod.rs.",
+      "reasoning": "Write all unit tests from design doc steps 1-6: test_runner_builds_correct_claude_command, test_runner_parses_specialist_json_output, test_runner_parses_direct_json_output, test_runner_handles_unparseable_output, test_runner_handles_partial_json, test_runner_handles_empty_output, test_runner_extracts_json_from_markdown_block, test_runner_builds_review_prompt, test_runner_handles_finding_without_line, test_runner_handles_finding_without_suggestion. Create runner.rs with test module and stub structs/methods that compile but fail tests. Register pub mod runner in mod.rs.",
       "depends_on": [],
       "skills": [],
       "permission_mode": "standard",
@@ -15,10 +15,10 @@
     },
     {
       "number": "02",
-      "name": "Implement scorer engine",
-      "promise": "SCORER COMPLETE",
-      "budget": 12,
-      "reasoning": "Implement parse_location (regex or manual parsing for file:line-line, file:line, line N-N, empty), tokenize helper (lowercase, split on non-alphanumeric, filter stop words), keyword_overlap (tokenize both, compute intersection/expected_tokens), FindingMatcher::matches_expected (parse location, check file basename match, check line within ±5 tolerance, check keyword overlap >0.50), FindingMatcher::matches_must_not_flag (keyword overlap >0.60 OR location match), Scorer::score (iterate must_finds for recall, iterate findings for false positives/precision, compute composite 0.4R+0.3P+0.3A), Display impl for SpecialistScore. All 15+ tests must pass, cargo clippy clean.",
+      "name": "Implement BenchmarkRunner",
+      "promise": "RUNNER COMPLETE",
+      "budget": 10,
+      "reasoning": "Implement BenchmarkRunner struct with new(), build_review_prompt(), build_command(), parse_output(), and async run(). Implement ConstructedCommand and BenchmarkResult structs. Implement JSON parsing with 4-format handling (direct, wrapped, markdown-extracted, error fallback). Implement extract_json_from_markdown helper. Reuse Finding from scorer.rs. Add internal SpecialistOutput and RawFinding deserialization structs. All 9+ tests must pass, cargo clippy clean.",
       "depends_on": [
         "01"
       ],

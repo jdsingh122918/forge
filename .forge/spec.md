@@ -1,99 +1,98 @@
-# Implementation Spec: FindingMatcher and Scorer for Autoresearch
+# Implementation Spec: BenchmarkRunner — Claude CLI Specialist Invocation
 
-> Generated from: docs/superpowers/specs/autoresearch-tasks/T06-finding-matcher-and-scorer.md
-> Generated at: 2026-03-12T01:46:21.239193+00:00
+> Generated from: docs/superpowers/specs/autoresearch-tasks/T06b-benchmark-runner.md
+> Generated at: 2026-03-12T01:58:24.560746+00:00
 
 ## Goal
 
-Implement the scoring engine that compares specialist output findings against benchmark ground truth using location proximity and keyword overlap, then computes recall, precision, and weighted composite scores to evaluate whether prompt mutations improved specialist performance.
+Build a BenchmarkRunner that constructs Claude CLI commands with specialist prompts and benchmark code, executes them as async subprocesses, and parses the JSON output (handling direct, wrapped, markdown-wrapped, and unparseable formats) into structured BenchmarkResult values containing verdict, findings, and error state.
 
 ## Components
 
 | Component | Description | Complexity | Dependencies |
 |-----------|-------------|------------|--------------|
-| LocationParser | Parses expected finding location strings like 'code.rs:42-45', 'issues.rs:70', 'line 42-45', or '' into a ParsedLocation struct with optional file, start_line, and end_line fields | low | - |
-| KeywordOverlap | Tokenizes two strings (lowercased, split on non-alphanumeric, stop words removed) and computes intersection/expected_tokens ratio. Returns 0.0 when expected has zero non-stop tokens | low | - |
-| FindingMatcher | Compares specialist Finding structs against ExpectedFinding (must_find) and MustNotFlag entries using location proximity (±5 lines) and keyword overlap thresholds (>0.50 for must_find, >0.60 for must_not_flag). Must_not_flag uses OR logic: location match OR keyword match triggers it | medium | LocationParser, KeywordOverlap |
-| Scorer | Computes recall (matched_must_finds/total), precision (1 - false_positives/total_findings), and composite (0.4*recall + 0.3*precision + 0.3*actionability). Handles edge cases: 0 must_finds => recall 1.0, 0 findings => precision 1.0 | medium | FindingMatcher |
+| BenchmarkResult | Struct holding the result of running a specialist against one benchmark case: case_name, verdict, findings (Vec<Finding>), raw_output, and optional error | low | Finding |
+| ConstructedCommand | Struct representing a constructed CLI command (program + args) for test inspection without execution | low | - |
+| BenchmarkRunner | Main runner struct with configurable claude_cmd. Methods: new(), build_review_prompt(), build_command(), parse_output(), run(). Constructs prompts combining specialist instructions with benchmark code/context, invokes Claude CLI as async subprocess, and parses output | medium | BenchmarkResult, ConstructedCommand, BenchmarkCase, Finding |
+| JSON Output Parser | Internal parsing logic handling 4 output formats: direct JSON, wrapped JSON ({"result": "..."}), markdown-wrapped JSON (```json blocks), and unparseable fallback with error reporting | medium | BenchmarkResult |
 
 ## Code Patterns
 
-### Finding struct
+### Claude CLI invocation
 
 ```
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Finding {
-    pub severity: String,
-    pub file: String,
-    pub line: Option<u32>,
-    pub issue: String,
-    pub suggestion: String,
+claude -p "<prompt>" --output-format json --print
+```
+
+### Specialist JSON output format
+
+```
+{
+    "verdict": "fail",
+    "findings": [
+        {
+            "severity": "critical",
+            "file": "code.rs",
+            "line": 42,
+            "issue": "TOCTOU race condition",
+            "suggestion": "Move query inside transaction"
+        }
+    ]
 }
 ```
 
-### SpecialistScore struct
+### Wrapped output format
 
 ```
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SpecialistScore {
-    pub recall: f64,
-    pub precision: f64,
-    pub actionability: f64,
-    pub composite: f64,
+{
+    "result": "{\"verdict\": \"fail\", \"findings\": [...]}"
 }
 ```
 
-### ParsedLocation struct
+### Review prompt template
 
 ```
-#[derive(Debug, Clone, PartialEq)]
-pub struct ParsedLocation {
-    pub file: Option<String>,
-    pub start_line: Option<u32>,
-    pub end_line: Option<u32>,
-}
+{specialist_prompt}
+
+## Code Under Review
+
+```rust
+{code}
 ```
 
-### Scoring formula
+## Context
 
-```
-composite = 0.4 * recall + 0.3 * precision + 0.3 * actionability
-```
+{context}
 
-### Stop words constant
+## Output Format
 
-```
-const STOP_WORDS: &[&str] = &[
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "in", "on", "at", "to", "for", "of", "with", "and", "or", "but",
-    "not", "this", "that", "it", "its",
-];
+Respond with a JSON object containing:
+- "verdict": one of "pass", "warn", or "fail"
+- "findings": array of finding objects
 ```
 
-### Threshold constants
+### Async subprocess execution
 
 ```
-const LINE_TOLERANCE: u32 = 5;
-const MUST_FIND_OVERLAP_THRESHOLD: f64 = 0.50;
-const MUST_NOT_FLAG_OVERLAP_THRESHOLD: f64 = 0.60;
+let output = tokio::process::Command::new(&self.claude_cmd)
+    .args(["-p", &prompt, "--output-format", "json", "--print"])
+    .output()
+    .await
+    .with_context(|| format!("Failed to run {} for case '{}'", self.claude_cmd, case.name))?;
 ```
 
 ## Acceptance Criteria
 
-- [ ] All 15+ tests pass: location parsing (4), keyword overlap (4), must_find matching (3), must_not_flag matching (3), recall (2), precision (2), composite (1), edge cases (2)
-- [ ] parse_location handles 'file.rs:42-45', 'file.rs:42', 'line 42-45', 'line 42', '' and bare 'file.rs' (no line)
-- [ ] keyword_overlap tokenizes to lowercase, splits on non-alphanumeric, removes stop words, returns intersection/expected_tokens
-- [ ] keyword_overlap returns 0.0 when expected string has zero non-stop tokens
-- [ ] FindingMatcher::matches_expected uses ±5 line tolerance AND >50% keyword overlap (both must pass when location is present)
-- [ ] FindingMatcher::matches_must_not_flag uses >60% keyword overlap OR location match (either triggers)
-- [ ] Scorer::score computes recall = matched_must_finds / total_must_finds (0 must_finds => 1.0)
-- [ ] Scorer::score computes precision = 1.0 - false_positives / total_findings (0 findings => 1.0)
-- [ ] Composite formula is exactly 0.4 * recall + 0.3 * precision + 0.3 * actionability
-- [ ] scorer.rs imports Expected, ExpectedFinding, MustNotFlag from forge::autoresearch::benchmarks
-- [ ] Module registered in src/cmd/autoresearch/mod.rs as pub mod scorer
-- [ ] cargo clippy has no warnings for new code
-- [ ] Display impl for SpecialistScore shows formatted percentages
+- [ ] All 9+ tests pass covering: command construction, JSON parsing (direct, wrapped, markdown-wrapped), unparseable output handling, empty output, missing fields
+- [ ] BenchmarkRunner::build_review_prompt includes specialist instructions, code, context, and output format specification
+- [ ] BenchmarkRunner::parse_output handles at least 4 output formats (direct JSON, wrapped JSON, markdown JSON, unparseable)
+- [ ] BenchmarkRunner::run is async and uses tokio::process::Command
+- [ ] BenchmarkRunner::build_command returns a ConstructedCommand for test inspection
+- [ ] Finding type is reused from scorer.rs (not duplicated)
+- [ ] BenchmarkResult includes raw_output for debugging
+- [ ] cargo clippy has no warnings for the new code
+- [ ] Module registered in src/cmd/autoresearch/mod.rs as pub mod runner
 
 ---
 *This spec was auto-generated from a design document.*
-*Original design: docs/superpowers/specs/autoresearch-tasks/T06-finding-matcher-and-scorer.md*
+*Original design: docs/superpowers/specs/autoresearch-tasks/T06b-benchmark-runner.md*

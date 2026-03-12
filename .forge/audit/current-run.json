@@ -1,6 +1,6 @@
 {
-  "run_id": "11b84095-583b-4b0d-92e1-9fd27f5b5a00",
-  "started_at": "2026-03-12T01:46:21.260742Z",
+  "run_id": "51eb8918-6ee0-40d8-94e2-6d05c928492f",
+  "started_at": "2026-03-12T01:58:24.583108Z",
   "ended_at": null,
   "config": {
     "auto_approve_threshold": 5,
@@ -9,30 +9,5 @@
     "spec_file": "/Users/jdsingh/Projects/AI/forge/.forge/spec.md",
     "project_dir": "/Users/jdsingh/Projects/AI/forge"
   },
-  "phases": [
-    {
-      "phase_number": "01",
-      "description": "Write scorer tests",
-      "promise": "SCORER TESTS WRITTEN",
-      "started_at": "2026-03-12T01:46:21.260926Z",
-      "ended_at": "2026-03-12T01:50:25.364956Z",
-      "iterations": [],
-      "outcome": {
-        "Completed": {
-          "iteration": 1
-        }
-      },
-      "file_changes": {
-        "files_added": [
-          "src/cmd/autoresearch/scorer.rs"
-        ],
-        "files_modified": [
-          "src/cmd/autoresearch/mod.rs"
-        ],
-        "files_deleted": [],
-        "total_lines_added": 1,
-        "total_lines_removed": 0
-      }
-    }
-  ]
+  "phases": []
 }
