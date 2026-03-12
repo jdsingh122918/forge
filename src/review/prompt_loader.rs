@@ -72,6 +72,28 @@ impl PromptLoader {
             .join(format!("{}.md", specialist.agent_name()))
     }
 
+    /// Try to load a prompt config from file only, without fallback.
+    ///
+    /// Returns `Some(PromptConfig)` if a valid prompt file exists and parses
+    /// successfully. Returns `None` if the file doesn't exist or can't be parsed.
+    /// This is used by the dispatcher to check for file-based prompts before
+    /// falling back to its own hardcoded template.
+    pub fn try_load_file_only(&self, specialist: &SpecialistType) -> Option<PromptConfig> {
+        let path = self.prompt_path(specialist);
+        match self.try_load_from_file(&path, specialist) {
+            Ok(config) => Some(config),
+            Err(reason) => {
+                warn!(
+                    specialist = specialist.agent_name(),
+                    path = %path.display(),
+                    reason = %reason,
+                    "File-based prompt not available for specialist"
+                );
+                None
+            }
+        }
+    }
+
     /// Load the prompt configuration for a specialist.
     ///
     /// Attempts to read from `{forge_dir}/autoresearch/prompts/{agent_name}.md`.
@@ -418,6 +440,69 @@ Check for performance issues.
         assert_eq!(deserialized.mode, config.mode);
         assert_eq!(deserialized.focus_areas, config.focus_areas);
         assert_eq!(deserialized.body, config.body);
+    }
+
+    // --- try_load_file_only tests ---
+
+    #[test]
+    fn test_try_load_file_only_returns_some_for_valid_file() {
+        let dir = TempDir::new().unwrap();
+        let content = "\
+---
+specialist: SecuritySentinel
+mode: gating
+---
+
+## Role
+You are a security review specialist.
+
+## Focus Areas
+- SQL injection vulnerabilities
+- XSS attacks
+
+## Instructions
+Check everything carefully.
+
+## Output Format
+JSON.
+";
+        write_prompt_file(&dir, "security-sentinel", content);
+        let loader = make_loader(&dir);
+        let result = loader.try_load_file_only(&SpecialistType::SecuritySentinel);
+
+        assert!(result.is_some());
+        let config = result.unwrap();
+        assert_eq!(config.specialist_name, "Security Sentinel");
+        assert!(config.body.contains("security review specialist"));
+    }
+
+    #[test]
+    fn test_try_load_file_only_returns_none_for_missing_file() {
+        let dir = TempDir::new().unwrap();
+        let loader = make_loader(&dir);
+        let result = loader.try_load_file_only(&SpecialistType::SecuritySentinel);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_try_load_file_only_returns_none_for_malformed_file() {
+        let dir = TempDir::new().unwrap();
+        write_prompt_file(&dir, "security-sentinel", "not valid frontmatter at all");
+        let loader = make_loader(&dir);
+        let result = loader.try_load_file_only(&SpecialistType::SecuritySentinel);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_try_load_file_only_returns_none_for_empty_file() {
+        let dir = TempDir::new().unwrap();
+        write_prompt_file(&dir, "security-sentinel", "");
+        let loader = make_loader(&dir);
+        let result = loader.try_load_file_only(&SpecialistType::SecuritySentinel);
+
+        assert!(result.is_none());
     }
 
     // --- Path resolution test ---

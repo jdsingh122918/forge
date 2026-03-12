@@ -29,12 +29,12 @@
 //! ```
 
 use crate::review::{
-    ArbiterConfig, ArbiterExecutor, ArbiterInput, ArbiterResult, FindingSeverity,
+    ArbiterConfig, ArbiterExecutor, ArbiterInput, ArbiterResult, FindingSeverity, PromptLoader,
     ReviewAggregation, ReviewFinding, ReviewReport, ReviewSpecialist, ReviewVerdict,
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -64,6 +64,8 @@ pub struct DispatcherConfig {
     pub verbose: bool,
     /// Arbiter configuration for handling failures.
     pub arbiter: ArbiterConfig,
+    /// Optional forge directory for loading file-based review prompts.
+    pub forge_dir: Option<PathBuf>,
 }
 
 impl Default for DispatcherConfig {
@@ -76,6 +78,7 @@ impl Default for DispatcherConfig {
             skip_permissions: true,
             verbose: false,
             arbiter: ArbiterConfig::default(),
+            forge_dir: None,
         }
     }
 }
@@ -120,6 +123,12 @@ impl DispatcherConfig {
     /// Set the arbiter configuration.
     pub fn with_arbiter(mut self, arbiter: ArbiterConfig) -> Self {
         self.arbiter = arbiter;
+        self
+    }
+
+    /// Set the forge directory for file-based review prompts.
+    pub fn with_forge_dir(mut self, dir: PathBuf) -> Self {
+        self.forge_dir = Some(dir);
         self
     }
 }
@@ -449,7 +458,7 @@ impl ReviewDispatcher {
         }
 
         // Build the review prompt
-        let prompt = build_review_prompt(specialist, review_config);
+        let prompt = build_review_prompt(specialist, review_config, self.config.forge_dir.as_deref());
 
         // Run Claude with the review prompt
         let output = self.run_claude_review(&prompt).await?;
@@ -561,7 +570,25 @@ impl ReviewDispatcher {
 }
 
 /// Build the prompt for a review specialist.
-fn build_review_prompt(specialist: &ReviewSpecialist, config: &PhaseReviewConfig) -> String {
+///
+/// When `forge_dir` is provided and a valid prompt file exists at
+/// `{forge_dir}/autoresearch/prompts/{specialist}.md`, uses the file-based
+/// prompt body with dynamic context injection. Otherwise falls back to the
+/// hardcoded template.
+fn build_review_prompt(
+    specialist: &ReviewSpecialist,
+    config: &PhaseReviewConfig,
+    forge_dir: Option<&Path>,
+) -> String {
+    // Try file-based prompt first
+    if let Some(forge_dir) = forge_dir {
+        let loader = PromptLoader::new(forge_dir.to_path_buf());
+        if let Some(prompt_config) = loader.try_load_file_only(&specialist.specialist_type) {
+            return build_prompt_from_config(&prompt_config, specialist, config);
+        }
+    }
+
+    // Fall back to hardcoded template
     let focus_areas = specialist.focus_areas();
     let focus_list = focus_areas
         .iter()
@@ -663,6 +690,69 @@ Begin your review now.
         gating_note = gating_note,
         focus_list = focus_list,
         files_section = files_section,
+    )
+}
+
+/// Build a review prompt from a file-based [`PromptConfig`].
+///
+/// Wraps the file's body with the dispatcher's dynamic context sections
+/// (phase, files, gating note, display name) while preserving the file's
+/// custom prompt content.
+fn build_prompt_from_config(
+    prompt_config: &crate::review::PromptConfig,
+    specialist: &ReviewSpecialist,
+    config: &PhaseReviewConfig,
+) -> String {
+    let display_name = specialist.display_name();
+
+    let files_section = if config.files_changed.is_empty() {
+        "No specific files listed - review the entire phase output.".to_string()
+    } else {
+        format!(
+            "Focus on these changed files:\n{}",
+            config
+                .files_changed
+                .iter()
+                .map(|f| format!("- {}", f))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+
+    let context_section = config
+        .additional_context
+        .as_ref()
+        .map(|ctx| format!("\n## Additional Context\n{}\n", ctx))
+        .unwrap_or_default();
+
+    let gating_note = if specialist.is_gating() {
+        "**This is a GATING review.** If you find critical issues (error severity), the phase cannot proceed until they are resolved."
+    } else {
+        "This is an advisory review. Issues will be reported but won't block phase progression."
+    };
+
+    format!(
+        r#"# {display_name} Review
+
+## Review Context
+- Phase: {phase} - {phase_name}
+- Reviewer Role: {display_name}
+{context_section}
+{gating_note}
+
+## Files to Review
+
+{files_section}
+
+{body}
+"#,
+        display_name = display_name,
+        phase = config.phase,
+        phase_name = config.phase_name,
+        context_section = context_section,
+        gating_note = gating_note,
+        files_section = files_section,
+        body = prompt_config.body.trim(),
     )
 }
 
@@ -1040,7 +1130,7 @@ mod tests {
         let config = PhaseReviewConfig::new("05", "OAuth Integration")
             .with_files_changed(vec!["src/auth.rs".to_string()]);
 
-        let prompt = build_review_prompt(&specialist, &config);
+        let prompt = build_review_prompt(&specialist, &config, None);
 
         assert!(prompt.contains("Security Sentinel"));
         assert!(prompt.contains("Phase: 05"));
@@ -1055,7 +1145,7 @@ mod tests {
         let specialist = ReviewSpecialist::advisory(SpecialistType::PerformanceOracle);
         let config = PhaseReviewConfig::new("05", "OAuth Integration");
 
-        let prompt = build_review_prompt(&specialist, &config);
+        let prompt = build_review_prompt(&specialist, &config, None);
 
         assert!(prompt.contains("Performance Oracle"));
         assert!(prompt.contains("advisory review"));
@@ -1311,6 +1401,171 @@ I found {"verdict": "warn", "summary": "Issues", "findings": []} in the code.
         assert_eq!(
             determine_verdict(&findings, ReviewVerdict::Pass, true),
             ReviewVerdict::Pass
+        );
+    }
+
+    // =========================================
+    // Dispatcher-PromptLoader integration tests
+    // =========================================
+
+    #[test]
+    fn test_build_review_prompt_with_no_forge_dir_unchanged() {
+        let specialist = ReviewSpecialist::gating(SpecialistType::SecuritySentinel);
+        let config = PhaseReviewConfig::new("05", "OAuth Integration")
+            .with_files_changed(vec!["src/auth.rs".to_string()]);
+
+        // Call with None -- should behave identically to the old version
+        let prompt = build_review_prompt(&specialist, &config, None);
+
+        assert!(prompt.contains("Security Sentinel"));
+        assert!(prompt.contains("Phase: 05"));
+        assert!(prompt.contains("OAuth Integration"));
+        assert!(prompt.contains("src/auth.rs"));
+        assert!(prompt.contains("GATING review"));
+        assert!(prompt.contains("injection")); // Security focus area
+        assert!(prompt.contains("Review Instructions"));
+        assert!(prompt.contains("Output Format"));
+    }
+
+    #[test]
+    fn test_build_review_prompt_with_forge_dir_but_no_file_falls_back() {
+        let specialist = ReviewSpecialist::gating(SpecialistType::SecuritySentinel);
+        let config = PhaseReviewConfig::new("05", "OAuth Integration")
+            .with_files_changed(vec!["src/auth.rs".to_string()]);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        // Provide a forge_dir that has no prompt files
+        let prompt = build_review_prompt(&specialist, &config, Some(temp_dir.path()));
+
+        // Should still produce valid output with hardcoded defaults
+        assert!(prompt.contains("Security Sentinel"));
+        assert!(prompt.contains("Phase: 05"));
+        assert!(prompt.contains("injection")); // Default focus area
+        assert!(prompt.contains("GATING review"));
+    }
+
+    #[test]
+    fn test_build_review_prompt_uses_file_prompt_when_available() {
+        let specialist = ReviewSpecialist::gating(SpecialistType::SecuritySentinel);
+        let config = PhaseReviewConfig::new("05", "OAuth Integration")
+            .with_files_changed(vec!["src/auth.rs".to_string()]);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let prompts_dir = temp_dir.path().join("autoresearch").join("prompts");
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+
+        // Write a custom prompt file
+        let custom_prompt = r#"---
+specialist: SecuritySentinel
+mode: gating
+---
+
+## Role
+You are a CUSTOM security specialist with LASER FOCUS on API security.
+
+## Focus Areas
+- OAuth token leakage
+- API key exposure in logs
+- CORS misconfiguration
+
+## Instructions
+Review the code with emphasis on API boundary security.
+Check all HTTP handlers and middleware.
+
+## Output Format
+Return JSON with verdict, summary, findings array.
+"#;
+        std::fs::write(prompts_dir.join("security-sentinel.md"), custom_prompt).unwrap();
+
+        let prompt = build_review_prompt(&specialist, &config, Some(temp_dir.path()));
+
+        // Should use the CUSTOM content from the file
+        assert!(prompt.contains("CUSTOM security specialist"));
+        assert!(prompt.contains("LASER FOCUS"));
+        assert!(prompt.contains("OAuth token leakage"));
+        assert!(prompt.contains("CORS misconfiguration"));
+
+        // Should still inject the dynamic phase/files context
+        assert!(prompt.contains("Phase: 05"));
+        assert!(prompt.contains("OAuth Integration"));
+        assert!(prompt.contains("src/auth.rs"));
+        assert!(prompt.contains("GATING review")); // Gating note still injected by dispatcher
+    }
+
+    #[test]
+    fn test_build_review_prompt_advisory_file_override() {
+        let specialist = ReviewSpecialist::advisory(SpecialistType::PerformanceOracle);
+        let config = PhaseReviewConfig::new("03", "Database Layer");
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let prompts_dir = temp_dir.path().join("autoresearch").join("prompts");
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+
+        let custom_prompt = r#"---
+specialist: PerformanceOracle
+mode: advisory
+---
+
+## Role
+You are a TURBO performance specialist.
+
+## Focus Areas
+- Database connection pooling
+- Query plan analysis
+
+## Instructions
+Focus on database performance.
+
+## Output Format
+JSON.
+"#;
+        std::fs::write(prompts_dir.join("performance-oracle.md"), custom_prompt).unwrap();
+
+        let prompt = build_review_prompt(&specialist, &config, Some(temp_dir.path()));
+
+        assert!(prompt.contains("TURBO performance specialist"));
+        assert!(prompt.contains("Database connection pooling"));
+        assert!(prompt.contains("advisory review")); // Advisory note, not gating
+        assert!(prompt.contains("Phase: 03"));
+    }
+
+    #[test]
+    fn test_build_review_prompt_malformed_file_falls_back() {
+        let specialist = ReviewSpecialist::gating(SpecialistType::SecuritySentinel);
+        let config = PhaseReviewConfig::new("05", "OAuth Integration");
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let prompts_dir = temp_dir.path().join("autoresearch").join("prompts");
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+
+        // Write a malformed file
+        std::fs::write(
+            prompts_dir.join("security-sentinel.md"),
+            "this is not valid frontmatter or prompt content",
+        )
+        .unwrap();
+
+        let prompt = build_review_prompt(&specialist, &config, Some(temp_dir.path()));
+
+        // Should fall back to hardcoded defaults
+        assert!(prompt.contains("Security Sentinel"));
+        assert!(prompt.contains("injection")); // Default focus area
+        assert!(prompt.contains("Review Instructions")); // Hardcoded template section
+    }
+
+    #[test]
+    fn test_dispatcher_config_has_forge_dir_field() {
+        // Default config has no forge_dir
+        let config = DispatcherConfig::default();
+        assert!(config.forge_dir.is_none());
+
+        // Can set forge_dir
+        let config =
+            DispatcherConfig::default().with_forge_dir(PathBuf::from("/tmp/test/.forge"));
+        assert_eq!(
+            config.forge_dir,
+            Some(PathBuf::from("/tmp/test/.forge"))
         );
     }
 }
