@@ -1,0 +1,28 @@
+{
+    "must_find": [
+        {
+            "id": "cmdi-create-branch",
+            "severity": "critical",
+            "description": "Command injection: branch_name is interpolated into sh -c command string without sanitization; use Command::arg() instead",
+            "location": "code.rs:11-12"
+        },
+        {
+            "id": "cmdi-commit-message",
+            "severity": "critical",
+            "description": "Command injection: commit message is interpolated into sh -c command string without sanitization; use Command::arg() instead",
+            "location": "code.rs:27-28"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-fetch-remote",
+            "description": "fetch_remote correctly uses Command::new('git').arg() with separate arguments, avoiding shell interpolation",
+            "location": "code.rs:40-49"
+        },
+        {
+            "id": "fp-current-branch",
+            "description": "current_branch uses Command::arg() safely and takes no user-controlled input for the git arguments",
+            "location": "code.rs:52-62"
+        }
+    ]
+}

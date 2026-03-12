@@ -1,0 +1,38 @@
+{
+    "must_find": [
+        {
+            "id": "vuln-aws-lc-rs",
+            "severity": "high",
+            "description": "aws-lc-rs 1.6.1 has CVE-2024-55887 (out-of-bounds memory access); upgrade to patched version",
+            "location": "code.rs:4"
+        },
+        {
+            "id": "vuln-aws-lc-sys",
+            "severity": "high",
+            "description": "aws-lc-sys 0.24.1 has CVE-2024-55887 (transitive vulnerability from aws-lc-rs); upgrade to patched version",
+            "location": "code.rs:5"
+        },
+        {
+            "id": "vuln-rollup",
+            "severity": "high",
+            "description": "rollup 3.29.4 has CVE-2024-47068 (DOM clobbering XSS in bundled output); upgrade to patched version",
+            "location": "code.rs:8"
+        },
+        {
+            "id": "vuln-minimatch",
+            "severity": "high",
+            "description": "minimatch 3.0.4 has CVE-2022-3517 (ReDoS via crafted glob patterns); upgrade to >= 3.0.5",
+            "location": "code.rs:9"
+        }
+    ],
+    "must_not_flag": [
+        {
+            "id": "fp-tls-config",
+            "description": "The TLS configuration logic itself is correct; the issue is only the vulnerable dependency version"
+        },
+        {
+            "id": "fp-command-execution",
+            "description": "The npx rollup invocation uses arg() properly without shell interpolation; the issue is the rollup version, not command injection"
+        }
+    ]
+}
