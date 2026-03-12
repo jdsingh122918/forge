@@ -111,7 +111,9 @@ impl BenchmarkRunner {
             verdict: String::new(),
             findings: vec![],
             raw_output: raw_output.to_string(),
-            error: Some(format!("Failed to parse output as JSON for case '{case_name}'")),
+            error: Some(format!(
+                "Failed to parse output as JSON for case '{case_name}'"
+            )),
         }
     }
 
@@ -195,10 +197,7 @@ impl BenchmarkRunner {
             .output()
             .await
             .with_context(|| {
-                format!(
-                    "Failed to run {} for case '{}'",
-                    self.claude_cmd, case.name
-                )
+                format!("Failed to run {} for case '{}'", self.claude_cmd, case.name)
             })?;
 
         let raw_output = String::from_utf8_lossy(&output.stdout).to_string();
@@ -232,7 +231,13 @@ mod tests {
         assert_eq!(cmd.program, "claude");
         assert_eq!(
             cmd.args,
-            vec!["-p", "Review this code", "--output-format", "json", "--print"]
+            vec![
+                "-p",
+                "Review this code",
+                "--output-format",
+                "json",
+                "--print"
+            ]
         );
     }
 
@@ -325,7 +330,10 @@ mod tests {
         assert_eq!(result.findings[0].file, "code.rs");
         assert_eq!(result.findings[0].line, Some(42));
         assert_eq!(result.findings[0].issue, "TOCTOU race condition");
-        assert_eq!(result.findings[0].suggestion, "Move query inside transaction");
+        assert_eq!(
+            result.findings[0].suggestion,
+            "Move query inside transaction"
+        );
     }
 
     #[test]
@@ -431,7 +439,10 @@ That's my review."#;
 
         let result = runner.parse_output("ws-case", "   \n\t  ");
 
-        assert!(result.error.is_some(), "Whitespace-only should be treated as empty");
+        assert!(
+            result.error.is_some(),
+            "Whitespace-only should be treated as empty"
+        );
     }
 
     // --- parse_output: missing fields ---

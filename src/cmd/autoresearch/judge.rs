@@ -430,7 +430,10 @@ mod tests {
             response: valid_judge_json(),
         });
         let ids = vec!["f1".to_string()];
-        let result = judge.evaluate("code", "expected", "findings", &ids).await.unwrap();
+        let result = judge
+            .evaluate("code", "expected", "findings", &ids)
+            .await
+            .unwrap();
 
         assert_eq!(result.classifications.len(), 1);
         assert_eq!(
@@ -448,7 +451,10 @@ mod tests {
         };
         let judge = Judge::with_executor(executor);
         let ids = vec!["f1".to_string()];
-        let result = judge.evaluate("code", "expected", "findings", &ids).await.unwrap();
+        let result = judge
+            .evaluate("code", "expected", "findings", &ids)
+            .await
+            .unwrap();
 
         // Should succeed on second attempt
         assert_eq!(result.classifications.len(), 1);
@@ -480,7 +486,10 @@ mod tests {
             call_count: count_clone,
         });
         let ids = vec!["f1".to_string()];
-        let result = judge.evaluate("code", "expected", "findings", &ids).await.unwrap();
+        let result = judge
+            .evaluate("code", "expected", "findings", &ids)
+            .await
+            .unwrap();
 
         // Should be fallback result
         assert_eq!(result.classifications.len(), 1);
@@ -498,7 +507,10 @@ mod tests {
     async fn test_judge_evaluate_fallback_after_two_cli_failures() {
         let judge = Judge::with_executor(FailingExecutor);
         let ids = vec!["f1".to_string(), "f2".to_string()];
-        let result = judge.evaluate("code", "expected", "findings", &ids).await.unwrap();
+        let result = judge
+            .evaluate("code", "expected", "findings", &ids)
+            .await
+            .unwrap();
 
         // Should be fallback after 2 CLI failures
         assert_eq!(result.classifications.len(), 2);

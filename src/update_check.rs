@@ -40,7 +40,8 @@ pub struct UpdateCache {
 
 /// Returns the global forge config directory (~/.forge/).
 pub fn global_forge_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
     Ok(home.join(".forge"))
 }
 
@@ -115,20 +116,30 @@ pub fn is_newer(current: &str, latest: &str) -> bool {
 /// Build-time target triple for release asset matching.
 pub const TARGET: &str = {
     #[cfg(all(target_arch = "x86_64", target_os = "macos"))]
-    { "x86_64-apple-darwin" }
+    {
+        "x86_64-apple-darwin"
+    }
     #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-    { "aarch64-apple-darwin" }
+    {
+        "aarch64-apple-darwin"
+    }
     #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-    { "x86_64-unknown-linux-gnu" }
+    {
+        "x86_64-unknown-linux-gnu"
+    }
     #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-    { "aarch64-unknown-linux-gnu" }
+    {
+        "aarch64-unknown-linux-gnu"
+    }
     #[cfg(not(any(
         all(target_arch = "x86_64", target_os = "macos"),
         all(target_arch = "aarch64", target_os = "macos"),
         all(target_arch = "x86_64", target_os = "linux"),
         all(target_arch = "aarch64", target_os = "linux"),
     )))]
-    { "unknown" }
+    {
+        "unknown"
+    }
 };
 
 /// Current binary version from Cargo.toml.

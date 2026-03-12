@@ -458,7 +458,8 @@ impl ReviewDispatcher {
         }
 
         // Build the review prompt
-        let prompt = build_review_prompt(specialist, review_config, self.config.forge_dir.as_deref());
+        let prompt =
+            build_review_prompt(specialist, review_config, self.config.forge_dir.as_deref());
 
         // Run Claude with the review prompt
         let output = self.run_claude_review(&prompt).await?;
@@ -1561,11 +1562,7 @@ JSON.
         assert!(config.forge_dir.is_none());
 
         // Can set forge_dir
-        let config =
-            DispatcherConfig::default().with_forge_dir(PathBuf::from("/tmp/test/.forge"));
-        assert_eq!(
-            config.forge_dir,
-            Some(PathBuf::from("/tmp/test/.forge"))
-        );
+        let config = DispatcherConfig::default().with_forge_dir(PathBuf::from("/tmp/test/.forge"));
+        assert_eq!(config.forge_dir, Some(PathBuf::from("/tmp/test/.forge")));
     }
 }

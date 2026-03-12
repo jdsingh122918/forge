@@ -55,9 +55,8 @@ const MUST_FIND_OVERLAP_THRESHOLD: f64 = 0.50;
 const MUST_NOT_FLAG_OVERLAP_THRESHOLD: f64 = 0.60;
 
 const STOP_WORDS: &[&str] = &[
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "in", "on", "at", "to", "for", "of", "with", "and", "or", "but",
-    "not", "this", "that", "it", "its",
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "in", "on", "at", "to",
+    "for", "of", "with", "and", "or", "but", "not", "this", "that", "it", "its",
 ];
 
 /// Parse a line range string like `"42-45"` or `"42"` into start/end line numbers.
@@ -201,10 +200,7 @@ impl FindingMatcher {
     }
 
     /// Count how many findings match at least one must_not_flag entry.
-    pub fn count_must_not_flag_hits(
-        findings: &[Finding],
-        must_not_flag: &[MustNotFlag],
-    ) -> usize {
+    pub fn count_must_not_flag_hits(findings: &[Finding], must_not_flag: &[MustNotFlag]) -> usize {
         findings
             .iter()
             .filter(|f| {
@@ -217,10 +213,7 @@ impl FindingMatcher {
 
     /// Identify novel findings: those that match neither any must_find nor any
     /// must_not_flag entry. Returns a set of finding indices.
-    pub fn identify_novel_findings(
-        findings: &[Finding],
-        expected: &Expected,
-    ) -> HashSet<usize> {
+    pub fn identify_novel_findings(findings: &[Finding], expected: &Expected) -> HashSet<usize> {
         findings
             .iter()
             .enumerate()
@@ -275,8 +268,7 @@ impl Scorer {
             matched as f64 / total_must_finds as f64
         };
 
-        let precision =
-            Self::compute_precision_with_judge(findings, expected, judge_result);
+        let precision = Self::compute_precision_with_judge(findings, expected, judge_result);
 
         let actionability = match judge_result {
             Some(jr) if !jr.actionability_scores.is_empty() => {
@@ -414,11 +406,7 @@ mod tests {
         );
         // Shared keywords: "race", "condition", "position", "query", "transaction"
         // Expected has ~6 non-stop tokens, finding shares ~5 => 5/6 ≈ 0.83
-        assert!(
-            overlap > 0.50,
-            "Should have >50% overlap, got {}",
-            overlap
-        );
+        assert!(overlap > 0.50, "Should have >50% overlap, got {}", overlap);
     }
 
     #[test]
@@ -886,10 +874,26 @@ mod tests {
             composite: 0.82,
         };
         let display = format!("{}", score);
-        assert!(display.contains("85.0%"), "Should show recall percentage: {}", display);
-        assert!(display.contains("90.0%"), "Should show precision percentage: {}", display);
-        assert!(display.contains("70.0%"), "Should show actionability percentage: {}", display);
-        assert!(display.contains("82.0%"), "Should show composite percentage: {}", display);
+        assert!(
+            display.contains("85.0%"),
+            "Should show recall percentage: {}",
+            display
+        );
+        assert!(
+            display.contains("90.0%"),
+            "Should show precision percentage: {}",
+            display
+        );
+        assert!(
+            display.contains("70.0%"),
+            "Should show actionability percentage: {}",
+            display
+        );
+        assert!(
+            display.contains("82.0%"),
+            "Should show composite percentage: {}",
+            display
+        );
     }
 
     // --- FindingMatcher helper tests ---
@@ -1012,7 +1016,10 @@ mod tests {
         }];
 
         let novel = FindingMatcher::identify_novel_findings(&findings, &expected);
-        assert!(novel.is_empty(), "All findings matched must_find, none should be novel");
+        assert!(
+            novel.is_empty(),
+            "All findings matched must_find, none should be novel"
+        );
     }
 
     #[test]
@@ -1052,9 +1059,7 @@ mod tests {
 
     // --- Judge-scorer integration tests ---
 
-    use super::super::judge::{
-        ActionabilityScore, Classification, ClassificationVerdict,
-    };
+    use super::super::judge::{ActionabilityScore, Classification, ClassificationVerdict};
 
     /// Helper to build a JudgeResult for tests.
     fn make_judge_result(

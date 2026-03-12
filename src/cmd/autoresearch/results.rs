@@ -11,7 +11,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// TSV header line for results files.
 const TSV_HEADER: &str =
@@ -269,29 +269,58 @@ mod tests {
 
     #[test]
     fn test_status_from_str_valid() {
-        assert_eq!(ExperimentStatus::from_str("keep").unwrap(), ExperimentStatus::Keep);
-        assert_eq!(ExperimentStatus::from_str("discard").unwrap(), ExperimentStatus::Discard);
-        assert_eq!(ExperimentStatus::from_str("error").unwrap(), ExperimentStatus::Error);
+        assert_eq!(
+            ExperimentStatus::from_str("keep").unwrap(),
+            ExperimentStatus::Keep
+        );
+        assert_eq!(
+            ExperimentStatus::from_str("discard").unwrap(),
+            ExperimentStatus::Discard
+        );
+        assert_eq!(
+            ExperimentStatus::from_str("error").unwrap(),
+            ExperimentStatus::Error
+        );
     }
 
     #[test]
     fn test_status_from_str_trims_whitespace() {
-        assert_eq!(ExperimentStatus::from_str("  keep  ").unwrap(), ExperimentStatus::Keep);
-        assert_eq!(ExperimentStatus::from_str("\tdiscard\n").unwrap(), ExperimentStatus::Discard);
+        assert_eq!(
+            ExperimentStatus::from_str("  keep  ").unwrap(),
+            ExperimentStatus::Keep
+        );
+        assert_eq!(
+            ExperimentStatus::from_str("\tdiscard\n").unwrap(),
+            ExperimentStatus::Discard
+        );
     }
 
     #[test]
     fn test_status_from_str_case_insensitive() {
-        assert_eq!(ExperimentStatus::from_str("KEEP").unwrap(), ExperimentStatus::Keep);
-        assert_eq!(ExperimentStatus::from_str("Discard").unwrap(), ExperimentStatus::Discard);
-        assert_eq!(ExperimentStatus::from_str("ERROR").unwrap(), ExperimentStatus::Error);
+        assert_eq!(
+            ExperimentStatus::from_str("KEEP").unwrap(),
+            ExperimentStatus::Keep
+        );
+        assert_eq!(
+            ExperimentStatus::from_str("Discard").unwrap(),
+            ExperimentStatus::Discard
+        );
+        assert_eq!(
+            ExperimentStatus::from_str("ERROR").unwrap(),
+            ExperimentStatus::Error
+        );
     }
 
     #[test]
     fn test_status_from_str_invalid() {
         let result = ExperimentStatus::from_str("unknown");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown experiment status"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unknown experiment status")
+        );
     }
 
     #[test]
@@ -305,7 +334,13 @@ mod tests {
 
     #[test]
     fn test_to_tsv_line_format() {
-        let row = sample_row("abc1234", 0.75, ExperimentStatus::Keep, "security", "baseline run");
+        let row = sample_row(
+            "abc1234",
+            0.75,
+            ExperimentStatus::Keep,
+            "security",
+            "baseline run",
+        );
         let line = row.to_tsv_line();
         assert_eq!(
             line,
@@ -376,7 +411,13 @@ mod tests {
 
     #[test]
     fn test_roundtrip_to_from_tsv() {
-        let original = sample_row("cafe0123", 0.8765, ExperimentStatus::Keep, "architecture", "roundtrip test");
+        let original = sample_row(
+            "cafe0123",
+            0.8765,
+            ExperimentStatus::Keep,
+            "architecture",
+            "roundtrip test",
+        );
         let line = original.to_tsv_line();
         let parsed = ResultRow::from_tsv_line(&line).unwrap();
 
@@ -393,7 +434,11 @@ mod tests {
 
     #[test]
     fn test_roundtrip_all_statuses() {
-        for status in [ExperimentStatus::Keep, ExperimentStatus::Discard, ExperimentStatus::Error] {
+        for status in [
+            ExperimentStatus::Keep,
+            ExperimentStatus::Discard,
+            ExperimentStatus::Error,
+        ] {
             let row = sample_row("aaa1111", 0.5, status.clone(), "simplicity", "status test");
             let line = row.to_tsv_line();
             let parsed = ResultRow::from_tsv_line(&line).unwrap();
@@ -418,10 +463,22 @@ mod tests {
         let path = dir.path().join("results.tsv");
 
         let mut log = ResultsLog::open(&path).unwrap();
-        log.append(sample_row("aaa1111", 0.8, ExperimentStatus::Keep, "security", "first"))
-            .unwrap();
-        log.append(sample_row("bbb2222", 0.6, ExperimentStatus::Discard, "security", "second"))
-            .unwrap();
+        log.append(sample_row(
+            "aaa1111",
+            0.8,
+            ExperimentStatus::Keep,
+            "security",
+            "first",
+        ))
+        .unwrap();
+        log.append(sample_row(
+            "bbb2222",
+            0.6,
+            ExperimentStatus::Discard,
+            "security",
+            "second",
+        ))
+        .unwrap();
 
         assert_eq!(log.total_experiments(), 2);
         assert_eq!(log.rows()[0].commit, "aaa1111");
@@ -436,10 +493,22 @@ mod tests {
         // First session: write rows
         {
             let mut log = ResultsLog::open(&path).unwrap();
-            log.append(sample_row("aaa1111", 0.8, ExperimentStatus::Keep, "security", "first"))
-                .unwrap();
-            log.append(sample_row("bbb2222", 0.6, ExperimentStatus::Discard, "performance", "second"))
-                .unwrap();
+            log.append(sample_row(
+                "aaa1111",
+                0.8,
+                ExperimentStatus::Keep,
+                "security",
+                "first",
+            ))
+            .unwrap();
+            log.append(sample_row(
+                "bbb2222",
+                0.6,
+                ExperimentStatus::Discard,
+                "performance",
+                "second",
+            ))
+            .unwrap();
         }
 
         // Second session: reopen and verify
@@ -463,10 +532,22 @@ mod tests {
             .unwrap();
         log.append(sample_row("b", 0.6, ExperimentStatus::Keep, "security", ""))
             .unwrap();
-        log.append(sample_row("c", 0.5, ExperimentStatus::Discard, "security", ""))
-            .unwrap();
-        log.append(sample_row("d", 0.0, ExperimentStatus::Error, "security", ""))
-            .unwrap();
+        log.append(sample_row(
+            "c",
+            0.5,
+            ExperimentStatus::Discard,
+            "security",
+            "",
+        ))
+        .unwrap();
+        log.append(sample_row(
+            "d",
+            0.0,
+            ExperimentStatus::Error,
+            "security",
+            "",
+        ))
+        .unwrap();
 
         assert_eq!(log.count_by_status(&ExperimentStatus::Keep), 2);
         assert_eq!(log.count_by_status(&ExperimentStatus::Discard), 1);
@@ -481,12 +562,24 @@ mod tests {
         let mut log = ResultsLog::open(&path).unwrap();
         log.append(sample_row("a", 0.7, ExperimentStatus::Keep, "security", ""))
             .unwrap();
-        log.append(sample_row("b", 0.9, ExperimentStatus::Discard, "security", "high but discarded"))
-            .unwrap();
+        log.append(sample_row(
+            "b",
+            0.9,
+            ExperimentStatus::Discard,
+            "security",
+            "high but discarded",
+        ))
+        .unwrap();
         log.append(sample_row("c", 0.8, ExperimentStatus::Keep, "security", ""))
             .unwrap();
-        log.append(sample_row("d", 0.6, ExperimentStatus::Keep, "performance", ""))
-            .unwrap();
+        log.append(sample_row(
+            "d",
+            0.6,
+            ExperimentStatus::Keep,
+            "performance",
+            "",
+        ))
+        .unwrap();
 
         // Best for security should be 0.8 (ignores discarded 0.9)
         let best = log.best_score_for("security").unwrap();
@@ -536,10 +629,22 @@ mod tests {
         let mut log = ResultsLog::open(&path).unwrap();
         log.append(sample_row("a", 0.8, ExperimentStatus::Keep, "security", ""))
             .unwrap();
-        log.append(sample_row("b", 0.5, ExperimentStatus::Discard, "security", ""))
-            .unwrap();
-        log.append(sample_row("c", 0.0, ExperimentStatus::Error, "security", ""))
-            .unwrap();
+        log.append(sample_row(
+            "b",
+            0.5,
+            ExperimentStatus::Discard,
+            "security",
+            "",
+        ))
+        .unwrap();
+        log.append(sample_row(
+            "c",
+            0.0,
+            ExperimentStatus::Error,
+            "security",
+            "",
+        ))
+        .unwrap();
 
         let summary = log.history_summary();
         assert_eq!(summary, "Experiments: 3 total (1 keep, 1 discard, 1 error)");
@@ -551,8 +656,14 @@ mod tests {
         let path = dir.path().join("results.tsv");
 
         let mut log = ResultsLog::open(&path).unwrap();
-        log.append(sample_row("abc", 0.75, ExperimentStatus::Keep, "security", "flush test"))
-            .unwrap();
+        log.append(sample_row(
+            "abc",
+            0.75,
+            ExperimentStatus::Keep,
+            "security",
+            "flush test",
+        ))
+        .unwrap();
 
         // Read raw file contents to verify it was written
         let contents = std::fs::read_to_string(&path).unwrap();

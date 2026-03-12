@@ -28,7 +28,9 @@ pub async fn run_orchestrator(
     start_phase: Option<String>,
 ) -> Result<()> {
     use chrono::Utc;
-    use forge::audit::{AuditLogger, FileChangeSummary, IterationAudit, PhaseAudit, PhaseOutcome, RunConfig};
+    use forge::audit::{
+        AuditLogger, FileChangeSummary, IterationAudit, PhaseAudit, PhaseOutcome, RunConfig,
+    };
     use forge::compaction::{
         CompactionManager, DEFAULT_MODEL_WINDOW_CHARS, extract_output_summary,
     };

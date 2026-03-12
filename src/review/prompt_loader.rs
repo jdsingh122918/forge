@@ -210,7 +210,9 @@ fn parse_frontmatter(content: &str) -> Result<(PromptFrontmatter, String), Strin
 
     let yaml_str = &after_first[..end_idx];
     let body_start = end_idx + 4; // skip \n---
-    let body = after_first[body_start..].trim_start_matches(['\r', '\n']).to_string();
+    let body = after_first[body_start..]
+        .trim_start_matches(['\r', '\n'])
+        .to_string();
 
     let frontmatter: PromptFrontmatter =
         serde_yaml::from_str(yaml_str).map_err(|e| format!("YAML parse error: {e}"))?;
@@ -318,10 +320,12 @@ mod tests {
         assert_eq!(config.specialist_name, "Simplicity Reviewer");
         assert_eq!(config.mode, PromptMode::Advisory);
         assert!(!config.focus_areas.is_empty());
-        assert!(config
-            .focus_areas
-            .iter()
-            .any(|a| a.contains("Over-engineering")));
+        assert!(
+            config
+                .focus_areas
+                .iter()
+                .any(|a| a.contains("Over-engineering"))
+        );
         assert!(config.body.contains("Simplicity Reviewer"));
     }
 
@@ -522,8 +526,7 @@ JSON.
             PathBuf::from("/project/.forge/autoresearch/prompts/performance-oracle.md")
         );
 
-        let path =
-            loader.prompt_path(&SpecialistType::Custom("Code Quality".to_string()));
+        let path = loader.prompt_path(&SpecialistType::Custom("Code Quality".to_string()));
         assert_eq!(
             path,
             PathBuf::from("/project/.forge/autoresearch/prompts/code-quality.md")
@@ -555,11 +558,7 @@ mod extraction_tests {
     fn assert_prompt_file_exists(specialist: &SpecialistType) {
         let l = loader();
         let path = l.prompt_path(specialist);
-        assert!(
-            path.exists(),
-            "Prompt file missing: {}",
-            path.display()
-        );
+        assert!(path.exists(), "Prompt file missing: {}", path.display());
     }
 
     /// Helper: load a prompt file's raw content and verify required markdown sections.
@@ -569,7 +568,12 @@ mod extraction_tests {
         let content = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
 
-        let required = ["## Role", "## Focus Areas", "## Instructions", "## Output Format"];
+        let required = [
+            "## Role",
+            "## Focus Areas",
+            "## Instructions",
+            "## Output Format",
+        ];
         for section in &required {
             assert!(
                 content.contains(section),
@@ -600,12 +604,14 @@ mod extraction_tests {
             specialist.agent_name()
         );
         assert_eq!(
-            config.mode, expected_mode,
+            config.mode,
+            expected_mode,
             "mode mismatch for {}",
             specialist.agent_name()
         );
         assert_eq!(
-            config.focus_areas, expected_focus,
+            config.focus_areas,
+            expected_focus,
             "focus_areas mismatch for {}",
             specialist.agent_name()
         );

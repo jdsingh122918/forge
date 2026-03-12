@@ -237,7 +237,13 @@ mod tests {
     fn test_benchmark_case_load_success() {
         let tmp = tempdir().unwrap();
         let expected = sample_expected();
-        create_case_dir(tmp.path(), "toctou-race", "fn main() {}", "# Context", &expected);
+        create_case_dir(
+            tmp.path(),
+            "toctou-race",
+            "fn main() {}",
+            "# Context",
+            &expected,
+        );
 
         let case = BenchmarkCase::load(&tmp.path().join("toctou-race")).unwrap();
         assert_eq!(case.name, "toctou-race");
@@ -253,7 +259,11 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         // Only create context.md and expected.json, skip code.rs
         fs::write(dir.join("context.md"), "context").unwrap();
-        fs::write(dir.join("expected.json"), r#"{"must_find":[],"must_not_flag":[]}"#).unwrap();
+        fs::write(
+            dir.join("expected.json"),
+            r#"{"must_find":[],"must_not_flag":[]}"#,
+        )
+        .unwrap();
 
         let err = BenchmarkCase::load(&dir).unwrap_err();
         let msg = format!("{:#}", err);
@@ -400,14 +410,22 @@ mod tests {
 
             // Validate must_find entries have required fields
             for finding in &case.expected.must_find {
-                assert!(!finding.id.is_empty(), "finding id should not be empty in '{}'", case.name);
+                assert!(
+                    !finding.id.is_empty(),
+                    "finding id should not be empty in '{}'",
+                    case.name
+                );
                 assert!(
                     ["critical", "high", "medium"].contains(&finding.severity.as_str()),
                     "severity '{}' is not valid in '{}'",
                     finding.severity,
                     case.name
                 );
-                assert!(!finding.description.is_empty(), "finding description should not be empty in '{}'", case.name);
+                assert!(
+                    !finding.description.is_empty(),
+                    "finding description should not be empty in '{}'",
+                    case.name
+                );
                 assert!(
                     finding.location.starts_with("code.rs:"),
                     "location '{}' should start with 'code.rs:' in '{}'",
@@ -426,7 +444,11 @@ mod tests {
         let suite = BenchmarkSuite::load(&forge_dir, "architecture").unwrap();
 
         assert_eq!(suite.specialist, "architecture");
-        assert_eq!(suite.cases.len(), 5, "Expected 5 architecture benchmark cases");
+        assert_eq!(
+            suite.cases.len(),
+            5,
+            "Expected 5 architecture benchmark cases"
+        );
 
         let case_names: Vec<&str> = suite.cases.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
@@ -461,14 +483,22 @@ mod tests {
 
             // Validate must_find entries have required fields
             for finding in &case.expected.must_find {
-                assert!(!finding.id.is_empty(), "finding id should not be empty in '{}'", case.name);
+                assert!(
+                    !finding.id.is_empty(),
+                    "finding id should not be empty in '{}'",
+                    case.name
+                );
                 assert!(
                     ["critical", "high", "medium"].contains(&finding.severity.as_str()),
                     "severity '{}' is not valid in '{}'",
                     finding.severity,
                     case.name
                 );
-                assert!(!finding.description.is_empty(), "finding description should not be empty in '{}'", case.name);
+                assert!(
+                    !finding.description.is_empty(),
+                    "finding description should not be empty in '{}'",
+                    case.name
+                );
                 assert!(
                     finding.location.starts_with("code.rs:"),
                     "location '{}' should start with 'code.rs:' in '{}'",
@@ -487,7 +517,11 @@ mod tests {
         let suite = BenchmarkSuite::load(&forge_dir, "simplicity").unwrap();
 
         assert_eq!(suite.specialist, "simplicity");
-        assert_eq!(suite.cases.len(), 5, "Expected 5 simplicity benchmark cases");
+        assert_eq!(
+            suite.cases.len(),
+            5,
+            "Expected 5 simplicity benchmark cases"
+        );
 
         let case_names: Vec<&str> = suite.cases.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
@@ -522,14 +556,22 @@ mod tests {
 
             // Validate must_find entries have required fields
             for finding in &case.expected.must_find {
-                assert!(!finding.id.is_empty(), "finding id should not be empty in '{}'", case.name);
+                assert!(
+                    !finding.id.is_empty(),
+                    "finding id should not be empty in '{}'",
+                    case.name
+                );
                 assert!(
                     ["critical", "high", "medium", "low"].contains(&finding.severity.as_str()),
                     "severity '{}' is not valid in '{}'",
                     finding.severity,
                     case.name
                 );
-                assert!(!finding.description.is_empty(), "finding description should not be empty in '{}'", case.name);
+                assert!(
+                    !finding.description.is_empty(),
+                    "finding description should not be empty in '{}'",
+                    case.name
+                );
                 assert!(
                     finding.location.starts_with("code.rs:"),
                     "location '{}' should start with 'code.rs:' in '{}'",
@@ -548,7 +590,11 @@ mod tests {
         let suite = BenchmarkSuite::load(&forge_dir, "performance").unwrap();
 
         assert_eq!(suite.specialist, "performance");
-        assert_eq!(suite.cases.len(), 5, "Expected 5 performance benchmark cases");
+        assert_eq!(
+            suite.cases.len(),
+            5,
+            "Expected 5 performance benchmark cases"
+        );
 
         let case_names: Vec<&str> = suite.cases.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
@@ -583,14 +629,22 @@ mod tests {
 
             // Validate must_find entries have required fields
             for finding in &case.expected.must_find {
-                assert!(!finding.id.is_empty(), "finding id should not be empty in '{}'", case.name);
+                assert!(
+                    !finding.id.is_empty(),
+                    "finding id should not be empty in '{}'",
+                    case.name
+                );
                 assert!(
                     ["critical", "high", "medium"].contains(&finding.severity.as_str()),
                     "severity '{}' is not valid in '{}'",
                     finding.severity,
                     case.name
                 );
-                assert!(!finding.description.is_empty(), "finding description should not be empty in '{}'", case.name);
+                assert!(
+                    !finding.description.is_empty(),
+                    "finding description should not be empty in '{}'",
+                    case.name
+                );
                 assert!(
                     finding.location.starts_with("code.rs:"),
                     "location '{}' should start with 'code.rs:' in '{}'",

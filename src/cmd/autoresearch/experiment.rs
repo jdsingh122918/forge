@@ -125,13 +125,12 @@ pub async fn run_single_experiment(
 
     // Step 3: Write mutated prompt (skip in dry run)
     if !config.dry_run {
-        std::fs::write(&config.prompt_path, &proposal.new_prompt)
-            .with_context(|| {
-                format!(
-                    "Failed to write mutated prompt: {}",
-                    config.prompt_path.display()
-                )
-            })?;
+        std::fs::write(&config.prompt_path, &proposal.new_prompt).with_context(|| {
+            format!(
+                "Failed to write mutated prompt: {}",
+                config.prompt_path.display()
+            )
+        })?;
     }
 
     // Step 4: Placeholder commit SHA

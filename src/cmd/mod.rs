@@ -28,6 +28,7 @@ pub mod skills;
 pub mod swarm;
 pub mod update;
 
+pub use autoresearch::cmd_autoresearch;
 pub use compact::cmd_compact;
 pub use config::cmd_config;
 pub use factory::cmd_factory;
@@ -37,5 +38,4 @@ pub use project::{cmd_generate, cmd_implement, cmd_init, cmd_interview};
 pub use run::{run_orchestrator, run_single_phase};
 pub use skills::cmd_skills;
 pub use swarm::{cmd_swarm, cmd_swarm_abort, cmd_swarm_status};
-pub use autoresearch::cmd_autoresearch;
 pub use update::cmd_update;

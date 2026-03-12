@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 
 use super::budget::BudgetTracker;
 use super::experiment::{
-    run_single_experiment, BenchmarkExecutor, ExperimentConfig, ExperimentOutcome, PromptMutator,
+    BenchmarkExecutor, ExperimentConfig, ExperimentOutcome, PromptMutator, run_single_experiment,
 };
 use super::results::{ExperimentStatus, ResultRow, ResultsLog};
 
@@ -341,11 +341,9 @@ pub async fn run_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cmd::autoresearch::experiment::{
-        BenchmarkScores, JudgeVerdict, MutationProposal,
-    };
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use crate::cmd::autoresearch::experiment::{BenchmarkScores, JudgeVerdict, MutationProposal};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     // --- Mock implementations ---
 
@@ -521,7 +519,13 @@ mod tests {
     fn setup_test(
         specialists: &[&str],
         scores: Vec<f64>,
-    ) -> (LoopConfig, MockGit, ScriptedMutator, ScriptedExecutor, tempfile::TempDir) {
+    ) -> (
+        LoopConfig,
+        MockGit,
+        ScriptedMutator,
+        ScriptedExecutor,
+        tempfile::TempDir,
+    ) {
         let dir = tempfile::tempdir().expect("create tempdir");
         let prompts_dir = dir.path().join("prompts");
         std::fs::create_dir_all(&prompts_dir).expect("create prompts dir");
@@ -587,8 +591,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dry_run_returns_immediately_with_zero_experiments() {
-        let (mut config, git, mutator, executor, _dir) =
-            setup_test(&["security"], vec![0.8]);
+        let (mut config, git, mutator, executor, _dir) = setup_test(&["security"], vec![0.8]);
         config.dry_run = true;
 
         let summary = run_loop(&config, &git, &mutator, &executor)
@@ -611,8 +614,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_budget_exhausted_before_first_experiment() {
-        let (mut config, git, mutator, executor, _dir) =
-            setup_test(&["security"], vec![0.8]);
+        let (mut config, git, mutator, executor, _dir) = setup_test(&["security"], vec![0.8]);
         // Budget smaller than ESTIMATED_EXPERIMENT_COST → gate triggers immediately.
         config.budget_cap = 0.10;
 
@@ -647,8 +649,7 @@ mod tests {
         let git = MockGit::new();
         // Mutator + executor tokens combine to ~$1.05 per experiment.
         let mutator = ScriptedMutator::with_tokens(50_000, 25_000);
-        let executor = ScriptedExecutor::new(vec![0.8, 0.9])
-            .with_tokens((50_000, 25_000));
+        let executor = ScriptedExecutor::new(vec![0.8, 0.9]).with_tokens((50_000, 25_000));
 
         let summary = run_loop(&config, &git, &mutator, &executor)
             .await
@@ -687,10 +688,8 @@ mod tests {
         // Scores: keep, 2x discard, keep (resets counter), 3x discard → break.
         // Without reset, would break after 3 consecutive discards (4 experiments).
         // With reset: 7 experiments.
-        let (config, git, mutator, executor, _dir) = setup_test(
-            &["security"],
-            vec![0.5, 0.3, 0.2, 0.6, 0.3, 0.2, 0.1],
-        );
+        let (config, git, mutator, executor, _dir) =
+            setup_test(&["security"], vec![0.5, 0.3, 0.2, 0.6, 0.3, 0.2, 0.1]);
 
         let summary = run_loop(&config, &git, &mutator, &executor)
             .await
@@ -709,10 +708,8 @@ mod tests {
         // Scores: 0.5 (keep, baseline→0.5), 0.6 (keep, baseline→0.6),
         // 0.55 (discard since ≤0.6), 0.55, 0.55 → 3 discards → break.
         // If baseline stayed at 0.5: 0.55 > 0.5 → keep (wrong).
-        let (config, git, mutator, executor, _dir) = setup_test(
-            &["security"],
-            vec![0.5, 0.6, 0.55, 0.55, 0.55],
-        );
+        let (config, git, mutator, executor, _dir) =
+            setup_test(&["security"], vec![0.5, 0.6, 0.55, 0.55, 0.55]);
 
         let summary = run_loop(&config, &git, &mutator, &executor)
             .await
@@ -727,10 +724,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_missing_prompt_skips_specialist() {
-        let (config, git, mutator, executor, _dir) = setup_test(
-            &["security"],
-            vec![0.8],
-        );
+        let (config, git, mutator, executor, _dir) = setup_test(&["security"], vec![0.8]);
 
         // Add a specialist with no prompt file.
         let mut config = config;
@@ -764,10 +758,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_results_persisted_to_disk() {
-        let (config, git, mutator, executor, dir) = setup_test(
-            &["security"],
-            vec![0.8],
-        );
+        let (config, git, mutator, executor, dir) = setup_test(&["security"], vec![0.8]);
 
         run_loop(&config, &git, &mutator, &executor)
             .await
@@ -782,10 +773,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_budget_persisted_to_disk() {
-        let (config, git, mutator, executor, dir) = setup_test(
-            &["security"],
-            vec![0.8],
-        );
+        let (config, git, mutator, executor, dir) = setup_test(&["security"], vec![0.8]);
 
         run_loop(&config, &git, &mutator, &executor)
             .await
@@ -807,10 +795,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_git_branch_created_with_tag() {
-        let (config, git, mutator, executor, _dir) = setup_test(
-            &["security"],
-            vec![0.8],
-        );
+        let (config, git, mutator, executor, _dir) = setup_test(&["security"], vec![0.8]);
 
         run_loop(&config, &git, &mutator, &executor)
             .await
@@ -826,10 +811,8 @@ mod tests {
     #[tokio::test]
     async fn test_git_commits_on_keep_resets_on_discard() {
         // 1 keep + 3 discards = 1 commit, 3 resets.
-        let (config, git, mutator, executor, _dir) = setup_test(
-            &["security"],
-            vec![0.8, 0.3, 0.2, 0.1],
-        );
+        let (config, git, mutator, executor, _dir) =
+            setup_test(&["security"], vec![0.8, 0.3, 0.2, 0.1]);
 
         run_loop(&config, &git, &mutator, &executor)
             .await
@@ -861,11 +844,8 @@ mod tests {
         // Verify both specialists appear in results.
         let results_path = state_dir(dir.path()).join("results.tsv");
         let log = ResultsLog::open(&results_path).expect("open results");
-        let specialists_seen: Vec<&str> = log
-            .rows()
-            .iter()
-            .map(|r| r.specialist.as_str())
-            .collect();
+        let specialists_seen: Vec<&str> =
+            log.rows().iter().map(|r| r.specialist.as_str()).collect();
         assert!(
             specialists_seen.contains(&"security"),
             "security must appear in results"
@@ -917,8 +897,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_specialists_returns_completed() {
-        let (mut config, git, mutator, executor, _dir) =
-            setup_test(&[], vec![]);
+        let (mut config, git, mutator, executor, _dir) = setup_test(&[], vec![]);
         config.specialists = vec![];
 
         let summary = run_loop(&config, &git, &mutator, &executor)
@@ -933,8 +912,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resume_checks_out_existing_branch() {
-        let (mut config, git, mutator, executor, _dir) =
-            setup_test(&["security"], vec![0.8]);
+        let (mut config, git, mutator, executor, _dir) = setup_test(&["security"], vec![0.8]);
         config.resume = true;
 
         run_loop(&config, &git, &mutator, &executor)
@@ -977,10 +955,7 @@ mod tests {
         let results_path = state_dir(dir.path()).join("results.tsv");
         let log = ResultsLog::open(&results_path).expect("open results");
         assert_eq!(log.total_experiments(), summary.total_experiments);
-        assert_eq!(
-            log.count_by_status(&ExperimentStatus::Keep),
-            summary.keeps
-        );
+        assert_eq!(log.count_by_status(&ExperimentStatus::Keep), summary.keeps);
         assert_eq!(
             log.count_by_status(&ExperimentStatus::Discard),
             summary.discards

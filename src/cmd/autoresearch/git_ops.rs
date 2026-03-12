@@ -128,8 +128,7 @@ impl LoopGitOps for AutoresearchGitOps {
         })?;
 
         let repo = self.open_repo()?;
-        let oid = git2::Oid::from_str(&sha)
-            .with_context(|| format!("invalid SHA '{sha}'"))?;
+        let oid = git2::Oid::from_str(&sha).with_context(|| format!("invalid SHA '{sha}'"))?;
         let commit = repo
             .find_commit(oid)
             .with_context(|| format!("failed to find commit '{sha}'"))?;
@@ -450,11 +449,16 @@ mod tests {
     #[test]
     fn test_trait_create_branch_and_checkout() {
         let (ops, _dir) = setup_trait_ops();
-        ops.create_branch("trait-branch").expect("create_branch via trait");
+        ops.create_branch("trait-branch")
+            .expect("create_branch via trait");
 
         // HEAD should now be on the new branch — verify via head_sha consistency.
         let sha = ops.head_sha().expect("head_sha after create");
-        assert_eq!(sha.len(), 40, "HEAD must still be a valid SHA after branch creation");
+        assert_eq!(
+            sha.len(),
+            40,
+            "HEAD must still be a valid SHA after branch creation"
+        );
     }
 
     #[test]
@@ -516,7 +520,8 @@ mod tests {
         let side_sha = ops.head_sha().expect("side sha");
 
         // Checkout the branch again (idempotent) — should succeed and set keep SHA.
-        ops.checkout_branch("trait-side").expect("checkout via trait");
+        ops.checkout_branch("trait-side")
+            .expect("checkout via trait");
         assert_eq!(ops.head_sha().expect("after checkout"), side_sha);
     }
 
@@ -594,7 +599,10 @@ mod tests {
         let (ops, _dir) = setup_trait_ops();
         ops.create_branch("dup").expect("first create");
         let result = ops.create_branch("dup");
-        assert!(result.is_err(), "duplicate branch creation must fail via trait");
+        assert!(
+            result.is_err(),
+            "duplicate branch creation must fail via trait"
+        );
     }
 
     #[test]
@@ -624,7 +632,10 @@ mod tests {
         // Create another file but do NOT commit (discard the mutation).
         let discarded_path = dir.path().join("discarded.txt");
         fs::write(&discarded_path, "I should be gone\n").expect("write discarded");
-        assert!(discarded_path.exists(), "discarded.txt must exist before discard");
+        assert!(
+            discarded_path.exists(),
+            "discarded.txt must exist before discard"
+        );
 
         // Reset to last keep.
         ops.reset_to_last_keep().expect("reset_to_last_keep");

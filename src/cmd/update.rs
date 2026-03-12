@@ -77,7 +77,10 @@ mod tests {
 
     #[test]
     fn test_target_triple_is_known() {
-        assert_ne!(TARGET, "unknown", "TARGET should resolve to a known platform");
+        assert_ne!(
+            TARGET, "unknown",
+            "TARGET should resolve to a known platform"
+        );
     }
 
     #[test]
@@ -85,7 +88,11 @@ mod tests {
         let parts: Vec<&str> = VERSION.split('.').collect();
         assert_eq!(parts.len(), 3, "VERSION should be semver: {}", VERSION);
         for part in &parts {
-            assert!(part.parse::<u64>().is_ok(), "Non-numeric version part: {}", part);
+            assert!(
+                part.parse::<u64>().is_ok(),
+                "Non-numeric version part: {}",
+                part
+            );
         }
     }
 }
