@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use libsql::{Connection, Row};
 
@@ -14,13 +16,21 @@ fn row_to_project(row: &Row) -> Result<Project> {
 }
 
 pub async fn create_project(conn: &Connection, name: &str, path: &str) -> Result<Project> {
+    // Canonicalize the project path so later containment checks operate
+    // on a normalized, symlink-resolved root. If the path does not exist
+    // yet (e.g. before `git clone`), fall back to the raw value.
+    let canonical_path = Path::new(path)
+        .canonicalize()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string());
+
     let tx = conn
         .transaction()
         .await
         .context("Failed to begin transaction")?;
     tx.execute(
         "INSERT INTO projects (name, path) VALUES (?1, ?2)",
-        (name, path),
+        (name, canonical_path.as_str()),
     )
     .await
     .context("Failed to insert project")?;
@@ -297,5 +307,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(updated.github_repo, Some("owner/repo".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_create_project_canonicalizes_existing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let conn = db.conn();
+
+        let raw_path = dir.path().to_str().unwrap();
+        let expected_canonical = dir.path().canonicalize().unwrap();
+        let expected_str = expected_canonical.to_str().unwrap();
+
+        let project = create_project(conn, "canon-proj", raw_path)
+            .await
+            .unwrap();
+        assert_eq!(
+            project.path, expected_str,
+            "Project path should be canonicalized when the directory exists"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_project_fallback_for_nonexistent_path() {
+        let db = DbHandle::new_in_memory().await.unwrap();
+        let conn = db.conn();
+
+        let fake_path = "/nonexistent/path/to/project";
+        let project = create_project(conn, "fallback-proj", fake_path)
+            .await
+            .unwrap();
+        assert_eq!(
+            project.path, fake_path,
+            "Project path should fall back to raw value when directory does not exist"
+        );
     }
 }

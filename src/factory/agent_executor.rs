@@ -201,16 +201,25 @@ impl AgentExecutor {
             task.id,
             crate::factory::pipeline::slugify(&task.name, 30)
         );
-        let worktree_path = PathBuf::from(&self.project_path)
+        let project_root = Path::new(&self.project_path);
+        let worktree_path = project_root
             .join(".worktrees")
             .join(format!("task-{}", task.id));
 
-        let parent = worktree_path
+        // Validate that the derived worktree path is contained within the project root
+        // BEFORE creating any directories or invoking git worktree add.
+        let validated_path = crate::factory::pipeline::validate_path_containment(
+            project_root,
+            &worktree_path,
+        )
+        .context("Worktree path containment check failed")?;
+
+        let parent = validated_path
             .parent()
             .context("Worktree path has no parent directory")?;
         tokio::fs::create_dir_all(parent).await?;
 
-        let worktree_str = worktree_path
+        let worktree_str = validated_path
             .to_str()
             .context("Worktree path contains invalid UTF-8")?;
 
@@ -237,7 +246,7 @@ impl AgentExecutor {
             .update_agent_task_isolation(task.id, Some(worktree_str), None, Some(&branch_name))
             .await?;
 
-        Ok((worktree_path, branch_name))
+        Ok((validated_path, branch_name))
     }
 
     /// Clean up worktree after task completes

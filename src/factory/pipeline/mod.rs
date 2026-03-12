@@ -24,7 +24,7 @@ use execution::*;
 use git::*;
 
 // Re-export public items that were previously at this module's path
-pub use git::{GitLockMap, slugify};
+pub use git::{GitLockMap, canonicalize_project_path, slugify, validate_path_containment};
 pub use parsing::{
     StreamJsonEvent, extract_file_change, extract_tool_input_summary, parse_stream_json_line,
 };
