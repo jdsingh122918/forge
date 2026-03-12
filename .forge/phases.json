@@ -1,13 +1,13 @@
 {
-  "spec_hash": "fc3d61bdf0e7",
-  "generated_at": "2026-03-12T01:24:31.968300+00:00",
+  "spec_hash": "db99a668fd2b",
+  "generated_at": "2026-03-12T01:38:29.680941+00:00",
   "phases": [
     {
       "number": "01",
-      "name": "Write git_ops tests",
-      "promise": "GIT_OPS TESTS WRITTEN",
+      "name": "Write dispatcher integration tests",
+      "promise": "DISPATCHER INTEGRATION TESTS WRITTEN",
       "budget": 5,
-      "reasoning": "Create git_ops.rs with AutoresearchGitOps struct definition, test helpers (setup_repo, write_and_commit), and all 11 tests: test_new_opens_repo, test_new_fails_on_non_repo, test_create_branch, test_create_branch_already_exists, test_commit, test_reset_to_last_keep, test_reset_without_keep_sha_errors, test_checkout_branch, test_checkout_nonexistent_branch, test_commit_updates_last_keep_sha, test_full_keep_discard_cycle. Add pub mod git_ops to mod.rs. Tests should compile but fail (red phase).",
+      "reasoning": "Write all 6 new tests: backward-compat with None, forge_dir with no file falls back, file prompt used when available, advisory file override, malformed file falls back, DispatcherConfig forge_dir field. Also update existing test call sites to pass None as third arg. Tests will fail to compile because build_review_prompt still takes 2 params and DispatcherConfig lacks forge_dir.",
       "depends_on": [],
       "skills": [],
       "permission_mode": "standard",
@@ -15,38 +15,12 @@
     },
     {
       "number": "02",
-      "name": "Implement AutoresearchGitOps",
-      "promise": "GIT_OPS COMPLETE",
-      "budget": 10,
-      "reasoning": "Implement all methods on AutoresearchGitOps: new(), head_sha(), open_repo(), create_branch(), checkout_branch(), commit(), reset_to_last_keep(), last_keep_sha(). Use git2 crate directly with anyhow::Context on all operations. Track last_keep_sha across branch creation, checkout, and commit. All 11 tests must pass. Run cargo clippy clean.",
+      "name": "Implement PromptLoader.try_load_file_only, DispatcherConfig.forge_dir, build_review_prompt 3-param, build_prompt_from_config",
+      "promise": "DISPATCHER WIRING COMPLETE",
+      "budget": 12,
+      "reasoning": "Add try_load_file_only() to PromptLoader. Add forge_dir field + Default + builder to DispatcherConfig. Change build_review_prompt signature to 3 params with file-loading logic. Add build_prompt_from_config helper. Update run_single_review call site. Add import for PromptLoader. All 6 new tests and both existing tests must pass. Clippy clean.",
       "depends_on": [
         "01"
-      ],
-      "skills": [],
-      "permission_mode": "standard",
-      "phase_type": "implement"
-    },
-    {
-      "number": "03",
-      "name": "Write LoopGitOps trait impl tests",
-      "promise": "LOOP_GIT_OPS TRAIT TESTS WRITTEN",
-      "budget": 3,
-      "reasoning": "Add tests verifying AutoresearchGitOps implements LoopGitOps trait from loop_runner.rs. Test that the trait object can be used (Box<dyn LoopGitOps>). If trait uses &self, convert last_keep_sha to Mutex<Option<String>> for interior mutability and verify thread safety (Send + Sync bounds).",
-      "depends_on": [
-        "02"
-      ],
-      "skills": [],
-      "permission_mode": "standard",
-      "phase_type": "test"
-    },
-    {
-      "number": "04",
-      "name": "Implement LoopGitOps trait",
-      "promise": "LOOP_GIT_OPS TRAIT COMPLETE",
-      "budget": 8,
-      "reasoning": "Implement LoopGitOps trait for AutoresearchGitOps. If trait uses &self, refactor last_keep_sha to use std::sync::Mutex<Option<String>> for interior mutability. Update all methods accordingly. Ensure Send + Sync. All existing tests plus new trait tests pass. cargo clippy clean. cargo build succeeds.",
-      "depends_on": [
-        "03"
       ],
       "skills": [],
       "permission_mode": "standard",

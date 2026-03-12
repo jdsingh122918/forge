@@ -1,79 +1,68 @@
-# Implementation Spec: Git Integration for Autoresearch (T14)
+# Implementation Spec: Wire PromptLoader into Review Dispatcher
 
-> Generated from: docs/superpowers/specs/autoresearch-tasks/T14-git-integration.md
-> Generated at: 2026-03-12T01:24:31.967966+00:00
+> Generated from: docs/superpowers/specs/autoresearch-tasks/T03-wire-into-dispatcher.md
+> Generated at: 2026-03-12T01:38:29.680606+00:00
 
 ## Goal
 
-Implement git_ops.rs providing AutoresearchGitOps struct that wraps git2::Repository for branch creation, committing with last_keep_sha tracking, hard-reset discard, and branch checkout — enabling the autoresearch experiment loop to keep/discard mutations via real git operations.
+Modify build_review_prompt() in dispatcher.rs to accept an optional forge_dir parameter. When provided and a valid prompt file exists, use the file-based prompt body with dynamic context injection. When no file exists or the file is malformed, fall back to the existing hardcoded template with zero behavior change. Add forge_dir field to DispatcherConfig and thread it through the call chain.
 
 ## Components
 
 | Component | Description | Complexity | Dependencies |
 |-----------|-------------|------------|--------------|
-| AutoresearchGitOps struct | Core struct wrapping project_dir and last_keep_sha, with new(), head_sha(), open_repo() methods. Opens git2::Repository on demand to avoid borrow issues. | low | - |
-| Branch operations | create_branch() creates a new branch from HEAD and checks it out, setting last_keep_sha. checkout_branch() checks out an existing branch for resume scenarios. | medium | AutoresearchGitOps struct |
-| Commit operation | commit() stages all changes via index.add_all, writes tree, creates commit with forge-autoresearch signature, updates last_keep_sha to new commit SHA. | medium | AutoresearchGitOps struct |
-| Reset operation | reset_to_last_keep() performs git2::ResetType::Hard to the stored last_keep_sha, reverting working directory to last kept state. | low | AutoresearchGitOps struct |
-| LoopGitOps trait implementation | Implement LoopGitOps trait from loop_runner.rs for AutoresearchGitOps. Requires interior mutability (Mutex) for last_keep_sha since trait uses &self but mutations need &mut self. | medium | AutoresearchGitOps struct, Branch operations, Commit operation, Reset operation |
-| Module registration | Add pub mod git_ops to src/cmd/autoresearch/mod.rs | low | - |
+| DispatcherConfig forge_dir field | Add optional forge_dir: Option<PathBuf> to DispatcherConfig struct with Default of None and with_forge_dir() builder method | low | - |
+| build_review_prompt signature change | Change build_review_prompt() from 2-param (specialist, config) to 3-param (specialist, config, forge_dir: Option<&Path>). Update all existing call sites to pass None. Add file-loading logic at the top that tries PromptLoader when forge_dir is Some. | medium | DispatcherConfig forge_dir field |
+| build_prompt_from_config helper | New function that takes a file-based PromptConfig body and wraps it with the dispatcher's dynamic context sections (phase, files, gating note, display name). Replaces the hardcoded Role/Focus/Instructions/Output Format block while preserving dynamic context injection. | medium | build_review_prompt signature change |
+| PromptLoader.try_load_file_only method | Add a public try_load_file_only() method to PromptLoader that returns Option<PromptConfig> — None if file doesn't exist or can't parse. Wraps the existing private try_load_from_file() but exposes it as a no-fallback API for the dispatcher's use. | low | - |
+| run_single_review call site update | Update the call site in ReviewDispatcher::run_single_review() to pass self.config.forge_dir.as_deref() as the third argument to build_review_prompt() | low | build_review_prompt signature change, DispatcherConfig forge_dir field |
 
 ## Code Patterns
 
-### Create branch from HEAD
+### File-first with hardcoded fallback
 
 ```
-let repo = Repository::open(project_dir)?;
-let head_commit = repo.head()?.peel_to_commit()?;
-repo.branch(branch_name, &head_commit, false)?;
-repo.set_head(&format!("refs/heads/{}", branch_name))?;
-repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
+if let Some(forge_dir) = forge_dir {
+    let loader = PromptLoader::new(forge_dir.to_path_buf());
+    if let Some(prompt_config) = loader.try_load_file_only(&specialist.specialist_type) {
+        return build_prompt_from_config(&prompt_config, specialist, config);
+    }
+}
+// ... original hardcoded logic unchanged ...
 ```
 
-### Commit all changes
+### Dynamic context injection for file-based prompts
 
 ```
-let repo = Repository::open(project_dir)?;
-let mut index = repo.index()?;
-index.add_all(["*"].iter(), IndexAddOption::DEFAULT, None)?;
-index.write()?;
-let tree_id = index.write_tree()?;
-let tree = repo.find_tree(tree_id)?;
-let sig = Signature::now("forge-autoresearch", "forge@localhost")?;
-let head = repo.head()?.peel_to_commit()?;
-let oid = repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&head])?;
+format!(
+    r#"# {display_name} Review\n\n## Review Context\n- Phase: {phase} - {phase_name}\n- Reviewer Role: {display_name}\n{context_section}\n{gating_note}\n\n## Files to Review\n\n{files_section}\n\n{body}\n"#,
+    display_name = specialist.display_name(),
+    phase = review_config.phase,
+    phase_name = review_config.phase_name,
+    body = prompt_config.body.trim(),
+)
 ```
 
-### Hard reset to commit
+### Builder pattern for forge_dir
 
 ```
-let repo = Repository::open(project_dir)?;
-let commit = repo.find_commit(oid)?;
-let obj = commit.as_object();
-repo.reset(obj, ResetType::Hard, None)?;
-```
-
-### Checkout existing branch
-
-```
-let repo = Repository::open(project_dir)?;
-repo.set_head(&format!("refs/heads/{}", branch_name))?;
-repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
+pub fn with_forge_dir(mut self, dir: PathBuf) -> Self {
+    self.forge_dir = Some(dir);
+    self
+}
 ```
 
 ## Acceptance Criteria
 
-- [ ] cargo test --lib cmd::autoresearch::git_ops passes with 11+ tests green
-- [ ] src/cmd/autoresearch/git_ops.rs exists with AutoresearchGitOps struct
-- [ ] create_branch() creates a new git branch from HEAD and checks it out
-- [ ] commit() stages all changes, creates a commit with forge-autoresearch signature, and updates last_keep_sha
-- [ ] reset_to_last_keep() performs git reset --hard to the stored last_keep_sha
-- [ ] checkout_branch() checks out an existing branch and sets last_keep_sha for resume
-- [ ] Full keep/discard cycle works: committed changes persist after keep, file changes revert after discard
-- [ ] All git2 operations use anyhow::Context for error enrichment
-- [ ] cargo clippy -- -D warnings passes clean
-- [ ] AutoresearchGitOps implements LoopGitOps trait (using Mutex for interior mutability if trait uses &self)
+- [ ] Existing behavior unchanged when forge_dir is None — existing tests pass with only call signature updated (None added), no assertion changes
+- [ ] When a valid prompt file exists at {forge_dir}/autoresearch/prompts/{specialist}.md, the dispatcher uses the file-based body content
+- [ ] When a prompt file is malformed or missing, the dispatcher falls back to hardcoded defaults silently (with tracing::warn)
+- [ ] Dynamic context (phase number, phase name, files_changed, gating/advisory note) is injected regardless of whether file-based or hardcoded prompt is used
+- [ ] DispatcherConfig has forge_dir: Option<PathBuf> field with Default of None and with_forge_dir() builder
+- [ ] dispatcher.rs imports and uses PromptLoader from prompt_loader.rs
+- [ ] cargo clippy -p forge produces no warnings
+- [ ] All T01 and T02 prompt_loader tests still pass
 
 ---
 *This spec was auto-generated from a design document.*
-*Original design: docs/superpowers/specs/autoresearch-tasks/T14-git-integration.md*
+*Original design: docs/superpowers/specs/autoresearch-tasks/T03-wire-into-dispatcher.md*
