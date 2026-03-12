@@ -1,13 +1,13 @@
 {
-  "spec_hash": "8abd1aaf84fc",
-  "generated_at": "2026-03-12T00:50:27.795356+00:00",
+  "spec_hash": "c6824b6607f1",
+  "generated_at": "2026-03-12T00:59:55.717344+00:00",
   "phases": [
     {
       "number": "01",
-      "name": "Write performance benchmark loading test",
-      "promise": "PERFORMANCE BENCHMARK TEST WRITTEN",
-      "budget": 4,
-      "reasoning": "Write the test_performance_benchmarks_load test that asserts BenchmarkSuite::load returns 5 cases with correct names, non-empty code/context, and populated must_find entries. This test will initially fail (red) because no benchmark data files exist yet.",
+      "name": "Write simplicity benchmark loader test",
+      "promise": "SIMPLICITY BENCHMARK TESTS WRITTEN",
+      "budget": 3,
+      "reasoning": "Add test_simplicity_benchmarks_load test that verifies BenchmarkSuite::load returns 5 cases with correct names, non-empty code/context, and at least 1 must_find per case. This test will fail (red) until benchmark files are created.",
       "depends_on": [],
       "skills": [],
       "permission_mode": "standard",
@@ -15,10 +15,10 @@
     },
     {
       "number": "02",
-      "name": "Create all 5 performance benchmark cases",
-      "promise": "PERFORMANCE BENCHMARKS COMPLETE",
+      "name": "Create all 5 simplicity benchmark cases",
+      "promise": "SIMPLICITY BENCHMARKS COMPLETE",
       "budget": 10,
-      "reasoning": "Create all 5 benchmark directories under .forge/autoresearch/benchmarks/performance/ with code.rs, context.md, and expected.json for each case: sync-event-batching (real, from commit 06cd7fe), non-shared-connection (real, from commit 54b9a63), n-plus-one-query (synthetic), blocking-in-async (synthetic), unnecessary-cloning (synthetic). All content is fully specified in the design doc. Validate JSON files parse correctly and the loading test passes (green). Verify with both python3 json.tool validation and cargo test.",
+      "reasoning": "Create 15 files across 5 directories: overcomplex-resolution-mode, dead-escalate-path, dead-strict-mode, verbose-let-chains, and premature-abstraction. Each gets code.rs (Rust source with annotated simplicity issues), context.md (background for reviewer), and expected.json (must_find/must_not_flag entries). Validate all JSON files parse correctly and test passes green.",
       "depends_on": [
         "01"
       ],
