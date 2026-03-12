@@ -62,12 +62,7 @@ pub async fn poll_and_import(
     for gh_issue in &issues {
         let description = gh_issue.body.as_deref().unwrap_or("");
         let result = db
-            .create_issue_from_github(
-                project_id,
-                &gh_issue.title,
-                description,
-                gh_issue.number,
-            )
+            .create_issue_from_github(project_id, &gh_issue.title, description, gh_issue.number)
             .await
             .with_context(|| {
                 format!(
@@ -129,10 +124,7 @@ impl TrackerPoller {
                 }
 
                 // Broadcast poll started
-                broadcast_message(
-                    &ws_tx,
-                    &WsMessage::TrackerPollStarted { project_id },
-                );
+                broadcast_message(&ws_tx, &WsMessage::TrackerPollStarted { project_id });
 
                 match poll_and_import(&db, project_id, &token, &owner, &repo, &labels).await {
                     Ok((imported, skipped)) => {
@@ -221,7 +213,10 @@ impl TrackerPollerManager {
     /// Start a poller for the given project. If one is already running,
     /// it is stopped first.
     pub fn start_poller(&self, project_id: i64, config: TrackerPollerConfig) {
-        let mut pollers = self.pollers.lock().expect("TrackerPollerManager lock poisoned");
+        let mut pollers = self
+            .pollers
+            .lock()
+            .expect("TrackerPollerManager lock poisoned");
         // Stop existing poller for this project if present
         if let Some(old) = pollers.remove(&project_id) {
             old.stop();
@@ -234,7 +229,10 @@ impl TrackerPollerManager {
 
     /// Stop the poller for a project, if one is running.
     pub fn stop_poller(&self, project_id: i64) {
-        let mut pollers = self.pollers.lock().expect("TrackerPollerManager lock poisoned");
+        let mut pollers = self
+            .pollers
+            .lock()
+            .expect("TrackerPollerManager lock poisoned");
         if let Some(poller) = pollers.remove(&project_id) {
             poller.stop();
             tracing::info!(project_id, "Tracker poller stopped");
@@ -243,13 +241,19 @@ impl TrackerPollerManager {
 
     /// Check whether a poller is running for the given project.
     pub fn is_running(&self, project_id: i64) -> bool {
-        let pollers = self.pollers.lock().expect("TrackerPollerManager lock poisoned");
+        let pollers = self
+            .pollers
+            .lock()
+            .expect("TrackerPollerManager lock poisoned");
         pollers.contains_key(&project_id)
     }
 
     /// Stop all active pollers (used during server shutdown).
     pub fn stop_all(&self) {
-        let mut pollers = self.pollers.lock().expect("TrackerPollerManager lock poisoned");
+        let mut pollers = self
+            .pollers
+            .lock()
+            .expect("TrackerPollerManager lock poisoned");
         for (project_id, poller) in pollers.drain() {
             poller.stop();
             tracing::info!(project_id, "Tracker poller stopped (shutdown)");
@@ -260,6 +264,12 @@ impl TrackerPollerManager {
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.pollers.lock().map(|p| p.len()).unwrap_or(0)
+    }
+
+    /// Returns whether there are no active pollers.
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -341,10 +351,7 @@ mod tests {
             .create_issue_from_github(project.id, "Issue #100 again", "new body", 100)
             .await
             .unwrap();
-        assert!(
-            duplicate.is_none(),
-            "Duplicate issue should be skipped"
-        );
+        assert!(duplicate.is_none(), "Duplicate issue should be skipped");
 
         // Different issue number should succeed
         let different = db
@@ -534,8 +541,7 @@ repo = "repo"
 poll_interval_secs = 60
 labels = ["bug", "enhancement"]
 "#;
-        let config: crate::forge_config::FactoryTrackerConfig =
-            toml::from_str(toml_str).unwrap();
+        let config: crate::forge_config::FactoryTrackerConfig = toml::from_str(toml_str).unwrap();
         assert!(config.enabled);
         assert_eq!(config.labels, vec!["bug", "enhancement"]);
     }
@@ -548,8 +554,7 @@ owner = ""
 repo = ""
 labels = []
 "#;
-        let config: crate::forge_config::FactoryTrackerConfig =
-            toml::from_str(toml_str).unwrap();
+        let config: crate::forge_config::FactoryTrackerConfig = toml::from_str(toml_str).unwrap();
         assert!(config.labels.is_empty());
     }
 
@@ -560,8 +565,7 @@ enabled = false
 owner = ""
 repo = ""
 "#;
-        let config: crate::forge_config::FactoryTrackerConfig =
-            toml::from_str(toml_str).unwrap();
+        let config: crate::forge_config::FactoryTrackerConfig = toml::from_str(toml_str).unwrap();
         assert!(config.labels.is_empty());
     }
 

@@ -319,9 +319,7 @@ mod tests {
         let expected_canonical = dir.path().canonicalize().unwrap();
         let expected_str = expected_canonical.to_str().unwrap();
 
-        let project = create_project(conn, "canon-proj", raw_path)
-            .await
-            .unwrap();
+        let project = create_project(conn, "canon-proj", raw_path).await.unwrap();
         assert_eq!(
             project.path, expected_str,
             "Project path should be canonicalized when the directory exists"

@@ -1048,11 +1048,7 @@ async fn trigger_pipeline(
         .ok_or_else(|| ApiError::Internal(format!("Pipeline run {} not found", run_id.0)))?;
 
     if updated_run.status == super::models::PipelineStatus::Queued {
-        let position = state
-            .db
-            .count_queue_position(run_id)
-            .await
-            .unwrap_or(1);
+        let position = state.db.count_queue_position(run_id).await.unwrap_or(1);
         broadcast_message(
             &state.ws_tx,
             &WsMessage::PipelineQueued {
@@ -1576,10 +1572,7 @@ async fn reload_project_config(
         .ok_or_else(|| ApiError::from(FactoryError::ProjectNotFound { id }))?;
 
     // Attempt reload
-    match state
-        .config_store
-        .reload_project_config(id, &project.path)
-    {
+    match state.config_store.reload_project_config(id, &project.path) {
         Ok(changed) => {
             // Check if any tracker settings changed and reconcile the poller
             let tracker_changed = changed.iter().any(|s| s.starts_with("factory.tracker"));
@@ -1641,11 +1634,7 @@ fn reconcile_tracker_poller(state: &AppState, project_id: i64) {
 
     if tracker.enabled && !tracker.owner.is_empty() && !tracker.repo.is_empty() {
         // Need a GitHub token to poll
-        let token = state
-            .github_token
-            .lock()
-            .ok()
-            .and_then(|t| t.clone());
+        let token = state.github_token.lock().ok().and_then(|t| t.clone());
 
         match token {
             Some(token) => {
@@ -2874,11 +2863,7 @@ stall_timeout_secs = 600
         let dir = tempfile::tempdir().unwrap();
         let forge_dir = dir.path().join(".forge");
         std::fs::create_dir_all(&forge_dir).unwrap();
-        std::fs::write(
-            forge_dir.join("forge.toml"),
-            "this is [[[not valid toml!!!",
-        )
-        .unwrap();
+        std::fs::write(forge_dir.join("forge.toml"), "this is [[[not valid toml!!!").unwrap();
 
         let state = Arc::new(AppState {
             db: db.clone(),
@@ -2908,6 +2893,11 @@ stall_timeout_secs = 600
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         let body: serde_json::Value = body_json(response.into_body()).await;
-        assert!(body["error"].as_str().unwrap().contains("Config reload failed"));
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("Config reload failed")
+        );
     }
 }

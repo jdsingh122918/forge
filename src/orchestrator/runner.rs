@@ -399,23 +399,21 @@ impl ClaudeRunner {
         };
 
         match timeout_duration {
-            Some(duration) => {
-                match tokio::time::timeout(duration, fut).await {
-                    Ok(result) => result,
-                    Err(_elapsed) => {
-                        warn!(
-                            phase = %phase.number,
-                            timeout_secs = duration.as_secs(),
-                            "Iteration timed out"
-                        );
-                        Err(OrchestratorError::IterationTimeout {
-                            phase: phase.number.clone(),
-                            timeout_secs: duration.as_secs(),
-                        }
-                        .into())
+            Some(duration) => match tokio::time::timeout(duration, fut).await {
+                Ok(result) => result,
+                Err(_elapsed) => {
+                    warn!(
+                        phase = %phase.number,
+                        timeout_secs = duration.as_secs(),
+                        "Iteration timed out"
+                    );
+                    Err(OrchestratorError::IterationTimeout {
+                        phase: phase.number.clone(),
+                        timeout_secs: duration.as_secs(),
                     }
+                    .into())
                 }
-            }
+            },
             None => fut.await,
         }
     }

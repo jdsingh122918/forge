@@ -202,7 +202,10 @@ mod tests {
             .arg("3600")
             .spawn()
             .unwrap();
-        processes.lock().await.insert(run.id.0, RunHandle::Process(child));
+        processes
+            .lock()
+            .await
+            .insert(run.id.0, RunHandle::Process(child));
 
         // last_event_at is None (no heartbeat ever) — should be treated as stalled
         let report = reconcile_runs(&db, &processes, &tx, 300).await.unwrap();
@@ -294,7 +297,10 @@ mod tests {
             .arg("3600")
             .spawn()
             .unwrap();
-        processes.lock().await.insert(run.id.0, RunHandle::Process(child));
+        processes
+            .lock()
+            .await
+            .insert(run.id.0, RunHandle::Process(child));
 
         let report = reconcile_runs(&db, &processes, &tx, 300).await.unwrap();
 
@@ -356,12 +362,18 @@ mod tests {
             .arg("3600")
             .spawn()
             .unwrap();
-        processes.lock().await.insert(run2.id.0, RunHandle::Process(child));
+        processes
+            .lock()
+            .await
+            .insert(run2.id.0, RunHandle::Process(child));
 
         let report = reconcile_runs(&db, &processes, &tx, 300).await.unwrap();
 
         // run1: no process → failed; run2: has process, no heartbeat → stalled; run3: completed → not inspected
-        assert_eq!(report.inspected, 2, "Only running/stalled runs are inspected");
+        assert_eq!(
+            report.inspected, 2,
+            "Only running/stalled runs are inspected"
+        );
         assert_eq!(report.failed, 1, "run1 should be failed (no process)");
         assert_eq!(report.stalled, 1, "run2 should be stalled (no heartbeat)");
 
@@ -435,7 +447,10 @@ mod tests {
             .arg("3600")
             .spawn()
             .unwrap();
-        processes.lock().await.insert(run.id.0, RunHandle::Process(child));
+        processes
+            .lock()
+            .await
+            .insert(run.id.0, RunHandle::Process(child));
 
         let report = reconcile_runs(&db, &processes, &tx, 300).await.unwrap();
 

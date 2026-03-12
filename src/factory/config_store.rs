@@ -109,9 +109,7 @@ impl ProjectConfigStore {
         project_id: i64,
         project_path: &str,
     ) -> Result<HotReloadableSettings> {
-        let config_path = Path::new(project_path)
-            .join(".forge")
-            .join("forge.toml");
+        let config_path = Path::new(project_path).join(".forge").join("forge.toml");
 
         let config = ForgeToml::load_or_default(Path::new(project_path).join(".forge").as_ref())
             .with_context(|| {
@@ -148,9 +146,7 @@ impl ProjectConfigStore {
         project_id: i64,
         project_path: &str,
     ) -> Result<Vec<String>> {
-        let config_path = Path::new(project_path)
-            .join(".forge")
-            .join("forge.toml");
+        let config_path = Path::new(project_path).join(".forge").join("forge.toml");
 
         // Try to parse the new config
         let new_config = if config_path.exists() {

@@ -356,25 +356,17 @@ impl DbHandle {
         pipeline::list_queued_runs(conn).await
     }
 
-    pub async fn count_queue_position(
-        &self,
-        run_id: super::models::RunId,
-    ) -> Result<i32> {
+    pub async fn count_queue_position(&self, run_id: super::models::RunId) -> Result<i32> {
         let conn = self.conn();
         pipeline::count_queue_position(conn, run_id).await
     }
 
-    pub async fn list_running_and_stalled_runs(
-        &self,
-    ) -> Result<Vec<super::models::PipelineRun>> {
+    pub async fn list_running_and_stalled_runs(&self) -> Result<Vec<super::models::PipelineRun>> {
         let conn = self.conn();
         pipeline::list_running_and_stalled_runs(conn).await
     }
 
-    pub async fn update_last_event_at(
-        &self,
-        run_id: super::models::RunId,
-    ) -> Result<()> {
+    pub async fn update_last_event_at(&self, run_id: super::models::RunId) -> Result<()> {
         let conn = self.conn();
         pipeline::update_last_event_at(conn, run_id).await
     }

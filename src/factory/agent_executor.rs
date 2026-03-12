@@ -10,11 +10,11 @@ use tokio::sync::{Mutex, broadcast};
 use tracing::{self, error, warn};
 
 use crate::factory::db::DbHandle;
+use crate::factory::heartbeat::emit_run_event;
 use crate::factory::models::{
     AgentEventType, AgentTask, AgentTaskStatus, FileAction, RunId, SignalType, TaskId,
 };
 use crate::factory::pipeline::{StreamJsonEvent, extract_file_change, parse_stream_json_line};
-use crate::factory::heartbeat::emit_run_event;
 use crate::factory::ws::WsMessage;
 
 /// Abstraction over agent task execution for testability.
@@ -208,11 +208,9 @@ impl AgentExecutor {
 
         // Validate that the derived worktree path is contained within the project root
         // BEFORE creating any directories or invoking git worktree add.
-        let validated_path = crate::factory::pipeline::validate_path_containment(
-            project_root,
-            &worktree_path,
-        )
-        .context("Worktree path containment check failed")?;
+        let validated_path =
+            crate::factory::pipeline::validate_path_containment(project_root, &worktree_path)
+                .context("Worktree path containment check failed")?;
 
         let parent = validated_path
             .parent()

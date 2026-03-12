@@ -36,11 +36,9 @@ impl WorktreeManager {
             )
         })?;
 
-        let validated_path = crate::factory::pipeline::validate_path_containment(
-            &self.repo_path,
-            &worktree_path,
-        )
-        .context("Council worktree path containment check failed")?;
+        let validated_path =
+            crate::factory::pipeline::validate_path_containment(&self.repo_path, &worktree_path)
+                .context("Council worktree path containment check failed")?;
 
         let output = Command::new("git")
             .args(["worktree", "add", "--detach"])

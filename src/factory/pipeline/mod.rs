@@ -11,10 +11,10 @@ use tokio::sync::broadcast;
 
 use super::agent_executor::{AgentExecutor, TaskRunner};
 use super::db::DbHandle;
+use super::heartbeat::emit_run_event;
 use super::models::*;
 use super::planner::{PlanProvider, PlanResponse, Planner};
 use super::sandbox::{DockerSandbox, SandboxConfig};
-use super::heartbeat::emit_run_event;
 use super::ws::{WsMessage, broadcast_message};
 use crate::metrics::MetricsCollector;
 
@@ -135,7 +135,13 @@ impl PipelineRunner {
 
         // Update DB status to Cancelled and move issue back to Ready
         let run = db.cancel_pipeline_run(RunId(run_id)).await?;
-        emit_run_event(db, tx, RunId(run_id), &WsMessage::PipelineFailed { run: run.clone() }).await;
+        emit_run_event(
+            db,
+            tx,
+            RunId(run_id),
+            &WsMessage::PipelineFailed { run: run.clone() },
+        )
+        .await;
 
         // Auto-move issue back to Ready
         let issue_id = run.issue_id;
@@ -617,90 +623,91 @@ impl PipelineRunner {
         let issue = issue.clone();
 
         async move {
-        let issue = &issue;
+            let issue = &issue;
 
-        // Look up the project path from the DB (per-project, not the global default)
-        let project_id = issue.project_id;
-        let project_path = match db.get_project(project_id).await {
-            Ok(Some(project)) => Ok(project.path),
-            Ok(None) => {
-                anyhow::bail!("Project {} not found in DB", project_id);
-            }
-            Err(e) => Err(e.context(format!("Failed to look up project {}", project_id))),
-        }?;
-        let project_path = translate_host_path_to_container(&project_path);
-        let issue_id = issue.id;
-        let issue_title = issue.title.clone();
-        let issue_description = issue.description.clone();
-        let issue_labels = issue.labels.clone();
+            // Look up the project path from the DB (per-project, not the global default)
+            let project_id = issue.project_id;
+            let project_path = match db.get_project(project_id).await {
+                Ok(Some(project)) => Ok(project.path),
+                Ok(None) => {
+                    anyhow::bail!("Project {} not found in DB", project_id);
+                }
+                Err(e) => Err(e.context(format!("Failed to look up project {}", project_id))),
+            }?;
+            let project_path = translate_host_path_to_container(&project_path);
+            let issue_id = issue.id;
+            let issue_title = issue.title.clone();
+            let issue_description = issue.description.clone();
+            let issue_labels = issue.labels.clone();
 
-        let from_column = issue.column.as_str().to_string();
+            let from_column = issue.column.as_str().to_string();
 
-        // Update status to Running and move issue to InProgress
-        {
-            let need_move = issue.column != IssueColumn::InProgress;
-            let run = db
-                .update_pipeline_run(RunId(run_id), &PipelineStatus::Running, None, None)
-                .await?;
-            if need_move && let Err(e) = db.move_issue(issue_id, &IssueColumn::InProgress, 0).await
+            // Update status to Running and move issue to InProgress
             {
-                error!(run_id, error = %e, "Failed to move issue to InProgress");
-            }
-            emit_run_event(&db, &tx, RunId(run_id), &WsMessage::PipelineStarted { run }).await;
-            if issue.column != IssueColumn::InProgress {
-                broadcast_message(
-                    &tx,
-                    &WsMessage::IssueMoved {
-                        issue_id,
-                        from_column: from_column.clone(),
-                        to_column: "in_progress".to_string(),
-                        position: 0,
-                    },
-                );
-            }
-        }
-
-        // Spawn background task for execution
-        tokio::spawn(async move {
-            let metrics = MetricsCollector::new(db.clone());
-            let run_id_str = run_id.to_string();
-            let run_start = Instant::now();
-            if let Err(e) = metrics
-                .record_run_started(&run_id_str, Some(issue_id.0))
-                .await
-            {
-                warn!(error = %e, "Failed to record metrics run start");
+                let need_move = issue.column != IssueColumn::InProgress;
+                let run = db
+                    .update_pipeline_run(RunId(run_id), &PipelineStatus::Running, None, None)
+                    .await?;
+                if need_move
+                    && let Err(e) = db.move_issue(issue_id, &IssueColumn::InProgress, 0).await
+                {
+                    error!(run_id, error = %e, "Failed to move issue to InProgress");
+                }
+                emit_run_event(&db, &tx, RunId(run_id), &WsMessage::PipelineStarted { run }).await;
+                if issue.column != IssueColumn::InProgress {
+                    broadcast_message(
+                        &tx,
+                        &WsMessage::IssueMoved {
+                            issue_id,
+                            from_column: from_column.clone(),
+                            to_column: "in_progress".to_string(),
+                            position: 0,
+                        },
+                    );
+                }
             }
 
-            // Step 1: Create a git branch for isolation (under project lock)
-            let branch_name = {
-                let git_result = {
-                    let git_lock = git_locks.get(&project_path).await;
-                    let _guard = git_lock.lock().await;
-                    create_git_branch(&project_path, issue_id, &issue_title).await
-                };
-                // git lock released — now safe to acquire DB lock
-                match git_result {
-                    Ok(name) => {
-                        // Store branch name in DB and broadcast
-                        if let Err(e) = db.update_pipeline_branch(RunId(run_id), &name).await {
-                            error!(run_id, error = %e, "Failed to update pipeline branch");
+            // Spawn background task for execution
+            tokio::spawn(async move {
+                let metrics = MetricsCollector::new(db.clone());
+                let run_id_str = run_id.to_string();
+                let run_start = Instant::now();
+                if let Err(e) = metrics
+                    .record_run_started(&run_id_str, Some(issue_id.0))
+                    .await
+                {
+                    warn!(error = %e, "Failed to record metrics run start");
+                }
+
+                // Step 1: Create a git branch for isolation (under project lock)
+                let branch_name = {
+                    let git_result = {
+                        let git_lock = git_locks.get(&project_path).await;
+                        let _guard = git_lock.lock().await;
+                        create_git_branch(&project_path, issue_id, &issue_title).await
+                    };
+                    // git lock released — now safe to acquire DB lock
+                    match git_result {
+                        Ok(name) => {
+                            // Store branch name in DB and broadcast
+                            if let Err(e) = db.update_pipeline_branch(RunId(run_id), &name).await {
+                                error!(run_id, error = %e, "Failed to update pipeline branch");
+                            }
+                            emit_run_event(
+                                &db,
+                                &tx,
+                                RunId(run_id),
+                                &WsMessage::PipelineBranchCreated {
+                                    run_id: RunId(run_id),
+                                    branch_name: name.clone(),
+                                },
+                            )
+                            .await;
+                            Some(name)
                         }
-                        emit_run_event(
-                            &db,
-                            &tx,
-                            RunId(run_id),
-                            &WsMessage::PipelineBranchCreated {
-                                run_id: RunId(run_id),
-                                branch_name: name.clone(),
-                            },
-                        )
-                        .await;
-                        Some(name)
-                    }
-                    Err(e) => {
-                        warn!(run_id, error = %e, "Failed to create git branch, continuing without branch isolation");
-                        emit_run_event(
+                        Err(e) => {
+                            warn!(run_id, error = %e, "Failed to create git branch, continuing without branch isolation");
+                            emit_run_event(
                             &db,
                             &tx,
                             RunId(run_id),
@@ -715,85 +722,85 @@ impl PipelineRunner {
                             },
                         )
                         .await;
-                        None
+                            None
+                        }
                     }
-                }
-            };
+                };
 
-            // Construct real planner and task runner for the agent team
-            debug!(run_id, project_path, "Starting planner");
-            emit_run_event(
-                &db,
-                &tx,
-                RunId(run_id),
-                &WsMessage::PipelineOutput {
-                    run_id: RunId(run_id),
-                    content: "Analyzing codebase and planning tasks...".to_string(),
-                },
-            )
-            .await;
-            let planner = Planner::new(&project_path);
-            let task_runner: Arc<dyn TaskRunner> =
-                Arc::new(AgentExecutor::new(&project_path, db.clone(), tx.clone()));
+                // Construct real planner and task runner for the agent team
+                debug!(run_id, project_path, "Starting planner");
+                emit_run_event(
+                    &db,
+                    &tx,
+                    RunId(run_id),
+                    &WsMessage::PipelineOutput {
+                        run_id: RunId(run_id),
+                        content: "Analyzing codebase and planning tasks...".to_string(),
+                    },
+                )
+                .await;
+                let planner = Planner::new(&project_path);
+                let task_runner: Arc<dyn TaskRunner> =
+                    Arc::new(AgentExecutor::new(&project_path, db.clone(), tx.clone()));
 
-            // Step 2: Try agent team pipeline first, fall back to forge pipeline
-            let team_result = Self::execute_agent_team(
-                &project_path,
-                run_id,
-                &issue_title,
-                &issue_description,
-                &issue_labels,
-                &branch_name,
-                &db,
-                &tx,
-                &git_locks,
-                &planner,
-                &task_runner,
-            )
-            .await;
+                // Step 2: Try agent team pipeline first, fall back to forge pipeline
+                let team_result = Self::execute_agent_team(
+                    &project_path,
+                    run_id,
+                    &issue_title,
+                    &issue_description,
+                    &issue_labels,
+                    &branch_name,
+                    &db,
+                    &tx,
+                    &git_locks,
+                    &planner,
+                    &task_runner,
+                )
+                .await;
 
-            debug!(
-                run_id,
-                outcome = match &team_result {
-                    Ok(PlanOutcome::TeamExecuted(_)) => "TeamExecuted",
-                    Ok(PlanOutcome::FallbackToForge) => "FallbackToForge",
-                    Err(_) => "Error",
-                },
-                "Planner returned"
-            );
-            let result = match team_result {
-                Ok(PlanOutcome::TeamExecuted(summary)) => {
-                    // Team succeeded, use summary
-                    Ok(summary)
-                }
-                Ok(PlanOutcome::FallbackToForge) => {
-                    debug!(run_id, "Single-task plan, using forge pipeline");
-                    emit_run_event(
-                        &db,
-                        &tx,
-                        RunId(run_id),
-                        &WsMessage::PipelineOutput {
-                            run_id: RunId(run_id),
-                            content: "Running single-task pipeline...".to_string(),
-                        },
-                    )
-                    .await;
-                    // Expected fallback -- continue to forge pipeline below
-                    Self::run_forge_fallback(
-                        run_id,
-                        &project_path,
-                        &issue_title,
-                        &issue_description,
-                        &sandbox_clone,
-                        &running_processes,
-                        &db,
-                        &tx,
-                    )
-                    .await
-                }
-                Err(e) => {
-                    error!(run_id, error = %e, "Agent team failed unexpectedly");
-                    emit_run_event(
+                debug!(
+                    run_id,
+                    outcome = match &team_result {
+                        Ok(PlanOutcome::TeamExecuted(_)) => "TeamExecuted",
+                        Ok(PlanOutcome::FallbackToForge) => "FallbackToForge",
+                        Err(_) => "Error",
+                    },
+                    "Planner returned"
+                );
+                let result = match team_result {
+                    Ok(PlanOutcome::TeamExecuted(summary)) => {
+                        // Team succeeded, use summary
+                        Ok(summary)
+                    }
+                    Ok(PlanOutcome::FallbackToForge) => {
+                        debug!(run_id, "Single-task plan, using forge pipeline");
+                        emit_run_event(
+                            &db,
+                            &tx,
+                            RunId(run_id),
+                            &WsMessage::PipelineOutput {
+                                run_id: RunId(run_id),
+                                content: "Running single-task pipeline...".to_string(),
+                            },
+                        )
+                        .await;
+                        // Expected fallback -- continue to forge pipeline below
+                        Self::run_forge_fallback(
+                            run_id,
+                            &project_path,
+                            &issue_title,
+                            &issue_description,
+                            &sandbox_clone,
+                            &running_processes,
+                            &db,
+                            &tx,
+                        )
+                        .await
+                    }
+                    Err(e) => {
+                        error!(run_id, error = %e, "Agent team failed unexpectedly");
+                        emit_run_event(
                         &db,
                         &tx,
                         RunId(run_id),
@@ -808,40 +815,175 @@ impl PipelineRunner {
                         },
                     )
                     .await;
-                    // Fall back to forge pipeline
-                    Self::run_forge_fallback(
-                        run_id,
-                        &project_path,
-                        &issue_title,
-                        &issue_description,
-                        &sandbox_clone,
-                        &running_processes,
-                        &db,
-                        &tx,
-                    )
-                    .await
-                }
-            };
+                        // Fall back to forge pipeline
+                        Self::run_forge_fallback(
+                            run_id,
+                            &project_path,
+                            &issue_title,
+                            &issue_description,
+                            &sandbox_clone,
+                            &running_processes,
+                            &db,
+                            &tx,
+                        )
+                        .await
+                    }
+                };
 
-            // Clean up the process handle regardless of outcome
-            {
-                let mut processes = running_processes.lock().await;
-                processes.remove(&run_id);
-            }
-
-            // Check if already cancelled (e.g., by cancel() call)
-            {
-                let is_cancelled = match db
-                    .get_pipeline_run(RunId(run_id))
-                    .await
-                    .map(|r| r.is_some_and(|r| r.status == PipelineStatus::Cancelled))
+                // Clean up the process handle regardless of outcome
                 {
-                    Ok(cancelled) => cancelled,
+                    let mut processes = running_processes.lock().await;
+                    processes.remove(&run_id);
+                }
+
+                // Check if already cancelled (e.g., by cancel() call)
+                {
+                    let is_cancelled = match db
+                        .get_pipeline_run(RunId(run_id))
+                        .await
+                        .map(|r| r.is_some_and(|r| r.status == PipelineStatus::Cancelled))
+                    {
+                        Ok(cancelled) => cancelled,
+                        Err(e) => {
+                            error!(run_id, error = %e, "DB error checking cancellation");
+                            // Attempt to mark the run as failed so it doesn't stay stuck in "Running"
+                            let error_msg = format!("DB error during cancellation check: {e:#}");
+                            if let Err(e2) = db
+                                .update_pipeline_run(
+                                    RunId(run_id),
+                                    &PipelineStatus::Failed,
+                                    None,
+                                    Some(&error_msg),
+                                )
+                                .await
+                            {
+                                error!(run_id, error = %e2, "CRITICAL: also failed to mark run as failed");
+                                // Last resort: broadcast so UI doesn't show "running" forever
+                                broadcast_message(
+                                    &tx,
+                                    &WsMessage::AgentSignal {
+                                        run_id: RunId(run_id),
+                                        task_id: TaskId(0),
+                                        signal_type: SignalType::Blocker,
+                                        content: format!(
+                                            "[pipeline] Run failed but could not persist status: {error_msg}"
+                                        ),
+                                    },
+                                );
+                            }
+                            return;
+                        }
+                    };
+                    if is_cancelled {
+                        return;
+                    }
+                }
+
+                match result {
+                    Ok(summary) => {
+                        // Step 3: On success, create a PR if we have a branch (under project lock)
+                        if let Some(ref branch) = branch_name {
+                            let pr_result = {
+                                let git_lock = git_locks.get(&project_path).await;
+                                let _guard = git_lock.lock().await;
+                                create_pull_request(
+                                    &project_path,
+                                    branch,
+                                    &issue_title,
+                                    &issue_description,
+                                )
+                                .await
+                            };
+                            // git lock released — now safe to acquire DB lock
+                            match pr_result {
+                                Ok(pr_url) => {
+                                    if let Err(e) =
+                                        db.update_pipeline_pr_url(RunId(run_id), &pr_url).await
+                                    {
+                                        error!(run_id, error = %e, "Failed to update pipeline PR URL");
+                                    }
+                                    emit_run_event(
+                                        &db,
+                                        &tx,
+                                        RunId(run_id),
+                                        &WsMessage::PipelinePrCreated {
+                                            run_id: RunId(run_id),
+                                            pr_url,
+                                        },
+                                    )
+                                    .await;
+                                }
+                                Err(e) => {
+                                    warn!(run_id, error = %e, "PR creation failed (pipeline still completed)");
+                                }
+                            }
+                        }
+
+                        if let Err(e) = db.move_issue(issue_id, &IssueColumn::InReview, 0).await {
+                            error!(run_id, error = %e, "Failed to move issue to InReview");
+                        }
+                        match db
+                            .update_pipeline_run(
+                                RunId(run_id),
+                                &PipelineStatus::Completed,
+                                Some(&summary),
+                                None,
+                            )
+                            .await
+                        {
+                            Ok(run) => {
+                                let duration = run_start.elapsed().as_secs_f64();
+                                if let Err(e) = metrics
+                                    .record_run_completed(&run_id_str, true, duration, 0, 0)
+                                    .await
+                                {
+                                    warn!(error = %e, "Failed to record metrics run completion");
+                                }
+                                emit_run_event(
+                                    &db,
+                                    &tx,
+                                    RunId(run_id),
+                                    &WsMessage::PipelineCompleted { run },
+                                )
+                                .await;
+                            }
+                            Err(e) => {
+                                error!(run_id, error = %e, "CRITICAL: completed but failed to update DB");
+                                // Still broadcast completion so UI doesn't show "running" forever
+                                broadcast_message(
+                                    &tx,
+                                    &WsMessage::AgentSignal {
+                                        run_id: RunId(run_id),
+                                        task_id: TaskId(0),
+                                        signal_type: SignalType::Blocker,
+                                        content: format!(
+                                            "[pipeline] Pipeline completed but failed to persist status: {}",
+                                            e
+                                        ),
+                                    },
+                                );
+                            }
+                        }
+                        broadcast_message(
+                            &tx,
+                            &WsMessage::IssueMoved {
+                                issue_id,
+                                from_column: "in_progress".to_string(),
+                                to_column: "in_review".to_string(),
+                                position: 0,
+                            },
+                        );
+                    }
                     Err(e) => {
-                        error!(run_id, error = %e, "DB error checking cancellation");
-                        // Attempt to mark the run as failed so it doesn't stay stuck in "Running"
-                        let error_msg = format!("DB error during cancellation check: {e:#}");
-                        if let Err(e2) = db
+                        let error_msg = format!("{:#}", e);
+                        let duration = run_start.elapsed().as_secs_f64();
+                        if let Err(e) = metrics
+                            .record_run_completed(&run_id_str, false, duration, 0, 0)
+                            .await
+                        {
+                            warn!(error = %e, "Failed to record metrics run failure");
+                        }
+                        match db
                             .update_pipeline_run(
                                 RunId(run_id),
                                 &PipelineStatus::Failed,
@@ -850,177 +992,56 @@ impl PipelineRunner {
                             )
                             .await
                         {
-                            error!(run_id, error = %e2, "CRITICAL: also failed to mark run as failed");
-                            // Last resort: broadcast so UI doesn't show "running" forever
-                            broadcast_message(
-                                &tx,
-                                &WsMessage::AgentSignal {
-                                    run_id: RunId(run_id),
-                                    task_id: TaskId(0),
-                                    signal_type: SignalType::Blocker,
-                                    content: format!(
-                                        "[pipeline] Run failed but could not persist status: {error_msg}"
-                                    ),
-                                },
-                            );
-                        }
-                        return;
-                    }
-                };
-                if is_cancelled {
-                    return;
-                }
-            }
-
-            match result {
-                Ok(summary) => {
-                    // Step 3: On success, create a PR if we have a branch (under project lock)
-                    if let Some(ref branch) = branch_name {
-                        let pr_result = {
-                            let git_lock = git_locks.get(&project_path).await;
-                            let _guard = git_lock.lock().await;
-                            create_pull_request(
-                                &project_path,
-                                branch,
-                                &issue_title,
-                                &issue_description,
-                            )
-                            .await
-                        };
-                        // git lock released — now safe to acquire DB lock
-                        match pr_result {
-                            Ok(pr_url) => {
-                                if let Err(e) =
-                                    db.update_pipeline_pr_url(RunId(run_id), &pr_url).await
-                                {
-                                    error!(run_id, error = %e, "Failed to update pipeline PR URL");
-                                }
+                            Ok(run) => {
                                 emit_run_event(
                                     &db,
                                     &tx,
                                     RunId(run_id),
-                                    &WsMessage::PipelinePrCreated {
-                                        run_id: RunId(run_id),
-                                        pr_url,
-                                    },
+                                    &WsMessage::PipelineFailed { run },
                                 )
-                                .await;
+                                .await
                             }
                             Err(e) => {
-                                warn!(run_id, error = %e, "PR creation failed (pipeline still completed)");
+                                error!(run_id, error = %e, "CRITICAL: failed but could not update DB");
+                                // Still broadcast failure so UI doesn't show "running" forever
+                                broadcast_message(
+                                    &tx,
+                                    &WsMessage::AgentSignal {
+                                        run_id: RunId(run_id),
+                                        task_id: TaskId(0),
+                                        signal_type: SignalType::Blocker,
+                                        content: format!(
+                                            "[pipeline] Pipeline failed but could not persist error status: {}",
+                                            e
+                                        ),
+                                    },
+                                );
                             }
                         }
+                        // Issue stays in InProgress on failure (error is visible on the card)
                     }
+                }
 
-                    if let Err(e) = db.move_issue(issue_id, &IssueColumn::InReview, 0).await {
-                        error!(run_id, error = %e, "Failed to move issue to InReview");
-                    }
-                    match db
-                        .update_pipeline_run(
-                            RunId(run_id),
-                            &PipelineStatus::Completed,
-                            Some(&summary),
-                            None,
-                        )
-                        .await
+                // After run completes (success or failure), dispatch next queued run.
+                // Spawn a separate task to avoid the Send issue with recursive start_run.
+                let dispatch_db = db.clone();
+                let dispatch_runner = runner_clone;
+                let dispatch_tx = tx.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = crate::factory::dispatch::dispatch_pending_runs(
+                        &dispatch_db,
+                        &dispatch_runner,
+                        &dispatch_tx,
+                        crate::factory::dispatch::DEFAULT_MAX_CONCURRENCY,
+                    )
+                    .await
                     {
-                        Ok(run) => {
-                            let duration = run_start.elapsed().as_secs_f64();
-                            if let Err(e) = metrics
-                                .record_run_completed(&run_id_str, true, duration, 0, 0)
-                                .await
-                            {
-                                warn!(error = %e, "Failed to record metrics run completion");
-                            }
-                            emit_run_event(&db, &tx, RunId(run_id), &WsMessage::PipelineCompleted { run }).await;
-                        }
-                        Err(e) => {
-                            error!(run_id, error = %e, "CRITICAL: completed but failed to update DB");
-                            // Still broadcast completion so UI doesn't show "running" forever
-                            broadcast_message(
-                                &tx,
-                                &WsMessage::AgentSignal {
-                                    run_id: RunId(run_id),
-                                    task_id: TaskId(0),
-                                    signal_type: SignalType::Blocker,
-                                    content: format!(
-                                        "[pipeline] Pipeline completed but failed to persist status: {}",
-                                        e
-                                    ),
-                                },
-                            );
-                        }
+                        warn!(error = %e, "dispatch_pending_runs failed after run completion");
                     }
-                    broadcast_message(
-                        &tx,
-                        &WsMessage::IssueMoved {
-                            issue_id,
-                            from_column: "in_progress".to_string(),
-                            to_column: "in_review".to_string(),
-                            position: 0,
-                        },
-                    );
-                }
-                Err(e) => {
-                    let error_msg = format!("{:#}", e);
-                    let duration = run_start.elapsed().as_secs_f64();
-                    if let Err(e) = metrics
-                        .record_run_completed(&run_id_str, false, duration, 0, 0)
-                        .await
-                    {
-                        warn!(error = %e, "Failed to record metrics run failure");
-                    }
-                    match db
-                        .update_pipeline_run(
-                            RunId(run_id),
-                            &PipelineStatus::Failed,
-                            None,
-                            Some(&error_msg),
-                        )
-                        .await
-                    {
-                        Ok(run) => emit_run_event(&db, &tx, RunId(run_id), &WsMessage::PipelineFailed { run }).await,
-                        Err(e) => {
-                            error!(run_id, error = %e, "CRITICAL: failed but could not update DB");
-                            // Still broadcast failure so UI doesn't show "running" forever
-                            broadcast_message(
-                                &tx,
-                                &WsMessage::AgentSignal {
-                                    run_id: RunId(run_id),
-                                    task_id: TaskId(0),
-                                    signal_type: SignalType::Blocker,
-                                    content: format!(
-                                        "[pipeline] Pipeline failed but could not persist error status: {}",
-                                        e
-                                    ),
-                                },
-                            );
-                        }
-                    }
-                    // Issue stays in InProgress on failure (error is visible on the card)
-                }
-            }
-
-            // After run completes (success or failure), dispatch next queued run.
-            // Spawn a separate task to avoid the Send issue with recursive start_run.
-            let dispatch_db = db.clone();
-            let dispatch_runner = runner_clone;
-            let dispatch_tx = tx.clone();
-            tokio::spawn(async move {
-                if let Err(e) = crate::factory::dispatch::dispatch_pending_runs(
-                    &dispatch_db,
-                    &dispatch_runner,
-                    &dispatch_tx,
-                    crate::factory::dispatch::DEFAULT_MAX_CONCURRENCY,
-                )
-                .await
-                {
-                    warn!(error = %e, "dispatch_pending_runs failed after run completion");
-                }
+                });
             });
-        });
 
-        Ok(())
+            Ok(())
         } // end async move
     }
 }

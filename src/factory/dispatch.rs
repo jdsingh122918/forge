@@ -229,14 +229,9 @@ mod tests {
         db.update_pipeline_run(runs[0].id, &PipelineStatus::Running, None, None)
             .await
             .unwrap();
-        db.update_pipeline_run(
-            runs[0].id,
-            &PipelineStatus::Completed,
-            Some("done"),
-            None,
-        )
-        .await
-        .unwrap();
+        db.update_pipeline_run(runs[0].id, &PipelineStatus::Completed, Some("done"), None)
+            .await
+            .unwrap();
 
         // Now dispatch — should pick up run2 (next FIFO)
         let dispatched = dispatch_pending_runs(&db, &runner, &tx, 1).await.unwrap();

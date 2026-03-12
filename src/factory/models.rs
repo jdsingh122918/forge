@@ -1085,10 +1085,7 @@ mod tests {
             completed_at: None,
             last_event_at: Some("2026-03-12T01:00:00".to_string()),
         };
-        assert_eq!(
-            run.last_event_at,
-            Some("2026-03-12T01:00:00".to_string())
-        );
+        assert_eq!(run.last_event_at, Some("2026-03-12T01:00:00".to_string()));
 
         // Also verify None case
         let run2 = PipelineRun {

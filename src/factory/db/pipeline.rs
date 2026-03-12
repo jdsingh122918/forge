@@ -218,10 +218,7 @@ pub async fn count_queue_position(conn: &Connection, run_id: RunId) -> Result<i3
         )
         .await
         .context("Failed to count queue position")?;
-    let row = rows
-        .next()
-        .await?
-        .context("No result from count query")?;
+    let row = rows.next().await?.context("No result from count query")?;
     let count: i64 = row.get(0)?;
     Ok(count as i32)
 }
@@ -567,7 +564,10 @@ mod tests {
 
         // Create a pipeline run — last_event_at should default to NULL
         let run = create_pipeline_run(conn, issue.id).await.unwrap();
-        assert_eq!(run.last_event_at, None, "last_event_at should default to None");
+        assert_eq!(
+            run.last_event_at, None,
+            "last_event_at should default to None"
+        );
 
         // Set last_event_at via direct SQL (simulating a heartbeat update)
         conn.execute(

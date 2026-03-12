@@ -38,10 +38,7 @@ pub enum OrchestratorError {
     GitTracker(String),
 
     #[error("Iteration timed out for phase '{phase}' after {timeout_secs}s")]
-    IterationTimeout {
-        phase: String,
-        timeout_secs: u64,
-    },
+    IterationTimeout { phase: String, timeout_secs: u64 },
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),

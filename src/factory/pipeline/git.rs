@@ -43,14 +43,20 @@ pub fn slugify(title: &str, max_len: usize) -> String {
 /// - The derived path (or its parent) cannot be canonicalized
 /// - The canonicalized derived path does not start with the canonicalized project root
 pub fn validate_path_containment(project_root: &Path, derived_path: &Path) -> Result<PathBuf> {
-    let canonical_root = project_root
-        .canonicalize()
-        .with_context(|| format!("Failed to canonicalize project root: {}", project_root.display()))?;
+    let canonical_root = project_root.canonicalize().with_context(|| {
+        format!(
+            "Failed to canonicalize project root: {}",
+            project_root.display()
+        )
+    })?;
 
     let canonical_derived = if derived_path.exists() {
-        derived_path
-            .canonicalize()
-            .with_context(|| format!("Failed to canonicalize derived path: {}", derived_path.display()))?
+        derived_path.canonicalize().with_context(|| {
+            format!(
+                "Failed to canonicalize derived path: {}",
+                derived_path.display()
+            )
+        })?
     } else {
         // Path doesn't exist yet — normalize it logically first (resolve `.` and `..`),
         // then canonicalize the nearest existing ancestor and append the rest.
@@ -73,9 +79,12 @@ pub fn validate_path_containment(project_root: &Path, derived_path: &Path) -> Re
                 .context("Derived path has no resolvable ancestor")?
                 .to_path_buf();
         }
-        let mut canonical_ancestor = existing_ancestor
-            .canonicalize()
-            .with_context(|| format!("Failed to canonicalize ancestor: {}", existing_ancestor.display()))?;
+        let mut canonical_ancestor = existing_ancestor.canonicalize().with_context(|| {
+            format!(
+                "Failed to canonicalize ancestor: {}",
+                existing_ancestor.display()
+            )
+        })?;
         for comp in pending_components.into_iter().rev() {
             canonical_ancestor = canonical_ancestor.join(comp);
         }
@@ -378,7 +387,10 @@ mod tests {
         let derived = worktrees_dir.join("task-1");
 
         let result = validate_path_containment(project_root, &derived);
-        assert!(result.is_ok(), "Valid path within project root should be accepted");
+        assert!(
+            result.is_ok(),
+            "Valid path within project root should be accepted"
+        );
         let canonical = result.unwrap();
         assert!(
             canonical.starts_with(project_root.canonicalize().unwrap()),
@@ -391,7 +403,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path();
         // Construct a path that traverses out of the project root
-        let escaped = project_root.join(".worktrees").join("..").join("..").join("etc");
+        let escaped = project_root
+            .join(".worktrees")
+            .join("..")
+            .join("..")
+            .join("etc");
 
         let result = validate_path_containment(project_root, &escaped);
         assert!(
@@ -490,6 +506,9 @@ mod tests {
     #[test]
     fn test_canonicalize_project_path_nonexistent() {
         let result = canonicalize_project_path("/nonexistent/path/that/does/not/exist");
-        assert!(result.is_err(), "Non-existent path should fail canonicalization");
+        assert!(
+            result.is_err(),
+            "Non-existent path should fail canonicalization"
+        );
     }
 }

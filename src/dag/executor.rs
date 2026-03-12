@@ -1429,20 +1429,14 @@ mod tests {
         let anyhow_err: anyhow::Error = err.into();
 
         // Replicate the DAG executor's logic
-        let failure_msg = if let Some(timeout_err) =
-            anyhow_err.downcast_ref::<OrchestratorError>()
-        {
-            if let OrchestratorError::IterationTimeout {
-                timeout_secs, ..
-            } = timeout_err
+        let failure_msg =
+            if let Some(OrchestratorError::IterationTimeout { timeout_secs, .. }) =
+                anyhow_err.downcast_ref::<OrchestratorError>()
             {
                 format!("Iteration 3 timed out after {}s", timeout_secs)
             } else {
                 anyhow_err.to_string()
-            }
-        } else {
-            anyhow_err.to_string()
-        };
+            };
 
         assert!(failure_msg.contains("timed out"));
         assert!(failure_msg.contains("600"));

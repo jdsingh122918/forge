@@ -504,10 +504,9 @@ mod tests {
     async fn test_get_board_view_includes_stalled_runs() {
         let db = DbHandle::new_in_memory().await.unwrap();
         let conn = db.conn();
-        let project =
-            super::super::projects::create_project(conn, "stall-proj", "/tmp/stall-proj")
-                .await
-                .unwrap();
+        let project = super::super::projects::create_project(conn, "stall-proj", "/tmp/stall-proj")
+            .await
+            .unwrap();
 
         let issue = create_issue(
             conn,
