@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "3d6ca2172d98",
+  "session_id": "9c79c99e-b470-42b7-bd40-f7c4d9e6547b",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-13T10:41:01.784456Z",
+  "branch": "main",
+  "checkpoints_count": 16,
+  "files_touched": [
+    "docs/superpowers/specs/2026-03-13-forge-runtime-platform-design.md"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "7b1375aaae0e",
+  "token_usage": {
+    "input_tokens": 4111,
+    "cache_creation_tokens": 146621,
+    "cache_read_tokens": 3611439,
+    "output_tokens": 42658,
+    "api_call_count": 55
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-13T10:41:01.226336Z",
+    "agent_lines": 1037,
+    "human_added": 1,
+    "human_modified": 12,
+    "human_removed": 0,
+    "total_committed": 1050,
+    "agent_percentage": 98.76190476190476
+  }
+}

@@ -3,7 +3,7 @@
   "checkpoint_id": "3d6ca2172d98",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 0,
+  "checkpoints_count": 16,
   "files_touched": [
     "docs/superpowers/specs/2026-03-13-forge-runtime-platform-design.md"
   ],
@@ -21,13 +21,20 @@
       "context": "/3d/6ca2172d98/1/context.md",
       "content_hash": "/3d/6ca2172d98/1/content_hash.txt",
       "prompt": "/3d/6ca2172d98/1/prompt.txt"
+    },
+    {
+      "metadata": "/3d/6ca2172d98/2/metadata.json",
+      "transcript": "/3d/6ca2172d98/2/full.jsonl",
+      "context": "/3d/6ca2172d98/2/context.md",
+      "content_hash": "/3d/6ca2172d98/2/content_hash.txt",
+      "prompt": "/3d/6ca2172d98/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 0,
-    "cache_creation_tokens": 0,
-    "cache_read_tokens": 0,
-    "output_tokens": 0,
-    "api_call_count": 0
+    "input_tokens": 4111,
+    "cache_creation_tokens": 146621,
+    "cache_read_tokens": 3611439,
+    "output_tokens": 42658,
+    "api_call_count": 55
   }
 }
