@@ -1,0 +1,19 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "74034160a199",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "docs/superpowers/plans/2026-03-13-runtime-foundation.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/74/034160a199/0/metadata.json",
+      "transcript": "/74/034160a199/0/full.jsonl",
+      "context": "",
+      "content_hash": "/74/034160a199/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
