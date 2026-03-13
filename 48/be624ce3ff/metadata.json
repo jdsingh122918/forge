@@ -1,0 +1,48 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "48be624ce3ff",
+  "strategy": "manual-commit",
+  "branch": "runtime-daemon-core-approvals",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "Cargo.lock",
+    "Cargo.toml",
+    "crates/forge-common/src/events.rs",
+    "crates/forge-common/src/facade.rs",
+    "crates/forge-common/src/lib.rs",
+    "crates/forge-proto/src/convert/enums.rs",
+    "crates/forge-proto/src/convert/mod.rs",
+    "crates/forge-runtime/Cargo.toml",
+    "crates/forge-runtime/src/event_stream.rs",
+    "crates/forge-runtime/src/lib.rs",
+    "crates/forge-runtime/src/main.rs",
+    "crates/forge-runtime/src/recovery.rs",
+    "crates/forge-runtime/src/run_orchestrator.rs",
+    "crates/forge-runtime/src/scheduler.rs",
+    "crates/forge-runtime/src/server.rs",
+    "crates/forge-runtime/src/shutdown.rs",
+    "crates/forge-runtime/src/state/events.rs",
+    "crates/forge-runtime/src/state/mod.rs",
+    "crates/forge-runtime/src/state/runs.rs",
+    "crates/forge-runtime/src/state/schema.rs",
+    "crates/forge-runtime/src/state/tasks.rs",
+    "crates/forge-runtime/src/version.rs",
+    "crates/forge-runtime/tests/approval_rpcs.rs",
+    "crates/forge-runtime/tests/control_rpcs.rs",
+    "crates/forge-runtime/tests/create_child_task.rs",
+    "crates/forge-runtime/tests/event_streaming.rs",
+    "crates/forge-runtime/tests/grpc_health.rs",
+    "crates/forge-runtime/tests/query_rpcs.rs",
+    "crates/forge-runtime/tests/submit_run.rs",
+    "docs/superpowers/plans/2026-03-13-runtime-daemon-core.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/48/be624ce3ff/0/metadata.json",
+      "transcript": "/48/be624ce3ff/0/full.jsonl",
+      "context": "",
+      "content_hash": "/48/be624ce3ff/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
