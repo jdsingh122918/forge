@@ -547,7 +547,10 @@ pub enum TaskOutput {
 
     /// Token usage update parsed from the agent's stream-json output.
     TokenUsage {
-        /// Tokens consumed in this update.
+        /// Tokens reported in this update.
+        ///
+        /// Backends that only expose cumulative usage may set this equal to
+        /// `cumulative`.
         tokens: u64,
         /// Cumulative tokens for this agent.
         cumulative: u64,

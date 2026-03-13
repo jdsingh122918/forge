@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::convert::TryFrom;
 
 use forge_common::manifest::{
     AgentManifest, BudgetEnvelope, CapabilityEnvelope, CredentialGrant, MemoryPolicy,
@@ -6,12 +7,12 @@ use forge_common::manifest::{
 };
 
 use crate::convert::enums::{
-    decode_credential_access_mode, decode_memory_scope, decode_repo_access,
-    decode_run_shared_write_mode, IntoProtoEnum,
+    IntoProtoEnum, decode_credential_access_mode, decode_memory_scope, decode_repo_access,
+    decode_run_shared_write_mode,
 };
 use crate::convert::{
-    non_negative_i32, non_negative_i64, require_message, u32_to_i32, u64_to_i64, ConversionError,
-    IntoProto, Result, TryFromProto,
+    ConversionError, IntoProto, Result, TryFromProto, non_negative_i32, non_negative_i64,
+    require_message, u32_to_i32, u64_to_i64,
 };
 use crate::proto;
 
@@ -193,11 +194,17 @@ impl IntoProto<proto::MemoryPolicy> for MemoryPolicy {
 
 impl TryFromProto<proto::ResourceLimits> for ResourceLimits {
     fn try_from_proto(value: &proto::ResourceLimits) -> Result<Self> {
-        if !value.cpu.is_finite() || value.cpu < 0.0 {
-            return Err(ConversionError::InvalidMemoryValue(format!(
-                "invalid cpu limit `{}`",
-                value.cpu
-            )));
+        if value.cpu.is_nan() || value.cpu.is_infinite() || value.cpu > f64::from(f32::MAX) {
+            return Err(ConversionError::OutOfRange {
+                field: "cpu",
+                value: u64::MAX,
+            });
+        }
+        if value.cpu < 0.0 {
+            return Err(ConversionError::NegativeValue {
+                field: "cpu",
+                value: value.cpu.floor() as i64,
+            });
         }
 
         Ok(Self {
@@ -208,13 +215,22 @@ impl TryFromProto<proto::ResourceLimits> for ResourceLimits {
     }
 }
 
+impl TryFrom<&ResourceLimits> for proto::ResourceLimits {
+    type Error = crate::convert::ConversionError;
+
+    fn try_from(value: &ResourceLimits) -> Result<Self> {
+        Ok(Self {
+            cpu: f64::from(value.cpu),
+            memory: value.memory_bytes.to_string(),
+            token_budget: u64_to_i64(value.token_budget, "token_budget")?,
+        })
+    }
+}
+
 impl IntoProto<proto::ResourceLimits> for ResourceLimits {
     fn into_proto(&self) -> proto::ResourceLimits {
-        proto::ResourceLimits {
-            cpu: f64::from(self.cpu),
-            memory: self.memory_bytes.to_string(),
-            token_budget: u64_to_i64(self.token_budget, "token_budget").unwrap_or(i64::MAX),
-        }
+        proto::ResourceLimits::try_from(self)
+            .expect("resource limits should fit within proto bounds")
     }
 }
 
@@ -236,22 +252,28 @@ impl TryFromProto<proto::PermissionSet> for PermissionSet {
     }
 }
 
+impl TryFrom<&PermissionSet> for proto::PermissionSet {
+    type Error = crate::convert::ConversionError;
+
+    fn try_from(value: &PermissionSet) -> Result<Self> {
+        Ok(Self {
+            repo_access: value.repo_access.into_proto() as i32,
+            network_allowlist: value.network_allowlist.iter().cloned().collect(),
+            spawn: Some(proto::SpawnPermissions {
+                max_children: u32_to_i32(value.spawn_limits.max_children, "spawn.max_children")?,
+                require_approval_after: u32_to_i32(
+                    value.spawn_limits.require_approval_after,
+                    "spawn.require_approval_after",
+                )?,
+            }),
+            allow_project_memory_promotion: value.allow_project_memory_promotion,
+        })
+    }
+}
+
 impl IntoProto<proto::PermissionSet> for PermissionSet {
     fn into_proto(&self) -> proto::PermissionSet {
-        proto::PermissionSet {
-            repo_access: self.repo_access.into_proto() as i32,
-            network_allowlist: self.network_allowlist.iter().cloned().collect(),
-            spawn: Some(proto::SpawnPermissions {
-                max_children: u32_to_i32(self.spawn_limits.max_children, "spawn.max_children")
-                    .unwrap_or(i32::MAX),
-                require_approval_after: u32_to_i32(
-                    self.spawn_limits.require_approval_after,
-                    "spawn.require_approval_after",
-                )
-                .unwrap_or(i32::MAX),
-            }),
-            allow_project_memory_promotion: self.allow_project_memory_promotion,
-        }
+        proto::PermissionSet::try_from(self).expect("permission set should fit within proto bounds")
     }
 }
 
@@ -267,7 +289,11 @@ impl TryFromProto<proto::CapabilityEnvelope> for CapabilityEnvelope {
                 .iter()
                 .map(CredentialGrant::try_from_proto)
                 .collect::<Result<Vec<_>>>()?,
-            network_allowlist: value.network_allowlist.iter().cloned().collect::<HashSet<_>>(),
+            network_allowlist: value
+                .network_allowlist
+                .iter()
+                .cloned()
+                .collect::<HashSet<_>>(),
             memory_policy: MemoryPolicy::try_from_proto(memory_policy)?,
             repo_access: decode_repo_access(value.repo_access)?,
             spawn_limits: SpawnLimits {
@@ -282,26 +308,37 @@ impl TryFromProto<proto::CapabilityEnvelope> for CapabilityEnvelope {
     }
 }
 
+impl TryFrom<&CapabilityEnvelope> for proto::CapabilityEnvelope {
+    type Error = crate::convert::ConversionError;
+
+    fn try_from(value: &CapabilityEnvelope) -> Result<Self> {
+        Ok(Self {
+            tools: value.tools.clone(),
+            mcp_servers: value.mcp_servers.clone(),
+            credentials: value
+                .credentials
+                .iter()
+                .map(IntoProto::into_proto)
+                .collect(),
+            network_allowlist: value.network_allowlist.iter().cloned().collect(),
+            memory_policy: Some(value.memory_policy.into_proto()),
+            repo_access: value.repo_access.into_proto() as i32,
+            spawn: Some(proto::SpawnPermissions {
+                max_children: u32_to_i32(value.spawn_limits.max_children, "spawn.max_children")?,
+                require_approval_after: u32_to_i32(
+                    value.spawn_limits.require_approval_after,
+                    "spawn.require_approval_after",
+                )?,
+            }),
+            allow_project_memory_promotion: value.allow_project_memory_promotion,
+        })
+    }
+}
+
 impl IntoProto<proto::CapabilityEnvelope> for CapabilityEnvelope {
     fn into_proto(&self) -> proto::CapabilityEnvelope {
-        proto::CapabilityEnvelope {
-            tools: self.tools.clone(),
-            mcp_servers: self.mcp_servers.clone(),
-            credentials: self.credentials.iter().map(IntoProto::into_proto).collect(),
-            network_allowlist: self.network_allowlist.iter().cloned().collect(),
-            memory_policy: Some(self.memory_policy.into_proto()),
-            repo_access: self.repo_access.into_proto() as i32,
-            spawn: Some(proto::SpawnPermissions {
-                max_children: u32_to_i32(self.spawn_limits.max_children, "spawn.max_children")
-                    .unwrap_or(i32::MAX),
-                require_approval_after: u32_to_i32(
-                    self.spawn_limits.require_approval_after,
-                    "spawn.require_approval_after",
-                )
-                .unwrap_or(i32::MAX),
-            }),
-            allow_project_memory_promotion: self.allow_project_memory_promotion,
-        }
+        proto::CapabilityEnvelope::try_from(self)
+            .expect("capability envelope should fit within proto bounds")
     }
 }
 
@@ -332,17 +369,29 @@ impl TryFromProto<proto::AgentManifest> for AgentManifest {
     }
 }
 
+impl TryFrom<&AgentManifest> for proto::AgentManifest {
+    type Error = crate::convert::ConversionError;
+
+    fn try_from(value: &AgentManifest) -> Result<Self> {
+        Ok(Self {
+            profile_name: value.name.clone(),
+            tools: value.tools.clone(),
+            mcp_servers: value.mcp_servers.clone(),
+            credentials: value
+                .credentials
+                .iter()
+                .map(IntoProto::into_proto)
+                .collect(),
+            memory_policy: Some(value.memory_policy.into_proto()),
+            resource_limits: Some(proto::ResourceLimits::try_from(&value.resources)?),
+            permissions: Some(proto::PermissionSet::try_from(&value.permissions)?),
+        })
+    }
+}
+
 impl IntoProto<proto::AgentManifest> for AgentManifest {
     fn into_proto(&self) -> proto::AgentManifest {
-        proto::AgentManifest {
-            profile_name: self.name.clone(),
-            tools: self.tools.clone(),
-            mcp_servers: self.mcp_servers.clone(),
-            credentials: self.credentials.iter().map(IntoProto::into_proto).collect(),
-            memory_policy: Some(self.memory_policy.into_proto()),
-            resource_limits: Some(self.resources.into_proto()),
-            permissions: Some(self.permissions.into_proto()),
-        }
+        proto::AgentManifest::try_from(self).expect("agent manifest should fit within proto bounds")
     }
 }
 
@@ -436,6 +485,49 @@ mod tests {
     }
 
     #[test]
+    fn negative_cpu_limits_are_rejected_with_cpu_field_context() {
+        let limits = proto::ResourceLimits {
+            cpu: -1.0,
+            memory: "1024".to_string(),
+            token_budget: 100,
+        };
+
+        assert!(matches!(
+            ResourceLimits::try_from_proto(&limits),
+            Err(ConversionError::NegativeValue {
+                field: "cpu",
+                value: -1
+            })
+        ));
+    }
+
+    #[test]
+    fn resource_limit_encoding_rejects_token_budget_overflow() {
+        let limits = ResourceLimits {
+            cpu: 1.0,
+            memory_bytes: 1024,
+            token_budget: u64::MAX,
+        };
+
+        assert!(proto::ResourceLimits::try_from(&limits).is_err());
+    }
+
+    #[test]
+    fn permission_encoding_rejects_spawn_limit_overflow() {
+        let permissions = PermissionSet {
+            repo_access: RepoAccess::ReadOnly,
+            network_allowlist: HashSet::new(),
+            spawn_limits: SpawnLimits {
+                max_children: u32::MAX,
+                require_approval_after: 0,
+            },
+            allow_project_memory_promotion: false,
+        };
+
+        assert!(proto::PermissionSet::try_from(&permissions).is_err());
+    }
+
+    #[test]
     fn unspecified_enum_values_are_rejected() {
         let policy = proto::MemoryPolicy {
             read_scopes: vec![proto::MemoryScope::Unspecified as i32],
@@ -454,8 +546,13 @@ mod tests {
         assert_eq!(proto.max_children, 0);
         assert!(proto.max_duration.is_none());
 
-        let back =
-            initial_budget_from_proto(&proto, BudgetPolicyDefaults { warn_at_percent: 60 }).unwrap();
+        let back = initial_budget_from_proto(
+            &proto,
+            BudgetPolicyDefaults {
+                warn_at_percent: 60,
+            },
+        )
+        .unwrap();
         assert_eq!(back.allocated, 25_000);
         assert_eq!(back.consumed, 0);
         assert_eq!(back.subtree_consumed, 0);
@@ -477,5 +574,24 @@ mod tests {
         };
 
         assert!(initial_budget_from_proto(&budget, BudgetPolicyDefaults::default()).is_err());
+    }
+
+    #[test]
+    fn agent_manifest_encoding_rejects_nested_overflow() {
+        let manifest = AgentManifest {
+            name: "implementer".to_string(),
+            tools: vec!["rg".to_string()],
+            mcp_servers: vec![],
+            credentials: vec![],
+            memory_policy: sample_memory_policy(),
+            resources: ResourceLimits {
+                cpu: 1.0,
+                memory_bytes: 1024,
+                token_budget: u64::MAX,
+            },
+            permissions: sample_permissions(),
+        };
+
+        assert!(proto::AgentManifest::try_from(&manifest).is_err());
     }
 }

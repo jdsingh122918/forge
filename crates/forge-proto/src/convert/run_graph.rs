@@ -2,12 +2,12 @@ use std::convert::TryFrom;
 
 use forge_common::run_graph::{MilestoneInfo, RunPlan, TaskTemplate};
 
-use crate::convert::enums::{decode_approval_mode, decode_memory_scope, IntoProtoEnum};
-use crate::convert::ids::{milestone_id_from_proto, task_node_id_from_proto, IntoProtoString};
+use crate::convert::enums::{IntoProtoEnum, decode_approval_mode, decode_memory_scope};
+use crate::convert::ids::{IntoProtoString, milestone_id_from_proto, task_node_id_from_proto};
 use crate::convert::manifest::{
-    encode_initial_budget_request, initial_budget_from_proto, BudgetPolicyDefaults,
+    BudgetPolicyDefaults, encode_initial_budget_request, initial_budget_from_proto,
 };
-use crate::convert::{require_message, IntoProto, Result};
+use crate::convert::{IntoProto, Result, require_message};
 use crate::proto;
 
 pub fn milestone_from_proto(
@@ -15,7 +15,7 @@ pub fn milestone_from_proto(
     defaults: BudgetPolicyDefaults,
 ) -> Result<MilestoneInfo> {
     Ok(MilestoneInfo {
-        id: milestone_id_from_proto(&value.id),
+        id: milestone_id_from_proto(&value.id)?,
         title: value.title.clone(),
         objective: value.objective.clone(),
         expected_output: value.expected_output.clone(),
@@ -24,7 +24,7 @@ pub fn milestone_from_proto(
             .iter()
             .cloned()
             .map(milestone_id_from_proto)
-            .collect(),
+            .collect::<Result<Vec<_>>>()?,
         success_criteria: value.success_criteria.clone(),
         default_profile: value.default_profile.clone(),
         budget: initial_budget_from_proto(require_message(&value.budget, "budget")?, defaults)?,
@@ -37,7 +37,7 @@ pub fn task_template_from_proto(
     defaults: BudgetPolicyDefaults,
 ) -> Result<TaskTemplate> {
     Ok(TaskTemplate {
-        milestone: milestone_id_from_proto(&value.milestone_id),
+        milestone: milestone_id_from_proto(&value.milestone_id)?,
         objective: value.objective.clone(),
         expected_output: value.expected_output.clone(),
         profile_hint: value.profile_hint.clone(),
@@ -48,11 +48,14 @@ pub fn task_template_from_proto(
             .iter()
             .cloned()
             .map(task_node_id_from_proto)
-            .collect(),
+            .collect::<Result<Vec<_>>>()?,
     })
 }
 
-pub fn run_plan_from_proto(value: &proto::RunPlan, defaults: BudgetPolicyDefaults) -> Result<RunPlan> {
+pub fn run_plan_from_proto(
+    value: &proto::RunPlan,
+    defaults: BudgetPolicyDefaults,
+) -> Result<RunPlan> {
     Ok(RunPlan {
         version: value.version,
         milestones: value
@@ -80,24 +83,31 @@ impl TryFrom<&proto::MilestonePlan> for MilestoneInfo {
     }
 }
 
+impl TryFrom<&MilestoneInfo> for proto::MilestonePlan {
+    type Error = crate::convert::ConversionError;
+
+    fn try_from(value: &MilestoneInfo) -> Result<Self> {
+        Ok(Self {
+            id: value.id.to_proto_string(),
+            title: value.title.clone(),
+            objective: value.objective.clone(),
+            expected_output: value.expected_output.clone(),
+            depends_on: value
+                .depends_on
+                .iter()
+                .map(IntoProtoString::to_proto_string)
+                .collect(),
+            success_criteria: value.success_criteria.clone(),
+            default_profile: value.default_profile.clone(),
+            budget: Some(encode_initial_budget_request(&value.budget)?),
+            approval_mode: value.approval_mode.into_proto() as i32,
+        })
+    }
+}
+
 impl IntoProto<proto::MilestonePlan> for MilestoneInfo {
     fn into_proto(&self) -> proto::MilestonePlan {
-        proto::MilestonePlan {
-            id: self.id.to_proto_string(),
-            title: self.title.clone(),
-            objective: self.objective.clone(),
-            expected_output: self.expected_output.clone(),
-            depends_on: self.depends_on.iter().map(IntoProtoString::to_proto_string).collect(),
-            success_criteria: self.success_criteria.clone(),
-            default_profile: self.default_profile.clone(),
-            budget: Some(encode_initial_budget_request(&self.budget).unwrap_or_else(|_| {
-                proto::BudgetEnvelope {
-                    max_tokens: i64::MAX,
-                    ..Default::default()
-                }
-            })),
-            approval_mode: self.approval_mode.into_proto() as i32,
-        }
+        proto::MilestonePlan::try_from(self).expect("milestone plan should fit within proto bounds")
     }
 }
 
@@ -109,26 +119,29 @@ impl TryFrom<&proto::TaskTemplate> for TaskTemplate {
     }
 }
 
-impl IntoProto<proto::TaskTemplate> for TaskTemplate {
-    fn into_proto(&self) -> proto::TaskTemplate {
-        proto::TaskTemplate {
-            milestone_id: self.milestone.to_proto_string(),
-            objective: self.objective.clone(),
-            expected_output: self.expected_output.clone(),
-            profile_hint: self.profile_hint.clone(),
-            budget: Some(encode_initial_budget_request(&self.budget).unwrap_or_else(|_| {
-                proto::BudgetEnvelope {
-                    max_tokens: i64::MAX,
-                    ..Default::default()
-                }
-            })),
-            memory_scope: self.memory_scope.into_proto() as i32,
-            depends_on_task_ids: self
+impl TryFrom<&TaskTemplate> for proto::TaskTemplate {
+    type Error = crate::convert::ConversionError;
+
+    fn try_from(value: &TaskTemplate) -> Result<Self> {
+        Ok(Self {
+            milestone_id: value.milestone.to_proto_string(),
+            objective: value.objective.clone(),
+            expected_output: value.expected_output.clone(),
+            profile_hint: value.profile_hint.clone(),
+            budget: Some(encode_initial_budget_request(&value.budget)?),
+            memory_scope: value.memory_scope.into_proto() as i32,
+            depends_on_task_ids: value
                 .depends_on
                 .iter()
                 .map(IntoProtoString::to_proto_string)
                 .collect(),
-        }
+        })
+    }
+}
+
+impl IntoProto<proto::TaskTemplate> for TaskTemplate {
+    fn into_proto(&self) -> proto::TaskTemplate {
+        proto::TaskTemplate::try_from(self).expect("task template should fit within proto bounds")
     }
 }
 
@@ -140,19 +153,30 @@ impl TryFrom<&proto::RunPlan> for RunPlan {
     }
 }
 
+impl TryFrom<&RunPlan> for proto::RunPlan {
+    type Error = crate::convert::ConversionError;
+
+    fn try_from(value: &RunPlan) -> Result<Self> {
+        Ok(Self {
+            version: value.version,
+            milestones: value
+                .milestones
+                .iter()
+                .map(proto::MilestonePlan::try_from)
+                .collect::<Result<Vec<_>>>()?,
+            initial_tasks: value
+                .initial_tasks
+                .iter()
+                .map(proto::TaskTemplate::try_from)
+                .collect::<Result<Vec<_>>>()?,
+            global_budget: Some(encode_initial_budget_request(&value.global_budget)?),
+        })
+    }
+}
+
 impl IntoProto<proto::RunPlan> for RunPlan {
     fn into_proto(&self) -> proto::RunPlan {
-        proto::RunPlan {
-            version: self.version,
-            milestones: self.milestones.iter().map(IntoProto::into_proto).collect(),
-            initial_tasks: self.initial_tasks.iter().map(IntoProto::into_proto).collect(),
-            global_budget: Some(encode_initial_budget_request(&self.global_budget).unwrap_or_else(
-                |_| proto::BudgetEnvelope {
-                    max_tokens: i64::MAX,
-                    ..Default::default()
-                },
-            )),
-        }
+        proto::RunPlan::try_from(self).expect("run plan should fit within proto bounds")
     }
 }
 
@@ -239,5 +263,35 @@ mod tests {
         };
 
         assert!(TaskTemplate::try_from(&proto).is_err());
+    }
+
+    #[test]
+    fn blank_proto_ids_are_rejected_on_decode() {
+        let proto = proto::TaskTemplate {
+            milestone_id: "   ".to_string(),
+            objective: "task".to_string(),
+            expected_output: "output".to_string(),
+            profile_hint: "base".to_string(),
+            budget: Some(proto::BudgetEnvelope {
+                max_tokens: 1_000,
+                ..Default::default()
+            }),
+            memory_scope: proto::MemoryScope::Scratch as i32,
+            depends_on_task_ids: vec!["dep-1".to_string()],
+        };
+
+        assert!(TaskTemplate::try_from(&proto).is_err());
+    }
+
+    #[test]
+    fn run_plan_encoding_rejects_budget_overflow() {
+        let domain = RunPlan {
+            version: 1,
+            milestones: vec![],
+            initial_tasks: vec![],
+            global_budget: BudgetEnvelope::new(u64::MAX, 80),
+        };
+
+        assert!(proto::RunPlan::try_from(&domain).is_err());
     }
 }

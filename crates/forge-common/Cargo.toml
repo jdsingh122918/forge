@@ -12,7 +12,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"
 anyhow = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["io-util", "process", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "sync", "time"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "time"] }

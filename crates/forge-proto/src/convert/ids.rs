@@ -1,4 +1,6 @@
-use forge_common::ids::{ApprovalId, AgentId, MilestoneId, RunId, TaskNodeId};
+use forge_common::ids::{AgentId, ApprovalId, MilestoneId, RunId, TaskNodeId};
+
+use crate::convert::{ConversionError, Result};
 
 /// Local helper trait for encoding strongly typed IDs into proto string fields.
 pub trait IntoProtoString {
@@ -27,24 +29,33 @@ impl_proto_string!(MilestoneId);
 impl_proto_string!(AgentId);
 impl_proto_string!(ApprovalId);
 
-pub fn run_id_from_proto(value: impl Into<String>) -> RunId {
-    RunId::new(value)
+fn parse_non_empty_id(value: impl Into<String>, field: &'static str) -> Result<String> {
+    let value = value.into();
+    if value.trim().is_empty() {
+        return Err(ConversionError::MissingField(field));
+    }
+
+    Ok(value)
 }
 
-pub fn task_node_id_from_proto(value: impl Into<String>) -> TaskNodeId {
-    TaskNodeId::new(value)
+pub fn run_id_from_proto(value: impl Into<String>) -> Result<RunId> {
+    Ok(RunId::new(parse_non_empty_id(value, "run_id")?))
 }
 
-pub fn milestone_id_from_proto(value: impl Into<String>) -> MilestoneId {
-    MilestoneId::new(value)
+pub fn task_node_id_from_proto(value: impl Into<String>) -> Result<TaskNodeId> {
+    Ok(TaskNodeId::new(parse_non_empty_id(value, "task_id")?))
 }
 
-pub fn agent_id_from_proto(value: impl Into<String>) -> AgentId {
-    AgentId::new(value)
+pub fn milestone_id_from_proto(value: impl Into<String>) -> Result<MilestoneId> {
+    Ok(MilestoneId::new(parse_non_empty_id(value, "milestone_id")?))
 }
 
-pub fn approval_id_from_proto(value: impl Into<String>) -> ApprovalId {
-    ApprovalId::new(value)
+pub fn agent_id_from_proto(value: impl Into<String>) -> Result<AgentId> {
+    Ok(AgentId::new(parse_non_empty_id(value, "agent_id")?))
+}
+
+pub fn approval_id_from_proto(value: impl Into<String>) -> Result<ApprovalId> {
+    Ok(ApprovalId::new(parse_non_empty_id(value, "approval_id")?))
 }
 
 #[cfg(test)]
@@ -53,13 +64,22 @@ mod tests {
 
     #[test]
     fn run_ids_round_trip_through_proto_strings() {
-        let id = run_id_from_proto("run-123");
+        let id = run_id_from_proto("run-123").unwrap();
         assert_eq!(id.to_proto_string(), "run-123");
     }
 
     #[test]
     fn milestone_ids_round_trip_through_proto_strings() {
-        let id = milestone_id_from_proto("M2");
+        let id = milestone_id_from_proto("M2").unwrap();
         assert_eq!(id.to_proto_string(), "M2");
+    }
+
+    #[test]
+    fn blank_proto_ids_are_rejected() {
+        assert!(run_id_from_proto("   ").is_err());
+        assert!(task_node_id_from_proto("").is_err());
+        assert!(milestone_id_from_proto("\n\t").is_err());
+        assert!(agent_id_from_proto(" ").is_err());
+        assert!(approval_id_from_proto("").is_err());
     }
 }

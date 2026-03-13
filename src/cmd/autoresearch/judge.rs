@@ -67,6 +67,23 @@ impl JudgeResult {
     }
 }
 
+/// Parse failure bundled with the conservative fallback result returned to
+/// callers that choose to continue.
+#[derive(Debug)]
+pub struct JudgeFallback {
+    pub result: JudgeResult,
+    pub error: anyhow::Error,
+}
+
+impl JudgeFallback {
+    fn from_error(error: anyhow::Error, finding_ids: &[String]) -> Self {
+        Self {
+            result: JudgeResult::fallback(finding_ids),
+            error,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Prompt Builder
 // ---------------------------------------------------------------------------
@@ -131,11 +148,14 @@ pub fn parse_judge_response(json_str: &str) -> Result<JudgeResult> {
     Ok(result)
 }
 
-/// Parse a judge response with fallback: returns `JudgeResult::fallback()` on any failure.
-pub fn parse_judge_response_with_fallback(json_str: &str, finding_ids: &[String]) -> JudgeResult {
+/// Parse a judge response while preserving the parse error alongside the safe fallback.
+pub fn parse_judge_response_with_fallback(
+    json_str: &str,
+    finding_ids: &[String],
+) -> std::result::Result<JudgeResult, JudgeFallback> {
     match parse_judge_response(json_str) {
-        Ok(result) => result,
-        Err(_) => JudgeResult::fallback(finding_ids),
+        Ok(result) => Ok(result),
+        Err(error) => Err(JudgeFallback::from_error(error, finding_ids)),
     }
 }
 
@@ -258,13 +278,13 @@ impl<E: JudgeExecutor> Judge<E> {
 
         // Attempt 1
         match self.executor.execute(request.clone()).await {
-            Ok(output) => {
-                if let Ok(result) = parse_judge_response(&output) {
-                    return Ok(result);
+            Ok(output) => match parse_judge_response_with_fallback(&output, finding_ids) {
+                Ok(result) => return Ok(result),
+                Err(fallback) => {
+                    tracing::warn!("judge parse failed on attempt 1: {:#}", fallback.error);
+                    return Ok(fallback.result);
                 }
-                // Parse failure: no retry, fall back immediately
-                return Ok(JudgeResult::fallback(finding_ids));
-            }
+            },
             Err(e) => {
                 tracing::warn!("judge attempt 1 failed: {:#}", e);
             }
@@ -272,12 +292,13 @@ impl<E: JudgeExecutor> Judge<E> {
 
         // Attempt 2 (retry on CLI failure)
         match self.executor.execute(request).await {
-            Ok(output) => {
-                if let Ok(result) = parse_judge_response(&output) {
-                    return Ok(result);
+            Ok(output) => match parse_judge_response_with_fallback(&output, finding_ids) {
+                Ok(result) => Ok(result),
+                Err(fallback) => {
+                    tracing::warn!("judge parse failed on attempt 2: {:#}", fallback.error);
+                    Ok(fallback.result)
                 }
-                Ok(JudgeResult::fallback(finding_ids))
-            }
+            },
             Err(e) => {
                 tracing::warn!("judge attempt 2 failed: {:#}", e);
                 Ok(JudgeResult::fallback(finding_ids))
@@ -372,7 +393,7 @@ mod tests {
             "actionability_scores": [{"finding_id": "f1", "score": 0.8}]
         }"#;
         let ids = vec!["f1".to_string()];
-        let result = parse_judge_response_with_fallback(json, &ids);
+        let result = parse_judge_response_with_fallback(json, &ids).unwrap();
 
         assert_eq!(result.classifications.len(), 1);
         assert_eq!(
@@ -385,7 +406,9 @@ mod tests {
     #[test]
     fn test_parse_judge_response_with_fallback_invalid() {
         let ids = vec!["f1".to_string(), "f2".to_string()];
-        let result = parse_judge_response_with_fallback("broken", &ids);
+        let fallback = parse_judge_response_with_fallback("broken", &ids).unwrap_err();
+        let error_text = fallback.error.to_string();
+        let result = fallback.result;
 
         assert_eq!(result.classifications.len(), 2);
         for c in &result.classifications {
@@ -394,6 +417,8 @@ mod tests {
         for s in &result.actionability_scores {
             assert!((s.score - 0.5).abs() < f64::EPSILON);
         }
+
+        assert!(error_text.contains("failed to parse judge response JSON"));
     }
 
     #[test]

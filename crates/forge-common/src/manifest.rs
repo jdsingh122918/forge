@@ -239,9 +239,14 @@ pub struct CapabilityEnvelope {
     pub allow_project_memory_promotion: bool,
 }
 
-/// Token budget envelope that tracks allocation and consumption with
+/// Token budget envelope that tracks live allocation and consumption with
 /// subtree rollup. The daemon uses this to enforce per-task and per-subtree
 /// budget limits.
+///
+/// This runtime type is intentionally different from the submission-time
+/// `proto::BudgetEnvelope` request shape. The proto message carries operator
+/// inputs such as `max_tokens`, `max_duration`, and spawn caps, while this
+/// type stores daemon-maintained token counters after plan admission.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BudgetEnvelope {
     /// Total tokens allocated to this task.
@@ -293,8 +298,12 @@ impl BudgetEnvelope {
         if self.allocated == 0 {
             return false;
         }
-        let percent_used = (self.consumed as f64 / self.allocated as f64 * 100.0) as u8;
-        percent_used >= self.warn_at_percent
+
+        let consumed = u128::from(self.consumed);
+        let allocated = u128::from(self.allocated);
+        let threshold = u128::from(self.warn_at_percent);
+
+        consumed.saturating_mul(100) >= allocated.saturating_mul(threshold)
     }
 
     /// Check whether the budget is exhausted.
@@ -359,6 +368,13 @@ mod tests {
         assert_eq!(budget.consumed, 2000);
         assert_eq!(budget.subtree_consumed, 7000); // 2000 (own) + 5000 (child)
         assert_eq!(budget.remaining, 8000);
+    }
+
+    #[test]
+    fn warning_threshold_handles_large_values_without_wrapping() {
+        let mut budget = BudgetEnvelope::new(u64::MAX, 100);
+        budget.consume(u64::MAX);
+        assert!(budget.is_warning_threshold_reached());
     }
 
     #[test]

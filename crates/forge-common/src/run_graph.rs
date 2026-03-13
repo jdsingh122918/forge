@@ -138,33 +138,45 @@ impl RunState {
     /// - All explicit dependency tasks are `Completed`
     /// - Its approval state is not pending or denied
     /// - The run is in `Running` status
-    pub fn get_ready_tasks(&self) -> Vec<TaskNodeId> {
+    pub fn get_ready_tasks(&self) -> Result<Vec<TaskNodeId>, RunGraphError> {
         if self.status != RunStatus::Running {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
-        self.tasks
-            .values()
-            .filter(|task| {
-                if task.status != TaskStatus::Pending {
-                    return false;
-                }
-                if !matches!(
-                    task.approval_state,
-                    ApprovalState::NotRequired | ApprovalState::Approved { .. }
-                ) {
-                    return false;
-                }
+        let mut ready = Vec::new();
 
-                task.depends_on.iter().all(|dependency_id| {
-                    self.tasks
-                        .get(dependency_id)
-                        .map(|dependency| matches!(dependency.status, TaskStatus::Completed { .. }))
-                        .unwrap_or(false)
-                })
-            })
-            .map(|task| task.id.clone())
-            .collect()
+        for task in self.tasks.values() {
+            if task.status != TaskStatus::Pending {
+                continue;
+            }
+            if !matches!(
+                task.approval_state,
+                ApprovalState::NotRequired | ApprovalState::Approved { .. }
+            ) {
+                continue;
+            }
+
+            let mut dependencies_satisfied = true;
+            for dependency_id in &task.depends_on {
+                let dependency = self.tasks.get(dependency_id).ok_or_else(|| {
+                    RunGraphError::DanglingDependency {
+                        task_id: task.id.clone(),
+                        dependency_id: dependency_id.clone(),
+                    }
+                })?;
+
+                if !matches!(dependency.status, TaskStatus::Completed { .. }) {
+                    dependencies_satisfied = false;
+                    break;
+                }
+            }
+
+            if dependencies_satisfied {
+                ready.push(task.id.clone());
+            }
+        }
+
+        Ok(ready)
     }
 
     /// Compute the total token budget consumed by a task and all its
@@ -244,6 +256,13 @@ pub enum RunGraphError {
     #[error("task node not found: {0}")]
     TaskNotFound(TaskNodeId),
 
+    /// A task depends on another task ID that is not present in the run graph.
+    #[error("task {task_id} depends on missing task {dependency_id}")]
+    DanglingDependency {
+        task_id: TaskNodeId,
+        dependency_id: TaskNodeId,
+    },
+
     /// The referenced run was not found.
     #[error("run not found: {0}")]
     RunNotFound(RunId),
@@ -318,7 +337,7 @@ pub struct TaskNode {
 
 /// Execution status of a task node, with associated data for stateful variants.
 ///
-/// Follows the lifecycle: Pending -> AwaitingApproval -> Enqueued ->
+/// Follows the lifecycle: Pending -> (AwaitingApproval | Enqueued) ->
 /// Materializing -> Running -> Completed | Failed | Killed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TaskStatus {
@@ -774,7 +793,7 @@ mod tests {
     #[test]
     fn get_ready_tasks_returns_pending_root_tasks() {
         let run = make_test_run();
-        let ready = run.get_ready_tasks();
+        let ready = run.get_ready_tasks().unwrap();
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].as_str(), "root");
     }
@@ -783,7 +802,26 @@ mod tests {
     fn get_ready_tasks_empty_when_not_running() {
         let mut run = make_test_run();
         run.status = RunStatus::Paused;
-        assert!(run.get_ready_tasks().is_empty());
+        assert!(run.get_ready_tasks().unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_ready_tasks_errors_on_dangling_dependency() {
+        let mut run = make_test_run();
+        let root = run.tasks.get_mut(&TaskNodeId::new("root")).unwrap();
+        root.depends_on.push(TaskNodeId::new("missing"));
+
+        let error = run.get_ready_tasks().unwrap_err();
+        match error {
+            RunGraphError::DanglingDependency {
+                task_id,
+                dependency_id,
+            } => {
+                assert_eq!(task_id.as_str(), "root");
+                assert_eq!(dependency_id.as_str(), "missing");
+            }
+            other => panic!("expected dangling dependency error, got {other:?}"),
+        }
     }
 
     #[test]

@@ -502,7 +502,10 @@ message TaskInfo {
   TaskResultSummary result_summary = 24;
 }
 
-// Budget envelope constraining a task's resource consumption.
+// Submission-time budget envelope constraining a task's resource request.
+// This is not the same shape as the live runtime budget tracked by
+// `forge_common::manifest::BudgetEnvelope`; only `max_tokens` is translated
+// into that Plan 1 runtime state today.
 message BudgetEnvelope {
   // Maximum tokens this task may consume.
   int64 max_tokens = 1;
