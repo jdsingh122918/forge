@@ -1,0 +1,42 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "7fe43885edc5",
+  "session_id": "aebe6771-3a41-4a9e-a818-36201c63724b",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-13T21:38:28.856191Z",
+  "branch": "runtime-daemon-core-approvals",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "crates/forge-runtime/tests/event_streaming.rs",
+    "crates/forge-runtime/src/event_stream.rs",
+    "crates/forge-runtime/src/run_orchestrator.rs",
+    "crates/forge-runtime/src/scheduler.rs",
+    "crates/forge-runtime/tests/approval_rpcs.rs",
+    "crates/forge-runtime/tests/grpc_health.rs",
+    "crates/forge-runtime/src/main.rs",
+    "crates/forge-runtime/src/recovery.rs",
+    "crates/forge-runtime/src/server.rs",
+    "crates/forge-runtime/src/state/tasks.rs",
+    "crates/forge-runtime/tests/control_rpcs.rs"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "f00f9af008f3",
+  "checkpoint_transcript_start": 8,
+  "transcript_lines_at_start": 8,
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-13T21:38:28.837073Z",
+    "agent_lines": 0,
+    "human_added": 7654,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 7654,
+    "agent_percentage": 0
+  }
+}
