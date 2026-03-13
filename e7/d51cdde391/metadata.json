@@ -53,6 +53,13 @@
       "context": "/e7/d51cdde391/3/context.md",
       "content_hash": "/e7/d51cdde391/3/content_hash.txt",
       "prompt": "/e7/d51cdde391/3/prompt.txt"
+    },
+    {
+      "metadata": "/e7/d51cdde391/4/metadata.json",
+      "transcript": "/e7/d51cdde391/4/full.jsonl",
+      "context": "/e7/d51cdde391/4/context.md",
+      "content_hash": "/e7/d51cdde391/4/content_hash.txt",
+      "prompt": "/e7/d51cdde391/4/prompt.txt"
     }
   ],
   "token_usage": {
