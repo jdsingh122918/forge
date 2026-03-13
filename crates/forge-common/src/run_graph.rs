@@ -13,7 +13,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{AgentId, ApprovalId, MilestoneId, RunId, TaskNodeId};
-use crate::manifest::{BudgetEnvelope, CompiledProfile, MemoryScope, WorktreePlan};
+use crate::manifest::{
+    BudgetEnvelope, CapabilityEnvelope, CompiledProfile, MemoryScope, WorktreePlan,
+};
 
 /// Top-level container holding all active and recent runs indexed by `RunId`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -46,8 +48,49 @@ impl RunGraph {
     }
 }
 
-/// The complete state of a single run: its milestones, task nodes, pending
-/// approvals, overall status, and scheduler cursor.
+/// Canonical operator-submitted run plan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunPlan {
+    /// Monotonic schema version for the plan envelope.
+    pub version: u32,
+
+    /// Top-level operator-visible milestones.
+    pub milestones: Vec<MilestoneInfo>,
+
+    /// Initial root tasks seeded under the milestones.
+    pub initial_tasks: Vec<TaskTemplate>,
+
+    /// Global budget for the run.
+    pub global_budget: BudgetEnvelope,
+}
+
+/// Template used to seed root tasks when the run is first submitted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskTemplate {
+    /// Milestone this task belongs to.
+    pub milestone: MilestoneId,
+
+    /// Human-readable objective.
+    pub objective: String,
+
+    /// Expected deliverable for the task.
+    pub expected_output: String,
+
+    /// Trusted base profile hint for compilation.
+    pub profile_hint: String,
+
+    /// Initial budget envelope.
+    pub budget: BudgetEnvelope,
+
+    /// Initial memory scope.
+    pub memory_scope: MemoryScope,
+
+    /// Task dependencies within the submitted plan.
+    pub depends_on: Vec<TaskNodeId>,
+}
+
+/// The complete state of a single run: canonical plan, milestone state,
+/// task nodes, pending approvals, overall status, and replay cursor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunState {
     /// Unique identifier for this run.
@@ -56,8 +99,11 @@ pub struct RunState {
     /// Project path or name this run is executing against.
     pub project: String,
 
-    /// Ordered list of milestone IDs (top-level phases visible to operators).
-    pub milestones: Vec<MilestoneInfo>,
+    /// Canonical daemon-owned submitted plan.
+    pub plan: RunPlan,
+
+    /// Current per-milestone execution state.
+    pub milestones: HashMap<MilestoneId, MilestoneState>,
 
     /// All task nodes in this run, keyed by task node ID.
     pub tasks: HashMap<TaskNodeId, TaskNode>,
@@ -68,8 +114,8 @@ pub struct RunState {
     /// Overall status of the run.
     pub status: RunStatus,
 
-    /// Scheduler cursor tracking which tasks have been considered.
-    pub scheduler_cursor: SchedulerCursor,
+    /// Last durable event-log cursor applied to this run state.
+    pub last_event_cursor: u64,
 
     /// When this run was submitted.
     pub submitted_at: DateTime<Utc>,
@@ -89,7 +135,8 @@ impl RunState {
     ///
     /// A task is ready when:
     /// - Its status is `Pending`
-    /// - All parent/dependency tasks are `Completed`
+    /// - All explicit dependency tasks are `Completed`
+    /// - Its approval state is not pending or denied
     /// - The run is in `Running` status
     pub fn get_ready_tasks(&self) -> Vec<TaskNodeId> {
         if self.status != RunStatus::Running {
@@ -102,16 +149,19 @@ impl RunState {
                 if task.status != TaskStatus::Pending {
                     return false;
                 }
-                // A task is ready if its parent (if any) is completed or running.
-                // Root tasks (no parent) are always eligible.
-                match &task.parent_task {
-                    None => true,
-                    Some(parent_id) => self
-                        .tasks
-                        .get(parent_id)
-                        .map(|parent| matches!(parent.status, TaskStatus::Running { .. } | TaskStatus::Completed { .. }))
-                        .unwrap_or(false),
+                if !matches!(
+                    task.approval_state,
+                    ApprovalState::NotRequired | ApprovalState::Approved { .. }
+                ) {
+                    return false;
                 }
+
+                task.depends_on.iter().all(|dependency_id| {
+                    self.tasks
+                        .get(dependency_id)
+                        .map(|dependency| matches!(dependency.status, TaskStatus::Completed { .. }))
+                        .unwrap_or(false)
+                })
             })
             .map(|task| task.id.clone())
             .collect()
@@ -214,8 +264,11 @@ pub struct TaskNode {
     /// Root tasks (from the submitted plan) have `None`.
     pub parent_task: Option<TaskNodeId>,
 
-    /// Milestone this task belongs to (top-level phase marker), if any.
-    pub milestone: Option<MilestoneId>,
+    /// Milestone this task belongs to (top-level phase marker).
+    pub milestone: MilestoneId,
+
+    /// Explicit task dependencies that must complete before this task can run.
+    pub depends_on: Vec<TaskNodeId>,
 
     /// Human-readable objective describing what this task should accomplish.
     pub objective: String,
@@ -232,6 +285,15 @@ pub struct TaskNode {
     /// Memory scope governing what memory namespaces the agent can access.
     pub memory_scope: MemoryScope,
 
+    /// Approval status for this task node.
+    pub approval_state: ApprovalState,
+
+    /// Capability envelope approved for this task subtree.
+    pub requested_capabilities: CapabilityEnvelope,
+
+    /// Whether the parent should wait for this task before continuing.
+    pub wait_mode: TaskWaitMode,
+
     /// Workspace plan (dedicated worktree, shared, or isolated).
     pub worktree: WorktreePlan,
 
@@ -240,6 +302,9 @@ pub struct TaskNode {
 
     /// Child task nodes spawned by this task's agent.
     pub children: Vec<TaskNodeId>,
+
+    /// Summary of the task result, persisted independently of live agent state.
+    pub result_summary: Option<TaskResultSummary>,
 
     /// Current execution status of this task.
     pub status: TaskStatus,
@@ -301,6 +366,67 @@ pub enum TaskStatus {
     },
 }
 
+/// Approval state of a task node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApprovalState {
+    /// No approval is required for this task.
+    NotRequired,
+    /// Approval is pending.
+    Pending { approval_id: ApprovalId },
+    /// Approval was granted.
+    Approved { actor_kind: ApprovalActorKind },
+    /// Approval was denied.
+    Denied {
+        actor_kind: ApprovalActorKind,
+        reason: String,
+    },
+}
+
+/// Whether child creation is automatic, parent-approvable, or operator-gated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApprovalMode {
+    AutoWithinEnvelope,
+    ParentWithinEnvelope,
+    OperatorRequired,
+}
+
+/// Who is authorized to resolve a pending approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApprovalActorKind {
+    ParentTask,
+    Operator,
+    Auto,
+}
+
+/// Why an approval was required.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApprovalReasonKind {
+    SoftCapExceeded,
+    CapabilityEscalation,
+    BudgetException,
+    ProfileApproval,
+    MemoryPromotion,
+    InsecureRuntimeRestriction,
+}
+
+/// Whether a parent waits for the child task to complete before continuing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskWaitMode {
+    Async,
+    WaitForCompletion,
+}
+
+/// Persisted summary of a completed task result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskResultSummary {
+    /// Human-readable summary of what was completed.
+    pub summary: String,
+    /// Relative artifact paths produced by the task.
+    pub artifacts: Vec<PathBuf>,
+    /// Commit SHA produced by the task, if any.
+    pub commit_sha: Option<String>,
+}
+
 /// The output produced by an agent upon successful task completion.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentResult {
@@ -323,14 +449,50 @@ pub struct MilestoneInfo {
     /// Unique identifier for this milestone.
     pub id: MilestoneId,
 
-    /// Human-readable name (e.g., "Phase 1: Setup", "Phase 2: Implementation").
-    pub name: String,
+    /// Human-readable title (e.g., "Phase 1: Setup", "Phase 2: Implementation").
+    pub title: String,
 
-    /// Task nodes associated with this milestone.
+    /// Objective the milestone is intended to accomplish.
+    pub objective: String,
+
+    /// Expected output from the milestone.
+    pub expected_output: String,
+
+    /// Other milestones that must complete first.
+    pub depends_on: Vec<MilestoneId>,
+
+    /// Human-readable success criteria.
+    pub success_criteria: Vec<String>,
+
+    /// Default trusted profile for tasks created under this milestone.
+    pub default_profile: String,
+
+    /// Budget envelope for this milestone.
+    pub budget: BudgetEnvelope,
+
+    /// Approval posture for child-task creation under this milestone.
+    pub approval_mode: ApprovalMode,
+}
+
+/// Current execution state of a milestone within a run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MilestoneState {
+    /// Task nodes currently attached to this milestone.
     pub task_ids: Vec<TaskNodeId>,
+    /// Whether the milestone is blocked, active, or completed.
+    pub status: MilestoneStatus,
+    /// When the milestone completed, if done.
+    pub completed_at: Option<DateTime<Utc>>,
+}
 
-    /// Whether this milestone has been completed (all tasks done).
-    pub completed: bool,
+/// Lifecycle state of a milestone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MilestoneStatus {
+    Pending,
+    Running,
+    Blocked,
+    Completed,
+    Failed,
 }
 
 /// A concrete agent worker process/container executing a task node.
@@ -441,8 +603,17 @@ pub struct PendingApproval {
     /// The task node requesting approval (or the proposed child task).
     pub task_id: TaskNodeId,
 
-    /// What kind of approval is needed.
-    pub kind: ApprovalKind,
+    /// Which actor is allowed to resolve this request.
+    pub approver: ApprovalActorKind,
+
+    /// Why the approval gate was triggered.
+    pub reason_kind: ApprovalReasonKind,
+
+    /// Proposed capabilities being requested by the task or child subtree.
+    pub requested_capabilities: CapabilityEnvelope,
+
+    /// Budget requested by the task or child subtree.
+    pub requested_budget: BudgetEnvelope,
 
     /// Human-readable description of what is being requested.
     pub description: String,
@@ -454,55 +625,14 @@ pub struct PendingApproval {
     pub resolution: Option<ApprovalResolution>,
 }
 
-/// The kind of approval being requested.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ApprovalKind {
-    /// A child task spawn that exceeded the soft cap.
-    ChildTaskSpawn {
-        /// The parent task requesting the spawn.
-        parent_task_id: TaskNodeId,
-        /// Profile requested for the child.
-        profile: String,
-        /// Current child count (already at or past soft cap).
-        current_children: u32,
-    },
-
-    /// A task that requires approval based on its profile.
-    ProfileApproval {
-        /// The profile name that requires approval.
-        profile: String,
-    },
-
-    /// Run budget exhausted — needs approval to continue.
-    BudgetOverride {
-        /// Current total tokens consumed.
-        tokens_consumed: u64,
-        /// The budget cap that was reached.
-        budget_cap: u64,
-    },
-
-    /// Credential access that requires explicit approval.
-    CredentialAccess {
-        /// The credential handle being requested.
-        handle: String,
-        /// Why approval is needed (e.g., raw export requested).
-        reason: String,
-    },
-
-    /// Memory promotion that requires approval.
-    MemoryPromotion {
-        /// The memory entry being promoted.
-        entry_id: String,
-        /// Target scope for the promotion.
-        target_scope: MemoryScope,
-    },
-}
-
 /// Resolution of an approval request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalResolution {
     /// Whether the request was approved or denied.
     pub approved: bool,
+
+    /// What kind of actor resolved the approval.
+    pub actor_kind: ApprovalActorKind,
 
     /// Who resolved this approval (operator ID, parent task ID, or "auto").
     pub resolved_by: String,
@@ -512,25 +642,6 @@ pub struct ApprovalResolution {
 
     /// When the approval was resolved.
     pub resolved_at: DateTime<Utc>,
-}
-
-/// Scheduler cursor tracking progress through the task graph.
-///
-/// The scheduler uses this to avoid re-evaluating tasks that have already
-/// been considered and to track scheduling watermarks.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SchedulerCursor {
-    /// Task nodes that have been evaluated and are no longer candidates.
-    pub evaluated: Vec<TaskNodeId>,
-
-    /// Number of tasks currently in-flight (Running or Materializing).
-    pub in_flight: u32,
-
-    /// Maximum concurrent tasks allowed by policy.
-    pub max_concurrent: u32,
-
-    /// The last time the scheduler ran a scheduling pass.
-    pub last_pass: Option<DateTime<Utc>>,
 }
 
 #[cfg(test)]
@@ -548,10 +659,11 @@ mod tests {
                 name: "test-agent".into(),
                 tools: vec![],
                 mcp_servers: vec![],
-                credential_handles: vec![],
+                credentials: vec![],
                 memory_policy: MemoryPolicy {
                     read_scopes: vec![MemoryScope::Scratch],
                     write_scopes: vec![MemoryScope::Scratch],
+                    run_shared_write_mode: RunSharedWriteMode::AppendOnlyLane,
                 },
                 resources: ResourceLimits {
                     cpu: 1.0,
@@ -565,6 +677,7 @@ mod tests {
                         max_children: 5,
                         require_approval_after: 3,
                     },
+                    allow_project_memory_promotion: false,
                 },
             },
             env_plan: RuntimeEnvPlan::Host {
@@ -577,17 +690,38 @@ mod tests {
         TaskNode {
             id: TaskNodeId::new(id),
             parent_task: parent.map(TaskNodeId::new),
-            milestone: None,
+            milestone: MilestoneId::new("M1"),
+            depends_on: vec![],
             objective: format!("Test task {id}"),
             expected_output: "Done".into(),
             profile: make_test_profile(),
             budget: BudgetEnvelope::new(100_000, 80),
             memory_scope: MemoryScope::Scratch,
+            approval_state: ApprovalState::NotRequired,
+            requested_capabilities: CapabilityEnvelope {
+                tools: vec![],
+                mcp_servers: vec![],
+                credentials: vec![],
+                network_allowlist: HashSet::new(),
+                memory_policy: MemoryPolicy {
+                    read_scopes: vec![MemoryScope::Scratch],
+                    write_scopes: vec![MemoryScope::Scratch],
+                    run_shared_write_mode: RunSharedWriteMode::AppendOnlyLane,
+                },
+                repo_access: RepoAccess::ReadWrite,
+                spawn_limits: SpawnLimits {
+                    max_children: 5,
+                    require_approval_after: 3,
+                },
+                allow_project_memory_promotion: false,
+            },
+            wait_mode: TaskWaitMode::Async,
             worktree: WorktreePlan::Shared {
                 workspace_path: "/tmp/test".into(),
             },
             assigned_agent: None,
             children: vec![],
+            result_summary: None,
             status: TaskStatus::Pending,
             created_at: Utc::now(),
             finished_at: None,
@@ -602,11 +736,34 @@ mod tests {
         RunState {
             id: RunId::new("run-1"),
             project: "test-project".into(),
-            milestones: vec![],
+            plan: RunPlan {
+                version: 1,
+                milestones: vec![MilestoneInfo {
+                    id: MilestoneId::new("M1"),
+                    title: "Milestone 1".into(),
+                    objective: "Test objective".into(),
+                    expected_output: "Done".into(),
+                    depends_on: vec![],
+                    success_criteria: vec!["Task completes".into()],
+                    default_profile: "test".into(),
+                    budget: BudgetEnvelope::new(100_000, 80),
+                    approval_mode: ApprovalMode::ParentWithinEnvelope,
+                }],
+                initial_tasks: vec![],
+                global_budget: BudgetEnvelope::new(500_000, 80),
+            },
+            milestones: HashMap::from([(
+                MilestoneId::new("M1"),
+                MilestoneState {
+                    task_ids: vec![TaskNodeId::new("root")],
+                    status: MilestoneStatus::Running,
+                    completed_at: None,
+                },
+            )]),
             tasks,
             approvals: HashMap::new(),
             status: RunStatus::Running,
-            scheduler_cursor: SchedulerCursor::default(),
+            last_event_cursor: 0,
             submitted_at: Utc::now(),
             finished_at: None,
             total_tokens: 0,

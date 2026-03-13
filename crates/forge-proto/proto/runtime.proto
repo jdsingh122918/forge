@@ -33,7 +33,7 @@ service ForgeRuntime {
   rpc SubmitRun(SubmitRunRequest) returns (RunInfo);
 
   // Attach to a running (or completed) run and receive a replay of events
-  // starting from `since_sequence`, followed by a live tail. Supports
+  // after `after_cursor`, followed by a live tail. Supports
   // CLI disconnect/reconnect without state loss.
   rpc AttachRun(AttachRunRequest) returns (stream RuntimeEvent);
 
@@ -55,7 +55,8 @@ service ForgeRuntime {
   // List task nodes within a run.
   rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
 
-  // Stream stdout/stderr and parsed signals from a running task's agent.
+  // Stream a task-scoped filtered projection of output chunks from the
+  // authoritative runtime event log.
   rpc StreamTaskOutput(StreamTaskOutputRequest) returns (stream TaskOutputEvent);
 
   // Create a child task node under an existing parent. The daemon runs the
@@ -148,12 +149,87 @@ enum ApprovalAction {
   APPROVAL_ACTION_DENY        = 2;
 }
 
+// Who is permitted to resolve an approval request.
+enum ApprovalActorKind {
+  APPROVAL_ACTOR_KIND_UNSPECIFIED = 0;
+  APPROVAL_ACTOR_KIND_PARENT_TASK = 1;
+  APPROVAL_ACTOR_KIND_OPERATOR    = 2;
+  APPROVAL_ACTOR_KIND_AUTO        = 3;
+}
+
+// Why an approval gate was triggered.
+enum ApprovalReasonKind {
+  APPROVAL_REASON_KIND_UNSPECIFIED            = 0;
+  APPROVAL_REASON_KIND_SOFT_CAP_EXCEEDED      = 1;
+  APPROVAL_REASON_KIND_CAPABILITY_ESCALATION  = 2;
+  APPROVAL_REASON_KIND_BUDGET_EXCEPTION       = 3;
+  APPROVAL_REASON_KIND_PROFILE_APPROVAL       = 4;
+  APPROVAL_REASON_KIND_MEMORY_PROMOTION       = 5;
+  APPROVAL_REASON_KIND_INSECURE_RUNTIME_RESTRICTION = 6;
+}
+
+// Current approval state of a task node.
+enum ApprovalState {
+  APPROVAL_STATE_UNSPECIFIED  = 0;
+  APPROVAL_STATE_NOT_REQUIRED = 1;
+  APPROVAL_STATE_PENDING      = 2;
+  APPROVAL_STATE_APPROVED     = 3;
+  APPROVAL_STATE_DENIED       = 4;
+}
+
+// Approval posture for child creation within a milestone or task envelope.
+enum ApprovalMode {
+  APPROVAL_MODE_UNSPECIFIED           = 0;
+  APPROVAL_MODE_AUTO_WITHIN_ENVELOPE  = 1;
+  APPROVAL_MODE_PARENT_WITHIN_ENVELOPE = 2;
+  APPROVAL_MODE_OPERATOR_REQUIRED     = 3;
+}
+
 // Memory scope for task data.
 enum MemoryScope {
   MEMORY_SCOPE_UNSPECIFIED = 0;
   MEMORY_SCOPE_SCRATCH     = 1; // Agent-local, lifetime = agent
-  MEMORY_SCOPE_RUN_SHARED  = 2; // Parent/child subtree, lifetime = run
+  MEMORY_SCOPE_RUN_SHARED  = 2; // Lane-scoped append-only by default, lifetime = run
   MEMORY_SCOPE_PROJECT     = 3; // Cross-run durable, deny-by-default writes
+}
+
+// Default run-shared write model.
+enum RunSharedWriteMode {
+  RUN_SHARED_WRITE_MODE_UNSPECIFIED = 0;
+  RUN_SHARED_WRITE_MODE_APPEND_ONLY_LANE = 1;
+  RUN_SHARED_WRITE_MODE_COORDINATED_SHARED_WRITE = 2;
+}
+
+// Repository filesystem access level.
+enum RepoAccess {
+  REPO_ACCESS_UNSPECIFIED = 0;
+  REPO_ACCESS_NONE        = 1;
+  REPO_ACCESS_READ_ONLY   = 2;
+  REPO_ACCESS_READ_WRITE  = 3;
+}
+
+// Whether a credential is proxy-only or may be exported with explicit approval.
+enum CredentialAccessMode {
+  CREDENTIAL_ACCESS_MODE_UNSPECIFIED = 0;
+  CREDENTIAL_ACCESS_MODE_PROXY_ONLY  = 1;
+  CREDENTIAL_ACCESS_MODE_EXPORTABLE  = 2;
+}
+
+// Whether a parent waits for the child task to complete.
+enum TaskWaitMode {
+  TASK_WAIT_MODE_UNSPECIFIED         = 0;
+  TASK_WAIT_MODE_ASYNC               = 1;
+  TASK_WAIT_MODE_WAIT_FOR_COMPLETION = 2;
+}
+
+// Execution state of an operator-facing milestone.
+enum MilestoneStatus {
+  MILESTONE_STATUS_UNSPECIFIED = 0;
+  MILESTONE_STATUS_PENDING     = 1;
+  MILESTONE_STATUS_RUNNING     = 2;
+  MILESTONE_STATUS_BLOCKED     = 3;
+  MILESTONE_STATUS_COMPLETED   = 4;
+  MILESTONE_STATUS_FAILED      = 5;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,9 +240,8 @@ message SubmitRunRequest {
   // Project identifier (e.g. repository path or name).
   string project = 1;
 
-  // Serialized run plan (phases / DAG / milestones). Opaque to the proto
-  // layer; the daemon deserializes using its internal plan schema.
-  bytes plan = 2;
+  // Canonical run plan submitted by the client.
+  RunPlan plan = 2;
 
   // Absolute path to the workspace root on the host.
   string workspace = 3;
@@ -211,14 +286,14 @@ message PolicyOverrides {
   // Percentage of budget at which to warn the parent.
   optional int32 warn_at_percent = 7;
 
-  // Whether to allow insecure host runtime mode.
-  optional bool allow_insecure_host_runtime = 8;
+  // Whether submission should require a secure runtime and refuse insecure host mode.
+  optional bool require_secure_runtime = 8;
 
-  // Additional network allowlist entries.
-  repeated string network_allowlist = 9;
+  // Additional network denials to tighten the effective policy.
+  repeated string network_denylist = 9;
 
-  // Additional credential handles to allow.
-  repeated string credential_allowlist = 10;
+  // Additional credential denials to tighten the effective policy.
+  repeated string credential_denylist = 10;
 }
 
 // Snapshot of a run's current state.
@@ -251,14 +326,49 @@ message RunInfo {
 
   // Human-readable failure reason when status is FAILED or CANCELLED.
   string failure_reason = 13;
+
+  // Canonical submitted plan persisted by the daemon.
+  RunPlan submitted_plan = 14;
 }
 
-// A top-level phase / milestone within a run.
+// Canonical run plan owned by the daemon.
+message RunPlan {
+  uint32 version = 1;
+  repeated MilestonePlan milestones = 2;
+  repeated TaskTemplate initial_tasks = 3;
+  BudgetEnvelope global_budget = 4;
+}
+
+// A top-level phase / milestone in the submitted run plan.
+message MilestonePlan {
+  string id = 1;
+  string title = 2;
+  string objective = 3;
+  string expected_output = 4;
+  repeated string depends_on = 5;
+  repeated string success_criteria = 6;
+  string default_profile = 7;
+  BudgetEnvelope budget = 8;
+  ApprovalMode approval_mode = 9;
+}
+
+// Root task seeded when a run is first submitted.
+message TaskTemplate {
+  string milestone_id = 1;
+  string objective = 2;
+  string expected_output = 3;
+  string profile_hint = 4;
+  BudgetEnvelope budget = 5;
+  MemoryScope memory_scope = 6;
+  repeated string depends_on_task_ids = 7;
+}
+
+// A top-level phase / milestone snapshot within a running run.
 message Milestone {
   string id = 1;
-  string name = 2;
+  string title = 2;
   int32 order = 3;
-  RunStatus status = 4;
+  MilestoneStatus status = 4;
   // Task nodes that belong to this milestone.
   repeated string task_ids = 5;
 }
@@ -275,10 +385,8 @@ message TokenUsage {
 message AttachRunRequest {
   string run_id = 1;
 
-  // Sequence number to replay from (inclusive). Set to 0 to replay from the
-  // beginning of the run. The daemon sends all events with seq >= since_sequence
-  // followed by a live tail.
-  int64 since_sequence = 2;
+  // Replay events with cursor > after_cursor, then continue with a live tail.
+  int64 after_cursor = 2;
 
   // Optional filter: only stream events for these task IDs.
   repeated string task_id_filter = 3;
@@ -377,6 +485,21 @@ message TaskInfo {
 
   // Cumulative token usage for this task's entire subtree.
   TokenUsage subtree_token_usage = 19;
+
+  // Explicit dependency edges in the run graph.
+  repeated string depends_on_task_ids = 20;
+
+  // Current approval state for this task.
+  ApprovalState approval_state = 21;
+
+  // Approved capability envelope for this task subtree.
+  CapabilityEnvelope requested_capabilities = 22;
+
+  // Whether the parent waited for this task to complete.
+  TaskWaitMode wait_mode = 23;
+
+  // Persisted summary of the task result.
+  TaskResultSummary result_summary = 24;
 }
 
 // Budget envelope constraining a task's resource consumption.
@@ -442,38 +565,38 @@ message ListTasksResponse {
 }
 
 message StreamTaskOutputRequest {
-  string task_id = 1;
+  string run_id = 1;
+  string task_id = 2;
 
-  // Sequence number to replay from. 0 = beginning.
-  int64 since_sequence = 2;
+  // Replay output chunks with cursor > after_cursor.
+  int64 after_cursor = 3;
 
-  ClientIdentity client_identity = 3;
+  ClientIdentity client_identity = 4;
 }
 
-// A single output event from a running task's agent process.
+// A single output event projected from the authoritative runtime event log.
 message TaskOutputEvent {
-  string task_id = 1;
+  string run_id = 1;
+  string task_id = 2;
+  string agent_id = 3;
 
-  // Monotonically increasing sequence within this task's output stream.
-  int64 sequence = 2;
+  // Authoritative runtime-event cursor for this output chunk.
+  int64 cursor = 4;
 
-  google.protobuf.Timestamp timestamp = 3;
+  google.protobuf.Timestamp timestamp = 5;
 
   oneof event {
     // Raw stdout/stderr line from the agent process.
-    StdoutLine stdout_line = 4;
+    StdoutLine stdout_line = 6;
 
-    // Parsed signal tag (<progress>, <blocker>, <pivot>).
-    Signal signal = 5;
+    // Parsed signal tag (`&lt;progress&gt;`, `&lt;blocker&gt;`, `&lt;pivot&gt;`).
+    Signal signal = 7;
 
-    // Promise tag (<promise>DONE</promise>) indicating task completion.
-    Promise promise = 6;
+    // Promise tag (`&lt;promise&gt;DONE&lt;/promise&gt;`) indicating task completion.
+    Promise promise = 8;
 
-    // Agent requested creation of a child task.
-    ChildTaskRequestEvent child_task_request = 7;
-
-    // Agent process exited.
-    AgentExitedEvent agent_exited = 8;
+    // Token-usage delta parsed from structured agent output.
+    TokenUsageDelta token_usage = 9;
   }
 }
 
@@ -492,46 +615,43 @@ message Promise {
   string value = 1;
 }
 
-message ChildTaskRequestEvent {
-  string profile = 1;
-  string objective = 2;
-  string expected_output = 3;
-  bool awaiting_approval = 4;
-  string pending_approval_id = 5;
-}
-
-message AgentExitedEvent {
-  int32 exit_code = 1;
-  string reason = 2;
-  // Duration the agent ran.
-  google.protobuf.Duration duration = 3;
+message TokenUsageDelta {
+  int64 tokens = 1;
+  int64 cumulative = 2;
 }
 
 message CreateChildTaskRequest {
   string run_id = 1;
   string parent_task_id = 2;
+  string milestone_id = 3;
 
   // Profile to use for the child agent (e.g. "implementer", "reviewer").
-  string profile = 3;
+  string profile = 4;
 
   // What the child task should accomplish.
-  string objective = 4;
+  string objective = 5;
 
   // What the child task is expected to produce.
-  string expected_output = 5;
+  string expected_output = 6;
 
   // Budget overrides for the child. If unset, inherits from parent minus
   // already consumed resources.
-  BudgetEnvelope budget = 6;
+  BudgetEnvelope budget = 7;
 
   // Memory scope for the child. If unset, defaults to RUN_SHARED.
-  MemoryScope memory_scope = 7;
+  MemoryScope memory_scope = 8;
 
   // Whether the parent should block until the child completes.
-  bool wait = 8;
+  TaskWaitMode wait_mode = 9;
+
+  // Explicit dependency edges for the child task.
+  repeated string depends_on_task_ids = 10;
+
+  // Requested capability envelope for the child subtree.
+  CapabilityEnvelope requested_capabilities = 11;
 
   // Client authentication context for audit.
-  ClientIdentity client_identity = 9;
+  ClientIdentity client_identity = 12;
 }
 
 message CreateChildTaskResponse {
@@ -585,22 +705,28 @@ message ApprovalRequest {
   // Parent task that requested the child.
   string parent_task_id = 3;
 
+  // Which actor is permitted to resolve this request.
+  ApprovalActorKind approver_kind = 4;
+
   // The compiled manifest of the proposed child task.
-  AgentManifest child_manifest = 4;
+  AgentManifest child_manifest = 5;
 
   // Capabilities the child task is requesting.
-  repeated string requested_capabilities = 5;
+  CapabilityEnvelope requested_capabilities = 6;
 
   // Why approval is required (e.g. "soft cap exceeded", "profile requires approval").
-  string reason = 6;
+  string reason = 7;
+
+  // Typed reason classification for policy handling.
+  ApprovalReasonKind reason_kind = 8;
 
   // Number of children the parent already has (context for the approver).
-  int32 current_child_count = 7;
+  int32 current_child_count = 9;
 
   // Budget the child would consume.
-  BudgetEnvelope requested_budget = 8;
+  BudgetEnvelope requested_budget = 10;
 
-  google.protobuf.Timestamp requested_at = 9;
+  google.protobuf.Timestamp requested_at = 11;
 }
 
 // Compiled agent manifest describing the capabilities a task's agent will
@@ -610,7 +736,7 @@ message AgentManifest {
   string profile_name = 1;
   repeated string tools = 2;
   repeated string mcp_servers = 3;
-  repeated string credential_handles = 4;
+  repeated CredentialGrant credentials = 4;
   MemoryPolicy memory_policy = 5;
   ResourceLimits resource_limits = 6;
   PermissionSet permissions = 7;
@@ -620,6 +746,12 @@ message AgentManifest {
 message MemoryPolicy {
   repeated MemoryScope read_scopes = 1;
   repeated MemoryScope write_scopes = 2;
+  RunSharedWriteMode run_shared_write_mode = 3;
+}
+
+message CredentialGrant {
+  string handle = 1;
+  CredentialAccessMode access_mode = 2;
 }
 
 // Resource limits enforced by the runtime backend.
@@ -636,14 +768,17 @@ message ResourceLimits {
 
 // Permission set derived from the compiled profile.
 message PermissionSet {
-  // Repository access level: "read-only", "read-write".
-  string repo_access = 1;
+  // Repository access level.
+  RepoAccess repo_access = 1;
 
   // Allowed network egress destinations.
   repeated string network_allowlist = 2;
 
   // Spawn limits.
   SpawnPermissions spawn = 3;
+
+  // Whether durable project-memory promotion is allowed.
+  bool allow_project_memory_promotion = 4;
 }
 
 message SpawnPermissions {
@@ -658,7 +793,9 @@ message ResolveApprovalRequest {
   // Optional reason (especially useful for denials).
   string reason = 3;
 
-  ClientIdentity client_identity = 4;
+  ApprovalActor actor = 4;
+
+  ClientIdentity client_identity = 5;
 }
 
 message ResolveApprovalResponse {
@@ -667,6 +804,28 @@ message ResolveApprovalResponse {
   TaskInfo task = 1;
 
   ApprovalAction action_taken = 2;
+}
+
+message ApprovalActor {
+  ApprovalActorKind kind = 1;
+  string actor_id = 2;
+}
+
+message CapabilityEnvelope {
+  repeated string tools = 1;
+  repeated string mcp_servers = 2;
+  repeated CredentialGrant credentials = 3;
+  repeated string network_allowlist = 4;
+  MemoryPolicy memory_policy = 5;
+  RepoAccess repo_access = 6;
+  SpawnPermissions spawn = 7;
+  bool allow_project_memory_promotion = 8;
+}
+
+message TaskResultSummary {
+  string summary = 1;
+  repeated string artifacts = 2;
+  string commit_sha = 3;
 }
 
 // ---------------------------------------------------------------------------
@@ -727,8 +886,8 @@ message ListMcpServersResponse {
 // ---------------------------------------------------------------------------
 
 message StreamEventsRequest {
-  // Sequence number to replay from (inclusive). 0 = live-only (no replay).
-  int64 since_sequence = 1;
+  // Replay events with cursor > after_cursor.
+  int64 after_cursor = 1;
 
   // Optional: scope to a specific run.
   string run_id = 2;

@@ -4,7 +4,12 @@
 #![allow(dead_code)] // Items will be used by future autoresearch command phases.
 
 use anyhow::{Context, Result};
+use forge_common::{
+    DirectExecutionFacade, ExecutionBackendKind, ExecutionFacade, ExecutionOutcome,
+    ExecutionOutputMode, ExecutionRequest, ExecutionResumeMode,
+};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -138,31 +143,48 @@ pub fn parse_judge_response_with_fallback(json_str: &str, finding_ids: &[String]
 // Command Executor
 // ---------------------------------------------------------------------------
 
-/// Trait for executing external commands, enabling mock injection in tests.
+/// Trait for executing the judge request, enabling mock injection in tests.
 #[async_trait::async_trait]
-pub trait CommandExecutor: Send + Sync {
-    /// Execute a command with the given arguments and return stdout as a string.
-    async fn execute(&self, cmd: &str, args: &[String]) -> Result<String>;
+pub trait JudgeExecutor: Send + Sync {
+    async fn execute(&self, request: ExecutionRequest) -> Result<String>;
 }
 
-/// Production executor using `tokio::process::Command`.
-pub struct TokioExecutor;
+/// Production executor backed by the shared direct execution facade.
+pub struct FacadeExecutor {
+    facade: DirectExecutionFacade,
+}
+
+impl Default for FacadeExecutor {
+    fn default() -> Self {
+        Self {
+            facade: DirectExecutionFacade::new(),
+        }
+    }
+}
 
 #[async_trait::async_trait]
-impl CommandExecutor for TokioExecutor {
-    async fn execute(&self, cmd: &str, args: &[String]) -> Result<String> {
-        let output = tokio::process::Command::new(cmd)
-            .args(args)
-            .output()
-            .await
-            .with_context(|| format!("failed to execute command: {cmd}"))?;
+impl JudgeExecutor for FacadeExecutor {
+    async fn execute(&self, request: ExecutionRequest) -> Result<String> {
+        let handle = self.facade.execute(request).await?;
+        let outcome = self.facade.wait(&handle.id).await?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("command failed (exit {}): {}", output.status, stderr);
+        match outcome {
+            ExecutionOutcome::Completed { stdout, .. } => Ok(stdout),
+            ExecutionOutcome::Failed {
+                exit_code,
+                error,
+                stderr,
+                ..
+            } => {
+                let suffix = exit_code
+                    .map(|code| format!(" (exit {code})"))
+                    .unwrap_or_default();
+                anyhow::bail!("{error}{suffix}: {stderr}");
+            }
+            ExecutionOutcome::Killed { reason, .. } => {
+                anyhow::bail!("judge execution was killed: {}", reason.unwrap_or_default());
+            }
         }
-
-        String::from_utf8(output.stdout).context("command output was not valid UTF-8")
     }
 }
 
@@ -171,24 +193,24 @@ impl CommandExecutor for TokioExecutor {
 // ---------------------------------------------------------------------------
 
 /// Cross-model judge that invokes GPT 5.4 via Codex CLI.
-pub struct Judge<E: CommandExecutor = TokioExecutor> {
+pub struct Judge<E: JudgeExecutor = FacadeExecutor> {
     codex_cmd: String,
     model: String,
     executor: E,
 }
 
-impl Judge<TokioExecutor> {
-    /// Create a new judge with the default `TokioExecutor`.
+impl Judge<FacadeExecutor> {
+    /// Create a new judge with the default `FacadeExecutor`.
     pub fn new() -> Self {
         Self {
             codex_cmd: "codex".to_string(),
             model: "gpt-5.4-xhigh".to_string(),
-            executor: TokioExecutor,
+            executor: FacadeExecutor::default(),
         }
     }
 }
 
-impl<E: CommandExecutor> Judge<E> {
+impl<E: JudgeExecutor> Judge<E> {
     /// Create a judge with a custom executor (for testing).
     pub fn with_executor(executor: E) -> Self {
         Self {
@@ -211,17 +233,31 @@ impl<E: CommandExecutor> Judge<E> {
         finding_ids: &[String],
     ) -> Result<JudgeResult> {
         let prompt = build_judge_prompt(code_sample, expected_json, specialist_findings_json);
-        let args = vec![
-            "--model".to_string(),
-            self.model.clone(),
-            "--quiet".to_string(),
-            "--json".to_string(),
-            "-p".to_string(),
-            prompt,
-        ];
+        let request = ExecutionRequest {
+            run_id: None,
+            task_id: None,
+            backend: ExecutionBackendKind::Codex,
+            program: self.codex_cmd.clone(),
+            args: vec![
+                "--model".to_string(),
+                self.model.clone(),
+                "--quiet".to_string(),
+                "--json".to_string(),
+                "-p".to_string(),
+                prompt,
+            ],
+            env: BTreeMap::new(),
+            working_dir: std::env::current_dir().context("failed to resolve current directory")?,
+            prompt: None,
+            stdin: Vec::new(),
+            output_mode: ExecutionOutputMode::Text,
+            allowed_tools: vec![],
+            disallowed_tools: vec![],
+            resume_mode: ExecutionResumeMode::Fresh,
+        };
 
         // Attempt 1
-        match self.executor.execute(&self.codex_cmd, &args).await {
+        match self.executor.execute(request.clone()).await {
             Ok(output) => {
                 if let Ok(result) = parse_judge_response(&output) {
                     return Ok(result);
@@ -235,7 +271,7 @@ impl<E: CommandExecutor> Judge<E> {
         }
 
         // Attempt 2 (retry on CLI failure)
-        match self.executor.execute(&self.codex_cmd, &args).await {
+        match self.executor.execute(request).await {
             Ok(output) => {
                 if let Ok(result) = parse_judge_response(&output) {
                     return Ok(result);
@@ -385,8 +421,8 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl CommandExecutor for MockExecutor {
-        async fn execute(&self, _cmd: &str, _args: &[String]) -> Result<String> {
+    impl JudgeExecutor for MockExecutor {
+        async fn execute(&self, _request: ExecutionRequest) -> Result<String> {
             Ok(self.response.clone())
         }
     }
@@ -394,8 +430,8 @@ mod tests {
     struct FailingExecutor;
 
     #[async_trait::async_trait]
-    impl CommandExecutor for FailingExecutor {
-        async fn execute(&self, _cmd: &str, _args: &[String]) -> Result<String> {
+    impl JudgeExecutor for FailingExecutor {
+        async fn execute(&self, _request: ExecutionRequest) -> Result<String> {
             anyhow::bail!("CLI unavailable")
         }
     }
@@ -406,8 +442,8 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl CommandExecutor for FailOnceExecutor {
-        async fn execute(&self, _cmd: &str, _args: &[String]) -> Result<String> {
+    impl JudgeExecutor for FailOnceExecutor {
+        async fn execute(&self, _request: ExecutionRequest) -> Result<String> {
             let count = self.call_count.fetch_add(1, Ordering::SeqCst);
             if count == 0 {
                 anyhow::bail!("transient failure")
@@ -475,8 +511,8 @@ mod tests {
         }
 
         #[async_trait::async_trait]
-        impl CommandExecutor for CountingMockExecutor {
-            async fn execute(&self, _cmd: &str, _args: &[String]) -> Result<String> {
+        impl JudgeExecutor for CountingMockExecutor {
+            async fn execute(&self, _request: ExecutionRequest) -> Result<String> {
                 self.call_count.fetch_add(1, Ordering::SeqCst);
                 Ok("not valid json".to_string())
             }

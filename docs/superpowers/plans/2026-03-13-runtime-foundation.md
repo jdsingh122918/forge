@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Wire `forge-common` and `forge-proto` into the workspace, add tonic/prost codegen for `runtime.proto`, build the translation layer between proto and domain types, and introduce an `ExecutionFacade` trait that converges all Claude/forge process spawning behind a single interface.
+**Goal:** Wire `forge-common` and `forge-proto` into the workspace, add tonic/prost codegen for `runtime.proto`, build a strict conversion layer for submission-path and shape-compatible manifest types, and introduce an `ExecutionFacade` plus a concrete `DirectExecutionFacade` that can back one low-risk migrated caller before the daemon exists.
 
-**Architecture:** This is Plan 1 of 6 for the forge-runtime platform. It produces no daemon yet — it lays the foundation that all subsequent plans build on. The `forge-proto` crate generates Rust types from `runtime.proto` via tonic-build. A `convert` module provides bidirectional `From`/`Into` between proto and domain types. The `ExecutionFacade` trait in `forge-common` defines the interface that the current direct-spawn code will migrate to, and a `DirectExecutionFacade` provides backwards-compatible implementation (spawns Claude CLI directly, no daemon).
+**Architecture:** This is Plan 1 of 6 for the forge-runtime platform. It deliberately produces no daemon yet. The `forge-proto` crate generates Rust types from `runtime.proto` via tonic-build. Conversion work in this plan is intentionally scoped: IDs, shape-compatible enums, manifest/capability inputs, and the run submission path (`RunPlan`, `MilestonePlan`, `TaskTemplate`). Runtime snapshot/read-model projections (`RunInfo`, `TaskInfo`, `RuntimeEvent`, policy overlays, approval projections) are deferred to Plan 2, where the daemon-owned read model exists. The execution layer adds a concrete `DirectExecutionFacade` that preserves current direct subprocess behavior and validates the abstraction with one pilot migration.
 
 **Tech Stack:** Rust, tonic 0.12, prost 0.13, tonic-build 0.12, protobuf well-known types
 
@@ -12,6 +12,12 @@
 **Proto:** `crates/forge-proto/proto/runtime.proto`
 **Domain types:** `crates/forge-common/src/`
 **Migration checklist:** `docs/superpowers/specs/2026-03-13-spawn-site-migration-checklist.md`
+
+**Guardrails for this plan:**
+- No lossy blanket `From`/`Into` impls for proto/domain pairs whose shapes do not actually match.
+- Proto `*_UNSPECIFIED` values must fail conversion; they must never silently default to a more permissive domain value.
+- Plan 1 must ship a real direct-backed execution implementation and prove it against one migrated caller.
+- High-complexity callers (`runner`, `swarm`, `factory` streaming paths) are explicitly out of scope for migration in this plan; the facade must still be rich enough to support them later.
 
 ---
 
@@ -25,18 +31,21 @@
 | `crates/forge-proto/src/lib.rs` | Re-export generated module |
 | `crates/forge-proto/src/convert/mod.rs` | Conversion module root |
 | `crates/forge-proto/src/convert/ids.rs` | Proto string ↔ forge-common ID newtypes |
-| `crates/forge-proto/src/convert/manifest.rs` | Proto messages ↔ BudgetEnvelope, ResourceLimits, CredentialGrant, etc. |
-| `crates/forge-proto/src/convert/run_graph.rs` | Proto messages ↔ RunPlan, MilestoneInfo, TaskTemplate |
-| `crates/forge-common/src/facade.rs` | ExecutionFacade trait + request/response types |
+| `crates/forge-proto/src/convert/enums.rs` | Strict enum conversions with explicit unknown-value errors |
+| `crates/forge-proto/src/convert/manifest.rs` | Strict conversion for manifest/capability input types and named budget adapters |
+| `crates/forge-proto/src/convert/run_graph.rs` | Submission-path conversions for `RunPlan`, `MilestonePlan`, `TaskTemplate` |
+| `crates/forge-common/src/facade.rs` | ExecutionFacade trait + request/event/result/health types |
+| `crates/forge-common/src/direct_execution.rs` | Direct subprocess-backed implementation of `ExecutionFacade` |
 
-Note: `convert/policy.rs` and `convert/events.rs` are deferred to Plan 2 (daemon core) where they are first needed.
+Note: `convert/policy.rs`, `convert/events.rs`, and read-model conversions for `RunInfo` / `TaskInfo` are deferred to Plan 2 (daemon core), where they are first needed and can be aligned with the daemon-owned state model.
 
 ### Modified files
 | File | Change |
 |------|--------|
-| `Cargo.toml` | Convert to `[workspace]` manifest with members |
-| `crates/forge-common/Cargo.toml` | Add `tokio` dep for Duration/channel types in facade |
+| `Cargo.toml` | Convert to `[workspace]` manifest and later add `forge-proto` once the crate exists |
+| `crates/forge-common/Cargo.toml` | Add `tokio` features needed by facade types and direct subprocess execution |
 | `crates/forge-common/src/lib.rs` | Add `pub mod facade;` and re-exports |
+| `src/cmd/autoresearch/judge.rs` | Pilot migration to `DirectExecutionFacade` |
 
 ---
 
@@ -47,35 +56,34 @@ Note: `convert/policy.rs` and `convert/events.rs` are deferred to Plan 2 (daemon
 **Files:**
 - Modify: `Cargo.toml` (root)
 
-- [ ] **Step 1: Read current root Cargo.toml**
+- [x] **Step 1: Read current root Cargo.toml**
 
 Verify the current structure is a single `[package]` (not already a workspace).
 
-- [ ] **Step 2: Convert root Cargo.toml to workspace**
+- [x] **Step 2: Convert root Cargo.toml to workspace**
 
-Add a `[workspace]` section with members. Keep the existing `[package]` intact (the root crate stays as a workspace member via `.`):
+Add a `[workspace]` section with the members that already exist on disk. Keep the existing `[package]` intact (the root crate stays as a workspace member via `.`):
 
 ```toml
 [workspace]
 members = [
     ".",
     "crates/forge-common",
-    "crates/forge-proto",
 ]
 resolver = "2"
 ```
 
 Add this block **before** the existing `[package]` section.
 
-- [ ] **Step 3: Verify workspace builds**
+- [x] **Step 3: Verify workspace builds**
 
 Run: `cargo check 2>&1 | head -30`
 Expected: Compilation proceeds (may have warnings but no errors about workspace structure). `forge-common` should be recognized as a workspace member.
 
-- [ ] **Step 4: Run existing tests**
+- [x] **Step 4: Run existing tests**
 
-Run: `cargo test --lib 2>&1 | tail -20`
-Expected: Existing forge tests still pass. forge-common tests (17) still pass.
+Run: `cargo test --lib --tests 2>&1 | tail -30`
+Expected: Existing forge unit and integration tests still pass after the workspace conversion.
 
 - [ ] **Step 5: Commit**
 
@@ -93,7 +101,7 @@ git commit -m "chore: convert to cargo workspace with forge-common member"
 - Create: `crates/forge-proto/build.rs`
 - Create: `crates/forge-proto/src/lib.rs`
 
-- [ ] **Step 1: Write Cargo.toml**
+- [x] **Step 1: Write Cargo.toml**
 
 ```toml
 [package]
@@ -107,6 +115,7 @@ prost = "0.13"
 prost-types = "0.13"
 tonic = "0.12"
 forge-common = { path = "../forge-common" }
+thiserror = "2"
 
 [build-dependencies]
 tonic-build = "0.12"
@@ -114,7 +123,7 @@ tonic-build = "0.12"
 
 Write to `crates/forge-proto/Cargo.toml`.
 
-- [ ] **Step 2: Write build.rs**
+- [x] **Step 2: Write build.rs**
 
 ```rust
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -133,7 +142,15 @@ Write to `crates/forge-proto/build.rs`.
 
 Note: `runtime.proto` imports `google/protobuf/timestamp.proto`, `duration.proto`, and `struct.proto`. These are bundled with `prost-types` and `tonic-build` resolves them automatically from the prost well-known types.
 
-- [ ] **Step 3: Write src/lib.rs (initial — generated module only)**
+- [x] **Step 3: Add `crates/forge-proto` to the workspace**
+
+Now that the crate exists, update the root `Cargo.toml` workspace members to include:
+
+```toml
+"crates/forge-proto",
+```
+
+- [x] **Step 4: Write src/lib.rs (initial — generated module only)**
 
 ```rust
 //! Generated gRPC types and stubs for the Forge runtime daemon.
@@ -150,7 +167,7 @@ pub mod proto {
 
 Write to `crates/forge-proto/src/lib.rs`.
 
-- [ ] **Step 4: Verify proto codegen compiles**
+- [x] **Step 5: Verify proto codegen compiles**
 
 Run: `cargo check -p forge-proto 2>&1 | tail -20`
 Expected: Compiles successfully. tonic-build generates Rust types from runtime.proto. If there are proto compilation errors (e.g., missing well-known type imports), fix them before proceeding.
@@ -159,7 +176,7 @@ Common issues:
 - If `google/protobuf/*.proto` are not found, ensure `tonic-build` version is 0.12+ (bundles them).
 - If field names collide with Rust keywords, tonic-build auto-escapes them.
 
-- [ ] **Step 5: Write a smoke test**
+- [x] **Step 6: Write a smoke test**
 
 Add to `crates/forge-proto/src/lib.rs`:
 
@@ -205,15 +222,15 @@ mod tests {
 }
 ```
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 7: Run tests**
 
 Run: `cargo test -p forge-proto 2>&1 | tail -20`
 Expected: 3 tests pass.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add crates/forge-proto/
+git add Cargo.toml crates/forge-proto/
 git commit -m "feat(forge-proto): add tonic codegen from runtime.proto"
 ```
 
@@ -228,7 +245,7 @@ git commit -m "feat(forge-proto): add tonic codegen from runtime.proto"
 - Create: `crates/forge-proto/src/convert/ids.rs`
 - Modify: `crates/forge-proto/src/lib.rs` (add `pub mod convert;`)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `crates/forge-proto/src/convert/mod.rs`:
 
@@ -299,7 +316,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Add convert module to lib.rs**
+- [x] **Step 2: Add convert module to lib.rs**
 
 Add to `crates/forge-proto/src/lib.rs` after the `proto` module:
 
@@ -307,7 +324,7 @@ Add to `crates/forge-proto/src/lib.rs` after the `proto` module:
 pub mod convert;
 ```
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 Run: `cargo test -p forge-proto 2>&1 | tail -20`
 Expected: ID roundtrip tests pass. If there are conflicting `From<String>` impls (orphan rule), remove the duplicate and use the one from `forge-common`.
@@ -315,7 +332,7 @@ Expected: ID roundtrip tests pass. If there are conflicting `From<String>` impls
 - [ ] **Step 4: Commit**
 
 ```bash
-git add crates/forge-proto/src/convert/
+git add crates/forge-proto/src/convert/ crates/forge-proto/src/lib.rs
 git commit -m "feat(forge-proto): add ID conversion between proto strings and domain newtypes"
 ```
 
@@ -327,145 +344,28 @@ git commit -m "feat(forge-proto): add ID conversion between proto strings and do
 - Create: `crates/forge-proto/src/convert/enums.rs`
 - Modify: `crates/forge-proto/src/convert/mod.rs`
 
-- [ ] **Step 1: Write enum conversion module**
+- [x] **Step 1: Write enum conversion module**
 
-Proto enums are generated as `i32` by prost. Domain enums are Rust enums. We need bidirectional mapping.
+Proto enums are generated as `i32` by prost. Domain enums are Rust enums. In this plan, only implement shape-compatible conversions and make them strict:
 
-Create `crates/forge-proto/src/convert/enums.rs`:
+- Add `UnknownEnumValue` in `crates/forge-proto/src/convert/enums.rs`.
+- Implement `TryFrom<i32>` and `TryFrom<proto::Enum>` for domain enums; reject `*_UNSPECIFIED` instead of defaulting.
+- Implement `From<DomainEnum> for proto::Enum` and `From<DomainEnum> for i32` where the mapping is total.
+- Cover these enums in Plan 1:
+  - `MemoryScope`
+  - `RunSharedWriteMode`
+  - `RepoAccess`
+  - `CredentialAccessMode`
+  - `ApprovalActorKind`
+  - `ApprovalReasonKind`
+  - `ApprovalMode`
+  - `TaskWaitMode`
+  - `MilestoneStatus`
+  - `RuntimeBackend`
+  - `RunStatus`, with an explicit mapping between domain `Planning` and proto `RUN_STATUS_SCHEDULING`
+- Defer `TaskStatus` and `ApprovalState` to Plan 2 because they are not plain enums in the domain/read model.
 
-```rust
-//! Bidirectional conversion between proto i32 enums and forge-common
-//! domain enums.
-
-use crate::proto;
-use forge_common::{
-    manifest::{CredentialAccessMode, MemoryScope, RepoAccess, RunSharedWriteMode},
-    run_graph::{
-        ApprovalActorKind, ApprovalMode, ApprovalReasonKind, MilestoneStatus, RunStatus,
-        TaskStatus, TaskWaitMode,
-    },
-    runtime::RuntimeBackend,
-};
-
-/// Conversion error for unrecognized proto enum values.
-#[derive(Debug, thiserror::Error)]
-#[error("unknown proto enum value {value} for type {type_name}")]
-pub struct UnknownEnumValue {
-    pub type_name: &'static str,
-    pub value: i32,
-}
-
-macro_rules! impl_enum_convert {
-    ($domain:ty, $proto:ty, $type_name:expr, $(($d_variant:expr, $p_variant:expr)),+ $(,)?) => {
-        impl From<$domain> for $proto {
-            fn from(d: $domain) -> Self {
-                match d {
-                    $($d_variant => $p_variant,)+
-                }
-            }
-        }
-
-        impl TryFrom<$proto> for $domain {
-            type Error = UnknownEnumValue;
-
-            fn try_from(p: $proto) -> Result<Self, Self::Error> {
-                match p {
-                    $($p_variant => Ok($d_variant),)+
-                    _ => Err(UnknownEnumValue {
-                        type_name: $type_name,
-                        value: p.into(),
-                    }),
-                }
-            }
-        }
-
-        impl From<$domain> for i32 {
-            fn from(d: $domain) -> Self {
-                <$proto>::from(d).into()
-            }
-        }
-    };
-}
-
-impl_enum_convert!(
-    MemoryScope, proto::MemoryScope, "MemoryScope",
-    (MemoryScope::Scratch, proto::MemoryScope::Scratch),
-    (MemoryScope::RunShared, proto::MemoryScope::RunShared),
-    (MemoryScope::Project, proto::MemoryScope::Project),
-);
-
-impl_enum_convert!(
-    RepoAccess, proto::RepoAccess, "RepoAccess",
-    (RepoAccess::None, proto::RepoAccess::None),
-    (RepoAccess::ReadOnly, proto::RepoAccess::ReadOnly),
-    (RepoAccess::ReadWrite, proto::RepoAccess::ReadWrite),
-);
-
-impl_enum_convert!(
-    CredentialAccessMode, proto::CredentialAccessMode, "CredentialAccessMode",
-    (CredentialAccessMode::ProxyOnly, proto::CredentialAccessMode::ProxyOnly),
-    (CredentialAccessMode::Exportable, proto::CredentialAccessMode::Exportable),
-);
-
-impl_enum_convert!(
-    ApprovalActorKind, proto::ApprovalActorKind, "ApprovalActorKind",
-    (ApprovalActorKind::ParentTask, proto::ApprovalActorKind::ParentTask),
-    (ApprovalActorKind::Operator, proto::ApprovalActorKind::Operator),
-    (ApprovalActorKind::Auto, proto::ApprovalActorKind::Auto),
-);
-
-impl_enum_convert!(
-    ApprovalReasonKind, proto::ApprovalReasonKind, "ApprovalReasonKind",
-    (ApprovalReasonKind::SoftCapExceeded, proto::ApprovalReasonKind::SoftCapExceeded),
-    (ApprovalReasonKind::CapabilityEscalation, proto::ApprovalReasonKind::CapabilityEscalation),
-    (ApprovalReasonKind::BudgetException, proto::ApprovalReasonKind::BudgetException),
-    (ApprovalReasonKind::ProfileApproval, proto::ApprovalReasonKind::ProfileApproval),
-    (ApprovalReasonKind::MemoryPromotion, proto::ApprovalReasonKind::MemoryPromotion),
-    (ApprovalReasonKind::InsecureRuntimeRestriction, proto::ApprovalReasonKind::InsecureRuntimeRestriction),
-);
-
-impl_enum_convert!(
-    MilestoneStatus, proto::MilestoneStatus, "MilestoneStatus",
-    (MilestoneStatus::Pending, proto::MilestoneStatus::Pending),
-    (MilestoneStatus::Running, proto::MilestoneStatus::Running),
-    (MilestoneStatus::Blocked, proto::MilestoneStatus::Blocked),
-    (MilestoneStatus::Completed, proto::MilestoneStatus::Completed),
-    (MilestoneStatus::Failed, proto::MilestoneStatus::Failed),
-);
-
-// Note: RunStatus, TaskStatus, and RuntimeBackend have data-carrying variants
-// in the domain types. These require manual conversion, not the macro.
-// They will be handled in run_graph.rs and manifest.rs conversion modules.
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn memory_scope_roundtrip() {
-        let domain = MemoryScope::RunShared;
-        let proto_val: proto::MemoryScope = domain.clone().into();
-        let back: MemoryScope = proto_val.try_into().unwrap();
-        assert_eq!(domain, back);
-    }
-
-    #[test]
-    fn repo_access_roundtrip() {
-        let domain = RepoAccess::ReadWrite;
-        let proto_val: proto::RepoAccess = domain.clone().into();
-        let back: RepoAccess = proto_val.try_into().unwrap();
-        assert_eq!(domain, back);
-    }
-
-    #[test]
-    fn unknown_enum_errors() {
-        let bad: Result<MemoryScope, _> = proto::MemoryScope::Unspecified.try_into();
-        assert!(bad.is_err());
-    }
-}
-```
-
-- [ ] **Step 2: Add to convert/mod.rs**
+- [x] **Step 2: Add to convert/mod.rs**
 
 ```rust
 pub mod ids;
@@ -474,10 +374,10 @@ pub mod enums;
 pub use enums::UnknownEnumValue;
 ```
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 Run: `cargo test -p forge-proto 2>&1 | tail -20`
-Expected: All enum conversion tests pass. If proto enum variants don't match the names above (e.g., tonic generates `ProxyOnly` vs `proxy_only`), adjust to match the generated names. Check the generated code at `target/debug/build/forge-proto-*/out/forge.runtime.v1.rs` to see exact names.
+Expected: All enum conversion tests pass, including rejection tests for every `*_UNSPECIFIED` value that is implemented in this task.
 
 - [ ] **Step 4: Commit**
 
@@ -494,276 +394,25 @@ git commit -m "feat(forge-proto): add enum conversions between proto and domain 
 - Create: `crates/forge-proto/src/convert/manifest.rs`
 - Modify: `crates/forge-proto/src/convert/mod.rs`
 
-- [ ] **Step 1: Write manifest conversion module**
+- [x] **Step 1: Write manifest conversion module**
 
-Create `crates/forge-proto/src/convert/manifest.rs`. This converts between proto `AgentManifest`, `BudgetEnvelope`, `ResourceLimits`, `PermissionSet`, `CapabilityEnvelope`, `CredentialGrant`, `MemoryPolicy` and their domain equivalents.
+Create `crates/forge-proto/src/convert/manifest.rs`. This task is intentionally narrower than the original draft:
 
-```rust
-//! Conversion between proto manifest messages and forge-common manifest types.
-//!
-//! Key type mismatches between proto and domain:
-//! - Proto int64 (i64) ↔ domain u64: explicit casts (token values are non-negative)
-//! - Proto int32 (i32) ↔ domain u32: explicit casts
-//! - Proto double (f64) ↔ domain f32: explicit casts (cpu cores)
-//! - Proto ResourceLimits.memory is string ("8Gi") ↔ domain memory_bytes is u64
+- Implement strict round-trip conversions for:
+  - `CredentialGrant`
+  - `MemoryPolicy`
+  - `ResourceLimits`
+  - `PermissionSet`
+  - `CapabilityEnvelope`
+  - `AgentManifest`
+- Resource parsing helpers must return `Result`, not silently coerce invalid values to zero.
+- All enum-bearing fields must use the strict enum conversions from Task 4.
+- Do **not** add blanket `From<&proto::BudgetEnvelope> for BudgetEnvelope` or `From<&BudgetEnvelope> for proto::BudgetEnvelope` in this task. The proto budget envelope is a submission/approval request shape; the domain `BudgetEnvelope` is live runtime state. Add named adapters instead:
+  - one helper for encoding an initial domain budget into a proto request shape
+  - one helper for constructing an initial domain budget from proto plus explicit policy defaults
+- Those budget helpers must document which fields are preserved, which are derived elsewhere (policy/spawn limits), and why they are not generic `From` impls.
 
-use crate::proto;
-use forge_common::manifest::{
-    BudgetEnvelope, CredentialAccessMode, CredentialGrant, MemoryPolicy,
-    MemoryScope, PermissionSet, RepoAccess, ResourceLimits, RunSharedWriteMode, SpawnLimits,
-};
-
-// --- Memory string parsing ---
-
-/// Parse a human-readable memory string (e.g. "8Gi", "512Mi", "1073741824")
-/// into bytes. Falls back to parsing as raw bytes if no suffix.
-fn parse_memory_string(s: &str) -> u64 {
-    let s = s.trim();
-    if s.ends_with("Gi") {
-        s[..s.len() - 2].parse::<u64>().unwrap_or(0) * 1024 * 1024 * 1024
-    } else if s.ends_with("Mi") {
-        s[..s.len() - 2].parse::<u64>().unwrap_or(0) * 1024 * 1024
-    } else if s.ends_with("Ki") {
-        s[..s.len() - 2].parse::<u64>().unwrap_or(0) * 1024
-    } else {
-        s.parse::<u64>().unwrap_or(0)
-    }
-}
-
-/// Format bytes as a human-readable memory string.
-fn format_memory_bytes(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 * 1024 && bytes % (1024 * 1024 * 1024) == 0 {
-        format!("{}Gi", bytes / (1024 * 1024 * 1024))
-    } else if bytes >= 1024 * 1024 && bytes % (1024 * 1024) == 0 {
-        format!("{}Mi", bytes / (1024 * 1024))
-    } else {
-        bytes.to_string()
-    }
-}
-
-// --- BudgetEnvelope ---
-// Proto BudgetEnvelope has 5 fields: max_tokens (i64), max_duration, max_children (i32),
-// require_approval_after (i32), max_depth (i32).
-// Domain BudgetEnvelope only tracks token budget (allocated/consumed/remaining).
-// max_children, require_approval_after, max_depth live in SpawnLimits and policy.
-// This conversion is intentionally lossy in the proto->domain direction for those fields.
-
-impl From<&BudgetEnvelope> for proto::BudgetEnvelope {
-    fn from(b: &BudgetEnvelope) -> Self {
-        proto::BudgetEnvelope {
-            max_tokens: b.allocated as i64,
-            max_duration: None,
-            max_children: 0,
-            require_approval_after: 0,
-            max_depth: 0,
-        }
-    }
-}
-
-impl From<&proto::BudgetEnvelope> for BudgetEnvelope {
-    fn from(p: &proto::BudgetEnvelope) -> Self {
-        // max_children, require_approval_after, max_depth are consumed by
-        // SpawnLimits/policy, not BudgetEnvelope. See policy.rs conversion.
-        BudgetEnvelope::new(p.max_tokens.max(0) as u64, 80)
-    }
-}
-
-// --- ResourceLimits ---
-// Proto: cpu is double (f64), memory is string ("8Gi"), token_budget is int64 (i64)
-// Domain: cpu is f32, memory_bytes is u64, token_budget is u64
-
-impl From<&ResourceLimits> for proto::ResourceLimits {
-    fn from(r: &ResourceLimits) -> Self {
-        proto::ResourceLimits {
-            cpu: r.cpu as f64,
-            memory: format_memory_bytes(r.memory_bytes),
-            token_budget: r.token_budget as i64,
-        }
-    }
-}
-
-impl From<&proto::ResourceLimits> for ResourceLimits {
-    fn from(p: &proto::ResourceLimits) -> Self {
-        ResourceLimits {
-            cpu: p.cpu as f32,
-            memory_bytes: parse_memory_string(&p.memory),
-            token_budget: p.token_budget.max(0) as u64,
-        }
-    }
-}
-
-// --- CredentialGrant ---
-
-impl From<&CredentialGrant> for proto::CredentialGrant {
-    fn from(c: &CredentialGrant) -> Self {
-        proto::CredentialGrant {
-            handle: c.handle.clone(),
-            access_mode: proto::CredentialAccessMode::from(c.access_mode.clone()).into(),
-        }
-    }
-}
-
-impl From<&proto::CredentialGrant> for CredentialGrant {
-    fn from(p: &proto::CredentialGrant) -> Self {
-        CredentialGrant {
-            handle: p.handle.clone(),
-            access_mode: proto::CredentialAccessMode::try_from(p.access_mode)
-                .ok()
-                .and_then(|v| CredentialAccessMode::try_from(v).ok())
-                .unwrap_or(CredentialAccessMode::ProxyOnly),
-        }
-    }
-}
-
-// --- MemoryPolicy ---
-
-impl From<&MemoryPolicy> for proto::MemoryPolicy {
-    fn from(m: &MemoryPolicy) -> Self {
-        proto::MemoryPolicy {
-            read_scopes: m.read_scopes.iter()
-                .map(|s| proto::MemoryScope::from(s.clone()).into())
-                .collect(),
-            write_scopes: m.write_scopes.iter()
-                .map(|s| proto::MemoryScope::from(s.clone()).into())
-                .collect(),
-            run_shared_write_mode: match m.run_shared_write_mode {
-                RunSharedWriteMode::AppendOnlyLane => proto::RunSharedWriteMode::AppendOnlyLane.into(),
-                RunSharedWriteMode::CoordinatedSharedWrite => proto::RunSharedWriteMode::CoordinatedSharedWrite.into(),
-            },
-        }
-    }
-}
-
-impl From<&proto::MemoryPolicy> for MemoryPolicy {
-    fn from(p: &proto::MemoryPolicy) -> Self {
-        MemoryPolicy {
-            read_scopes: p.read_scopes.iter()
-                .filter_map(|&v| proto::MemoryScope::try_from(v).ok())
-                .filter_map(|v| MemoryScope::try_from(v).ok())
-                .collect(),
-            write_scopes: p.write_scopes.iter()
-                .filter_map(|&v| proto::MemoryScope::try_from(v).ok())
-                .filter_map(|v| MemoryScope::try_from(v).ok())
-                .collect(),
-            run_shared_write_mode: proto::RunSharedWriteMode::try_from(p.run_shared_write_mode)
-                .ok()
-                .map(|v| match v {
-                    proto::RunSharedWriteMode::CoordinatedSharedWrite => RunSharedWriteMode::CoordinatedSharedWrite,
-                    _ => RunSharedWriteMode::AppendOnlyLane,
-                })
-                .unwrap_or(RunSharedWriteMode::AppendOnlyLane),
-        }
-    }
-}
-
-// --- PermissionSet ---
-// Proto uses SpawnPermissions (not SpawnLimits), with i32 fields.
-
-impl From<&PermissionSet> for proto::PermissionSet {
-    fn from(p: &PermissionSet) -> Self {
-        proto::PermissionSet {
-            repo_access: proto::RepoAccess::from(p.repo_access.clone()).into(),
-            network_allowlist: p.network_allowlist.iter().cloned().collect(),
-            spawn: Some(proto::SpawnPermissions {
-                max_children: p.spawn_limits.max_children as i32,
-                require_approval_after: p.spawn_limits.require_approval_after as i32,
-            }),
-            allow_project_memory_promotion: p.allow_project_memory_promotion,
-        }
-    }
-}
-
-impl From<&proto::PermissionSet> for PermissionSet {
-    fn from(p: &proto::PermissionSet) -> Self {
-        let spawn = p.spawn.as_ref();
-        PermissionSet {
-            repo_access: proto::RepoAccess::try_from(p.repo_access)
-                .ok()
-                .and_then(|v| RepoAccess::try_from(v).ok())
-                .unwrap_or(RepoAccess::None),
-            network_allowlist: p.network_allowlist.iter().cloned().collect(),
-            spawn_limits: SpawnLimits {
-                max_children: spawn.map(|s| s.max_children.max(0) as u32).unwrap_or(0),
-                require_approval_after: spawn.map(|s| s.require_approval_after.max(0) as u32).unwrap_or(0),
-            },
-            allow_project_memory_promotion: p.allow_project_memory_promotion,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_memory_formats() {
-        assert_eq!(parse_memory_string("8Gi"), 8 * 1024 * 1024 * 1024);
-        assert_eq!(parse_memory_string("512Mi"), 512 * 1024 * 1024);
-        assert_eq!(parse_memory_string("1073741824"), 1073741824);
-    }
-
-    #[test]
-    fn format_memory_roundtrip() {
-        assert_eq!(format_memory_bytes(8 * 1024 * 1024 * 1024), "8Gi");
-        assert_eq!(format_memory_bytes(512 * 1024 * 1024), "512Mi");
-        assert_eq!(format_memory_bytes(12345), "12345");
-    }
-
-    #[test]
-    fn budget_envelope_roundtrip() {
-        let domain = BudgetEnvelope::new(100_000, 80);
-        let proto_val = proto::BudgetEnvelope::from(&domain);
-        assert_eq!(proto_val.max_tokens, 100_000);
-        let back = BudgetEnvelope::from(&proto_val);
-        assert_eq!(back.allocated, 100_000);
-    }
-
-    #[test]
-    fn resource_limits_roundtrip() {
-        let domain = ResourceLimits {
-            cpu: 4.0,
-            memory_bytes: 8 * 1024 * 1024 * 1024,
-            token_budget: 200_000,
-        };
-        let proto_val = proto::ResourceLimits::from(&domain);
-        assert_eq!(proto_val.memory, "8Gi");
-        assert_eq!(proto_val.cpu, 4.0);
-        let back = ResourceLimits::from(&proto_val);
-        assert_eq!(back.cpu, 4.0);
-        assert_eq!(back.memory_bytes, 8 * 1024 * 1024 * 1024);
-        assert_eq!(back.token_budget, 200_000);
-    }
-
-    #[test]
-    fn credential_grant_roundtrip() {
-        let domain = CredentialGrant {
-            handle: "github-api".to_string(),
-            access_mode: CredentialAccessMode::ProxyOnly,
-        };
-        let proto_val = proto::CredentialGrant::from(&domain);
-        let back = CredentialGrant::from(&proto_val);
-        assert_eq!(back.handle, "github-api");
-        assert!(matches!(back.access_mode, CredentialAccessMode::ProxyOnly));
-    }
-
-    #[test]
-    fn permission_set_roundtrip() {
-        let domain = PermissionSet {
-            repo_access: RepoAccess::ReadWrite,
-            network_allowlist: ["api.github.com".to_string()].into(),
-            spawn_limits: SpawnLimits { max_children: 10, require_approval_after: 5 },
-            allow_project_memory_promotion: false,
-        };
-        let proto_val = proto::PermissionSet::from(&domain);
-        let back = PermissionSet::from(&proto_val);
-        assert!(matches!(back.repo_access, RepoAccess::ReadWrite));
-        assert_eq!(back.spawn_limits.max_children, 10);
-        assert_eq!(back.spawn_limits.require_approval_after, 5);
-    }
-}
-```
-
-- [ ] **Step 2: Add to convert/mod.rs**
+- [x] **Step 2: Add to convert/mod.rs**
 
 ```rust
 pub mod ids;
@@ -773,10 +422,14 @@ pub mod manifest;
 pub use enums::UnknownEnumValue;
 ```
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 Run: `cargo test -p forge-proto 2>&1 | tail -20`
-Expected: All manifest conversion tests pass. If proto field names differ from what's shown (check generated code), adjust accordingly.
+Expected: All manifest conversion tests pass, including:
+- strict failure on invalid memory strings
+- strict failure on unspecified enum values
+- round-trip coverage for `CapabilityEnvelope` and `AgentManifest`
+- explicit tests for the named budget helpers that prove they do not pretend to preserve runtime-only state
 
 - [ ] **Step 4: Commit**
 
@@ -787,211 +440,33 @@ git commit -m "feat(forge-proto): add manifest type conversions (budget, resourc
 
 ---
 
-### Task 6: Run Graph Conversions
+### Task 6: Run Submission Conversions
 
 **Files:**
 - Create: `crates/forge-proto/src/convert/run_graph.rs`
 - Modify: `crates/forge-proto/src/convert/mod.rs`
 
-- [ ] **Step 1: Write run graph conversion module**
+- [x] **Step 1: Write run submission conversion module**
 
-Create `crates/forge-proto/src/convert/run_graph.rs`. This handles the complex types: `RunPlan`, `MilestonePlan`/`MilestoneInfo`, `TaskPlan`/`TaskTemplate`, `RunInfo`/`RunState`, `TaskInfo`/`TaskNode`. Focus on the types needed for `SubmitRun` and `GetRun`/`GetTask` responses.
+Create `crates/forge-proto/src/convert/run_graph.rs` for the submission path only:
 
-```rust
-//! Conversion between proto run-graph messages and forge-common run_graph types.
-//!
-//! Proto message names that differ from domain:
-//! - Proto `TaskTemplate` ↔ domain `TaskTemplate` (same name)
-//! - Proto `MilestonePlan` ↔ domain `MilestoneInfo`
-//! - Proto field `depends_on_task_ids` ↔ domain field `depends_on`
-//! - Proto `ApprovalMode` enum ↔ domain `ApprovalMode` enum
+- Implement proto/domain conversions for:
+  - `RunPlan`
+  - `MilestonePlan` ↔ `MilestoneInfo`
+  - `TaskTemplate`
+- Use the named budget helpers from Task 5 instead of blanket `From` impls.
+- Use strict enum conversions for `ApprovalMode` and `MemoryScope`.
+- Preserve dependency IDs exactly (`depends_on_task_ids` ↔ `depends_on`).
 
-use crate::proto;
-use crate::convert::enums::UnknownEnumValue;
-use forge_common::{
-    manifest::MemoryScope,
-    run_graph::{ApprovalMode, MilestoneInfo, RunPlan, TaskTemplate},
-    BudgetEnvelope, MilestoneId, TaskNodeId,
-};
+Plan 1 explicitly does **not** implement conversions for:
+- `RunInfo` ↔ `RunState`
+- `TaskInfo` ↔ `TaskNode`
+- `Milestone` runtime snapshots
+- `TaskStatus`, `ApprovalState`, or event/read-model payloads
 
-// --- RunPlan ---
+Those are daemon read-model projections and belong in Plan 2 once the runtime state store exists.
 
-impl From<&proto::RunPlan> for RunPlan {
-    fn from(p: &proto::RunPlan) -> Self {
-        RunPlan {
-            version: p.version,
-            milestones: p.milestones.iter().map(MilestoneInfo::from).collect(),
-            initial_tasks: p.initial_tasks.iter().map(TaskTemplate::from).collect(),
-            global_budget: p
-                .global_budget
-                .as_ref()
-                .map(BudgetEnvelope::from)
-                .unwrap_or_else(|| BudgetEnvelope::new(2_000_000, 80)),
-        }
-    }
-}
-
-impl From<&RunPlan> for proto::RunPlan {
-    fn from(r: &RunPlan) -> Self {
-        proto::RunPlan {
-            version: r.version,
-            milestones: r.milestones.iter().map(proto::MilestonePlan::from).collect(),
-            initial_tasks: r.initial_tasks.iter().map(proto::TaskTemplate::from).collect(),
-            global_budget: Some(proto::BudgetEnvelope::from(&r.global_budget)),
-        }
-    }
-}
-
-// --- MilestoneInfo ↔ MilestonePlan ---
-
-impl From<&proto::MilestonePlan> for MilestoneInfo {
-    fn from(p: &proto::MilestonePlan) -> Self {
-        MilestoneInfo {
-            id: MilestoneId::new(&p.id),
-            title: p.title.clone(),
-            objective: p.objective.clone(),
-            expected_output: p.expected_output.clone(),
-            depends_on: p.depends_on.iter().map(|s| MilestoneId::new(s)).collect(),
-            success_criteria: p.success_criteria.clone(),
-            default_profile: p.default_profile.clone(),
-            budget: p
-                .budget
-                .as_ref()
-                .map(BudgetEnvelope::from)
-                .unwrap_or_else(|| BudgetEnvelope::new(200_000, 80)),
-            approval_mode: proto::ApprovalMode::try_from(p.approval_mode)
-                .ok()
-                .and_then(|v| ApprovalMode::try_from(v).ok())
-                .unwrap_or(ApprovalMode::AutoWithinEnvelope),
-        }
-    }
-}
-
-impl From<&MilestoneInfo> for proto::MilestonePlan {
-    fn from(m: &MilestoneInfo) -> Self {
-        proto::MilestonePlan {
-            id: m.id.as_str().to_string(),
-            title: m.title.clone(),
-            objective: m.objective.clone(),
-            expected_output: m.expected_output.clone(),
-            depends_on: m.depends_on.iter().map(|id| id.as_str().to_string()).collect(),
-            success_criteria: m.success_criteria.clone(),
-            default_profile: m.default_profile.clone(),
-            budget: Some(proto::BudgetEnvelope::from(&m.budget)),
-            approval_mode: proto::ApprovalMode::from(m.approval_mode.clone()).into(),
-        }
-    }
-}
-
-// --- TaskTemplate (same name in both proto and domain) ---
-
-impl From<&proto::TaskTemplate> for TaskTemplate {
-    fn from(p: &proto::TaskTemplate) -> Self {
-        TaskTemplate {
-            milestone: MilestoneId::new(&p.milestone_id),
-            objective: p.objective.clone(),
-            expected_output: p.expected_output.clone(),
-            profile_hint: p.profile_hint.clone(),
-            budget: p
-                .budget
-                .as_ref()
-                .map(BudgetEnvelope::from)
-                .unwrap_or_else(|| BudgetEnvelope::new(200_000, 80)),
-            memory_scope: proto::MemoryScope::try_from(p.memory_scope)
-                .ok()
-                .and_then(|v| MemoryScope::try_from(v).ok())
-                .unwrap_or(MemoryScope::Scratch),
-            depends_on: p.depends_on_task_ids.iter().map(|s| TaskNodeId::new(s)).collect(),
-        }
-    }
-}
-
-impl From<&TaskTemplate> for proto::TaskTemplate {
-    fn from(t: &TaskTemplate) -> Self {
-        proto::TaskTemplate {
-            milestone_id: t.milestone.as_str().to_string(),
-            objective: t.objective.clone(),
-            expected_output: t.expected_output.clone(),
-            profile_hint: t.profile_hint.clone(),
-            budget: Some(proto::BudgetEnvelope::from(&t.budget)),
-            memory_scope: proto::MemoryScope::from(t.memory_scope.clone()).into(),
-            depends_on_task_ids: t.depends_on.iter().map(|id| id.as_str().to_string()).collect(),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn run_plan_roundtrip() {
-        let domain = RunPlan {
-            version: 1,
-            milestones: vec![MilestoneInfo {
-                id: MilestoneId::new("m1"),
-                title: "Setup".to_string(),
-                objective: "Bootstrap the project".to_string(),
-                expected_output: "Project compiles".to_string(),
-                depends_on: vec![],
-                success_criteria: vec!["cargo check passes".to_string()],
-                default_profile: "implementer".to_string(),
-                budget: BudgetEnvelope::new(100_000, 80),
-                approval_mode: ApprovalMode::AutoWithinEnvelope,
-            }],
-            initial_tasks: vec![TaskTemplate {
-                milestone: MilestoneId::new("m1"),
-                objective: "Set up project".to_string(),
-                expected_output: "Project structure created".to_string(),
-                profile_hint: "implementer".to_string(),
-                budget: BudgetEnvelope::new(50_000, 80),
-                memory_scope: MemoryScope::Scratch,
-                depends_on: vec![],
-            }],
-            global_budget: BudgetEnvelope::new(2_000_000, 80),
-        };
-        let proto_val = proto::RunPlan::from(&domain);
-        let back = RunPlan::from(&proto_val);
-        assert_eq!(back.version, 1);
-        assert_eq!(back.milestones.len(), 1);
-        assert_eq!(back.milestones[0].title, "Setup");
-        assert_eq!(back.initial_tasks.len(), 1);
-        assert_eq!(back.initial_tasks[0].profile_hint, "implementer");
-    }
-
-    #[test]
-    fn task_template_preserves_depends_on() {
-        let domain = TaskTemplate {
-            milestone: MilestoneId::new("m1"),
-            objective: "task".to_string(),
-            expected_output: "output".to_string(),
-            profile_hint: "base".to_string(),
-            budget: BudgetEnvelope::new(10_000, 80),
-            memory_scope: MemoryScope::RunShared,
-            depends_on: vec![TaskNodeId::new("t1"), TaskNodeId::new("t2")],
-        };
-        let proto_val = proto::TaskTemplate::from(&domain);
-        assert_eq!(proto_val.depends_on_task_ids, vec!["t1", "t2"]);
-        let back = TaskTemplate::from(&proto_val);
-        assert_eq!(back.depends_on.len(), 2);
-    }
-}
-```
-
-Note: The `ApprovalMode` enum conversion must be added to `convert/enums.rs` for this to compile. Add it alongside the other enum conversions:
-
-```rust
-impl_enum_convert!(
-    ApprovalMode, proto::ApprovalMode, "ApprovalMode",
-    (ApprovalMode::AutoWithinEnvelope, proto::ApprovalMode::AutoWithinEnvelope),
-    (ApprovalMode::ParentWithinEnvelope, proto::ApprovalMode::ParentWithinEnvelope),
-    (ApprovalMode::OperatorRequired, proto::ApprovalMode::OperatorRequired),
-);
-```
-
-Also note: `RunStatus` and `TaskStatus` conversions are deferred — domain `TaskStatus` has data-carrying variants (`Running { agent_id, since }`, `Completed { result, duration }`, etc.) that require manual conversion, not the macro. These are needed when implementing the daemon (Plan 2), not for the foundation layer.
-
-- [ ] **Step 2: Add to convert/mod.rs**
+- [x] **Step 2: Add to convert/mod.rs**
 
 ```rust
 pub mod ids;
@@ -1002,10 +477,10 @@ pub mod run_graph;
 pub use enums::UnknownEnumValue;
 ```
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 Run: `cargo test -p forge-proto 2>&1 | tail -20`
-Expected: Run graph conversion tests pass. TODO comments mark fields that need enum conversion wiring — these will be completed as part of a follow-up task when the full integration is needed.
+Expected: Submission-path conversion tests pass. There should be no TODO placeholders claiming `RunInfo` / `TaskInfo` support.
 
 - [ ] **Step 4: Commit**
 
@@ -1018,211 +493,61 @@ git commit -m "feat(forge-proto): add run graph conversions (RunPlan, MilestoneI
 
 ## Chunk 3: Execution Facade
 
-### Task 7: Define ExecutionFacade Trait
+### Task 7: Define ExecutionFacade Types and Trait
 
 **Files:**
 - Create: `crates/forge-common/src/facade.rs`
 - Modify: `crates/forge-common/src/lib.rs`
 - Modify: `crates/forge-common/Cargo.toml`
 
-This is the critical abstraction that all spawn sites will migrate to. It defines the interface between forge's orchestration logic and the execution backend (currently direct CLI spawning, future daemon).
+This is the critical abstraction that later spawn-site migrations will build on. In Plan 1 it must be rich enough to model the current direct subprocess behavior without baking in daemon-specific IDs or throwing away stream-json detail.
 
-- [ ] **Step 1: Add tokio dependency to forge-common**
+- [x] **Step 1: Add tokio dependency to forge-common**
 
 Edit `crates/forge-common/Cargo.toml` to add:
 
 ```toml
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["sync", "process", "io-util", "rt", "time"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
 ```
 
-`sync` is needed for `mpsc` channels in the facade's streaming response type. `rt` and `macros` are dev-only for `#[tokio::test]`.
+`sync` is needed for `mpsc` channels in the facade's streaming response type. `process`, `io-util`, `rt`, and `time` are needed by `DirectExecutionFacade` for subprocess management and streaming. `macros` remains dev-only for `#[tokio::test]`.
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write facade types and trait**
 
-Create `crates/forge-common/src/facade.rs`:
+Create `crates/forge-common/src/facade.rs` with these requirements:
 
-```rust
-//! Execution facade — the single interface through which all Claude/forge
-//! process execution flows.
-//!
-//! This trait abstracts whether execution happens via direct CLI spawning
-//! (current behavior) or via the forge-runtime daemon (target architecture).
-//! All 26 spawn sites identified in the migration checklist converge behind
-//! this interface.
+- Introduce a facade-owned `ExecutionId` for in-flight executions. Do not key the trait to `AgentId`.
+- Define `ExecutionRequest` so it can model current direct callers without forcing every call site into daemon task semantics on day one. It should support:
+  - optional `run_id` / `task_id`
+  - prompt text
+  - working directory as `PathBuf`
+  - backend kind (`claude`, `codex`, `forge-subcommand`, or equivalent)
+  - output mode (`text` vs `stream-json`)
+  - optional allowed/disallowed tools
+  - resume/continue mode for current CLI session flows
+- Define a richer `ExecutionEvent` stream that can represent:
+  - `TaskOutputEvent`
+  - assistant text / thinking deltas
+  - tool-use metadata
+  - final result payloads
+  - captured session identifiers
+- Define `ExecutionOutcome` as a status enum rather than always embedding a successful `AgentResult`. It must be able to represent completed, failed, and killed executions without inventing fake success data.
+- Define `ExecutionBackendHealth` as a structured response with backend identity and capability/version metadata. Do not collapse health to `bool`.
+- Define the trait roughly as:
+  - `execute(&self, request) -> Result<ExecutionHandle>`
+  - `wait(&self, execution_id: &ExecutionId) -> Result<ExecutionOutcome>`
+  - `kill(&self, execution_id: &ExecutionId, reason: Option<&str>) -> Result<()>`
+  - `health_check(&self) -> Result<ExecutionBackendHealth>`
 
-use crate::{
-    events::TaskOutputEvent,
-    ids::{AgentId, RunId, TaskNodeId},
-    manifest::BudgetEnvelope,
-    run_graph::AgentResult,
-};
-use async_trait::async_trait;
-use std::path::Path;
-use tokio::sync::mpsc;
+Add unit tests for a `MockFacade` that prove:
+- rich events can be streamed
+- failed outcomes are representable
+- structured health is returned
 
-/// A request to execute a task (spawn an agent).
-#[derive(Debug, Clone)]
-pub struct ExecuteTaskRequest {
-    /// Run this task belongs to.
-    pub run_id: RunId,
-    /// Task node to execute.
-    pub task_id: TaskNodeId,
-    /// Profile name to use for the agent environment.
-    pub profile: String,
-    /// The prompt/objective to send to the agent.
-    pub prompt: String,
-    /// Working directory (repo path).
-    pub workspace: String,
-    /// Token budget for this task.
-    pub budget: BudgetEnvelope,
-}
-
-/// Handle to a running task execution. Provides streaming output and
-/// allows cancellation.
-pub struct ExecutionHandle {
-    /// Unique agent ID assigned to this execution.
-    pub agent_id: AgentId,
-    /// Task node being executed.
-    pub task_id: TaskNodeId,
-    /// Receiver for streaming output events from the agent.
-    pub output: mpsc::Receiver<TaskOutputEvent>,
-}
-
-/// Result of a completed task execution.
-#[derive(Debug, Clone)]
-pub struct ExecutionResult {
-    /// Agent that executed the task.
-    pub agent_id: AgentId,
-    /// Task that was executed.
-    pub task_id: TaskNodeId,
-    /// Whether execution succeeded.
-    pub success: bool,
-    /// Agent's result (output, artifacts, tokens consumed).
-    pub result: AgentResult,
-    /// Exit code from the process (0 = success).
-    pub exit_code: i32,
-}
-
-/// The execution facade — all spawn sites converge behind this trait.
-///
-/// Two implementations:
-/// - `DirectExecutionFacade`: spawns Claude CLI directly (backwards compat)
-/// - `DaemonExecutionFacade`: delegates to forge-runtime daemon via gRPC
-#[async_trait]
-pub trait ExecutionFacade: Send + Sync {
-    /// Execute a task: spawn an agent, return a handle for streaming output.
-    async fn execute(&self, request: ExecuteTaskRequest) -> anyhow::Result<ExecutionHandle>;
-
-    /// Wait for a running execution to complete.
-    async fn wait(&self, agent_id: &AgentId) -> anyhow::Result<ExecutionResult>;
-
-    /// Kill a running execution.
-    async fn kill(&self, agent_id: &AgentId) -> anyhow::Result<()>;
-
-    /// Check if the execution backend is healthy and reachable.
-    async fn health_check(&self) -> anyhow::Result<bool>;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::events::TaskOutput;
-    use std::sync::Arc;
-
-    /// Mock facade for testing consumers of the trait.
-    struct MockFacade;
-
-    #[async_trait]
-    impl ExecutionFacade for MockFacade {
-        async fn execute(&self, request: ExecuteTaskRequest) -> anyhow::Result<ExecutionHandle> {
-            let (tx, rx) = mpsc::channel(16);
-            let agent_id = AgentId::generate();
-
-            // Simulate some output
-            let agent_id_clone = agent_id.clone();
-            let task_id = request.task_id.clone();
-            let run_id = request.run_id.clone();
-            tokio::spawn(async move {
-                let _ = tx
-                    .send(TaskOutputEvent {
-                        run_id,
-                        task_id: task_id.clone(),
-                        agent_id: agent_id_clone,
-                        cursor: 1,
-                        output: TaskOutput::Stdout("Hello from mock".to_string()),
-                        timestamp: chrono::Utc::now(),
-                    })
-                    .await;
-            });
-
-            Ok(ExecutionHandle {
-                agent_id,
-                task_id: request.task_id,
-                output: rx,
-            })
-        }
-
-        async fn wait(&self, _agent_id: &AgentId) -> anyhow::Result<ExecutionResult> {
-            Ok(ExecutionResult {
-                agent_id: AgentId::generate(),
-                task_id: TaskNodeId::generate(),
-                success: true,
-                result: AgentResult {
-                    summary: "Mock completed".to_string(),
-                    artifacts: vec![],
-                    tokens_consumed: 1000,
-                    commit_sha: None,
-                },
-                exit_code: 0,
-            })
-        }
-
-        async fn kill(&self, _agent_id: &AgentId) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn health_check(&self) -> anyhow::Result<bool> {
-            Ok(true)
-        }
-    }
-
-    #[tokio::test]
-    async fn mock_facade_executes_and_streams() {
-        let facade: Arc<dyn ExecutionFacade> = Arc::new(MockFacade);
-        let request = ExecuteTaskRequest {
-            run_id: RunId::generate(),
-            task_id: TaskNodeId::generate(),
-            profile: "base".to_string(),
-            prompt: "test prompt".to_string(),
-            workspace: "/tmp/test".to_string(),
-            budget: BudgetEnvelope::new(50_000, 80),
-        };
-
-        let mut handle = facade.execute(request).await.unwrap();
-        let event = handle.output.recv().await.unwrap();
-        assert!(matches!(event.output, TaskOutput::Stdout(ref s) if s == "Hello from mock"));
-    }
-
-    #[tokio::test]
-    async fn mock_facade_wait_returns_result() {
-        let facade: Arc<dyn ExecutionFacade> = Arc::new(MockFacade);
-        let result = facade.wait(&AgentId::generate()).await.unwrap();
-        assert!(result.success);
-        assert_eq!(result.exit_code, 0);
-    }
-
-    #[tokio::test]
-    async fn mock_facade_health_check() {
-        let facade: Arc<dyn ExecutionFacade> = Arc::new(MockFacade);
-        assert!(facade.health_check().await.unwrap());
-    }
-}
-```
-
-- [ ] **Step 3: Add facade module to lib.rs**
+- [x] **Step 3: Add facade module to lib.rs**
 
 Edit `crates/forge-common/src/lib.rs` — add after existing modules:
 
@@ -1233,44 +558,102 @@ pub mod facade;
 And add to the re-exports:
 
 ```rust
-pub use facade::{ExecuteTaskRequest, ExecutionFacade, ExecutionHandle, ExecutionResult};
+pub use facade::{
+    ExecutionBackendHealth, ExecutionEvent, ExecutionFacade, ExecutionHandle, ExecutionId,
+    ExecutionOutcome, ExecutionRequest,
+};
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `cargo test -p forge-common 2>&1 | tail -20`
-Expected: All tests pass including the 3 new async facade tests. If there are compilation errors from missing `tokio` features, ensure `Cargo.toml` has `tokio = { version = "1", features = ["sync", "rt", "macros"] }` (macros needed for `#[tokio::test]`).
+Expected: All tests pass, including async facade tests that cover completed and failed outcomes plus structured health data.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add crates/forge-common/
-git commit -m "feat(forge-common): add ExecutionFacade trait — single interface for all agent execution"
+git commit -m "feat(forge-common): add execution facade types for direct and daemon backends"
 ```
 
 ---
 
-### Task 8: Final Integration Test
+### Task 8: Implement DirectExecutionFacade and Migrate One Pilot Caller
+
+**Files:**
+- Create: `crates/forge-common/src/direct_execution.rs`
+- Modify: `crates/forge-common/src/lib.rs`
+- Modify: `src/cmd/autoresearch/judge.rs`
+
+Plan 1 must produce a real direct-backed bridge, not just a trait. The implementation should preserve the current subprocess behavior closely enough that one low-risk caller can switch to it without waiting for the daemon.
+
+- [x] **Step 1: Implement `DirectExecutionFacade`**
+
+Create `crates/forge-common/src/direct_execution.rs`:
+
+- Spawn the configured backend command directly using `tokio::process::Command`.
+- Capture stream-json detail into the richer `ExecutionEvent` enum from Task 7.
+- Preserve current direct-mode features needed later by higher-complexity callers:
+  - session capture
+  - final result capture
+  - stdout/stderr forwarding
+  - cancellation by `ExecutionId`
+- Re-export `DirectExecutionFacade` from `forge-common/src/lib.rs`.
+
+- [x] **Step 2: Pilot-migrate one low-risk caller**
+
+Migrate `src/cmd/autoresearch/judge.rs` to use `DirectExecutionFacade`.
+
+Why this caller:
+- it is already behind a trait-like execution boundary
+- it is low-risk compared to `runner`, `swarm`, or `factory`
+- it proves the facade is not purely theoretical
+
+Keep all existing user-visible behavior intact. The goal is validation of the abstraction, not broad migration.
+
+- [x] **Step 3: Run focused tests**
+
+Run:
+- `cargo test -p forge-common 2>&1 | tail -20`
+- `cargo test cmd::autoresearch::judge -- --nocapture 2>&1 | tail -20`
+
+Expected: direct facade tests pass and the pilot caller still behaves correctly.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add crates/forge-common/ src/cmd/autoresearch/judge.rs
+git commit -m "feat(execution): add direct execution facade and migrate autoresearch judge"
+```
+
+---
+
+### Task 9: Final Integration Test
 
 **Files:**
 - No new files — cross-crate integration verification
 
-- [ ] **Step 1: Verify full workspace builds**
+- [x] **Step 1: Verify full workspace builds**
 
 Run: `cargo check --workspace 2>&1 | tail -20`
 Expected: All three crates compile (forge, forge-common, forge-proto).
 
-- [ ] **Step 2: Run all tests**
+- [x] **Step 2: Run all tests**
 
-Run: `cargo test --workspace 2>&1 | tail -30`
-Expected: All tests pass across all crates.
+Run: `cargo test --workspace --lib --tests 2>&1 | tail -30`
+Expected: All unit and integration tests pass across the workspace.
 
-- [ ] **Step 3: Verify proto types are accessible from forge-proto**
+- [x] **Step 3: Run the existing CLI integration suite explicitly**
+
+Run: `cargo test --test integration_tests 2>&1 | tail -30`
+Expected: Existing packaged-binary integration tests still pass after the workspace and facade changes.
+
+- [x] **Step 4: Verify proto types are accessible from forge-proto**
 
 Run: `cargo doc -p forge-proto --no-deps 2>&1 | tail -10`
 Expected: Documentation generates without errors — confirms all public types are well-formed.
 
-- [ ] **Step 4: Commit and tag**
+- [ ] **Step 5: Commit and tag**
 
 ```bash
 git add -A
@@ -1285,7 +668,8 @@ After completing this plan you will have:
 
 1. **Cargo workspace** with three members: `forge` (existing), `forge-common` (domain types), `forge-proto` (codegen + conversions)
 2. **Proto codegen** from `runtime.proto` via tonic-build — all proto types available as Rust structs/enums
-3. **Conversion layer** (5 modules) translating between proto messages and domain types: IDs, enums, manifests, run graph
-4. **ExecutionFacade trait** — the single interface that all 26 spawn sites will migrate to in Plan 5
+3. **Strict conversion layer** for IDs, shape-compatible enums, manifest/capability inputs, and the run submission path
+4. **Concrete `DirectExecutionFacade`** plus one pilot migration that proves the abstraction against real direct subprocess execution
+5. **Clear deferrals** for read-model/event/policy conversions and high-complexity caller migration, rather than partially implementing them with lossy mappings
 
-**What comes next (Plan 2):** Build the `forge-runtime` daemon binary with gRPC server skeleton, SQLite state store, event log, and policy engine — implementing the server side of the proto contract defined here.
+**What comes next (Plan 2):** Build the `forge-runtime` daemon binary with gRPC server skeleton, SQLite state store, event log, and policy engine, then add the deferred read-model/event/policy conversions and the daemon-backed execution facade.

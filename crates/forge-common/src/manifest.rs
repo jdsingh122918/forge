@@ -42,9 +42,9 @@ pub struct AgentManifest {
     /// MCP servers this agent is allowed to access through the MCP router.
     pub mcp_servers: Vec<String>,
 
-    /// Logical credential handles this agent may request from the credential broker.
-    /// These are symbolic names (e.g., "github-api"), not raw secrets.
-    pub credential_handles: Vec<String>,
+    /// Logical credential grants this agent may request from the credential broker.
+    /// These are symbolic handles (e.g., "github-api"), not raw secrets.
+    pub credentials: Vec<CredentialGrant>,
 
     /// Policy governing what memory scopes this agent can read and write.
     pub memory_policy: MemoryPolicy,
@@ -81,7 +81,8 @@ pub enum RuntimeEnvPlan {
     },
 
     /// Host mode: agent runs with the host PATH. Explicit insecure fallback.
-    /// Sensitive capabilities are disabled or downgraded.
+    /// Sensitive capabilities are hard-disabled and the task is permanently
+    /// considered insecure until re-materialized into a secure runtime.
     Host {
         /// Whether the operator explicitly opted into insecure host mode.
         explicit_opt_in: bool,
@@ -106,13 +107,15 @@ pub struct MemoryPolicy {
     pub read_scopes: Vec<MemoryScope>,
     /// Scopes this agent can write to.
     pub write_scopes: Vec<MemoryScope>,
+    /// Default write model for run-shared memory.
+    pub run_shared_write_mode: RunSharedWriteMode,
 }
 
 /// The three memory scopes available to agents.
 ///
 /// Each scope has a different lifetime and default write policy:
 /// - **Scratch**: agent-local, dies with the agent
-/// - **RunShared**: shared within a run's task subtree, dies with the run
+/// - **RunShared**: lane-scoped and append-only by default, dies with the run
 /// - **Project**: cross-run durable storage, deny-by-default writes
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MemoryScope {
@@ -123,6 +126,34 @@ pub enum MemoryScope {
     /// Cross-run durable project memory. Writes require explicit policy and
     /// usually approval. Lifetime: permanent.
     Project,
+}
+
+/// How run-shared memory may be written by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RunSharedWriteMode {
+    /// Each task writes only to its own append-only lane; parents aggregate
+    /// child outputs through checkpoints.
+    AppendOnlyLane,
+    /// Broader shared coordination space, granted only by explicit policy.
+    CoordinatedSharedWrite,
+}
+
+/// Whether a credential handle may only be proxied or may be exported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CredentialAccessMode {
+    /// Default. The daemon proxies the credential; the agent never sees the raw secret.
+    ProxyOnly,
+    /// Exceptional path. Raw export is possible, but still requires policy and approval.
+    Exportable,
+}
+
+/// A credential handle grant available to an agent or child-task envelope.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CredentialGrant {
+    /// Logical handle name (for example `github-api`).
+    pub handle: String,
+    /// Whether this handle is proxy-only or exportable.
+    pub access_mode: CredentialAccessMode,
 }
 
 /// Resource limits enforced by the runtime backend (cgroups, Docker limits,
@@ -152,6 +183,9 @@ pub struct PermissionSet {
 
     /// Limits on how many child tasks this agent may spawn.
     pub spawn_limits: SpawnLimits,
+
+    /// Whether this agent may request promotion into durable project memory.
+    pub allow_project_memory_promotion: bool,
 }
 
 /// Repository filesystem access level.
@@ -172,6 +206,37 @@ pub struct SpawnLimits {
     pub max_children: u32,
     /// Soft cap: after this many children, further spawns require approval.
     pub require_approval_after: u32,
+}
+
+/// Capability envelope used for child-task approval and policy evaluation.
+///
+/// Unlike the fully materialized `AgentManifest`, this envelope represents
+/// the capabilities a task subtree is allowed to request or inherit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapabilityEnvelope {
+    /// Tool identifiers the task may use or request for children.
+    pub tools: Vec<String>,
+
+    /// MCP servers the task may access.
+    pub mcp_servers: Vec<String>,
+
+    /// Credential grants the task may access.
+    pub credentials: Vec<CredentialGrant>,
+
+    /// Allowed outbound network destinations.
+    pub network_allowlist: HashSet<String>,
+
+    /// Memory access policy for the task subtree.
+    pub memory_policy: MemoryPolicy,
+
+    /// Repository access level.
+    pub repo_access: RepoAccess,
+
+    /// Child-task spawning limits for the subtree.
+    pub spawn_limits: SpawnLimits,
+
+    /// Whether durable project-memory promotion is allowed.
+    pub allow_project_memory_promotion: bool,
 }
 
 /// Token budget envelope that tracks allocation and consumption with

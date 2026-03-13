@@ -1,3 +1,11 @@
+[workspace]
+members = [
+    ".",
+    "crates/forge-common",
+    "crates/forge-proto",
+]
+resolver = "2"
+
 [package]
 name = "forge"
 version = "0.1.0"
@@ -33,6 +41,7 @@ serde_yaml = "0.9"
 # Utilities
 anyhow = "1"
 thiserror = "2"
+forge-common = { path = "crates/forge-common" }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.10"
