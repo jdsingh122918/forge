@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{Duration, Utc};
@@ -42,7 +43,7 @@ struct RunRecoveryCounts {
 
 /// Reconcile stale non-terminal tasks and runs before the daemon starts serving.
 pub async fn recover_orphans(
-    state_store: &StateStore,
+    state_store: Arc<StateStore>,
     event_stream: &EventStreamCoordinator,
     agent_supervisor: &dyn AgentSupervisor,
 ) -> Result<RecoveryResult> {
@@ -50,13 +51,28 @@ pub async fn recover_orphans(
         .list_active()
         .await
         .context("failed to list active runtime instances during recovery")?;
-    let (mut result, per_run_counts) = recover_tasks(state_store, &live_agents)?;
-    let stale_run_ids = reconcile_runs(state_store)?;
+    let recover_store = Arc::clone(&state_store);
+    let (mut result, per_run_counts) =
+        tokio::task::spawn_blocking(move || recover_tasks(recover_store.as_ref(), &live_agents))
+            .await
+            .context("recovery task reconciliation worker panicked")??;
+    let reconcile_store = Arc::clone(&state_store);
+    let stale_run_ids =
+        tokio::task::spawn_blocking(move || reconcile_runs(reconcile_store.as_ref()))
+            .await
+            .context("run reconciliation worker panicked")??;
 
-    emit_daemon_recovered_events(state_store, event_stream, &stale_run_ids, &per_run_counts)
-        .await?;
-    state_store
-        .checkpoint_wal()
+    emit_daemon_recovered_events(
+        Arc::clone(&state_store),
+        event_stream,
+        &stale_run_ids,
+        &per_run_counts,
+    )
+    .await?;
+    let checkpoint_store = Arc::clone(&state_store);
+    tokio::task::spawn_blocking(move || checkpoint_store.checkpoint_wal())
+        .await
+        .context("runtime WAL checkpoint worker panicked")?
         .context("failed to checkpoint runtime WAL after recovery")?;
 
     result.stale_sockets_cleaned = 0;
@@ -170,7 +186,7 @@ fn reconcile_run_status(tasks: &[TaskNodeRow]) -> RunStatus {
 }
 
 async fn emit_daemon_recovered_events(
-    state_store: &StateStore,
+    state_store: Arc<StateStore>,
     event_stream: &EventStreamCoordinator,
     stale_run_ids: &HashSet<String>,
     per_run_counts: &HashMap<String, RunRecoveryCounts>,
@@ -197,9 +213,14 @@ async fn emit_daemon_recovered_events(
             .await
             .with_context(|| format!("failed to append DaemonRecovered event for run {run_id}"))?;
 
-        state_store
-            .update_run_cursor(&run_id, seq)
-            .with_context(|| format!("failed to persist recovery cursor for run {run_id}"))?;
+        let cursor_store = Arc::clone(&state_store);
+        let run_id_for_cursor = run_id.clone();
+        tokio::task::spawn_blocking(move || {
+            cursor_store.update_run_cursor(&run_id_for_cursor, seq)
+        })
+        .await
+        .with_context(|| format!("recovery cursor persistence worker panicked for run {run_id}"))?
+        .with_context(|| format!("failed to persist recovery cursor for run {run_id}"))?;
     }
 
     Ok(())
@@ -424,7 +445,10 @@ fn reconstruct_task_status(
                 agent_id,
                 since: row.created_at,
             }),
-            None => Ok(TaskStatus::Materializing),
+            None => bail!(
+                "task {} stored as Running without assigned_agent_id during recovery",
+                row.id
+            ),
         },
         "completed" => Ok(TaskStatus::Completed {
             result: AgentResult {
@@ -516,19 +540,26 @@ fn decode_json_or_plain_enum<T>(value: &str, field: &str) -> Result<T>
 where
     T: DeserializeOwned,
 {
-    decode_json::<T>(value, field).or_else(|_| {
-        let quoted = serde_json::to_string(value).context("failed to quote enum fallback")?;
-        serde_json::from_str(&quoted).with_context(|| format!("failed to decode {field}"))
-    })
+    let json_error = match decode_json::<T>(value, field) {
+        Ok(parsed) => return Ok(parsed),
+        Err(error) => error,
+    };
+    let quoted = serde_json::to_string(value).context("failed to quote enum fallback")?;
+    serde_json::from_str(&quoted)
+        .with_context(|| format!("failed to decode {field} after JSON decode error: {json_error}"))
 }
 
 fn decode_approval_state(value: &str) -> Result<ApprovalState> {
-    if let Ok(parsed) = serde_json::from_str::<ApprovalState>(value) {
-        return Ok(parsed);
-    }
+    let strict_error = match serde_json::from_str::<ApprovalState>(value) {
+        Ok(parsed) => return Ok(parsed),
+        Err(error) => error,
+    };
 
-    let legacy = serde_json::from_str::<serde_json::Value>(value)
-        .context("failed to decode task_nodes.approval_state")?;
+    let legacy = serde_json::from_str::<serde_json::Value>(value).with_context(|| {
+        format!(
+            "failed to decode task_nodes.approval_state after strict decode error: {strict_error}"
+        )
+    })?;
     let state = legacy
         .get("state")
         .and_then(serde_json::Value::as_str)
@@ -775,7 +806,7 @@ mod tests {
             .unwrap();
 
         let result = recover_orphans(
-            harness.state_store.as_ref(),
+            Arc::clone(&harness.state_store),
             &harness.event_stream,
             &FakeSupervisor::default(),
         )
@@ -857,7 +888,7 @@ mod tests {
             .unwrap();
 
         let result = recover_orphans(
-            harness.state_store.as_ref(),
+            Arc::clone(&harness.state_store),
             &harness.event_stream,
             &FakeSupervisor::default(),
         )
@@ -921,7 +952,7 @@ mod tests {
             .unwrap();
 
         recover_orphans(
-            harness.state_store.as_ref(),
+            Arc::clone(&harness.state_store),
             &harness.event_stream,
             &FakeSupervisor::default(),
         )
@@ -995,6 +1026,32 @@ mod tests {
         assert_eq!(
             run.get_ready_tasks().unwrap(),
             vec![TaskNodeId::new("parent")]
+        );
+    }
+
+    #[test]
+    fn rebuild_run_graph_rejects_running_task_without_agent_assignment() {
+        let harness = TestHarness::new();
+        insert_run(harness.state_store.as_ref(), "run-1", "Running");
+        harness
+            .state_store
+            .insert_task(&sample_task_row(
+                "task-running",
+                "run-1",
+                None,
+                "Running",
+                ApprovalState::NotRequired,
+                None,
+                0,
+            ))
+            .unwrap();
+
+        let error = rebuild_run_graph(harness.state_store.as_ref()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("stored as Running without assigned_agent_id"),
+            "{error:#}"
         );
     }
 }

@@ -47,9 +47,12 @@ async fn main() -> Result<()> {
         .context("runtime socket path must have a parent directory")?
         .to_path_buf();
     let stale_sockets_cleaned = clean_runtime_socket_artifacts(&runtime_dir)?;
-    let mut recovery_result =
-        recover_orphans(state_store.as_ref(), event_stream.as_ref(), agent_supervisor.as_ref())
-            .await?;
+    let mut recovery_result = recover_orphans(
+        Arc::clone(&state_store),
+        event_stream.as_ref(),
+        agent_supervisor.as_ref(),
+    )
+    .await?;
     recovery_result.stale_sockets_cleaned = stale_sockets_cleaned;
     tracing::info!(
         tasks_reattached = recovery_result.tasks_reattached,
@@ -111,15 +114,29 @@ fn init_tracing(log_level: &str) -> Result<()> {
 
 #[cfg(unix)]
 async fn wait_for_termination_signal() -> String {
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("failed to install SIGTERM handler");
+    let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
+    let mut sigterm = match sigterm {
+        Ok(sigterm) => Some(sigterm),
+        Err(error) => {
+            tracing::warn!(%error, "failed to install SIGTERM handler; falling back to SIGINT only");
+            None
+        }
+    };
 
-    tokio::select! {
-        result = tokio::signal::ctrl_c() => match result {
+    match sigterm.as_mut() {
+        Some(sigterm) => {
+            tokio::select! {
+                result = tokio::signal::ctrl_c() => match result {
+                    Ok(()) => "received SIGINT".to_string(),
+                    Err(error) => format!("failed to install SIGINT handler: {error}"),
+                },
+                _ = sigterm.recv() => "received SIGTERM".to_string(),
+            }
+        }
+        None => match tokio::signal::ctrl_c().await {
             Ok(()) => "received SIGINT".to_string(),
             Err(error) => format!("failed to install SIGINT handler: {error}"),
         },
-        _ = sigterm.recv() => "received SIGTERM".to_string(),
     }
 }
 

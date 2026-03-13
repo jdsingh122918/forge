@@ -503,7 +503,10 @@ mod tests {
             .unwrap();
 
         let row = store.get_task("task-1").unwrap().unwrap();
-        assert_eq!(row.approval_state, r#"{"Pending":{"approval_id":"approval-1"}}"#);
+        assert_eq!(
+            row.approval_state,
+            r#"{"Pending":{"approval_id":"approval-1"}}"#
+        );
         assert_eq!(row.status, "AwaitingApproval");
     }
 }

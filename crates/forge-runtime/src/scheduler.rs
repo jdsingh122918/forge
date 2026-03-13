@@ -57,11 +57,21 @@ impl Scheduler {
                     Some(run) => match run.get_ready_tasks() {
                         Ok(tasks) => tasks,
                         Err(error) => {
-                            tracing::warn!(%error, run_id = %run_id, "failed to compute ready tasks");
-                            Vec::new()
+                            tracing::error!(
+                                %error,
+                                run_id = %run_id,
+                                "scheduler skipped run after ready-task computation failed"
+                            );
+                            continue;
                         }
                     },
-                    None => Vec::new(),
+                    None => {
+                        tracing::debug!(
+                            run_id = %run_id,
+                            "active run disappeared before scheduler could inspect it"
+                        );
+                        continue;
+                    }
                 }
             };
 

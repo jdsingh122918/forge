@@ -14,7 +14,7 @@ use forge_runtime::state::StateStore;
 use tempfile::TempDir;
 use tokio::sync::{Mutex, Notify};
 use tokio_stream::StreamExt;
-use tonic::Request;
+use tonic::{Code, Request};
 
 struct Harness {
     _temp_dir: TempDir,
@@ -258,11 +258,17 @@ async fn pending_approvals_replays_existing_approval_gated_child_task() {
         proto::ApprovalReasonKind::SoftCapExceeded as i32
     );
     assert_eq!(
-        approval.requested_budget.as_ref().map(|budget| budget.max_tokens),
+        approval
+            .requested_budget
+            .as_ref()
+            .map(|budget| budget.max_tokens),
         Some(2_000)
     );
     assert_eq!(
-        approval.child_manifest.as_ref().map(|manifest| manifest.profile_name.as_str()),
+        approval
+            .child_manifest
+            .as_ref()
+            .map(|manifest| manifest.profile_name.as_str()),
         Some("implementer")
     );
 }
@@ -288,8 +294,16 @@ async fn resolve_approval_approve_clears_pending_approval_and_enqueues_task() {
     assert_eq!(task.id, fixture.child_id);
     assert_eq!(task.status(), proto::TaskStatus::Enqueued);
     assert_ne!(task.approval_state, proto::ApprovalState::Pending as i32);
+    assert_eq!(
+        task.budget.as_ref().map(|budget| budget.max_tokens),
+        Some(2_000)
+    );
 
-    let persisted = harness.state_store.get_task(&fixture.child_id).unwrap().unwrap();
+    let persisted = harness
+        .state_store
+        .get_task(&fixture.child_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(persisted.status, "Enqueued");
 
     let orchestrator = harness.orchestrator.lock().await;
@@ -324,8 +338,16 @@ async fn resolve_approval_deny_kills_task_and_returns_updated_task() {
     assert_eq!(task.id, fixture.child_id);
     assert_eq!(task.status(), proto::TaskStatus::Killed);
     assert!(task.failure_reason.contains(deny_reason));
+    assert_eq!(
+        task.budget.as_ref().map(|budget| budget.max_tokens),
+        Some(2_000)
+    );
 
-    let persisted = harness.state_store.get_task(&fixture.child_id).unwrap().unwrap();
+    let persisted = harness
+        .state_store
+        .get_task(&fixture.child_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(persisted.status, "Killed");
 
     let orchestrator = harness.orchestrator.lock().await;
@@ -334,5 +356,91 @@ async fn resolve_approval_deny_kills_task_and_returns_updated_task() {
     assert!(matches!(
         &run.tasks[&TaskNodeId::new(fixture.child_id)].status,
         TaskStatus::Killed { reason } if reason.contains(deny_reason)
+    ));
+}
+
+#[tokio::test]
+async fn resolve_approval_returns_not_found_for_unknown_id() {
+    let (harness, _fixture) = Harness::with_pending_child_approval().await;
+
+    let error = harness
+        .service
+        .resolve_approval(Request::new(proto::ResolveApprovalRequest {
+            approval_id: "missing-approval".to_string(),
+            action: proto::ApprovalAction::Approve as i32,
+            actor: Some(operator_actor()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code(), Code::NotFound);
+}
+
+#[tokio::test]
+async fn resolve_approval_rejects_empty_approval_id() {
+    let (harness, _fixture) = Harness::with_pending_child_approval().await;
+
+    let error = harness
+        .service
+        .resolve_approval(Request::new(proto::ResolveApprovalRequest {
+            approval_id: String::new(),
+            action: proto::ApprovalAction::Approve as i32,
+            actor: Some(operator_actor()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code(), Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn resolve_approval_second_attempt_returns_not_found_and_leaves_first_result_intact() {
+    let (harness, fixture) = Harness::with_pending_child_approval().await;
+
+    let first = harness
+        .service
+        .resolve_approval(Request::new(proto::ResolveApprovalRequest {
+            approval_id: fixture.approval_id.clone(),
+            action: proto::ApprovalAction::Approve as i32,
+            actor: Some(operator_actor()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(
+        first.task.as_ref().map(|task| task.status()),
+        Some(proto::TaskStatus::Enqueued)
+    );
+
+    let error = harness
+        .service
+        .resolve_approval(Request::new(proto::ResolveApprovalRequest {
+            approval_id: fixture.approval_id.clone(),
+            action: proto::ApprovalAction::Approve as i32,
+            actor: Some(operator_actor()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code(), Code::NotFound);
+
+    let persisted = harness
+        .state_store
+        .get_task(&fixture.child_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.status, "Enqueued");
+
+    let orchestrator = harness.orchestrator.lock().await;
+    let run = orchestrator.get_run(&RunId::new(fixture.run_id)).unwrap();
+    assert!(run.approvals.is_empty());
+    assert!(matches!(
+        &run.tasks[&TaskNodeId::new(fixture.child_id)].status,
+        TaskStatus::Enqueued
     ));
 }

@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use forge_proto::proto::forge_runtime_client::ForgeRuntimeClient;
 use forge_proto::proto::{
-    ApprovalMode, BudgetEnvelope, GetRunRequest, HealthRequest, ListMcpServersRequest, ListTasksRequest,
-    MilestonePlan, RunPlan, RuntimeBackend, ShutdownRequest, SubmitRunRequest, TaskTemplate,
+    ApprovalMode, BudgetEnvelope, GetRunRequest, HealthRequest, ListMcpServersRequest,
+    ListTasksRequest, MilestonePlan, RunPlan, RuntimeBackend, ShutdownRequest, SubmitRunRequest,
+    TaskTemplate,
 };
 use forge_runtime::server::run_server;
 use forge_runtime::state::StateStore;
@@ -288,7 +289,11 @@ async fn restart_preserves_persisted_runs_via_server_bootstrap() {
         .unwrap()
         .connect_with_connector(service_fn(move |_: Uri| {
             let restarted_socket = restarted_socket.clone();
-            async move { UnixStream::connect(restarted_socket).await.map(TokioIo::new) }
+            async move {
+                UnixStream::connect(restarted_socket)
+                    .await
+                    .map(TokioIo::new)
+            }
         }))
         .await
         .unwrap();

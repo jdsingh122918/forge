@@ -322,6 +322,24 @@ async fn attach_run_replays_historical_events_in_order() {
 }
 
 #[tokio::test]
+async fn attach_run_returns_not_found_for_unknown_run() {
+    let server = TestServer::start().await;
+    let mut client = server.client().await;
+
+    let status = client
+        .attach_run(proto::AttachRunRequest {
+            run_id: "missing-run".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(status.code(), tonic::Code::NotFound);
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn attach_run_live_tail_delivers_new_events_after_subscription() {
     let server = TestServer::start().await;
     let mut client = server.client().await;

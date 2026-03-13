@@ -15,6 +15,26 @@ use crate::state::events::AppendEvent;
 const STREAM_BATCH_SIZE: i64 = 256;
 const STREAM_BUFFER_SIZE: usize = 32;
 
+async fn send_or_stop<T>(
+    tx: &mpsc::Sender<Result<T, Status>>,
+    item: Result<T, Status>,
+    stream: &'static str,
+    detail: impl Into<String>,
+) -> bool {
+    let detail = detail.into();
+
+    if tx.send(item).await.is_err() {
+        tracing::debug!(
+            stream,
+            detail = %detail,
+            "stream receiver closed; stopping background producer"
+        );
+        return false;
+    }
+
+    true
+}
+
 /// Thin wrapper around the durable event log that also wakes live consumers.
 #[derive(Debug)]
 pub struct EventStreamCoordinator {
@@ -56,11 +76,18 @@ impl EventStreamCoordinator {
 
         tokio::spawn(async move {
             let Ok(mut cursor) = i64::try_from(after_cursor) else {
-                let _ = tx
-                    .send(Err(Status::invalid_argument(
+                if !send_or_stop(
+                    &tx,
+                    Err(Status::invalid_argument(
                         "after_cursor exceeds supported event-log range",
-                    )))
-                    .await;
+                    )),
+                    "runtime-events",
+                    format!("after_cursor={after_cursor}"),
+                )
+                .await
+                {
+                    return;
+                }
                 return;
             };
 
@@ -85,24 +112,42 @@ impl EventStreamCoordinator {
                 let batch = match batch {
                     Ok(Ok(batch)) => batch,
                     Ok(Err(error)) => {
-                        if tx
-                            .send(Err(Status::internal(format!(
+                        tracing::error!(
+                            stream = "runtime-events",
+                            cursor,
+                            %error,
+                            "failed to query persisted runtime events"
+                        );
+                        if !send_or_stop(
+                            &tx,
+                            Err(Status::internal(format!(
                                 "failed to query runtime events: {error}"
-                            ))))
-                            .await
-                            .is_err()
+                            ))),
+                            "runtime-events",
+                            format!("cursor={cursor} query-error"),
+                        )
+                        .await
                         {
                             return;
                         }
                         return;
                     }
                     Err(error) => {
-                        if tx
-                            .send(Err(Status::internal(format!(
+                        tracing::error!(
+                            stream = "runtime-events",
+                            cursor,
+                            %error,
+                            "runtime-event replay task failed"
+                        );
+                        if !send_or_stop(
+                            &tx,
+                            Err(Status::internal(format!(
                                 "runtime-event replay task failed: {error}"
-                            ))))
-                            .await
-                            .is_err()
+                            ))),
+                            "runtime-events",
+                            format!("cursor={cursor} join-error"),
+                        )
+                        .await
                         {
                             return;
                         }
@@ -116,19 +161,35 @@ impl EventStreamCoordinator {
                 }
 
                 for event in batch {
+                    let event_seq = event.seq;
                     cursor = match i64::try_from(event.seq) {
                         Ok(seq) => seq,
                         Err(error) => {
-                            let _ = tx
-                                .send(Err(Status::internal(format!(
+                            tracing::error!(
+                                stream = "runtime-events",
+                                raw_seq = event.seq,
+                                %error,
+                                "runtime event cursor exceeded supported range"
+                            );
+                            if !send_or_stop(
+                                &tx,
+                                Err(Status::internal(format!(
                                     "runtime event cursor out of range: {error}"
-                                ))))
-                                .await;
+                                ))),
+                                "runtime-events",
+                                format!("raw_seq={} cursor-conversion", event.seq),
+                            )
+                            .await
+                            {
+                                return;
+                            }
                             return;
                         }
                     };
 
-                    if tx.send(Ok(event)).await.is_err() {
+                    if !send_or_stop(&tx, Ok(event), "runtime-events", format!("seq={event_seq}"))
+                        .await
+                    {
                         return;
                     }
                 }
@@ -151,11 +212,18 @@ impl EventStreamCoordinator {
 
         tokio::spawn(async move {
             let Ok(mut cursor) = i64::try_from(after_cursor) else {
-                let _ = tx
-                    .send(Err(Status::invalid_argument(
+                if !send_or_stop(
+                    &tx,
+                    Err(Status::invalid_argument(
                         "after_cursor exceeds supported event-log range",
-                    )))
-                    .await;
+                    )),
+                    "task-output",
+                    format!("after_cursor={after_cursor}"),
+                )
+                .await
+                {
+                    return;
+                }
                 return;
             };
 
@@ -179,24 +247,42 @@ impl EventStreamCoordinator {
                 let batch = match batch {
                     Ok(Ok(batch)) => batch,
                     Ok(Err(error)) => {
-                        if tx
-                            .send(Err(Status::internal(format!(
+                        tracing::error!(
+                            stream = "task-output",
+                            cursor,
+                            %error,
+                            "failed to query task-output source rows"
+                        );
+                        if !send_or_stop(
+                            &tx,
+                            Err(Status::internal(format!(
                                 "failed to query task-output source rows: {error}"
-                            ))))
-                            .await
-                            .is_err()
+                            ))),
+                            "task-output",
+                            format!("cursor={cursor} query-error"),
+                        )
+                        .await
                         {
                             return;
                         }
                         return;
                     }
                     Err(error) => {
-                        if tx
-                            .send(Err(Status::internal(format!(
+                        tracing::error!(
+                            stream = "task-output",
+                            cursor,
+                            %error,
+                            "task-output replay task failed"
+                        );
+                        if !send_or_stop(
+                            &tx,
+                            Err(Status::internal(format!(
                                 "task-output replay task failed: {error}"
-                            ))))
-                            .await
-                            .is_err()
+                            ))),
+                            "task-output",
+                            format!("cursor={cursor} join-error"),
+                        )
+                        .await
                         {
                             return;
                         }
@@ -213,17 +299,32 @@ impl EventStreamCoordinator {
                     cursor = row.seq;
                     match row.decode_task_output_event() {
                         Ok(Some(event)) => {
-                            if tx.send(Ok(event)).await.is_err() {
+                            if !send_or_stop(&tx, Ok(event), "task-output", format!("seq={cursor}"))
+                                .await
+                            {
                                 return;
                             }
                         }
                         Ok(None) => {}
                         Err(error) => {
-                            let _ = tx
-                                .send(Err(Status::internal(format!(
+                            tracing::error!(
+                                stream = "task-output",
+                                cursor,
+                                %error,
+                                "failed to decode task-output event"
+                            );
+                            if !send_or_stop(
+                                &tx,
+                                Err(Status::internal(format!(
                                     "failed to decode task-output event: {error}"
-                                ))))
-                                .await;
+                                ))),
+                                "task-output",
+                                format!("seq={cursor} decode-error"),
+                            )
+                            .await
+                            {
+                                return;
+                            }
                             return;
                         }
                     }

@@ -13,9 +13,9 @@ use forge_common::manifest::{
     RepoAccess, ResourceLimits, RunSharedWriteMode, RuntimeEnvPlan, SpawnLimits, WorktreePlan,
 };
 use forge_common::run_graph::{
-    ApprovalActorKind, ApprovalReasonKind, ApprovalResolution, ApprovalState, MilestoneInfo,
-    MilestoneState, MilestoneStatus, PendingApproval, RunGraph, RunPlan, RunState, RunStatus,
-    TaskNode, TaskStatus, TaskTemplate, TaskWaitMode,
+    ApprovalActorKind, ApprovalReasonKind, ApprovalState, MilestoneInfo, MilestoneState,
+    MilestoneStatus, PendingApproval, RunGraph, RunPlan, RunState, RunStatus, TaskNode, TaskStatus,
+    TaskTemplate, TaskWaitMode,
 };
 use serde::Serialize;
 use tonic::Status;
@@ -185,7 +185,7 @@ impl RunOrchestrator {
             id: run_id.to_string(),
             project: project.clone(),
             plan_json,
-            plan_hash: plan_hash(&run_state.plan),
+            plan_hash: plan_hash(&run_state.plan).map_err(internal_status)?,
             policy_snapshot: "{}".to_string(),
             status: run_status_label(RunStatus::Submitted).to_string(),
             started_at: submitted_at,
@@ -547,7 +547,7 @@ impl RunOrchestrator {
         &mut self,
         approval_id: &ApprovalId,
         actor_kind: ApprovalActorKind,
-        actor_id: String,
+        _actor_id: String,
         approved: bool,
         reason: Option<String>,
     ) -> Result<(RunId, TaskNode), Status> {
@@ -567,19 +567,20 @@ impl RunOrchestrator {
         let (task_id, old_status, new_status, approval_state_json, finished_at, updated_task) = {
             let run = self
                 .run_graph
-                .get_run_mut(&run_id)
+                .get_run(&run_id)
                 .ok_or_else(|| Status::not_found("run not found"))?;
-            let mut approval = run
+            let approval = run
                 .approvals
-                .remove(approval_id)
+                .get(approval_id)
                 .ok_or_else(|| Status::not_found("approval not found"))?;
             let task = run
                 .tasks
-                .get_mut(&approval.task_id)
+                .get(&approval.task_id)
                 .ok_or_else(|| Status::not_found("task not found for approval"))?;
             match &task.approval_state {
-                ApprovalState::Pending { approval_id: task_approval_id }
-                    if task_approval_id == approval_id => {}
+                ApprovalState::Pending {
+                    approval_id: task_approval_id,
+                } if task_approval_id == approval_id => {}
                 _ => {
                     return Err(Status::failed_precondition(
                         "task is not awaiting the requested approval",
@@ -587,15 +588,9 @@ impl RunOrchestrator {
                 }
             }
 
-            approval.resolution = Some(ApprovalResolution {
-                approved,
-                actor_kind,
-                resolved_by: actor_id,
-                reason: reason.clone(),
-                resolved_at: timestamp,
-            });
-            let old_status = task.status.clone();
-            task.approval_state = if approved {
+            let mut updated_task = task.clone();
+            let old_status = updated_task.status.clone();
+            updated_task.approval_state = if approved {
                 ApprovalState::Approved { actor_kind }
             } else {
                 ApprovalState::Denied {
@@ -603,23 +598,23 @@ impl RunOrchestrator {
                     reason: denial_reason.clone(),
                 }
             };
-            task.status = if approved {
+            updated_task.status = if approved {
                 TaskStatus::Enqueued
             } else {
                 TaskStatus::Killed {
                     reason: denial_reason.clone(),
                 }
             };
-            task.assigned_agent = None;
-            task.finished_at = finished_at_for_status(&task.status, timestamp);
+            updated_task.assigned_agent = None;
+            updated_task.finished_at = finished_at_for_status(&updated_task.status, timestamp);
 
             (
                 approval.task_id.clone(),
                 old_status,
-                task.status.clone(),
-                serialize_json(&task.approval_state).map_err(internal_status)?,
-                task.finished_at,
-                task.clone(),
+                updated_task.status.clone(),
+                serialize_json(&updated_task.approval_state).map_err(internal_status)?,
+                updated_task.finished_at,
+                updated_task,
             )
         };
 
@@ -642,6 +637,21 @@ impl RunOrchestrator {
                 Status::internal(format!("resolve_approval persistence task failed: {error}"))
             })?
             .map_err(internal_status)?;
+        }
+
+        {
+            let run = self
+                .run_graph
+                .get_run_mut(&run_id)
+                .ok_or_else(|| Status::not_found("run not found"))?;
+            let task = run
+                .tasks
+                .get_mut(&task_id)
+                .ok_or_else(|| Status::not_found("task not found for approval"))?;
+            *task = updated_task.clone();
+            run.approvals
+                .remove(approval_id)
+                .ok_or_else(|| Status::not_found("approval not found"))?;
         }
 
         let _approval_cursor = self
@@ -672,12 +682,16 @@ impl RunOrchestrator {
         {
             let state_store = Arc::clone(&self.state_store);
             let run_id_value = run_id.to_string();
-            tokio::task::spawn_blocking(move || state_store.update_run_cursor(&run_id_value, last_cursor))
-                .await
-                .map_err(|error| {
-                    Status::internal(format!("resolve_approval cursor persistence task failed: {error}"))
-                })?
-                .map_err(internal_status)?;
+            tokio::task::spawn_blocking(move || {
+                state_store.update_run_cursor(&run_id_value, last_cursor)
+            })
+            .await
+            .map_err(|error| {
+                Status::internal(format!(
+                    "resolve_approval cursor persistence task failed: {error}"
+                ))
+            })?
+            .map_err(internal_status)?;
         }
 
         let run = self
@@ -715,13 +729,22 @@ impl RunOrchestrator {
         task_id: &TaskNodeId,
         reason: String,
     ) -> Result<(RunId, TaskNode), Status> {
-        let run_id = self
+        let (run_id, existing_task) = self
             .find_task(task_id)
-            .map(|(run, _)| run.id.clone())
+            .map(|(run, task)| (run.id.clone(), task.clone()))
             .ok_or_else(|| Status::not_found("task not found"))?;
+        if is_terminal(&existing_task.status) {
+            return Ok((run_id, existing_task));
+        }
         let to_kill = self.collect_subtree(&run_id, task_id)?;
 
         for descendant_id in &to_kill {
+            let Some(descendant) = self.get_task_in_run(&run_id, descendant_id) else {
+                return Err(Status::not_found("task not found after subtree collection"));
+            };
+            if is_terminal(&descendant.status) {
+                continue;
+            }
             self.transition_task(
                 &run_id,
                 descendant_id,
@@ -743,13 +766,20 @@ impl RunOrchestrator {
 
     /// Cancel a run, killing all non-terminal tasks before finalizing run state.
     pub async fn stop_run(&mut self, run_id: &RunId, reason: String) -> Result<RunState, Status> {
-        let active_task_ids = {
-            let run = self
-                .run_graph
-                .get_run(run_id)
-                .ok_or_else(|| Status::not_found("run not found"))?;
+        let existing_run = self
+            .run_graph
+            .get_run(run_id)
+            .ok_or_else(|| Status::not_found("run not found"))?;
+        if matches!(
+            existing_run.status,
+            RunStatus::Completed | RunStatus::Failed | RunStatus::Cancelled
+        ) {
+            return Ok(existing_run.clone());
+        }
 
-            run.tasks
+        let active_task_ids = {
+            existing_run
+                .tasks
                 .values()
                 .filter(|task| !is_terminal(&task.status))
                 .map(|task| task.id.clone())
@@ -883,6 +913,16 @@ impl RunOrchestrator {
                 .ok_or_else(|| anyhow::anyhow!("task not found: {}", task_id))?;
 
             let old_status = task.status.clone();
+            if is_terminal(&old_status) {
+                if old_status == new_status {
+                    return Ok(());
+                }
+                return Err(anyhow::anyhow!(
+                    "invalid transition from terminal task status {} to {}",
+                    task_status_label(&old_status),
+                    task_status_label(&new_status)
+                ));
+            }
             let finished_at = finished_at_for_status(&new_status, timestamp);
             let assigned_agent = assigned_agent_for_status(&new_status);
             task.status = new_status.clone();
@@ -1126,10 +1166,10 @@ fn task_to_row(run_id: &RunId, task: &TaskNode) -> Result<TaskNodeRow> {
     })
 }
 
-fn plan_hash(plan: &RunPlan) -> String {
-    let json = serde_json::to_vec(plan).unwrap_or_default();
+fn plan_hash(plan: &RunPlan) -> Result<String> {
+    let json = serde_json::to_vec(plan).context("failed to serialize run plan for hashing")?;
     let digest = Sha256::digest(json);
-    format!("{digest:x}")
+    Ok(format!("{digest:x}"))
 }
 
 fn serialize_json<T: Serialize>(value: &T) -> Result<String> {
@@ -1162,11 +1202,40 @@ fn collect_subtree_inner(
 fn runtime_event_name(event_kind: &RuntimeEventKind) -> &'static str {
     match event_kind {
         RuntimeEventKind::RunSubmitted { .. } => "RunSubmitted",
+        RuntimeEventKind::MilestoneCompleted { .. } => "MilestoneCompleted",
+        RuntimeEventKind::RunFinished { .. } => "RunFinished",
         RuntimeEventKind::TaskCreated { .. } => "TaskCreated",
         RuntimeEventKind::RunStatusChanged { .. } => "RunStatusChanged",
         RuntimeEventKind::TaskStatusChanged { .. } => "TaskStatusChanged",
         RuntimeEventKind::ApprovalRequested { .. } => "ApprovalRequested",
-        _ => "RuntimeEvent",
+        RuntimeEventKind::ApprovalResolved { .. } => "ApprovalResolved",
+        RuntimeEventKind::TaskCompleted { .. } => "TaskCompleted",
+        RuntimeEventKind::TaskFailed { .. } => "TaskFailed",
+        RuntimeEventKind::TaskKilled { .. } => "TaskKilled",
+        RuntimeEventKind::TaskOutput { .. } => "TaskOutput",
+        RuntimeEventKind::AgentSpawned { .. } => "AgentSpawned",
+        RuntimeEventKind::AgentTerminated { .. } => "AgentTerminated",
+        RuntimeEventKind::ChildTaskRequested { .. } => "ChildTaskRequested",
+        RuntimeEventKind::ChildTaskApprovalNeeded { .. } => "ChildTaskApprovalNeeded",
+        RuntimeEventKind::ChildTaskApproved { .. } => "ChildTaskApproved",
+        RuntimeEventKind::ChildTaskDenied { .. } => "ChildTaskDenied",
+        RuntimeEventKind::CredentialIssued { .. } => "CredentialIssued",
+        RuntimeEventKind::CredentialDenied { .. } => "CredentialDenied",
+        RuntimeEventKind::SecretRotated { .. } => "SecretRotated",
+        RuntimeEventKind::MemoryRead { .. } => "MemoryRead",
+        RuntimeEventKind::MemoryPromoted { .. } => "MemoryPromoted",
+        RuntimeEventKind::NetworkCall { .. } => "NetworkCall",
+        RuntimeEventKind::ResourceSample { .. } => "ResourceSample",
+        RuntimeEventKind::BudgetWarning { .. } => "BudgetWarning",
+        RuntimeEventKind::BudgetExhausted { .. } => "BudgetExhausted",
+        RuntimeEventKind::FileLockAcquired { .. } => "FileLockAcquired",
+        RuntimeEventKind::FileLockReleased { .. } => "FileLockReleased",
+        RuntimeEventKind::FileModified { .. } => "FileModified",
+        RuntimeEventKind::PolicyViolation { .. } => "PolicyViolation",
+        RuntimeEventKind::SpawnCapReached { .. } => "SpawnCapReached",
+        RuntimeEventKind::Shutdown { .. } => "Shutdown",
+        RuntimeEventKind::DaemonRecovered { .. } => "DaemonRecovered",
+        RuntimeEventKind::ServiceEvent { .. } => "ServiceEvent",
     }
 }
 
@@ -1584,6 +1653,32 @@ mod tests {
         assert_eq!(row.status, "Pending");
         assert_eq!(row.runtime_mode, "host");
         assert_eq!(row.finished_at, None);
+    }
+
+    #[test]
+    fn runtime_event_name_is_specific_for_non_core_variants() {
+        assert_eq!(
+            runtime_event_name(&RuntimeEventKind::ServiceEvent {
+                service: "mcp".to_string(),
+                description: "connected".to_string(),
+            }),
+            "ServiceEvent"
+        );
+        assert_eq!(
+            runtime_event_name(&RuntimeEventKind::DaemonRecovered {
+                tasks_recovered: 1,
+                tasks_failed: 2,
+            }),
+            "DaemonRecovered"
+        );
+        assert_eq!(
+            runtime_event_name(&RuntimeEventKind::BudgetWarning {
+                consumed: 90,
+                allocated: 100,
+                percent: 90,
+            }),
+            "BudgetWarning"
+        );
     }
 
     #[tokio::test]

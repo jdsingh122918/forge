@@ -16,8 +16,8 @@ use forge_common::manifest::{
     MemoryPolicy, MemoryScope as DomainMemoryScope, RepoAccess, RunSharedWriteMode, SpawnLimits,
 };
 use forge_common::run_graph::{
-    ApprovalActorKind as DomainApprovalActorKind, ApprovalState, PendingApproval,
-    RunState, TaskNode, TaskResultSummary, TaskStatus, TaskWaitMode as DomainTaskWaitMode,
+    ApprovalActorKind as DomainApprovalActorKind, ApprovalState, PendingApproval, RunState,
+    RunStatus, TaskNode, TaskResultSummary, TaskStatus, TaskWaitMode as DomainTaskWaitMode,
 };
 use forge_proto::convert::IntoProto;
 use forge_proto::convert::enums::IntoProtoEnum;
@@ -127,9 +127,13 @@ pub async fn run_server(
 ) -> Result<()> {
     let event_stream = Arc::new(EventStreamCoordinator::new(Arc::clone(&state_store)));
     let agent_supervisor = Arc::new(NoopAgentSupervisor);
-    recover_orphans(state_store.as_ref(), event_stream.as_ref(), agent_supervisor.as_ref())
-        .await
-        .context("failed to recover runtime state before serving")?;
+    recover_orphans(
+        Arc::clone(&state_store),
+        event_stream.as_ref(),
+        agent_supervisor.as_ref(),
+    )
+    .await
+    .context("failed to recover runtime state before serving")?;
     let run_graph =
         rebuild_run_graph(state_store.as_ref()).context("failed to rebuild run graph")?;
     let orchestrator = Arc::new(Mutex::new(RunOrchestrator::with_run_graph(
@@ -370,7 +374,7 @@ impl ForgeRuntime for RuntimeService {
         let (run, task) = orchestrator
             .find_task(&task_id)
             .ok_or_else(|| Status::not_found("task not found"))?;
-        Ok(Response::new(task_node_to_proto(run.id.as_str(), task)))
+        Ok(Response::new(task_node_to_proto(run.id.as_str(), task)?))
     }
 
     async fn list_tasks(
@@ -424,7 +428,7 @@ impl ForgeRuntime for RuntimeService {
             tasks: tasks
                 .into_iter()
                 .map(|task| task_node_to_proto(run.id.as_str(), task))
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
             next_page_token,
         }))
     }
@@ -492,7 +496,7 @@ impl ForgeRuntime for RuntimeService {
             .create_child_task(&run_id, &parent_task_id, params)
             .await?;
         Ok(Response::new(proto::CreateChildTaskResponse {
-            task: Some(task_node_to_proto(run_id.as_str(), &task)),
+            task: Some(task_node_to_proto(run_id.as_str(), &task)?),
             requires_approval,
             approval_id: approval_id.map(|id| id.to_string()).unwrap_or_default(),
         }))
@@ -513,7 +517,7 @@ impl ForgeRuntime for RuntimeService {
         let mut orchestrator = self.orchestrator.lock().await;
         let (run_id, task) = orchestrator.kill_task(&task_id, reason).await?;
         Ok(Response::new(proto::KillTaskResponse {
-            task: Some(task_node_to_proto(run_id.as_str(), &task)),
+            task: Some(task_node_to_proto(run_id.as_str(), &task)?),
         }))
     }
 
@@ -544,8 +548,16 @@ impl ForgeRuntime for RuntimeService {
             .map(|view| view.approval.id.to_string())
             .collect::<HashSet<_>>();
         for approval in snapshot {
-            if tx.send(Ok(approval_view_to_proto(&approval))).await.is_err() {
-                return Ok(Response::new(ReceiverStream::new(rx)));
+            match approval_view_to_proto(&approval) {
+                Ok(proto_approval) => {
+                    if tx.send(Ok(proto_approval)).await.is_err() {
+                        return Ok(Response::new(ReceiverStream::new(rx)));
+                    }
+                }
+                Err(status) => {
+                    let _ = tx.send(Err(status)).await;
+                    return Ok(Response::new(ReceiverStream::new(rx)));
+                }
             }
         }
 
@@ -623,7 +635,7 @@ impl ForgeRuntime for RuntimeService {
             .await?;
 
         Ok(Response::new(proto::ResolveApprovalResponse {
-            task: Some(task_node_to_proto(run_id.as_str(), &task)),
+            task: Some(task_node_to_proto(run_id.as_str(), &task)?),
             action_taken: action as i32,
         }))
     }
@@ -776,15 +788,15 @@ fn run_state_to_proto(run_state: &RunState) -> proto::RunInfo {
         runtime_backend: proto::RuntimeBackend::Host as i32,
         insecure_host_runtime: true,
         submitted_at: Some(datetime_to_timestamp(run_state.submitted_at)),
-        started_at: Some(datetime_to_timestamp(run_state.submitted_at)),
+        started_at: run_started_at(run_state).map(datetime_to_timestamp),
         finished_at: run_state.finished_at.map(datetime_to_timestamp),
         failure_reason: String::new(),
         submitted_plan: Some(run_state.plan.into_proto()),
     }
 }
 
-fn task_node_to_proto(run_id: &str, task: &TaskNode) -> proto::TaskInfo {
-    proto::TaskInfo {
+fn task_node_to_proto(run_id: &str, task: &TaskNode) -> Result<proto::TaskInfo, Status> {
+    Ok(proto::TaskInfo {
         id: task.id.to_string(),
         run_id: run_id.to_string(),
         parent_task_id: task
@@ -796,7 +808,10 @@ fn task_node_to_proto(run_id: &str, task: &TaskNode) -> proto::TaskInfo {
         objective: task.objective.clone(),
         expected_output: task.expected_output.clone(),
         profile: task.profile.base_profile.clone(),
-        budget: encode_initial_budget_request(&task.budget).ok(),
+        budget: Some(encode_budget_for_proto(
+            &task.budget,
+            "task budget projection",
+        )?),
         memory_scope: task.memory_scope.into_proto() as i32,
         status: task_status_to_proto(task.status.clone()) as i32,
         assigned_agent_id: task
@@ -832,7 +847,7 @@ fn task_node_to_proto(run_id: &str, task: &TaskNode) -> proto::TaskInfo {
             .result_summary
             .as_ref()
             .map(task_result_summary_to_proto),
-    }
+    })
 }
 
 fn datetime_to_timestamp(timestamp: chrono::DateTime<chrono::Utc>) -> prost_types::Timestamp {
@@ -864,6 +879,14 @@ fn approval_state_to_proto(state: &ApprovalState) -> proto::ApprovalState {
     }
 }
 
+fn encode_budget_for_proto(
+    budget: &DomainBudgetEnvelope,
+    context: &'static str,
+) -> Result<proto::BudgetEnvelope, Status> {
+    encode_initial_budget_request(budget)
+        .map_err(|error| Status::internal(format!("failed to encode {context}: {error}")))
+}
+
 fn failure_reason_for_task(task: &TaskNode) -> String {
     match &task.status {
         TaskStatus::Failed { error, .. } => error.clone(),
@@ -876,6 +899,13 @@ fn task_started_at(task: &TaskNode) -> Option<chrono::DateTime<chrono::Utc>> {
     match &task.status {
         TaskStatus::Running { since, .. } => Some(*since),
         _ => None,
+    }
+}
+
+fn run_started_at(run_state: &RunState) -> Option<chrono::DateTime<chrono::Utc>> {
+    match run_state.status {
+        RunStatus::Submitted => None,
+        _ => Some(run_state.submitted_at),
     }
 }
 
@@ -949,9 +979,9 @@ fn duration_from_proto(duration: &prost_types::Duration) -> Result<Duration, Sta
 
 fn decode_approval_action(value: i32) -> Result<proto::ApprovalAction, Status> {
     match proto::ApprovalAction::try_from(value) {
-        Ok(proto::ApprovalAction::Unspecified) => {
-            Err(Status::invalid_argument("approval action must be specified"))
-        }
+        Ok(proto::ApprovalAction::Unspecified) => Err(Status::invalid_argument(
+            "approval action must be specified",
+        )),
         Ok(action) => Ok(action),
         Err(_) => Err(Status::invalid_argument(format!(
             "unknown ApprovalAction enum value: {value}"
@@ -1004,11 +1034,11 @@ fn pending_approval_to_proto(
         .into_iter()
         .find(|view| view.approval.id == approval.id)
         .ok_or_else(|| Status::not_found("approval no longer pending"))?;
-    Ok(approval_view_to_proto(&approval_view))
+    approval_view_to_proto(&approval_view)
 }
 
-fn approval_view_to_proto(view: &PendingApprovalView) -> proto::ApprovalRequest {
-    proto::ApprovalRequest {
+fn approval_view_to_proto(view: &PendingApprovalView) -> Result<proto::ApprovalRequest, Status> {
+    Ok(proto::ApprovalRequest {
         id: view.approval.id.to_string(),
         run_id: view.approval.run_id.to_string(),
         parent_task_id: view
@@ -1022,9 +1052,12 @@ fn approval_view_to_proto(view: &PendingApprovalView) -> proto::ApprovalRequest 
         reason: view.approval.description.clone(),
         reason_kind: view.approval.reason_kind.into_proto() as i32,
         current_child_count: i32::try_from(view.current_child_count).unwrap_or(i32::MAX),
-        requested_budget: encode_initial_budget_request(&view.approval.requested_budget).ok(),
+        requested_budget: Some(encode_budget_for_proto(
+            &view.approval.requested_budget,
+            "approval requested budget projection",
+        )?),
         requested_at: Some(datetime_to_timestamp(view.approval.requested_at)),
-    }
+    })
 }
 
 fn map_runtime_stream(
@@ -1035,7 +1068,7 @@ fn map_runtime_stream(
     tokio::spawn(async move {
         while let Some(item) = stream.next().await {
             let message = match item {
-                Ok(event) => Ok(runtime_event_to_proto(&event)),
+                Ok(event) => runtime_event_to_proto(&event),
                 Err(status) => Err(status),
             };
 
@@ -1069,7 +1102,7 @@ fn map_task_output_stream(
     ReceiverStream::new(rx)
 }
 
-fn runtime_event_to_proto(event: &DomainRuntimeEvent) -> proto::RuntimeEvent {
+fn runtime_event_to_proto(event: &DomainRuntimeEvent) -> Result<proto::RuntimeEvent, Status> {
     let event_payload = match &event.event {
         RuntimeEventKind::RunStatusChanged { from, to } => Some(
             proto::runtime_event::Event::RunStatusChanged(proto::RunStatusChangedEvent {
@@ -1164,11 +1197,11 @@ fn runtime_event_to_proto(event: &DomainRuntimeEvent) -> proto::RuntimeEvent {
             },
         )),
         _ => Some(proto::runtime_event::Event::ServiceEvent(
-            service_event_to_proto(event),
+            service_event_to_proto(event)?,
         )),
     };
 
-    proto::RuntimeEvent {
+    Ok(proto::RuntimeEvent {
         sequence: i64::try_from(event.seq).unwrap_or(i64::MAX),
         run_id: event.run_id.to_string(),
         task_id: event
@@ -1183,15 +1216,20 @@ fn runtime_event_to_proto(event: &DomainRuntimeEvent) -> proto::RuntimeEvent {
             .unwrap_or_default(),
         timestamp: Some(datetime_to_timestamp(event.timestamp)),
         event: event_payload,
-    }
+    })
 }
 
-fn service_event_to_proto(event: &DomainRuntimeEvent) -> proto::ServiceEvent {
+fn service_event_to_proto(event: &DomainRuntimeEvent) -> Result<proto::ServiceEvent, Status> {
     let details = serde_json::to_value(&event.event)
-        .ok()
-        .and_then(json_to_struct);
+        .map(json_to_struct)
+        .map_err(|error| {
+            Status::internal(format!(
+                "failed to serialize service event `{}`: {error}",
+                runtime_event_kind_name(&event.event)
+            ))
+        })?;
 
-    proto::ServiceEvent {
+    Ok(proto::ServiceEvent {
         service: "runtime".to_string(),
         event_type: runtime_event_kind_name(&event.event).to_string(),
         agent_id: event
@@ -1206,7 +1244,7 @@ fn service_event_to_proto(event: &DomainRuntimeEvent) -> proto::ServiceEvent {
             .unwrap_or_default(),
         details,
         timestamp: Some(datetime_to_timestamp(event.timestamp)),
-    }
+    })
 }
 
 fn task_output_projection_to_proto(event: &DomainTaskOutputEvent) -> proto::TaskOutputEvent {

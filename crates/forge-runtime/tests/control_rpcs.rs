@@ -208,6 +208,71 @@ async fn kill_task_marks_task_killed() {
 }
 
 #[tokio::test]
+async fn kill_task_is_idempotent_for_already_terminal_task() {
+    let server = TestServer::start().await;
+    let mut client = server.client().await;
+    let run = submit_run(
+        &mut client,
+        "project-kill-task-idempotent",
+        server.workspace_path("workspace-kill-task-idempotent"),
+        make_plan(1),
+    )
+    .await;
+
+    let task_id = client
+        .list_tasks(proto::ListTasksRequest {
+            run_id: run.id,
+            page_size: 100,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .tasks
+        .into_iter()
+        .next()
+        .unwrap()
+        .id;
+
+    let first = client
+        .kill_task(proto::KillTaskRequest {
+            task_id: task_id.clone(),
+            reason: "first kill".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        first.task.as_ref().map(|task| task.status()),
+        Some(proto::TaskStatus::Killed)
+    );
+
+    let second = client
+        .kill_task(proto::KillTaskRequest {
+            task_id: task_id.clone(),
+            reason: "second kill".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        second.task.as_ref().map(|task| task.status()),
+        Some(proto::TaskStatus::Killed)
+    );
+
+    let fetched = client
+        .get_task(proto::GetTaskRequest { task_id })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(fetched.status(), proto::TaskStatus::Killed);
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn stop_run_cancels_run_and_leaves_no_active_tasks() {
     let server = TestServer::start().await;
     let mut client = server.client().await;
@@ -264,6 +329,50 @@ async fn stop_run_cancels_run_and_leaves_no_active_tasks() {
             .map(|task| task.status().as_str_name())
             .collect::<Vec<_>>()
     );
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn stop_run_is_idempotent_for_already_terminal_run() {
+    let server = TestServer::start().await;
+    let mut client = server.client().await;
+    let run = submit_run(
+        &mut client,
+        "project-stop-run-idempotent",
+        server.workspace_path("workspace-stop-run-idempotent"),
+        make_plan(1),
+    )
+    .await;
+
+    let first = client
+        .stop_run(proto::StopRunRequest {
+            run_id: run.id.clone(),
+            reason: "first cancel".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(first.status(), proto::RunStatus::Cancelled);
+
+    let second = client
+        .stop_run(proto::StopRunRequest {
+            run_id: run.id.clone(),
+            reason: "second cancel".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(second.status(), proto::RunStatus::Cancelled);
+
+    let fetched = client
+        .get_run(proto::GetRunRequest { run_id: run.id })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(fetched.status(), proto::RunStatus::Cancelled);
 
     server.stop().await;
 }
