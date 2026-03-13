@@ -1,0 +1,50 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "e7d51cdde391",
+  "session_id": "c3679989-9b4f-4167-bb5a-8576e22b7bb5",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-13T17:19:08.255483Z",
+  "branch": "runtime-plan1-foundation",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "crates/forge-proto/build.rs",
+    "crates/forge-proto/proto/runtime.proto",
+    "crates/forge-common/Cargo.toml",
+    "crates/forge-proto/src/convert/mod.rs",
+    "crates/forge-proto/src/lib.rs",
+    "docs/superpowers/plans/2026-03-13-runtime-foundation.md",
+    "Cargo.lock",
+    "crates/forge-common/src/run_graph.rs",
+    "crates/forge-proto/src/convert/enums.rs",
+    "crates/forge-proto/src/convert/ids.rs",
+    "crates/forge-proto/src/convert/manifest.rs",
+    "crates/forge-common/src/direct_execution.rs",
+    "crates/forge-common/src/facade.rs",
+    "crates/forge-common/src/lib.rs",
+    "crates/forge-proto/Cargo.toml",
+    "crates/forge-proto/src/convert/run_graph.rs",
+    "src/cmd/autoresearch/judge.rs",
+    "Cargo.toml",
+    "crates/forge-common/src/manifest.rs"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "37273e539501",
+  "checkpoint_transcript_start": 8,
+  "transcript_lines_at_start": 8,
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-13T17:19:08.236162Z",
+    "agent_lines": 668,
+    "human_added": 2241,
+    "human_modified": 77,
+    "human_removed": 0,
+    "total_committed": 2986,
+    "agent_percentage": 22.371064969859344
+  }
+}
