@@ -1,0 +1,562 @@
+You are implementing a project per the following spec.
+
+## SPECIFICATION
+# Implementation Spec: PromptConfig Type + PromptLoader with File-Exists Fallback
+
+> Generated from: docs/superpowers/specs/autoresearch-tasks/T01-prompt-config-and-loader.md
+> Generated at: 2026-03-11T19:49:14.169632+00:00
+
+## Goal
+
+Create a PromptConfig struct and PromptLoader that loads specialist review prompts from .forge/autoresearch/prompts/<specialist>.md files, falling back to hardcoded defaults derived from SpecialistType data when no file exists. This is foundational infrastructure for the autoresearch experiment loop which will mutate these .md files and reload them.
+
+## Components
+
+| Component | Description | Complexity | Dependencies |
+|-----------|-------------|------------|--------------|
+| PromptConfig and PromptMode types | PromptConfig struct (specialist_name, mode, focus_areas, body) with Serialize/Deserialize/Clone/Debug derives. PromptMode enum (Gating, Advisory) that is informational only — never controls actual gating behavior. PromptFrontmatter internal struct for YAML deserialization. | low | - |
+| PromptLoader | Loader struct holding a forge_dir PathBuf. Resolves specialist prompts from {forge_dir}/autoresearch/prompts/{agent_name}.md files. Parses YAML frontmatter (specialist, mode) and markdown body (extracts ## Focus Areas bullet points). Falls back to hardcoded defaults from SpecialistType::focus_areas(), display_name(), and default_gating() on any error (missing file, malformed YAML, empty file, missing sections). Uses tracing::warn for fallback logging. | medium | PromptConfig and PromptMode types |
+| Module wiring | Add pub mod prompt_loader to src/review/mod.rs and re-export PromptConfig, PromptLoader, PromptMode. | low | PromptLoader |
+
+## Code Patterns
+
+### YAML frontmatter parsing
+
+```
+---
+specialist: SecuritySentinel
+mode: gating
+---
+
+## Role
+You are a security review specialist...
+
+## Focus Areas
+- SQL injection vulnerabilities
+- XSS
+```
+
+### File path resolution
+
+```
+{forge_dir}/autoresearch/prompts/{agent_name}.md
+// e.g., .forge/autoresearch/prompts/security-sentinel.md
+```
+
+### Default body template structure
+
+```
+# {display_name} Review
+
+You are a code review specialist focused on **{display_name}** concerns.
+
+## Focus Areas
+{focus_list}
+
+## Review Instructions
+1. Examine the code changes carefully
+2. Check for issues in your focus areas
+3. For each issue found: identify file/line, describe, suggest fix, classify severity
+
+## Output Format
+JSON with verdict, summary, findings array
+```
+
+### Focus area extraction from markdown
+
+```
+// Find ## Focus Areas section, parse bullet points (- ) until next ## heading or EOF
+// If no Focus Areas section found, fall back to SpecialistType::focus_areas()
+```
+
+## Acceptance Criteria
+
+- [ ] Loading from a temp dir with no prompt files returns hardcoded defaults matching SpecialistType::focus_areas() for all 4 built-in specialists
+- [ ] src/review/prompt_loader.rs exists with PromptConfig, PromptMode, PromptLoader structs
+- [ ] src/review/mod.rs declares pub mod prompt_loader and re-exports PromptConfig, PromptLoader, PromptMode
+- [ ] Loading from a valid .md file returns the file's focus areas and body, not hardcoded defaults
+- [ ] Malformed files (bad YAML, empty file, missing sections) fall back to hardcoded defaults without panicking
+- [ ] File path resolution uses {forge_dir}/autoresearch/prompts/{agent_name}.md pattern
+- [ ] PromptConfig implements Serialize + Deserialize + Clone + Debug
+- [ ] PromptMode field is informational only — never influences gating decisions
+- [ ] All 10 tests in prompt_loader::tests pass
+- [ ] cargo check -p forge succeeds with no errors
+- [ ] Existing review tests (cargo test -p forge review::) still pass with no regressions
+
+---
+*This spec was auto-generated from a design document.*
+*Original design: docs/superpowers/specs/autoresearch-tasks/T01-prompt-config-and-loader.md*
+
+## SKILLS AND CONVENTIONS
+
+The following skills provide guidance for this phase:
+
+## SKILL: RUST CONVENTIONS
+
+# Rust Conventions
+
+Follow these Rust conventions for all code in this project:
+
+## Code Style
+- Use `rustfmt` defaults for formatting
+- Run `cargo clippy` and address all warnings before committing
+- Prefer `?` operator for error propagation over `.unwrap()` in library code
+- Use `.expect("meaningful message")` only when failure indicates a bug
+
+## Error Handling
+- Use `anyhow::Result` for application code and CLI
+- Use `thiserror` for library errors that callers need to match on
+- Provide context with `.context()` or `.with_context()`
+- Log errors at the appropriate level (error, warn, info)
+
+## Naming
+- Use `snake_case` for functions, methods, variables, and modules
+- Use `CamelCase` for types, traits, and enum variants
+- Prefix private helper functions with underscore only if they shadow public ones
+- Use descriptive names; avoid single letters except for trivial loops
+
+## Module Structure
+- One module per file, except for small related types
+- Put tests in a `#[cfg(test)] mod tests` block at the end of each file
+- Use `pub(crate)` for internal visibility when appropriate
+- Re-export important types from the crate root
+
+## Documentation
+- Add doc comments (`///`) for all public items
+- Include examples in doc comments for complex functions
+- Use `//` comments sparingly for non-obvious implementation details
+- Keep CLAUDE.md updated with key concepts and patterns
+
+## Testing
+- Write unit tests for all non-trivial functions
+- Use descriptive test names: `test_<function>_<scenario>`
+- Group related tests with comment headers
+- Use `tempdir()` for tests that need filesystem access
+
+---
+
+## SKILL: TESTING STRATEGY
+
+# Testing Strategy
+
+Apply this testing strategy for all new code:
+
+## Test Levels
+1. **Unit Tests** - Test individual functions in isolation
+   - Located in `mod tests` at the bottom of each file
+   - Mock external dependencies
+   - Fast, deterministic, no I/O
+
+2. **Integration Tests** - Test modules working together
+   - Located in `tests/` directory
+   - Use real dependencies where practical
+   - May involve filesystem, database, or network
+
+3. **End-to-End Tests** - Test complete user workflows
+   - Test CLI commands with actual execution
+   - Verify output matches expectations
+
+## Test Naming Convention
+```rust
+#[test]
+fn test_<function_name>_<scenario>() {
+    // Example: test_parse_config_with_missing_file()
+}
+```
+
+## Test Structure (AAA Pattern)
+```rust
+#[test]
+fn test_example() {
+    // Arrange - Set up test data and conditions
+    let input = create_test_input();
+
+    // Act - Execute the code under test
+    let result = function_under_test(input);
+
+    // Assert - Verify the results
+    assert_eq!(result, expected_value);
+}
+```
+
+## What to Test
+- Happy path (normal operation)
+- Edge cases (empty input, boundaries, limits)
+- Error conditions (invalid input, failures)
+- Regression tests for fixed bugs
+
+## Test Helpers
+- Create helper functions for common test setup
+- Use `tempdir()` for filesystem tests
+- Use builders for complex test data
+
+## Running Tests
+```bash
+cargo test                    # Run all tests
+cargo test <test_name>        # Run specific test
+cargo test -- --nocapture     # Show println! output
+```
+
+---
+
+## SKILL: CLI DESIGN
+
+# CLI Design
+
+Follow these conventions for CLI commands and user interaction:
+
+## Command Structure
+- Use clap with derive macros for argument parsing
+- Organize commands as subcommands where logical
+- Provide both short and long flags for common options
+- Include helpful examples in help text
+
+## User Feedback
+- Print progress information during long operations
+- Use clear, action-oriented language ("Creating...", "Loading...")
+- Show success/failure status clearly
+- Provide next steps on completion
+
+## Output Formatting
+- Use consistent indentation for structured output
+- Add blank lines to separate sections for readability
+- Keep line length reasonable for terminal display
+- Use colors sparingly (via `console` crate) for emphasis
+
+## Error Messages
+- Be specific about what went wrong
+- Suggest how to fix the problem when possible
+- Include relevant file paths or values
+- Exit with non-zero status on error
+
+## Confirmation Prompts
+- Require confirmation for destructive operations
+- Provide `--force` flag to skip prompts in scripts
+- Default to the safer option (usually "no")
+
+## Example Pattern
+```rust
+fn cmd_example(project_dir: &Path) -> Result<()> {
+    println!("Performing operation...");
+
+    // Do work
+    let result = do_work(project_dir)?;
+
+    // Report success
+    println!("Operation complete: {} items processed", result.count);
+    println!();
+    println!("Next steps:");
+    println!("  Run 'forge next-command' to continue");
+
+    Ok(())
+}
+```
+
+---
+
+## SKILL: TDD WORKFLOW
+
+# TDD Workflow
+
+Apply Test-Driven Development when implementing new functionality. Use your judgment
+to determine when TDD is appropriate — it's most valuable for business logic,
+algorithms, and complex state management.
+
+## When to Use TDD
+
+- New functions with defined inputs/outputs
+- Bug fixes (write failing test first, then fix)
+- Refactoring existing code (ensure tests exist first)
+- API endpoints and data transformations
+
+## When TDD May Not Apply
+
+- Configuration files, constants, types/interfaces
+- Simple wiring code with no logic
+- Exploratory prototyping (but add tests before phase completion)
+
+## The TDD Cycle
+
+1. **Red**: Write a failing test that defines expected behavior
+2. **Green**: Write minimal code to make the test pass
+3. **Refactor**: Clean up while keeping tests green
+
+## Example
+
+```rust
+// 1. RED - Write the test first (this won't compile yet)
+#[test]
+fn test_parse_phase_number_valid_input() {
+    assert_eq!(parse_phase_number("03"), Ok(3));
+}
+
+#[test]
+fn test_parse_phase_number_invalid_input() {
+    assert!(parse_phase_number("abc").is_err());
+}
+
+// 2. GREEN - Minimal implementation to pass
+fn parse_phase_number(s: &str) -> Result<u32> {
+    s.parse().context("invalid phase number")
+}
+
+// 3. REFACTOR - Clean up if needed (in this case, it's already clean)
+```
+
+## Guidelines
+
+- Test behavior, not implementation details
+- One assertion per test when practical
+- Name tests descriptively: `test_<function>_<scenario>` (e.g., `test_load_config_missing_file`)
+- Run `cargo test` after each change to verify state
+- Never emit `<promise>DONE</promise>` with failing tests
+
+---
+
+## SKILL: DRY PRINCIPLES
+
+# DRY Principles
+
+Eliminate duplication to improve maintainability. Every piece of knowledge should
+have a single, authoritative representation in the codebase.
+
+## Before Writing Code
+
+- Search for existing functions/utilities that solve the problem
+- Check if similar patterns exist elsewhere that should be unified
+- Consider if this logic belongs in a shared module
+
+## Duplication Red Flags
+
+- Copy-pasting code blocks (extract to function)
+- Similar functions with minor variations (parameterize or use generics)
+- Repeated validation logic (create validators/middleware)
+- Magic strings/numbers appearing multiple times (define constants)
+- Similar error handling patterns (create error utilities)
+
+## When Duplication is Acceptable
+
+- Test code: clarity over DRY (some repetition aids readability)
+- Early prototyping: extract patterns after they stabilize
+- Fewer than 3 occurrences: wait until you see 3 instances before abstracting
+
+## Example Refactoring
+
+```rust
+// Before: Duplicated validation
+fn create_user(name: &str) -> Result<User> {
+    if name.is_empty() { bail!("name required"); }
+    // ...
+}
+fn update_user(name: &str) -> Result<User> {
+    if name.is_empty() { bail!("name required"); }
+    // ...
+}
+
+// After: Extracted validator
+fn validate_name(name: &str) -> Result<()> {
+    ensure!(!name.is_empty(), "name required");
+    Ok(())
+}
+fn create_user(name: &str) -> Result<User> {
+    validate_name(name)?;
+    // ...
+}
+```
+
+## Refactoring for DRY
+
+When you identify duplication:
+1. Verify both instances truly represent the same concept
+2. Extract to a well-named function/constant/type
+3. Update all call sites
+4. Run tests to confirm behavior unchanged
+
+## Warning
+
+Premature abstraction is worse than duplication. Only abstract when:
+- The pattern appears 3+ times, OR
+- The duplication causes active maintenance burden
+
+---
+
+## SKILL: SECURE CODING
+
+# Secure Coding
+
+Follow these secure coding practices for all code in this project.
+
+## Input Validation
+
+- Validate all external input (user input, API responses, file contents)
+- Use allowlists over denylists when validating
+- Sanitize data before use in SQL, shell commands, or HTML output
+- Validate early, at system boundaries (CLI args, file reads, network responses)
+
+## Rust-Specific Security
+
+- Minimize `unsafe` blocks; document safety invariants when used
+- Use established crypto libraries (`ring`, `rustls`) — never roll your own
+- Validate and canonicalize file paths to prevent directory traversal
+- Handle symlinks carefully; use `canonicalize()` before path operations
+- Prefer `OsStr`/`OsString` for paths from external sources
+
+## Command Execution
+
+- Never interpolate untrusted input into shell commands
+- Use `Command::new().arg()` instead of shell string concatenation
+- Validate command arguments against an allowlist when possible
+
+## OWASP Awareness
+
+- **Injection**: Use parameterized queries, avoid string interpolation
+- **Broken Auth**: Never hardcode credentials, use secure session management
+- **Sensitive Data**: Encrypt at rest and in transit, minimize data collection
+- **Broken Access Control**: Verify permissions on every request, deny by default
+- **Logging**: Log security events, never log secrets or PII
+
+## Secrets Management
+
+- Never commit secrets to version control
+- Use environment variables or secret managers for credentials
+- Add sensitive file patterns to `.gitignore` (`.env`, `*.key`, `credentials.*`)
+
+## Error Handling
+
+- Never expose stack traces or internal details to users
+- Log detailed errors server-side only
+- Return generic error messages to external callers
+- Use `.context()` to add information without leaking internals
+
+---
+
+## SKILL: CONTEXT7 INTEGRATION
+
+# Context7 Integration
+
+Query Context7 for up-to-date library documentation before implementing code that
+uses external dependencies. This ensures you use current APIs and best practices.
+
+## When to Query Context7
+
+- Before first use of an unfamiliar or rapidly-evolving library
+- When implementing patterns you haven't used recently
+- When errors suggest API changes or deprecations
+- When the spec mentions specific library features
+
+## When NOT to Query
+
+- Standard library features (Rust `std`, Python built-ins)
+- Well-known stable APIs you're confident about (`serde`, `clap` basics)
+- Internal project modules
+
+## How to Query
+
+Use the MCP tools in sequence:
+
+1. **Resolve the library ID first:**
+   ```
+   Tool: mcp__plugin_context7_context7__resolve-library-id
+   Parameters:
+     libraryName: "tokio"
+     query: "async file operations"
+   ```
+
+2. **Query documentation with the resolved ID:**
+   ```
+   Tool: mcp__plugin_context7_context7__query-docs
+   Parameters:
+     libraryId: "/tokio-rs/tokio" (from step 1)
+     query: "how to read file asynchronously"
+   ```
+
+## Guidelines
+
+- Query once per library per phase — avoid redundant queries for the same library
+- Be specific in queries: "jwt token validation" not just "auth"
+- If the library isn't found, proceed with general knowledge but note the gap
+- Limit to 3 Context7 queries per phase to avoid excessive API calls
+
+## Handling Missing Libraries
+
+If Context7 doesn't have documentation for a library:
+1. Check the library's README or docs.rs
+2. Proceed with general knowledge
+3. Add extra test coverage for that integration
+
+---
+
+## SKILL: AGENT REVIEW
+
+# Agent Review
+
+Before claiming phase completion, spawn an independent review agent to verify
+your implementation. This catches issues you may have missed.
+
+## When to Trigger Review
+
+- After all implementation for the phase is complete
+- After all tests pass
+- Before emitting `<promise>DONE</promise>`
+
+## How to Spawn Review Agent
+
+Use the Task tool with these parameters:
+
+- **subagent_type**: `"general-purpose"`
+- **description**: `"Review phase N implementation"` (replace N with phase number)
+- **prompt**: Include the phase context and checklist below
+
+Example prompt to pass to the review agent:
+
+```text
+Review the code changes for Phase {N} - {phase name}.
+
+Run this command to see what changed:
+git diff HEAD~{iterations} --stat
+git diff HEAD~{iterations}
+
+Check for:
+1. DRY violations - duplicated code that should be extracted
+2. Security issues - injection risks, hardcoded secrets, missing validation
+3. Test coverage - are edge cases covered, are tests meaningful
+4. Code clarity - naming, structure, comments where needed
+
+Report issues as a numbered list with file:line references.
+If no issues found, respond with: REVIEW PASSED
+```
+
+Replace `{N}` with the phase number, `{phase name}` with the phase name, and
+`{iterations}` with the number of iterations completed in this phase.
+
+## Handling Review Results
+
+- **REVIEW PASSED**: Proceed to emit `<promise>DONE</promise>`
+- **Issues found**: Address each issue, re-run tests, then request another review
+- **Max 2 review cycles**: If issues persist after 2 reviews, emit `<blocker>review-failed</blocker>` and describe the unresolved issues
+
+## Review Scope
+
+The reviewer checks only the current phase's changes, not the entire codebase.
+Use `git diff HEAD~N` where N is the iteration count to see phase changes.
+
+## CRITICAL RULES
+1. Follow the spec requirements exactly
+2. Check existing code before making changes
+3. Run tests/checks to verify your work
+4. Only output <promise>PROMPT CONFIG TYPE TESTS WRITTEN</promise> when the task is FULLY complete and verified
+5. If tests fail, fix them before claiming completion
+
+## PROGRESS SIGNALS (Optional)
+You can use these tags to communicate your progress:
+- <progress>X%</progress> - Report completion percentage (0-100)
+- <blocker>description</blocker> - Signal you're blocked and need help
+- <pivot>new approach</pivot> - Signal you're changing strategy
+
+Example: <progress>50%</progress> indicates you're halfway done.
+
+## TASK
+Implement phase 01 - Write PromptConfig and PromptMode tests
+
+When complete, output:
+<promise>PROMPT CONFIG TYPE TESTS WRITTEN</promise>
