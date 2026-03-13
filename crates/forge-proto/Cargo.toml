@@ -1,0 +1,15 @@
+[package]
+name = "forge-proto"
+version = "0.1.0"
+edition = "2024"
+description = "Generated gRPC types and conversion helpers for the Forge runtime daemon"
+
+[dependencies]
+prost = "0.13"
+prost-types = "0.13"
+tonic = "0.12"
+forge-common = { path = "../forge-common" }
+thiserror = "2"
+
+[build-dependencies]
+tonic-build = "0.12"
