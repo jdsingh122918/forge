@@ -47,7 +47,6 @@ pub struct RuntimeEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RuntimeEventKind {
     // ── Run lifecycle ────────────────────────────────────────────────
-
     /// A new run was submitted to the daemon.
     RunSubmitted {
         /// Project path or name.
@@ -81,7 +80,6 @@ pub enum RuntimeEventKind {
     },
 
     // ── Task lifecycle ───────────────────────────────────────────────
-
     /// A new task node was created in the run graph.
     TaskCreated {
         /// The parent task, if this is a dynamically spawned child.
@@ -147,7 +145,6 @@ pub enum RuntimeEventKind {
     },
 
     // ── Agent lifecycle ──────────────────────────────────────────────
-
     /// An agent instance was spawned to execute a task.
     AgentSpawned {
         /// The task this agent is executing.
@@ -167,7 +164,6 @@ pub enum RuntimeEventKind {
     },
 
     // ── Child task flow ──────────────────────────────────────────────
-
     /// A parent agent requested creation of a child task.
     ChildTaskRequested {
         /// Profile requested for the child.
@@ -213,7 +209,6 @@ pub enum RuntimeEventKind {
     },
 
     // ── Credential & security events ─────────────────────────────────
-
     /// A credential was issued to an agent via the credential broker.
     CredentialIssued {
         /// The credential handle that was issued.
@@ -237,7 +232,6 @@ pub enum RuntimeEventKind {
     },
 
     // ── Memory events ────────────────────────────────────────────────
-
     /// A memory entry was read by an agent.
     MemoryRead {
         /// The scope that was read from.
@@ -257,7 +251,6 @@ pub enum RuntimeEventKind {
     },
 
     // ── Network events ───────────────────────────────────────────────
-
     /// An outbound network call was made through the auth proxy.
     NetworkCall {
         /// Target host.
@@ -269,7 +262,6 @@ pub enum RuntimeEventKind {
     },
 
     // ── Resource events ──────────────────────────────────────────────
-
     /// A resource usage snapshot was taken for an agent.
     ResourceSample {
         /// The snapshot data.
@@ -295,7 +287,6 @@ pub enum RuntimeEventKind {
     },
 
     // ── Workspace events ─────────────────────────────────────────────
-
     /// A file lock was acquired by an agent.
     FileLockAcquired {
         /// Path to the locked file.
@@ -317,7 +308,6 @@ pub enum RuntimeEventKind {
     },
 
     // ── Policy events ────────────────────────────────────────────────
-
     /// A policy violation was detected.
     PolicyViolation {
         /// The rule that was violated.
@@ -337,7 +327,6 @@ pub enum RuntimeEventKind {
     },
 
     // ── Daemon management ────────────────────────────────────────────
-
     /// Daemon is shutting down.
     Shutdown {
         /// Reason for shutdown.
@@ -355,7 +344,6 @@ pub enum RuntimeEventKind {
     },
 
     // ── Service events ───────────────────────────────────────────────
-
     /// A service-level event (MCP, cache, bus, etc.).
     ServiceEvent {
         /// Service name (e.g., "mcp_router", "cache", "message_bus").
@@ -373,7 +361,6 @@ pub enum RuntimeEventKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BusMessage {
     // ── Task-to-task communication ───────────────────────────────────
-
     /// Request/reply message from one task to another (blocks until response).
     Request {
         /// Sending task.
@@ -407,7 +394,6 @@ pub enum BusMessage {
     },
 
     // ── Child task lifecycle messages ─────────────────────────────────
-
     /// A parent agent requests creation of a child task.
     ChildTaskRequested {
         /// Profile for the child agent.
@@ -453,7 +439,6 @@ pub enum BusMessage {
     },
 
     // ── Daemon notifications ─────────────────────────────────────────
-
     /// An agent was spawned.
     AgentSpawned {
         /// The agent's ID.

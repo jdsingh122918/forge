@@ -43,10 +43,7 @@ pub enum ConversionError {
     InvalidWarnThreshold(u8),
 
     #[error("unsupported budget field `{field}`: {reason}")]
-    UnsupportedBudgetField {
-        field: &'static str,
-        reason: String,
-    },
+    UnsupportedBudgetField { field: &'static str, reason: String },
 }
 
 pub(crate) fn require_message<'a, T>(value: &'a Option<T>, field: &'static str) -> Result<&'a T> {

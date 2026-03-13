@@ -60,7 +60,7 @@
 - Create: `crates/forge-runtime/src/main.rs`
 - Modify: `Cargo.toml` (root workspace)
 
-- [ ] **Step 1: Write Cargo.toml**
+- [x] **Step 1: Write Cargo.toml**
 
 ```toml
 [package]
@@ -117,11 +117,11 @@ tempfile = "3"
 
 Write to `crates/forge-runtime/Cargo.toml`.
 
-- [ ] **Step 2: Add crate to workspace**
+- [x] **Step 2: Add crate to workspace**
 
 Add `"crates/forge-runtime"` to the `[workspace] members` list in the root `Cargo.toml`.
 
-- [ ] **Step 3: Write main.rs with CLI args**
+- [x] **Step 3: Write main.rs with CLI args**
 
 ```rust
 //! Forge runtime daemon entry point.
@@ -196,11 +196,11 @@ fn resolve_socket_path(explicit: Option<PathBuf>) -> PathBuf {
 }
 ```
 
-- [ ] **Step 4: Add `libc` dependency**
+- [x] **Step 4: Add `libc` dependency**
 
 Add `libc = "0.2"` to `[dependencies]` in `crates/forge-runtime/Cargo.toml` for UID lookup in socket path resolution.
 
-- [ ] **Step 5: Verify the crate compiles**
+- [x] **Step 5: Verify the crate compiles**
 
 Run: `cargo check -p forge-runtime 2>&1 | tail -20`
 Expected: Compiles (main.rs may need stub modules `server` and `state` — create empty `mod.rs` files if needed).
@@ -220,7 +220,7 @@ git commit -m "feat(forge-runtime): add daemon binary skeleton with CLI args"
 - Create: `crates/forge-runtime/src/server.rs`
 - Modify: `crates/forge-runtime/src/main.rs` (wire up server start)
 
-- [ ] **Step 1: Write the ForgeRuntime service implementation**
+- [x] **Step 1: Write the ForgeRuntime service implementation**
 
 `server.rs` implements the generated `ForgeRuntime` tonic service trait. Only `Health` and `Shutdown` have real logic; all other RPCs return `Unimplemented`:
 
@@ -272,7 +272,7 @@ type PendingApprovalsStream = tokio_stream::wrappers::ReceiverStream<Result<prot
 type StreamEventsStream = tokio_stream::wrappers::ReceiverStream<Result<proto::RuntimeEvent, Status>>;
 ```
 
-- [ ] **Step 2: Write the UDS listener and server boot function**
+- [x] **Step 2: Write the UDS listener and server boot function**
 
 The server listens on a Unix domain socket, not TCP. Tonic does not natively support UDS, so we use `tokio::net::UnixListener` + `tokio_stream::wrappers::UnixListenerStream` + `tonic::transport::Server`:
 
@@ -313,7 +313,7 @@ pub async fn run_server(
 }
 ```
 
-- [ ] **Step 3: Wire server into main.rs**
+- [x] **Step 3: Wire server into main.rs**
 
 Update `main()` to:
 1. Resolve paths via `resolve_socket_path()` and `resolve_state_dir()`
@@ -348,7 +348,7 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-- [ ] **Step 4: Write integration test — Health RPC round-trip**
+- [x] **Step 4: Write integration test — Health RPC round-trip**
 
 Create `crates/forge-runtime/tests/grpc_health.rs`:
 
@@ -400,14 +400,14 @@ async fn health_returns_protocol_version() {
 }
 ```
 
-- [ ] **Step 5: Run the test**
+- [x] **Step 5: Run the test**
 
 Run: `cargo test -p forge-runtime --test grpc_health 2>&1 | tail -20`
 Expected: Test passes — Health RPC returns `protocol_version=1`.
 
 Note: The integration test requires `server::run_server` and `state::StateStore` to be public. Add `pub` visibility to these in `main.rs` module declarations (`pub mod server; pub mod state;`) and make the necessary structs/functions `pub` for test access. Alternatively, use a `#[cfg(test)]` re-export in `lib.rs` — but since this is a binary crate, a simpler approach is to create `crates/forge-runtime/src/lib.rs` that re-exports the modules, and have `main.rs` use `forge_runtime::*`.
 
-- [ ] **Step 6: Test that unimplemented RPCs return correct status**
+- [x] **Step 6: Test that unimplemented RPCs return correct status**
 
 Add a test in the same integration test file:
 
@@ -439,7 +439,7 @@ git commit -m "feat(forge-runtime): gRPC server on UDS with Health and Shutdown 
 - Create: `crates/forge-runtime/src/state/mod.rs`
 - Create: `crates/forge-runtime/src/state/schema.rs`
 
-- [ ] **Step 1: Write the StateStore struct and connection management**
+- [x] **Step 1: Write the StateStore struct and connection management**
 
 `state/mod.rs` owns a `rusqlite::Connection` behind a `Mutex` (rusqlite connections are `!Send`):
 
@@ -472,7 +472,7 @@ impl StateStore {
 }
 ```
 
-- [ ] **Step 2: Write schema creation matching spec Section 6.5**
+- [x] **Step 2: Write schema creation matching spec Section 6.5**
 
 `state/schema.rs` creates all 6 tables. The schema must match the spec exactly:
 
@@ -571,7 +571,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_instances_task ON agent_instances(task_id);
 "#;
 ```
 
-- [ ] **Step 3: Write a unit test verifying schema creation**
+- [x] **Step 3: Write a unit test verifying schema creation**
 
 Add to `schema.rs`:
 
@@ -614,7 +614,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `cargo test -p forge-runtime state::schema 2>&1 | tail -20`
 Expected: Both tests pass.
@@ -634,7 +634,7 @@ git commit -m "feat(forge-runtime): SQLite state store with 6-table schema from 
 - Create: `crates/forge-runtime/src/state/runs.rs`
 - Create: `crates/forge-runtime/src/state/tasks.rs`
 
-- [ ] **Step 1: Define row types for runs**
+- [x] **Step 1: Define row types for runs**
 
 `state/runs.rs` provides typed insert/get/update/list operations. Define a `RunRow` that maps 1:1 to the SQL columns (JSON-serialized complex fields):
 
@@ -660,7 +660,7 @@ pub struct RunRow {
 }
 ```
 
-- [ ] **Step 2: Implement CRUD operations for runs**
+- [x] **Step 2: Implement CRUD operations for runs**
 
 Key function signatures on `StateStore`:
 
@@ -677,7 +677,7 @@ impl StateStore {
 
 All methods acquire the `Mutex<Connection>` lock, execute the SQL, and return. For async callers, wrap in `tokio::task::spawn_blocking`.
 
-- [ ] **Step 3: Write tests for run CRUD**
+- [x] **Step 3: Write tests for run CRUD**
 
 ```rust
 #[cfg(test)]
@@ -727,7 +727,7 @@ impl StateStore {
 }
 ```
 
-- [ ] **Step 4: Implement task_nodes CRUD**
+- [x] **Step 4: Implement task_nodes CRUD**
 
 `state/tasks.rs` — same pattern. Define `TaskNodeRow` and CRUD:
 
@@ -764,7 +764,7 @@ impl StateStore {
 }
 ```
 
-- [ ] **Step 5: Write tests for task CRUD**
+- [x] **Step 5: Write tests for task CRUD**
 
 ```rust
 #[cfg(test)]
@@ -790,7 +790,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 6: Run all state store tests**
+- [x] **Step 6: Run all state store tests**
 
 Run: `cargo test -p forge-runtime state:: 2>&1 | tail -30`
 Expected: All run and task CRUD tests pass.
@@ -809,7 +809,7 @@ git commit -m "feat(forge-runtime): CRUD operations for runs and task_nodes tabl
 **Files:**
 - Create: `crates/forge-runtime/src/state/events.rs`
 
-- [ ] **Step 1: Define the EventRow type**
+- [x] **Step 1: Define the EventRow type**
 
 ```rust
 use chrono::{DateTime, Utc};
@@ -839,7 +839,7 @@ pub struct AppendEvent {
 }
 ```
 
-- [ ] **Step 2: Implement append and replay operations**
+- [x] **Step 2: Implement append and replay operations**
 
 ```rust
 impl StateStore {
@@ -884,7 +884,7 @@ ORDER BY seq ASC
 LIMIT ?3
 ```
 
-- [ ] **Step 3: Write tests for event log append and replay**
+- [x] **Step 3: Write tests for event log append and replay**
 
 ```rust
 #[cfg(test)]
@@ -935,12 +935,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: Run all event log tests**
+- [x] **Step 4: Run all event log tests**
 
 Run: `cargo test -p forge-runtime state::events 2>&1 | tail -20`
 Expected: All tests pass. Seq numbers are strictly increasing and are only used as opaque replay cursors.
 
-- [ ] **Step 5: Verify full state module tests pass together**
+- [x] **Step 5: Verify full state module tests pass together**
 
 Run: `cargo test -p forge-runtime 2>&1 | tail -30`
 Expected: All schema, runs, tasks, and events tests pass.
@@ -964,7 +964,7 @@ git commit -m "feat(forge-runtime): append-only event log with seq-based replay 
 - Create: `crates/forge-runtime/src/run_orchestrator.rs`
 - Modify: `crates/forge-runtime/src/server.rs` (wire SubmitRun RPC to orchestrator)
 
-- [ ] **Step 1: Define RunOrchestrator struct**
+- [x] **Step 1: Define RunOrchestrator struct**
 
 The orchestrator owns the in-memory `RunGraph`, a handle to the state store, and an event append handle that writes through `EventStreamCoordinator`. It is wrapped in `Arc<Mutex<...>>` for shared access from gRPC handlers and the scheduling loop.
 
@@ -977,7 +977,7 @@ pub struct RunOrchestrator {
 }
 ```
 
-- [ ] **Step 2: Implement `validate_run_plan`**
+- [x] **Step 2: Implement `validate_run_plan`**
 
 Validate the submitted `RunPlan` before accepting it:
 - `version` must be >= 1
@@ -995,7 +995,7 @@ impl RunOrchestrator {
 }
 ```
 
-- [ ] **Step 3: Implement `submit_run`**
+- [x] **Step 3: Implement `submit_run`**
 
 This is the core SubmitRun handler. It:
 1. Calls `validate_run_plan`
@@ -1022,7 +1022,7 @@ impl RunOrchestrator {
 }
 ```
 
-- [ ] **Step 4: Persist and emit events**
+- [x] **Step 4: Persist and emit events**
 
 After building the `RunState`:
 1. Call `state_store.insert_run(...)` to persist the run row
@@ -1039,7 +1039,7 @@ async fn emit_event(&self, event: AppendEvent) -> anyhow::Result<i64> {
 }
 ```
 
-- [ ] **Step 5: Wire SubmitRun gRPC handler**
+- [x] **Step 5: Wire SubmitRun gRPC handler**
 
 In `server.rs`, implement the `submit_run` method on the tonic service. Convert the proto `SubmitRunRequest` to domain types using the conversion layer from Plan 1, call `run_orchestrator.submit_run(...)`, and convert the resulting `RunState` to a proto `RunInfo` response.
 
@@ -1056,7 +1056,7 @@ async fn submit_run(
 }
 ```
 
-- [ ] **Step 6: Unit tests**
+- [x] **Step 6: Unit tests**
 
 Test in `run_orchestrator.rs`:
 - `submit_run_creates_run_with_seeded_tasks` -- verify run is in `Running` status, tasks are `Pending`, correct count
@@ -1091,7 +1091,7 @@ feat(runtime): implement SubmitRun orchestrator with validation, persistence, an
 - Modify: `crates/forge-runtime/src/run_orchestrator.rs` (add scheduling integration)
 - Modify: `crates/forge-runtime/src/main.rs` (spawn scheduler task)
 
-- [ ] **Step 1: Define the scheduler**
+- [x] **Step 1: Define the scheduler**
 
 The scheduler runs on a tokio interval (default: 500ms) and checks all active runs for tasks that are ready to be scheduled. It does not spawn agents -- it only transitions task status and emits events.
 
@@ -1115,7 +1115,7 @@ impl Scheduler {
 }
 ```
 
-- [ ] **Step 2: Implement the scheduling tick**
+- [x] **Step 2: Implement the scheduling tick**
 
 Each tick:
 1. Lock the orchestrator
@@ -1147,7 +1147,7 @@ impl Scheduler {
 }
 ```
 
-- [ ] **Step 3: Add `transition_task` helper on RunOrchestrator**
+- [x] **Step 3: Add `transition_task` helper on RunOrchestrator**
 
 Centralized status transition that validates the transition, updates the in-memory graph, persists to state store, and emits the event.
 
@@ -1182,7 +1182,7 @@ impl RunOrchestrator {
 }
 ```
 
-- [ ] **Step 4: Spawn scheduler in main.rs**
+- [x] **Step 4: Spawn scheduler in main.rs**
 
 Start the scheduler as a background tokio task after the gRPC server is initialized. Pass it the shared orchestrator handle and the global `CancellationToken`.
 
@@ -1191,7 +1191,7 @@ let scheduler = Scheduler::new(orchestrator.clone(), shutdown_token.clone());
 tokio::spawn(async move { scheduler.run().await });
 ```
 
-- [ ] **Step 5: Unit tests**
+- [x] **Step 5: Unit tests**
 
 - `scheduler_enqueues_ready_tasks` -- submit a run, tick the scheduler, verify tasks transition to `Enqueued`
 - `scheduler_skips_tasks_with_unmet_deps` -- create tasks with dependencies, verify only independent tasks are enqueued
@@ -1224,7 +1224,7 @@ feat(runtime): add task scheduling loop with periodic ready-task polling
 - Modify: `crates/forge-runtime/src/run_orchestrator.rs` (add create_child_task method)
 - Modify: `crates/forge-runtime/src/server.rs` (wire CreateChildTask RPC)
 
-- [ ] **Step 1: Implement `create_child_task`**
+- [x] **Step 1: Implement `create_child_task`**
 
 The core method that handles child task creation requests from agents or operators:
 
@@ -1251,7 +1251,7 @@ pub struct CreateChildTaskParams {
 }
 ```
 
-- [ ] **Step 2: Validate parent and spawn limits**
+- [x] **Step 2: Validate parent and spawn limits**
 
 Before creating the child:
 1. Verify the run exists and is in `Running` status
@@ -1278,7 +1278,7 @@ fn check_spawn_limits(
 }
 ```
 
-- [ ] **Step 3: Build and insert the child TaskNode**
+- [x] **Step 3: Build and insert the child TaskNode**
 
 Create the child `TaskNode` with:
 - `TaskNodeId::generate()`
@@ -1289,7 +1289,7 @@ Create the child `TaskNode` with:
 
 Insert via `RunState::add_child_task`. Persist to state store. Emit `TaskCreated` event.
 
-- [ ] **Step 4: Handle approval flow (basic)**
+- [x] **Step 4: Handle approval flow (basic)**
 
 If spawn limits require approval:
 1. Create a `PendingApproval` with `ApprovalId::generate()`
@@ -1304,7 +1304,7 @@ If no approval needed:
 - Set `approval_state` to `ApprovalState::NotRequired`
 - Return `(child_task, false, None)`
 
-- [ ] **Step 5: Wire CreateChildTask gRPC handler**
+- [x] **Step 5: Wire CreateChildTask gRPC handler**
 
 Convert `CreateChildTaskRequest` proto to `CreateChildTaskParams`, call `orchestrator.create_child_task(...)`, convert result to `CreateChildTaskResponse`.
 
@@ -1328,7 +1328,7 @@ async fn create_child_task(
 }
 ```
 
-- [ ] **Step 6: Unit tests**
+- [x] **Step 6: Unit tests**
 
 - `create_child_succeeds_within_limits` -- create child, verify it exists in run graph with correct parent
 - `create_child_denied_at_hard_cap` -- set max_children=2, create 2 children, verify 3rd is rejected
@@ -1362,7 +1362,7 @@ feat(runtime): implement CreateChildTask with spawn limit checks and approval ga
 - Modify: `crates/forge-runtime/src/run_orchestrator.rs` (expose replay/query helpers to streaming layer)
 - Modify: `crates/forge-runtime/src/server.rs` (wire AttachRun and StreamEvents RPCs)
 
-- [ ] **Step 1: Define `EventStreamCoordinator`**
+- [x] **Step 1: Define `EventStreamCoordinator`**
 
 Model live streaming as a durable tail over `event_log`, not as a replay-plus-broadcast handoff. An in-memory notifier only wakes waiting stream consumers after new rows are committed.
 
@@ -1389,7 +1389,7 @@ impl EventStreamCoordinator {
 }
 ```
 
-- [ ] **Step 2: Implement race-free cursor tailing**
+- [x] **Step 2: Implement race-free cursor tailing**
 
 `AttachRun`, `StreamEvents`, and the later `PendingApprovals` stream must all use the same rule: **poll persisted rows by cursor until caught up, then wait on `Notify`, then poll again**. There is never a separate subscription step, so there is no dropped-event window.
 
@@ -1433,7 +1433,7 @@ impl EventStreamCoordinator {
 }
 ```
 
-- [ ] **Step 3: Expand `query_events` and related store helpers**
+- [x] **Step 3: Expand `query_events` and related store helpers**
 
 State-store queries must support chunked reads by cursor plus run/task/type filters. They should return rows in ascending `seq`, with the caller treating `seq` as an opaque cursor.
 
@@ -1457,7 +1457,7 @@ impl StateStore {
 }
 ```
 
-- [ ] **Step 4: Wire `AttachRun` and `StreamEvents`**
+- [x] **Step 4: Wire `AttachRun` and `StreamEvents`**
 
 Both RPCs should validate the requested scope, then delegate to `EventStreamCoordinator::replay_and_stream(...)`. `StreamTaskOutput` remains a filtered projection over the same durable event log rather than a separate pipe reader.
 
@@ -1480,7 +1480,7 @@ async fn attach_run(
 }
 ```
 
-- [ ] **Step 5: Unit tests**
+- [x] **Step 5: Unit tests**
 
 - `replay_yields_historical_events` — insert 5 events, replay from cursor 0, verify all 5 arrive in order
 - `tail_waits_then_yields_new_rows` — start a stream at the current cursor, append a new row through `append_and_wake`, verify it is delivered without reconnecting
@@ -1489,7 +1489,7 @@ async fn attach_run(
 - `stream_events_filters_by_type` — verify event-type filtering is applied after durable replay
 - `stream_task_output_matches_runtime_event_cursors` — prove the task-output projection reuses the same `event_log.seq` cursor space
 
-- [ ] **Step 6: Exit criteria for this task**
+- [x] **Step 6: Exit criteria for this task**
 
 `AttachRun`, `StreamEvents`, and `StreamTaskOutput` all read from the same persisted cursor space. There is no replay/live handoff race, and reconnecting clients can resume from any returned cursor without gaps.
 
@@ -1577,7 +1577,7 @@ feat(runtime): implement Health RPC with protocol version and capability flags
 - Create: `crates/forge-runtime/src/shutdown.rs`
 - Modify: `crates/forge-runtime/src/server.rs` (implement Shutdown RPC)
 
-- [ ] **Step 1: Define ShutdownCoordinator**
+- [x] **Step 1: Define ShutdownCoordinator**
 
 ```rust
 pub struct ShutdownCoordinator {
@@ -1597,7 +1597,7 @@ pub trait AgentSupervisor: Send + Sync {
 }
 ```
 
-- [ ] **Step 2: Implement `initiate_shutdown`**
+- [x] **Step 2: Implement `initiate_shutdown`**
 
 The shutdown sequence (per spec Section 6.7):
 1. Cancel the `CancellationToken` to stop the scheduling loop
@@ -1650,7 +1650,7 @@ pub struct ShutdownResult {
 }
 ```
 
-- [ ] **Step 3: Wire signal handlers in main.rs**
+- [x] **Step 3: Wire signal handlers in main.rs**
 
 Listen for SIGTERM and SIGINT using `tokio::signal`. On receipt, call `ShutdownCoordinator::initiate_shutdown(...)`, then drop the gRPC server and exit.
 
@@ -1666,7 +1666,7 @@ tokio::select! {
 }
 ```
 
-- [ ] **Step 4: Wire Shutdown gRPC handler**
+- [x] **Step 4: Wire Shutdown gRPC handler**
 
 Allow remote clients to trigger shutdown:
 
@@ -1688,11 +1688,11 @@ async fn shutdown(
 }
 ```
 
-- [ ] **Step 5: Clean up UDS socket file on exit**
+- [x] **Step 5: Clean up UDS socket file on exit**
 
 Remove `$FORGE_RUNTIME_DIR/forge.sock` in a `Drop` impl or explicit cleanup function called after shutdown completes.
 
-- [ ] **Step 6: Unit tests**
+- [x] **Step 6: Unit tests**
 
 - `shutdown_cancels_scheduling` -- start scheduler, trigger shutdown, verify scheduler loop exits
 - `shutdown_gracefully_stops_agents_before_marking_tasks` -- fake supervisor reports graceful completion, verify tasks are only marked terminal after the supervisor callback
@@ -1715,7 +1715,7 @@ feat(runtime): implement graceful shutdown with task termination and state flush
 - Create: `crates/forge-runtime/src/recovery.rs`
 - Modify: `crates/forge-runtime/src/main.rs` (call recovery before starting gRPC)
 
-- [ ] **Step 1: Define recovery function**
+- [x] **Step 1: Define recovery function**
 
 Per spec Section 6.6, on startup the daemon must reconcile stale state from the previous run.
 
@@ -1736,7 +1736,7 @@ pub async fn recover_orphans(
 ) -> Result<RecoveryResult> { ... }
 ```
 
-- [ ] **Step 2: Classify tasks by recoverability**
+- [x] **Step 2: Classify tasks by recoverability**
 
 Recovery should not fail every non-terminal task. Use these rules:
 
@@ -1786,7 +1786,7 @@ async fn recover_tasks(
 }
 ```
 
-- [ ] **Step 3: Recompute run status from recovered task state**
+- [x] **Step 3: Recompute run status from recovered task state**
 
 Only mark a run failed when recovery leaves it with irrecoverable active work. Runs containing only preserved queued/approval-gated tasks should remain schedulable after startup.
 
@@ -1807,7 +1807,7 @@ fn reconcile_runs(state_store: &StateStore) -> Result<usize> {
 }
 ```
 
-- [ ] **Step 4: Clean stale UDS socket files**
+- [x] **Step 4: Clean stale UDS socket files**
 
 Scan `$FORGE_RUNTIME_DIR/` for leftover `.sock` files and agent socket directories. Remove any that do not belong to a running process (skip this check on macOS where PID inspection of UDS peers is limited; just remove all stale sockets).
 
@@ -1829,11 +1829,11 @@ fn clean_stale_sockets(runtime_dir: &Path) -> Result<usize> {
 }
 ```
 
-- [ ] **Step 5: Emit `DaemonRecovered` event**
+- [x] **Step 5: Emit `DaemonRecovered` event**
 
 After recovery, append a `RuntimeEventKind::DaemonRecovered` event summarizing reattached agents, failed tasks, preserved approvals, and cleaned sockets. This event must be written through `event_stream.append_and_wake(...)` so reconnecting clients can replay it.
 
-- [ ] **Step 6: Rebuild in-memory RunGraph from state store**
+- [x] **Step 6: Rebuild in-memory RunGraph from state store**
 
 Load all runs and their task nodes from the state store into the in-memory `RunGraph`. This is essential for the scheduler and orchestrator to operate correctly after restart.
 
@@ -1850,7 +1850,7 @@ pub fn rebuild_run_graph(state_store: &StateStore) -> Result<RunGraph> {
 }
 ```
 
-- [ ] **Step 7: Wire into main.rs startup sequence**
+- [x] **Step 7: Wire into main.rs startup sequence**
 
 Call recovery before starting the gRPC server, per the spec startup sequence: Load policy -> open/migrate DB -> recover orphans -> rebuild run graph -> start gRPC server.
 
@@ -1873,7 +1873,7 @@ let run_graph = rebuild_run_graph(&state_store)?;
 let run_orchestrator = Arc::new(Mutex::new(RunOrchestrator::new(run_graph, state_store.clone(), ...)));
 ```
 
-- [ ] **Step 8: Unit tests**
+- [x] **Step 8: Unit tests**
 
 - `recovery_preserves_pending_and_awaiting_approval_tasks` -- verify queued work survives restart unchanged
 - `recovery_reattaches_live_runtime_instances` -- fake supervisor reports a live Docker agent, verify task returns to `Running`
@@ -1896,7 +1896,7 @@ feat(runtime): implement orphan recovery with stale task/run cleanup on daemon s
 - Modify: `crates/forge-runtime/src/run_orchestrator.rs` (add query methods)
 - Modify: `crates/forge-runtime/src/server.rs` (implement remaining RPC handlers)
 
-- [ ] **Step 1: Implement GetRun**
+- [x] **Step 1: Implement GetRun**
 
 Look up a run by ID in the in-memory `RunGraph` and convert to `RunInfo` proto. Return `Status::not_found` if the run does not exist.
 
@@ -1913,7 +1913,7 @@ async fn get_run(
 }
 ```
 
-- [ ] **Step 2: Implement ListRuns**
+- [x] **Step 2: Implement ListRuns**
 
 Return all runs, optionally filtered by project and/or status. Support basic pagination via `page_size` and `page_token` (use run ID as cursor).
 
@@ -1934,7 +1934,7 @@ async fn list_runs(
 }
 ```
 
-- [ ] **Step 3: Implement GetTask**
+- [x] **Step 3: Implement GetTask**
 
 Look up a task by ID across all runs. The orchestrator needs a cross-run task index or linear scan. For now, use linear scan (optimize later with a `HashMap<TaskNodeId, RunId>` index).
 
@@ -1951,7 +1951,7 @@ impl RunOrchestrator {
 }
 ```
 
-- [ ] **Step 4: Implement ListTasks**
+- [x] **Step 4: Implement ListTasks**
 
 Return tasks within a run, optionally filtered by parent, status, or milestone.
 
@@ -2033,7 +2033,7 @@ impl RunOrchestrator {
 }
 ```
 
-- [ ] **Step 7: Proto conversion helpers for read-model**
+- [x] **Step 7: Proto conversion helpers for read-model**
 
 Add `run_state_to_run_info` and `task_node_to_task_info` conversion functions that map the in-memory domain types to proto response messages. These are the deferred read-model conversions mentioned in Plan 1.
 

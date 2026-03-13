@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::ids::{RunId, TaskNodeId};
 use crate::TaskOutput;
+use crate::ids::{RunId, TaskNodeId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ExecutionId(String);
@@ -266,7 +266,13 @@ mod tests {
         };
 
         let outcome = facade.wait(&ExecutionId::generate()).await.unwrap();
-        assert!(matches!(outcome, ExecutionOutcome::Failed { exit_code: Some(1), .. }));
+        assert!(matches!(
+            outcome,
+            ExecutionOutcome::Failed {
+                exit_code: Some(1),
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

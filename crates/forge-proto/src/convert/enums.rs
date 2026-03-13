@@ -120,8 +120,14 @@ impl_enum_convert!(
     ApprovalActorKind,
     proto::ApprovalActorKind,
     "ApprovalActorKind",
-    (ApprovalActorKind::ParentTask, proto::ApprovalActorKind::ParentTask),
-    (ApprovalActorKind::Operator, proto::ApprovalActorKind::Operator),
+    (
+        ApprovalActorKind::ParentTask,
+        proto::ApprovalActorKind::ParentTask
+    ),
+    (
+        ApprovalActorKind::Operator,
+        proto::ApprovalActorKind::Operator
+    ),
     (ApprovalActorKind::Auto, proto::ApprovalActorKind::Auto),
 );
 
@@ -173,7 +179,10 @@ impl_enum_convert!(
     (MilestoneStatus::Pending, proto::MilestoneStatus::Pending),
     (MilestoneStatus::Running, proto::MilestoneStatus::Running),
     (MilestoneStatus::Blocked, proto::MilestoneStatus::Blocked),
-    (MilestoneStatus::Completed, proto::MilestoneStatus::Completed),
+    (
+        MilestoneStatus::Completed,
+        proto::MilestoneStatus::Completed
+    ),
     (MilestoneStatus::Failed, proto::MilestoneStatus::Failed),
 );
 
@@ -218,8 +227,8 @@ impl IntoProtoEnum<proto::RunStatus> for RunStatus {
 }
 
 pub fn decode_memory_scope(value: i32) -> Result<MemoryScope, UnknownEnumValue> {
-    let proto_value =
-        proto::MemoryScope::try_from(value).map_err(|_| UnknownEnumValue::new("MemoryScope", value))?;
+    let proto_value = proto::MemoryScope::try_from(value)
+        .map_err(|_| UnknownEnumValue::new("MemoryScope", value))?;
     MemoryScope::try_from(proto_value)
 }
 
@@ -230,8 +239,8 @@ pub fn decode_run_shared_write_mode(value: i32) -> Result<RunSharedWriteMode, Un
 }
 
 pub fn decode_repo_access(value: i32) -> Result<RepoAccess, UnknownEnumValue> {
-    let proto_value =
-        proto::RepoAccess::try_from(value).map_err(|_| UnknownEnumValue::new("RepoAccess", value))?;
+    let proto_value = proto::RepoAccess::try_from(value)
+        .map_err(|_| UnknownEnumValue::new("RepoAccess", value))?;
     RepoAccess::try_from(proto_value)
 }
 

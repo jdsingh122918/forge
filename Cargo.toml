@@ -3,6 +3,7 @@ members = [
     ".",
     "crates/forge-common",
     "crates/forge-proto",
+    "crates/forge-runtime",
 ]
 resolver = "2"
 
