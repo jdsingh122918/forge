@@ -67,11 +67,14 @@ Forge currently executes agents by spawning Claude CLI processes directly via `t
 
 ### 3.3 Key Design Decisions
 
-- CLI and daemon communicate over **gRPC on a Unix domain socket** (`$XDG_RUNTIME_DIR/forge.sock`). gRPC provides streaming (live agent output) and strong typing (protobuf schemas).
+- **Runtime directory** (`$FORGE_RUNTIME_DIR`): resolves to `$XDG_RUNTIME_DIR/forge/` (Linux) or `$TMPDIR/forge-$UID/` (macOS). All UDS socket paths in this spec use `$FORGE_RUNTIME_DIR` as shorthand. Override with `$FORGE_RUNTIME_DIR` env var.
+- CLI and daemon communicate over **gRPC on a Unix domain socket** at `$FORGE_RUNTIME_DIR/forge.sock`. gRPC provides streaming (live agent output) and strong typing (protobuf schemas).
 - The daemon is a **single Rust binary** (`forge-runtime`) using tokio.
 - Agents are **not containers by default** — they run in Linux namespaces (bubblewrap) with Nix-provided environments for sub-second spawning.
 - The existing orchestration logic (DAG scheduler, phase runner, reviews, Factory) stays in the CLI but delegates agent execution to the daemon.
-- **macOS fallback**: Docker replaces bubblewrap where Linux namespaces are unavailable, abstracted behind an `AgentRuntime` trait.
+- **macOS runtime**: See Section 4.6 for macOS-specific runtime details.
+- **Nix is optional**: Agents can run in "host mode" (current behavior, no Nix) or "profile mode" (Nix-defined environments). See Section 4.7.
+- **Version negotiation**: CLI and daemon may be updated independently. See Section 7.5.
 
 ## 4. Agent Lifecycle & Nix Environment Model
 
@@ -85,7 +88,7 @@ forgeLib.mkAgent {
   tools = [ "git" "gh" "ripgrep" "fd" ];
   mcp-servers = [];
   secrets = [];
-  resources = { cpu = 1; memory = "2Gi"; };
+  resources = { cpu = 1; memory = "2Gi"; token-budget = 50000; };
   permissions = {
     repo = "read-write";
     network = [];
@@ -102,7 +105,7 @@ forgeLib.mkAgent {
   tools = profiles.base.tools ++ [ "semgrep" "trivy" "bandit" ];
   mcp-servers = [ "github" ];
   secrets = [ "GITHUB_TOKEN" ];
-  resources = { cpu = 2; memory = "4Gi"; };
+  resources = { cpu = 2; memory = "4Gi"; token-budget = 100000; };
   permissions = {
     repo = "read-only";
     network = [ "api.github.com" "*.semgrep.dev" ];
@@ -119,7 +122,7 @@ forgeLib.mkAgent {
   tools = profiles.base.tools ++ [ "cargo" "rustc" "nodejs" "npm" ];
   mcp-servers = [ "filesystem" "github" ];
   secrets = [ "GITHUB_TOKEN" "NPM_TOKEN" ];
-  resources = { cpu = 4; memory = "8Gi"; };
+  resources = { cpu = 4; memory = "8Gi"; token-budget = 200000; };
   permissions = {
     repo = "read-write";
     network = [ "registry.npmjs.org" "crates.io" ];
@@ -179,7 +182,7 @@ permissions.spawn = {
 - Agents 6–10: parent must explicitly approve each spawn
 - Agent 11+: denied outright
 
-### 4.5 macOS Fallback
+### 4.5 AgentRuntime Trait
 
 ```rust
 #[async_trait]
@@ -190,7 +193,109 @@ trait AgentRuntime: Send + Sync {
 }
 
 struct BwrapRuntime { /* Linux namespace impl */ }
-struct DockerRuntime { /* Docker/bollard impl */ }
+struct DockerRuntime { /* Docker/macOS impl */ }
+struct HostRuntime { /* No-sandbox fallback, current behavior */ }
+```
+
+### 4.6 macOS Runtime
+
+macOS cannot use Linux namespaces or bubblewrap. Rather than treating it as a degraded fallback, the macOS runtime is a first-class target with its own characteristics:
+
+**Primary option: Docker (via colima or Docker Desktop)**
+- Agent spawning latency: 1-3 seconds (vs. <1s on Linux with bwrap)
+- UDS sockets bind-mounted into containers via Docker volumes
+- File system performance: Use `:cached` mount flag for workspace volumes; expect ~2x latency vs. native on write-heavy workloads
+- Resource monitoring via Docker API (`bollard`) instead of cgroups
+- Network isolation via Docker bridge network with iptables rules
+
+**Lightweight option: Process isolation only (no container)**
+- Uses `sandbox-exec` (Apple's Sandbox framework) for basic filesystem restrictions where available. Note: `sandbox-exec` is deprecated by Apple and may be removed in future macOS versions. If unavailable, this mode provides no filesystem isolation — rely on the daemon's service ACLs and network proxy as the primary security boundary.
+- No network namespace isolation — network allowlist enforced at daemon proxy level only
+- No PID namespace — agents can see host processes (reduced security)
+- Sub-second spawning, native filesystem performance
+- Suitable for development/trusted environments, not production security
+
+**Auto-detection:** Daemon detects platform on startup and selects runtime:
+1. Linux + bwrap available → `BwrapRuntime`
+2. macOS + Docker available → `DockerRuntime`
+3. macOS + no Docker → `HostRuntime` with `sandbox-exec` where available
+4. Any platform + `--host-runtime` flag → `HostRuntime` (no isolation)
+
+**Documented performance expectations:**
+
+| Capability | Linux (bwrap) | macOS (Docker) | macOS (host) |
+|-----------|---------------|----------------|--------------|
+| Spawn latency | <1s | 1-3s | <0.5s |
+| Filesystem I/O | Native | ~2x slower | Native |
+| Network isolation | Full (namespace) | Full (bridge) | Proxy-only |
+| PID isolation | Full | Full | None |
+| Resource limits | cgroup v2 | Docker limits | None |
+| Security level | High | High | Low |
+
+### 4.7 Host Mode (No-Nix Fallback)
+
+Nix is powerful but optional. Agents can run in two modes:
+
+**Host mode** (default when Nix is not installed):
+- Agents run with the host PATH and environment (current forge behavior)
+- No reproducibility guarantees — tools must be pre-installed
+- Manifest is a TOML file instead of a Nix expression:
+
+```toml
+# .forge/profiles/implementer.toml
+[agent]
+name = "implementer"
+tools = ["cargo", "rustc", "nodejs"]  # checked in PATH at spawn time
+
+[resources]
+cpu = 4
+memory = "8Gi"
+
+[secrets]
+allowed = ["GITHUB_TOKEN"]
+
+[permissions]
+repo = "read-write"
+network = ["registry.npmjs.org", "crates.io"]
+
+[spawn]
+max-children = 10
+require-approval-after = 5
+```
+
+- Policy engine, approval gates, service ACLs, and audit trail all work identically
+- The daemon logs a warning at startup: "Running in host mode — agent environments are not reproducible"
+
+**Profile mode** (when Nix is installed):
+- Full Nix evaluation and materialization as described in Sections 4.1-4.4
+- First `nix build` for a profile may take 1-5 minutes (downloading packages to Nix store)
+- Subsequent spawns for the same profile are instant (Nix store cache)
+- `forge runtime warm <profile>` command pre-builds profiles before a run
+- Daemon tracks Nix store size and reports via metrics
+
+**Mode detection:** Daemon checks for `nix` binary in PATH. If present and `forge-profiles/flake.nix` exists, uses profile mode. Otherwise, host mode. Override with `--nix-mode` or `--host-mode` flags.
+
+### 4.8 Nix Evaluation Error Handling
+
+When `nix eval` or `nix build` fails:
+
+```
+SpawnRequest → PolicyCheck → Approved → Materializing
+    → nix eval fails → MaterializationFailed { error, profile, stderr }
+        → Daemon logs structured error
+        → Parent agent notified via bus: AgentFailed { error: "Nix evaluation failed: ..." }
+        → Agent status set to Failed in state store
+    → nix build fails → MaterializationFailed { error, profile, stderr }
+        → Same notification flow
+        → Common causes surfaced: missing package, network timeout, flake lock stale
+```
+
+Updated state machine:
+```
+SpawnRequest → PolicyCheck → [NeedsApproval?] → Approved
+    → Materializing → [Success?]
+        → Yes → Spawning → Running → Completed | Failed | Killed
+        → No  → MaterializationFailed → Cleanup (notify parent, log error)
 ```
 
 ## 5. Shared Services Architecture
@@ -200,7 +305,7 @@ All services managed by the daemon, exposed to agents via Unix domain sockets. A
 ### 5.1 Auth Proxy
 
 ```
-Agent → /run/forge/agent-$ID/auth.sock → Daemon Auth Service → External APIs
+Agent → $FORGE_RUNTIME_DIR/agent-$ID/auth.sock → Daemon Auth Service → External APIs
 ```
 
 - Each agent gets an identity token (JWT, short-lived, scoped to manifest permissions) at spawn
@@ -211,7 +316,7 @@ Agent → /run/forge/agent-$ID/auth.sock → Daemon Auth Service → External AP
 ### 5.2 Key Vault
 
 ```
-Agent → /run/forge/agent-$ID/vault.sock → Daemon Vault Service → Encrypted Store
+Agent → $FORGE_RUNTIME_DIR/agent-$ID/vault.sock → Daemon Vault Service → Encrypted Store
 ```
 
 - Secrets stored encrypted at rest in `$FORGE_STATE_DIR/vault.db` (SQLite + age/AEAD)
@@ -223,7 +328,7 @@ Agent → /run/forge/agent-$ID/vault.sock → Daemon Vault Service → Encrypted
 ### 5.3 Cache Service
 
 ```
-Agent → /run/forge/agent-$ID/cache.sock → Daemon Cache Service → Shared Cache
+Agent → $FORGE_RUNTIME_DIR/agent-$ID/cache.sock → Daemon Cache Service → Shared Cache
 ```
 
 Three tiers:
@@ -241,7 +346,7 @@ Three tiers:
 ### 5.4 MCP Router
 
 ```
-Agent → /run/forge/agent-$ID/mcp.sock → Daemon MCP Router → MCP Server Pool
+Agent → $FORGE_RUNTIME_DIR/agent-$ID/mcp.sock → Daemon MCP Router → MCP Server Pool
 ```
 
 - Daemon manages a pool of MCP server processes (filesystem, github, database, custom)
@@ -262,7 +367,7 @@ Unified tool discovery across Nix CLI tools and MCP tools:
 ### 5.6 Message Bus
 
 ```
-Agent ←→ /run/forge/agent-$ID/bus.sock ←→ Daemon Bus ←→ Other Agents
+Agent ←→ $FORGE_RUNTIME_DIR/agent-$ID/bus.sock ←→ Daemon Bus ←→ Other Agents
 ```
 
 **Three communication primitives:**
@@ -397,6 +502,22 @@ always_require_approval = ["implementer"]
 require_approval_after = 5
 ```
 
+```toml
+[costs]
+max_tokens_per_agent = 200000     # hard cap per agent
+max_tokens_per_run = 2000000      # hard cap per run
+warn_at_percent = 80              # alert parent when agent hits 80% of budget
+```
+
+**Token budget enforcement:**
+- Daemon intercepts Claude CLI output and parses token usage from stream-json events
+- Cumulative token count tracked per agent and per run in state store
+- When agent hits `warn_at_percent` of its `token-budget`: daemon alerts parent via bus
+- When agent hits 100% of `token-budget`: daemon sends SIGTERM, status → `Failed(token_budget_exceeded)`
+- When run hits `max_tokens_per_run`: daemon pauses all spawns, notifies CLI, requires manual approval to continue
+- Sub-agent tokens count toward both the sub-agent's budget AND the parent's cumulative tree budget
+- Cost attribution: `runs` table gains `total_tokens` and `estimated_cost_usd` columns
+
 **Evaluation order:**
 1. Global hard limits (max_agents_total, max_depth)
 2. Project limits (max_agents_per_parent, max_concurrent)
@@ -457,7 +578,7 @@ CREATE TABLE runs (
 
 On startup, daemon:
 1. Scans for stale cgroup directories → reap or adopt
-2. Cleans leftover UDS files in `/run/forge/`
+2. Cleans leftover UDS files in `$FORGE_RUNTIME_DIR/`
 3. Marks incomplete state entries as `Failed(daemon_restart)`
 4. Adopts or kills running Docker containers with `forge-agent-` prefix
 
@@ -466,6 +587,30 @@ On startup, daemon:
 **Startup:** Load policy → open/migrate DB → start gRPC server → start shared services → recover orphans → begin telemetry → ready signal.
 
 **Shutdown (graceful):** Stop new spawns → send Shutdown to all agents → wait grace period → force-kill remaining → flush telemetry/audit → close DB → remove socket.
+
+### 6.8 Daemon Reliability
+
+The daemon is a single point of failure. Mitigations:
+
+**Process supervision:** The daemon should be managed by a process supervisor that auto-restarts on crash:
+- Linux: systemd unit file (`forge-runtime.service`) with `Restart=on-failure`, `RestartSec=2`
+- macOS: launchd plist (`com.forge.runtime.plist`) with `KeepAlive=true`
+- `forge runtime install` generates and installs the appropriate service file
+
+**Agent survival across daemon restarts:**
+- `--die-with-parent` is used for bubblewrap agents (they die with daemon). This is intentional — agents without daemon services are non-functional (no vault, no bus, no MCP).
+- Docker agents survive daemon crashes (containers are independent). On restart, daemon re-adopts them via Docker API, reconnects UDS sockets, and resumes service proxying.
+- The state store (SQLite) persists across restarts. On recovery, daemon marks bwrap agents as `Failed(daemon_restart)` and re-adopts Docker agents.
+
+**Minimizing blast radius:**
+- Long-running agents should checkpoint their work to git (commit to worktree branch) periodically. The daemon can enforce this via a configurable `checkpoint_interval` that sends a checkpoint signal to agents.
+- The orchestration layer (CLI-side DAG scheduler) tracks completed phases. On daemon restart, only the in-progress phase needs re-execution — completed phases are not re-run.
+- Expected recovery time: daemon restart <5s, agent re-execution for the failed phase only.
+
+**Monitoring:**
+- Daemon exposes `/health` endpoint on a separate HTTP port for external monitoring (Prometheus, uptime checks)
+- `forge runtime status` command shows daemon uptime, agent count, resource usage
+- Daemon logs its own health metrics (tokio task count, allocator stats, open file descriptors)
 
 ## 7. CLI ↔ Daemon Integration
 
@@ -545,7 +690,82 @@ message AgentEvent {
 }
 ```
 
-### 7.4 Integration Points
+### 7.4 Version Negotiation
+
+CLI and daemon are separate binaries that may be updated independently. Protocol:
+
+1. `HealthResponse` includes `protocol_version: u32` (starts at 1) and `daemon_version: String` (semver)
+2. CLI checks version on connect. If `protocol_version` matches, proceed normally
+3. If CLI protocol > daemon protocol: CLI warns "daemon is outdated, some features may not work" and falls back to the daemon's protocol version
+4. If daemon protocol > CLI protocol: daemon accepts the connection (backwards compatible) — new fields are ignored by the older CLI
+5. Protobuf schema follows standard forwards-compatible conventions: no field renumbering, no removing required fields, new fields are always optional
+
+**Breaking changes** (protocol version bump) require both binaries to be updated. The daemon refuses connections from CLIs with incompatible protocol versions and prints upgrade instructions.
+
+### 7.5 CLI ↔ Daemon Interaction Patterns
+
+**Connection model:** CLI opens a persistent gRPC connection to the daemon for the duration of a run. Multiple CLI instances can connect simultaneously (e.g., two terminals running different projects).
+
+**CLI disconnect behavior:**
+- If CLI disconnects while agents are running, the daemon **continues execution** (agents are daemon children, not CLI children)
+- CLI can reconnect and resume streaming via `StreamAgent` / `StreamEvents` with a `since_timestamp` parameter
+- If no CLI reconnects within a configurable timeout (default: 1 hour), daemon completes the run and persists results to state store
+- `forge run --attach <run_id>` reconnects to an in-progress run
+
+**Sequence: Simple sequential run (3 phases):**
+```
+CLI                              Daemon                          Agents
+ │                                │                               │
+ ├─ StartRun(phases=[1,2,3]) ──►│                               │
+ │◄── RunInfo(run_id=R1) ───────│                               │
+ │                                │                               │
+ ├─ SpawnAgent(R1, phase1) ─────►├─ PolicyCheck ────────────────►│
+ ├─ StreamAgent(agent-A) ───────►│  nix build + bwrap spawn ───►│ Agent A
+ │◄── AgentEvent(stdout) ───────│◄── stdout lines ──────────────│
+ │◄── AgentEvent(promise) ──────│◄── <promise>DONE</promise> ──│
+ │                                ├─ Cleanup(agent-A) ──────────►│ ✗
+ │                                │                               │
+ ├─ SpawnAgent(R1, phase2) ─────►├─ spawn ─────────────────────►│ Agent B
+ │  ... (same pattern) ...       │                               │
+ │                                │                               │
+ ├─ SpawnAgent(R1, phase3) ─────►├─ spawn ─────────────────────►│ Agent C
+ │  ...                          │                               │
+ │                                │                               │
+ ├─ StopRun(R1) ───────────────►│                               │
+ │◄── RunInfo(status=complete) ──│                               │
+```
+
+**Sequence: DAG-parallel run (agents spawn sub-agents):**
+```
+CLI                              Daemon                          Agents
+ │                                │                               │
+ ├─ StartRun(phases=DAG) ──────►│                               │
+ │                                │                               │
+ ├─ SpawnAgent(phase1) ─────────►├─ spawn ─────────────────────►│ Agent A (primary)
+ ├─ SpawnAgent(phase2) ─────────►├─ spawn ─────────────────────►│ Agent B
+ ├─ StreamAgent(A) ────────────►│                               │
+ ├─ StreamAgent(B) ────────────►│                               │
+ │                                │                               │
+ │  [Agent A requests sub-agent spawn via MCP tool]              │
+ │                                │◄── SpawnRequest ────────────│ Agent A
+ │                                ├─ PolicyCheck (within cap)    │
+ │                                ├─ spawn ────────────────────►│ Agent C (child of A)
+ │◄── AgentEvent(child_spawn) ──│                               │
+ │                                │                               │
+ │  [Agent A requests 6th child — exceeds soft cap]             │
+ │                                │◄── SpawnRequest ────────────│ Agent A
+ │                                ├─ PolicyCheck (exceeds cap)   │
+ │◄── ApprovalRequest ──────────│                               │
+ │─── ResolveApproval(approve) ►│                               │
+ │                                ├─ spawn ────────────────────►│ Agent D
+```
+
+**Multi-CLI:** Each CLI connection is independent. State is in the daemon. Multiple CLIs can:
+- Stream different agents' output simultaneously
+- One CLI runs `forge run`, another watches via `forge runtime events`
+- Factory UI connects as another client via WebSocket (daemon bridges gRPC → WS)
+
+### 7.7 Integration Points
 
 **ClaudeRunner (runner.rs):** Replace `Command::new("claude")` with `runtime_client.spawn_agent()`. Stream output via `runtime_client.stream_agent()`. Same signal parsing logic, different source.
 
@@ -555,7 +775,7 @@ message AgentEvent {
 
 **Pipeline execution (factory/pipeline/execution.rs):** Uses `daemon.start_run()` instead of spawning forge subprocess.
 
-### 7.5 Crate Structure
+### 7.8 Crate Structure
 
 ```
 forge/
@@ -643,6 +863,14 @@ Primary agents get spawn/coordination tools via their MCP socket:
 - On completion, daemon merges worktree → shared or creates PR branch
 - Merge conflicts → parent agent notified for resolution
 
+**File locking protocol** (for shared workspace mode only — hybrid/worktree modes rarely need it):
+- Locks are **lease-based with TTL**: agent acquires lock with a TTL (default: 300s), must renew before expiry
+- Locks are **daemon-managed**: stored in-memory in the daemon, not on filesystem. No stale lockfiles.
+- **Crash safety**: if an agent dies while holding a lock, the daemon detects process termination and immediately releases all locks held by that agent
+- **Deadlock prevention**: locks are acquired in lexicographic path order. If agent A holds `src/a.rs` and requests `src/b.rs`, and agent B holds `src/b.rs` and requests `src/a.rs`, the daemon detects the cycle and rejects the second request with a `DeadlockDetected` error
+- **Granularity**: file-level only. Directory locks are not supported (lock individual files)
+- **When needed**: primarily in shared workspace mode where multiple agents write to the same checkout. In hybrid worktree mode, each agent has its own worktree, so file locks are only needed for shared config files (e.g., `Cargo.lock`, `package-lock.json`)
+
 **Alternative patterns:** Shared workspace + file locks (small teams), or full worktree isolation (independent modules). Configurable per-run.
 
 ### 8.3 Agent Discovery
@@ -670,7 +898,7 @@ bus.request(to: reviewers[0].id, payload: review_request).await?;
 
 ### 9.2 Four Isolation Layers
 
-**Filesystem:** Agents see only `/nix/store` (read-only), `/workspace` (bind mount), `/run/forge/agent-$ID` (own sockets), `/tmp` (private tmpfs). Cannot see other agents' sockets, daemon state, or host filesystem.
+**Filesystem:** Agents see only `/nix/store` (read-only), `/workspace` (bind mount), `$FORGE_RUNTIME_DIR/agent-$ID` (own sockets), `/tmp` (private tmpfs). Cannot see other agents' sockets, daemon state, or host filesystem.
 
 **Process:** PID namespace (`--unshare-pid`), `--die-with-parent`, `--new-session`, cgroup v2 CPU+memory limits.
 
@@ -727,9 +955,82 @@ Configurable thresholds in `$FORGE_STATE_DIR/alerts.toml`:
 - `spawn_storm`: > 10 spawns in 60s → pause spawns
 - `policy_violations`: > 3 violations in 5m → kill agent
 
-## 11. Migration Path
+## 11. Data Retention & Cleanup
 
-### 11.1 From Current Architecture
+Agent logs, audit entries, and state records grow unboundedly. Retention policies:
+
+**Configurable retention in `$FORGE_STATE_DIR/retention.toml`:**
+```toml
+[logs]
+max_runs = 100              # keep last N runs' log files
+max_age_days = 30           # delete logs older than this
+compress_after_days = 7     # gzip logs older than 7 days
+
+[audit]
+max_age_days = 90           # audit trail kept longer for compliance
+archive_format = "jsonl.gz" # compressed archive
+
+[state]
+max_runs = 500              # keep last N runs in runtime.db
+vacuum_on_cleanup = true    # SQLite VACUUM after deletion
+
+[nix]
+gc_after_days = 14          # nix store garbage collection for unused profiles
+```
+
+**Cleanup commands:**
+- `forge runtime gc` — manual cleanup: applies retention policies, runs Nix garbage collection
+- `forge runtime gc --dry-run` — shows what would be deleted
+- Daemon runs automatic cleanup daily (configurable interval) if running as a service
+
+## 12. MCP Router Validation
+
+The MCP router validates responses from MCP servers to mitigate compromised or misbehaving servers:
+
+- **Schema conformance**: responses must match the MCP protocol JSON-RPC schema. Malformed responses are dropped and logged as errors.
+- **Response size limits**: configurable max response size per server (default: 10MB). Oversized responses are truncated and the agent is notified.
+- **Timeout enforcement**: per-server timeout (default: 30s). Timed-out requests return an error to the agent; the router logs a warning and optionally restarts the server.
+- **Content scanning**: optional regex-based scanning for patterns that look like prompt injection attempts (e.g., `<system>`, `ignore previous instructions`). Suspicious responses are flagged in the audit log and optionally quarantined (agent gets a sanitized version).
+- **Rate limiting**: per-agent, per-server rate limits to prevent a single agent from overwhelming a shared MCP server (default: 100 calls/minute).
+
+## 13. Nix Profile Composition
+
+### 13.1 Forge Profiles vs. Project Profiles
+
+Forge ships a set of built-in profiles in `forge-profiles/`. Projects can extend or override them:
+
+```
+forge-profiles/            (ships with forge — base, implementer, reviewer, etc.)
+.forge/profiles/           (project-specific — overrides or new profiles)
+```
+
+**Resolution order:**
+1. Project profiles (`.forge/profiles/`) take precedence
+2. Forge built-in profiles (`forge-profiles/`) as fallback
+3. Project profile can import and extend a forge profile:
+
+```nix
+# .forge/profiles/implementer.nix
+{ forgeLib, forgeProfiles, ... }:
+forgeProfiles.implementer.override {
+  tools = forgeProfiles.implementer.tools ++ [ "python3" "poetry" ];
+  secrets = forgeProfiles.implementer.secrets ++ [ "PYPI_TOKEN" ];
+  permissions.network = forgeProfiles.implementer.permissions.network
+    ++ [ "pypi.org" "files.pythonhosted.org" ];
+}
+```
+
+### 13.2 Interaction with Project Flakes
+
+If the target project has its own `flake.nix`:
+- Forge profiles are a **separate flake** — they do not import or depend on the project flake
+- The project's dev tools (from its flake) are available in the workspace, but agents use forge-profile-defined tools
+- To make project-specific tools available to agents, add them to the project's `.forge/profiles/` override
+- Tool version pinning: forge profiles use `forge-profiles/flake.lock`, project overrides use `.forge/profiles/flake.lock` (if it exists) or inherit from forge
+
+## 14. Migration Path
+
+### 14.1 From Current Architecture
 
 The refactor is **additive, not destructive**:
 
@@ -740,7 +1041,7 @@ The refactor is **additive, not destructive**:
 5. Add services incrementally (message bus first, then cache, vault, MCP router, auth proxy)
 6. Add Nix profiles for existing agent types (base, reviewer, implementer)
 
-### 11.2 Future: Docker/k8s Backend
+### 14.2 Future: Docker/k8s Backend
 
 The `AgentRuntime` trait enables future backends:
 - `DockerRuntime` already needed for macOS fallback
