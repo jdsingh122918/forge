@@ -3,7 +3,7 @@
   "checkpoint_id": "e7d51cdde391",
   "strategy": "manual-commit",
   "branch": "runtime-plan1-foundation",
-  "checkpoints_count": 4,
+  "checkpoints_count": 11,
   "files_touched": [
     "Cargo.lock",
     "Cargo.toml",
@@ -67,13 +67,20 @@
       "context": "/e7/d51cdde391/5/context.md",
       "content_hash": "/e7/d51cdde391/5/content_hash.txt",
       "prompt": "/e7/d51cdde391/5/prompt.txt"
+    },
+    {
+      "metadata": "/e7/d51cdde391/6/metadata.json",
+      "transcript": "/e7/d51cdde391/6/full.jsonl",
+      "context": "/e7/d51cdde391/6/context.md",
+      "content_hash": "/e7/d51cdde391/6/content_hash.txt",
+      "prompt": "/e7/d51cdde391/6/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 4157,
-    "cache_creation_tokens": 360144,
-    "cache_read_tokens": 8135691,
-    "output_tokens": 76503,
-    "api_call_count": 88
+    "input_tokens": 4219,
+    "cache_creation_tokens": 504055,
+    "cache_read_tokens": 13144009,
+    "output_tokens": 101230,
+    "api_call_count": 131
   }
 }

@@ -1,0 +1,295 @@
+@docs/superpowers/specs/2026-03-13-forge-runtime-platform-design.md 
+create a detailed implementation plan using a team of agents
+
+---
+
+Base directory for this skill: /Users/jdsingh/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.2/skills/writing-plans
+
+# Writing Plans
+
+## Overview
+
+Write comprehensive implementation plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
+
+Assume they are a skilled developer, but know almost nothing about our toolset or problem domain. Assume they don't know good test design very well.
+
+**Announce at start:** "I'm using the writing-plans skill to create the implementation plan."
+
+**Context:** This should be run in a dedicated worktree (created by brainstorming skill).
+
+**Save plans to:** `docs/superpowers/plans/YYYY-MM-DD-<feature-name>.md`
+- (User preferences for plan location override this default)
+
+## Scope Check
+
+If the spec covers multiple independent subsystems, it should have been broken into sub-project specs during brainstorming. If it wasn't, suggest breaking this into separate plans — one per subsystem. Each plan should produce working, testable software on its own.
+
+## File Structure
+
+Before defining tasks, map out which files will be created or modified and what each one is responsible for. This is where decomposition decisions get locked in.
+
+- Design units with clear boundaries and well-defined interfaces. Each file should have one clear responsibility.
+- You reason best about code you can hold in context at once, and your edits are more reliable when files are focused. Prefer smaller, focused files over large ones that do too much.
+- Files that change together should live together. Split by responsibility, not by technical layer.
+- In existing codebases, follow established patterns. If the codebase uses large files, don't unilaterally restructure - but if a file you're modifying has grown unwieldy, including a split in the plan is reasonable.
+
+This structure informs the task decomposition. Each task should produce self-contained changes that make sense independently.
+
+## Bite-Sized Task Granularity
+
+**Each step is one action (2-5 minutes):**
+- "Write the failing test" - step
+- "Run it to make sure it fails" - step
+- "Implement the minimal code to make the test pass" - step
+- "Run the tests and make sure they pass" - step
+- "Commit" - step
+
+## Plan Document Header
+
+**Every plan MUST start with this header:**
+
+```markdown
+# [Feature Name] Implementation Plan
+
+> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** [One sentence describing what this builds]
+
+**Architecture:** [2-3 sentences about approach]
+
+**Tech Stack:** [Key technologies/libraries]
+
+---
+```
+
+## Task Structure
+
+````markdown
+### Task N: [Component Name]
+
+**Files:**
+- Create: `exact/path/to/file.py`
+- Modify: `exact/path/to/existing.py:123-145`
+- Test: `tests/exact/path/to/test.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_specific_behavior():
+    result = function(input)
+    assert result == expected
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `pytest tests/path/test.py::test_name -v`
+Expected: FAIL with "function not defined"
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+def function(input):
+    return expected
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `pytest tests/path/test.py::test_name -v`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tests/path/test.py src/path/file.py
+git commit -m "feat: add specific feature"
+```
+````
+
+## Remember
+- Exact file paths always
+- Complete code in plan (not "add validation")
+- Exact commands with expected output
+- Reference relevant skills with @ syntax
+- DRY, YAGNI, TDD, frequent commits
+
+## Plan Review Loop
+
+After completing each chunk of the plan:
+
+1. Dispatch plan-document-reviewer subagent (see plan-document-reviewer-prompt.md) with precisely crafted review context — never your session history. This keeps the reviewer focused on the plan, not your thought process.
+   - Provide: chunk content, path to spec document
+2. If ❌ Issues Found:
+   - Fix the issues in the chunk
+   - Re-dispatch reviewer for that chunk
+   - Repeat until ✅ Approved
+3. If ✅ Approved: proceed to next chunk (or execution handoff if last chunk)
+
+**Chunk boundaries:** Use `## Chunk N: <name>` headings to delimit chunks. Each chunk should be ≤1000 lines and logically self-contained.
+
+**Review loop guidance:**
+- Same agent that wrote the plan fixes it (preserves context)
+- If loop exceeds 5 iterations, surface to human for guidance
+- Reviewers are advisory - explain disagreements if you believe feedback is incorrect
+
+## Execution Handoff
+
+After saving the plan:
+
+**"Plan complete and saved to `docs/superpowers/plans/<filename>.md`. Ready to execute?"**
+
+**Execution path depends on harness capabilities:**
+
+**If harness has subagents (Claude Code, etc.):**
+- **REQUIRED:** Use superpowers:subagent-driven-development
+- Do NOT offer a choice - subagent-driven is the standard approach
+- Fresh subagent per task + two-stage review
+
+**If harness does NOT have subagents:**
+- Execute plan in current session using superpowers:executing-plans
+- Batch execution with checkpoints for review
+
+---
+
+<task-notification>
+<task-id>a46bf19b45d2cfc06</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-Projects-AI-forge/9b5ab61f-7419-4a59-b28e-592199a0761a/tasks/a46bf19b45d2cfc06.output</output-file>
+<status>completed</status>
+<summary>Agent "Write Plan 4: Runtime Backends" completed</summary>
+<result>The plan is complete. Here is what was written:
+
+**File:** `/Users/jdsingh/Projects/AI/forge/docs/superpowers/plans/2026-03-13-runtime-backends.md`
+
+**Plan 4: Runtime Backends & Profile Compilation** -- 3,245 lines, 7 chunks, 12 tasks, 51 checkbox steps.
+
+**Structure:**
+- **Chunk 1 (HostRuntime Backend):** Tasks 1-2. Scaffolds the runtime module, writes failing tests, then implements `AgentRuntime` for `HostRuntime` using `tokio::process::Command` with `nix` crate for Unix signal handling.
+- **Chunk 2 (Profile Compiler):** Tasks 3-4. Defines `TrustedBaseProfile` schema and `ProjectOverlay` types with `#[serde(deny_unknown_fields)]`. Implements overlay validation (rejects undeclared tools/credentials/network/spawn increases), base+overlay merging, `CompiledProfile` caching via `DashMap`, and TOML parsing.
+- **Chunk 3 (BwrapRuntime):** Tasks 5-6. Linux namespace isolation with `--die-with-parent`, `--unshare-pid`, read-only base filesystem, read-write workspace bind, per-agent socket directory bind. Tests skip when `bwrap` is unavailable.
+- **Chunk 4 (DockerRuntime):** Tasks 7-8. Container execution via `bollard`. Bind mounts with `:cached` consistency, CPU/memory resource limits from the compiled profile, container lifecycle via Docker API. Tests skip when Docker is unavailable.
+- **Chunk 5 (Mode Detection):** Tasks 9-10. `detect_platform()` checks OS and tool availability. `select_runtime()` follows the spec's priority: Linux+bwrap, macOS+Docker, explicit host opt-in, otherwise fail closed with remediation message.
+- **Chunk 6 (Task Manager Integration):** Task 11. `AgentTracker` for active agent lifecycle. `spawn_agent`, `check_agent_status`, `kill_agent` bridge the run graph with the runtime backend.
+- **Chunk 7 (Final Integration):** Task 12. Cross-backend verification, workspace tests, clippy.
+
+The plan follows the exact format of Plan 1, uses TDD throughout (failing test first, then implementation), references the existing `AgentRuntime` trait from `forge-common` without redefining it, and respects all constraints (bollard for Docker, tokio::process for host/bwrap, fail-closed mode detection, overlay-as-data-only).</result>
+<usage><total_tokens>99530</total_tokens><tool_uses>25</tool_uses><duration_ms>496369</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-Projects-AI-forge/9b5ab61f-7419-4a59-b28e-592199a0761a/tasks/a46bf19b45d2cfc06.output
+
+---
+
+<task-notification>
+<task-id>ac90fcebcdbdf8285</task-id>
+<tool-use-id>toolu_01KaoajxTo7KaiuW6be5bQk7</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-Projects-AI-forge/9b5ab61f-7419-4a59-b28e-592199a0761a/tasks/ac90fcebcdbdf8285.output</output-file>
+<status>completed</status>
+<summary>Agent "Write Plans 5-7: Services/Migration/Obs" completed</summary>
+<result>All three plans have clean, consistent structure. Here is a summary of what was created:
+
+**Three implementation plan files written:**
+
+1. `/Users/jdsingh/Projects/AI/forge/docs/superpowers/plans/2026-03-13-runtime-shared-services.md` (Plan 5, 674 lines)
+   - 10 tasks covering: Service Manager + socket infrastructure, Message Bus (namespace routing, request/reply, broadcast, capability discovery), Credential Vault (SQLite + age encryption), Credential Broker (handle grants, scoped tokens, rotation), Memory Service (three scopes, lane-scoped writes, provenance, promotion), Cache Service (L1/L2/L3 tiers, content-addressed, LRU, LLM caching), Auth Proxy (identity tokens, allowlist proxying, credential injection), MCP Router (server pool, manifest ACL, response validation, rate limiting), service manager integration, and state store schema extensions.
+
+2. `/Users/jdsingh/Projects/AI/forge/docs/superpowers/plans/2026-03-13-runtime-migration.md` (Plan 6, 449 lines)
+   - 10 tasks covering: Daemon gRPC client (UDS transport, version negotiation), DaemonExecutionFacade (drop-in facade replacement), CLI daemon integration (--daemon/--no-daemon/--attach flags), Phase 2 core migration (A1 orchestrator, A2 swarm, A3 factory agent, A8 pipeline), Phase 3 review+council migration (A4, A5, A7), Phase 4 lightweight tasks (A6, A9-A13), Factory WebSocket event projection, stdout parser retirement, Phase 5 infrastructure migration (C8 hooks, D1 Docker, C1-C5 git), and end-to-end validation.
+
+3. `/Users/jdsingh/Projects/AI/forge/docs/superpowers/plans/2026-03-13-runtime-observability.md` (Plan 7, 708 lines)
+   - 11 tasks covering: Telemetry configuration, telemetry coordinator (event fan-out), structured JSONL logging (per-agent + per-run + OTLP), Prometheus metrics (agent/task/service counters and gauges + HTTP /metrics), distributed traces (OpenTelemetry with run=trace, task=span, agent=child span), audit trail (event_log backed + SIEM export), configurable alert evaluator (agent_stuck, memory_pressure, spawn_storm, policy_violations), data retention and GC (log rotation, state cleanup, Nix GC, `forge runtime gc`), health HTTP endpoints, GetMetrics RPC + CLI commands, and Factory UI observability WebSocket extensions.
+
+All plans follow the specified format with Goal/Architecture/Tech Stack/Depends on headers, file structure tables, per-task interface blocks with Rust signatures, step checklists, test descriptions, and commit messages. They reuse all existing types from `forge-common` and reference the correct spec sections, proto definitions, and migration checklist priorities.</result>
+<usage><total_tokens>126486</total_tokens><tool_uses>23</tool_uses><duration_ms>494988</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-Projects-AI-forge/9b5ab61f-7419-4a59-b28e-592199a0761a/tasks/ac90fcebcdbdf8285.output
+
+---
+
+<task-notification>
+<task-id>a914870700416cbf8</task-id>
+<tool-use-id>toolu_01CQMvPmr4V26RtsjbM64T4m</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-Projects-AI-forge/9b5ab61f-7419-4a59-b28e-592199a0761a/tasks/a914870700416cbf8.output</output-file>
+<status>completed</status>
+<summary>Agent "Write Plan 3: Policy & Approvals" completed</summary>
+<result>The plan has been written to `/Users/jdsingh/Projects/AI/forge/docs/superpowers/plans/2026-03-13-runtime-policy-approvals.md`.
+
+**What it covers:**
+
+- **5 Chunks, 9 Tasks** spanning the full policy engine and approval flow
+- **Chunk 1** (Tasks 1-2): TOML dependency setup, policy loading from global/project files, merge with tighten-only semantics (lower limits win, denylists union, allowlists intersect)
+- **Chunk 2** (Task 3): The 8-step evaluation pipeline from spec Section 6.4 -- global hard limits, project limits, credential denylist/allowlist with glob matching, memory scope checks, network egress checks, profile auto-approve/always-require, insecure runtime gating, soft cap with parent-vs-operator approval, and capability escalation detection
+- **Chunk 3** (Task 4): `ApprovalResolver` with `create_approval`, broadcast streaming for gRPC, `resolve` with actor kind validation, run-scoped filtering
+- **Chunk 4** (Task 5): `BudgetTracker` with per-task/per-run registration, warning threshold (once only), task exhaustion, run exhaustion
+- **Chunk 5** (Tasks 6-9): Integration wiring -- policy check in `CreateChildTask`, `PendingApprovals` streaming RPC, `ResolveApproval` RPC with task state transitions, budget events piped into event log
+
+All types are reused from `forge-common::policy` and `forge-common::run_graph`. Every task follows TDD (failing test first, then implementation) with exact code, exact test commands, and expected output. The plan uses the same format as Plan 1 with checkbox syntax for tracking.</result>
+<usage><total_tokens>103922</total_tokens><tool_uses>20</tool_uses><duration_ms>1175919</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-Projects-AI-forge/9b5ab61f-7419-4a59-b28e-592199a0761a/tasks/a914870700416cbf8.output
+
+---
+
+<task-notification>
+<task-id>af49162bb4b006cc7</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-Projects-AI-forge/9b5ab61f-7419-4a59-b28e-592199a0761a/tasks/af49162bb4b006cc7.output</output-file>
+<status>completed</status>
+<summary>Agent "Write Plan 2: Daemon Core" completed</summary>
+<result>API Error: Claude's response exceeded the 32000 output token maximum. To configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.</result>
+<usage><total_tokens>65</total_tokens><tool_uses>14</tool_uses><duration_ms>1490907</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-Projects-AI-forge/9b5ab61f-7419-4a59-b28e-592199a0761a/tasks/af49162bb4b006cc7.output
+
+---
+
+<task-notification>
+<task-id>ab99e57f33d495e41</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-Projects-AI-forge/9b5ab61f-7419-4a59-b28e-592199a0761a/tasks/ab99e57f33d495e41.output</output-file>
+<status>completed</status>
+<summary>Agent "Write Plan 2 Part A: skeleton+state" completed</summary>
+<result>The plan has been written to `/Users/jdsingh/Projects/AI/forge/docs/superpowers/plans/2026-03-13-runtime-daemon-core-a.md`.
+
+**Summary of what was created:**
+
+The plan covers Chunks 1-2 of the Daemon Core & State Store, split into 5 tasks:
+
+**Chunk 1: Binary Skeleton & gRPC Server**
+- **Task 1** (6 steps): Creates the `forge-runtime` crate with `Cargo.toml`, clap-based CLI (`--socket-path`, `--state-dir`, `--log-level`), and platform-aware socket path resolution (XDG_RUNTIME_DIR on Linux, TMPDIR on macOS).
+- **Task 2** (7 steps): Implements the `ForgeRuntime` gRPC service trait on a Unix domain socket using tonic + `UnixListenerStream`. Only `Health` (returns protocol_version=1, uptime, capabilities) and `Shutdown` (notifies via `Arc<Notify>`) are real; all 16 other RPCs return `Unimplemented`. Includes an integration test that connects a gRPC client over UDS and validates the Health response.
+
+**Chunk 2: SQLite State Store & Event Log**
+- **Task 3** (5 steps): Creates the SQLite schema with all 6 tables from spec Section 6.5 (`runs`, `task_nodes`, `agent_instances`, `event_log`, `credential_access`, `memory_access`) plus performance indexes. WAL mode and foreign keys enabled at open. Schema creation is idempotent.
+- **Task 4** (7 steps): Typed `RunRow`/`TaskNodeRow` CRUD operations on `StateStore` behind `Mutex<Connection>`. Complex fields (plan, profile, capabilities) stored as JSON strings. Includes `open_in_memory()` for test ergonomics and FK enforcement tests.
+- **Task 5** (6 steps): Append-only event log with `AUTOINCREMENT` seq, `AppendEvent` input type (seq omitted), and `replay_events(after_cursor, run_id_filter, limit)` for cursor-based replay. Tests verify monotonic gap-free sequences and cursor/filter/limit behavior.</result>
+<usage><total_tokens>69907</total_tokens><tool_uses>13</tool_uses><duration_ms>185913</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-Projects-AI-forge/9b5ab61f-7419-4a59-b28e-592199a0761a/tasks/ab99e57f33d495e41.output
+
+---
+
+<task-notification>
+<task-id>aa76946a7e89a3792</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-Projects-AI-forge/9b5ab61f-7419-4a59-b28e-592199a0761a/tasks/aa76946a7e89a3792.output</output-file>
+<status>completed</status>
+<summary>Agent "Write Plan 2 Part B: orchestrator+tasks" completed</summary>
+<result>The plan has been written to `/Users/jdsingh/Projects/AI/forge/docs/superpowers/plans/2026-03-13-runtime-daemon-core-b.md`.
+
+It covers Chunks 3-4 with 8 tasks (numbered 6-13) across two chunks:
+
+**Chunk 3: Run Orchestrator & Task Manager**
+- Task 6: `SubmitRun` implementation -- validates `RunPlan`, builds `RunState`, seeds root tasks from `TaskTemplate`s, persists to state store, emits events
+- Task 7: Task scheduling loop -- tokio interval-based `tick()` that calls `RunState::get_ready_tasks()`, transitions `Pending` to `Enqueued`, emits `TaskStatusChanged` events
+- Task 8: `CreateChildTask` -- validates parent exists and is running, checks `SpawnLimits.max_children` (hard cap) and `require_approval_after` (soft cap), creates child `TaskNode`, handles basic approval flow
+- Task 9: `AttachRun` / `StreamEvents` -- `EventBus` wrapping `broadcast::Sender`, cursor-based replay from persistent event log via `query_events`, two-phase stream (replay then live)
+
+**Chunk 4: Lifecycle & Integration**
+- Task 10: Health RPC -- protocol_version, daemon_version, uptime, supported_capabilities, run/agent counts
+- Task 11: Graceful shutdown -- `ShutdownCoordinator` that cancels scheduling, kills active tasks, transitions runs to Failed, flushes state, cleans UDS socket
+- Task 12: Orphan recovery -- marks incomplete tasks as `Failed(daemon_restart)`, marks incomplete runs as Failed, cleans stale `.sock` files, rebuilds `RunGraph` from state store
+- Task 13: Remaining gRPC RPCs -- `GetRun`, `ListRuns`, `GetTask`, `ListTasks`, `KillTask`, `StopRun`, plus `run_state_to_run_info` and `task_node_to_task_info` read-model conversion helpers
+
+Code snippets are focused on key signatures and structural patterns rather than full implementations. Total output is well under 1500 lines.</result>
+<usage><total_tokens>88266</total_tokens><tool_uses>17</tool_uses><duration_ms>260216</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-Projects-AI-forge/9b5ab61f-7419-4a59-b28e-592199a0761a/tasks/aa76946a7e89a3792.output
