@@ -87,6 +87,10 @@ pub struct CredentialPolicy {
     /// Credential handles explicitly denied. Evaluated after `allowed`.
     /// Supports glob patterns (e.g., "aws-root-*").
     pub denied: HashSet<String>,
+
+    /// Credential handles that are allowed to use raw export when a separate
+    /// approval gate passes. Handles not listed here are proxy-only.
+    pub exportable: HashSet<String>,
 }
 
 impl Default for CredentialPolicy {
@@ -94,6 +98,7 @@ impl Default for CredentialPolicy {
         Self {
             allowed: HashSet::new(),
             denied: HashSet::new(),
+            exportable: HashSet::new(),
         }
     }
 }
@@ -149,6 +154,9 @@ pub struct MemoryPolicyConfig {
 
     /// Memory scopes that require approval for promotion.
     pub promotion_requires_approval: Vec<MemoryScope>,
+
+    /// Whether run-shared memory defaults to lane-scoped append-only writes.
+    pub run_shared_lane_scoped: bool,
 }
 
 /// Default access stance for a memory operation.
@@ -169,6 +177,7 @@ impl Default for MemoryPolicyConfig {
             project_write_default: MemoryAccessDefault::Deny,
             project_read_default: MemoryAccessDefault::Allow,
             promotion_requires_approval: vec![MemoryScope::Project],
+            run_shared_lane_scoped: true,
         }
     }
 }
@@ -186,6 +195,12 @@ pub struct ApprovalPolicy {
     /// This is the global default; individual profiles may override via
     /// `SpawnLimits::require_approval_after`.
     pub require_approval_after: u32,
+
+    /// Whether a direct parent may approve same-envelope child tasks.
+    pub parent_can_approve_within_envelope: bool,
+
+    /// Whether capability escalation always requires operator approval.
+    pub operator_required_for_capability_escalation: bool,
 }
 
 impl Default for ApprovalPolicy {
@@ -194,6 +209,8 @@ impl Default for ApprovalPolicy {
             auto_approve_profiles: HashSet::new(),
             always_require_approval: HashSet::new(),
             require_approval_after: 5,
+            parent_can_approve_within_envelope: true,
+            operator_required_for_capability_escalation: true,
         }
     }
 }

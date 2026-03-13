@@ -24,7 +24,7 @@ These are the high-value migration targets. Each spawns a Claude CLI process, pi
 | **Subsystem** | Orchestrator (sequential `forge run`) |
 | **Current pattern** | Spawns `claude` via `tokio::process::Command`. Pipes prompt to stdin. Reads stdout line-by-line via `BufReader::lines()`. Parses each line as `StreamEvent` (stream-json format) extracting `Assistant` messages (text + tool_use), `Result` events (final output + token usage), and `session_id` for `--resume`. Runs an elapsed-time UI updater task. Waits for process exit. On `--resume` failure, retries fresh. |
 | **Calling context** | `run_iteration_with_context()` — the inner loop of sequential phase execution. Called once per iteration per phase. |
-| **Daemon API** | `SubmitRun` with phase/iteration context, then `StreamTaskOutput` for live events. Session resume becomes daemon-managed task-node retry. |
+| **Daemon API** | `SubmitRun` with phase/iteration context, then `AttachRun` / `StreamEvents` for the authoritative live event log. `StreamTaskOutput` remains available as a focused task-output view. Session resume becomes daemon-managed task-node retry. |
 | **Complexity** | **High** — This is the core execution loop. It manages: session resume/retry logic, StreamEvent parsing for UI feedback (tool_use, thinking, text), token usage extraction, signal parsing (`<promise>DONE</promise>`), and elapsed-time UI updates. The daemon must own iteration lifecycle, session state, and retry policy. |
 | **Notes** | The `--resume` fallback retry (line 691) is particularly tricky — the daemon must internalize this. Token usage extraction (re-parsing the result JSON) should become a first-class daemon event field. |
 
@@ -39,7 +39,7 @@ These are the high-value migration targets. Each spawns a Claude CLI process, pi
 | **Subsystem** | Swarm (parallel DAG execution via `forge swarm`) |
 | **Current pattern** | Spawns `claude` with `--print --output-format stream-json`. Pipes prompt to stdin. Reads stdout via a dedicated `read_stdout()` task (line 527) that accumulates all output. Coordinates with a callback server (HTTP) for swarm events and a timeout task via `tokio::select!`. Parses completion signals from accumulated output (`parse_swarm_completion`). |
 | **Calling context** | `run_claude_process()` — called per-agent in the swarm DAG. Multiple instances run concurrently. |
-| **Daemon API** | `SubmitRun` as a coordinator task or `CreateChildTask` for each DAG node. The daemon's run graph replaces the DAG scheduler. `StreamTaskOutput` replaces stdout accumulation. Callback server is replaced by daemon message bus. |
+| **Daemon API** | `SubmitRun` as a coordinator task or `CreateChildTask` for each DAG node. The daemon's run graph replaces the DAG scheduler. `AttachRun` / `StreamEvents` replace stdout accumulation at the run level, and `StreamTaskOutput` is available for focused task tails. Callback server is replaced by daemon message bus. |
 | **Complexity** | **High** — Multi-task coordination: stdout reader, callback poller, timeout watcher all via `tokio::select!`. The callback server (HTTP) for swarm events is an entire subsystem that gets replaced by the daemon's message bus. Swarm completion parsing from stdout must become structured daemon events. |
 | **Notes** | The `CallbackServer` (swarm/callback.rs) is a bespoke HTTP server that agents post progress to. This entire pattern is subsumed by the daemon's message bus and task-node status updates. |
 
@@ -54,7 +54,7 @@ These are the high-value migration targets. Each spawns a Claude CLI process, pi
 | **Subsystem** | Factory (agent-per-task execution for kanban issues) |
 | **Current pattern** | Spawns `claude --print --verbose --dangerously-skip-permissions --output-format stream-json -p <description>`. Reads stdout via `BufReader::lines()`. Uses `OutputParser::parse_line()` which delegates to `parse_stream_json_line()` and also extracts signal tags (`<progress>`, `<blocker>`, `<pivot>`). Routes parsed events to WebSocket broadcasts (`WsMessage::AgentThinking`, `AgentAction`, `AgentSignal`, `AgentOutput`). Batches DB writes via a channel-based event writer task. Captures stderr after stdout closes. Stores child process handle in `running` map for cancellation. |
 | **Calling context** | `run_task()` — executes a single agent task within a Factory run. Multiple tasks may run concurrently with worktree isolation. |
-| **Daemon API** | `CreateChildTask` per agent task. `StreamTaskOutput` replaces stdout parsing. Daemon events replace WebSocket broadcasts (Factory UI subscribes to daemon event stream). |
+| **Daemon API** | `CreateChildTask` per agent task. `AttachRun` / `StreamEvents` replace stdout parsing as the authoritative event source. `StreamTaskOutput` remains a task-scoped projection. Daemon events replace WebSocket broadcasts (Factory UI subscribes to daemon event stream). |
 | **Complexity** | **High** — Most complex stdout parsing pipeline: signal extraction, stream-json parsing, file-change detection from tool_use metadata, WebSocket event routing, batched DB persistence, and process handle management for cancellation. All of this becomes daemon-side event processing. |
 | **Notes** | The `OutputParser` (lines 69-168) and `parse_stream_json_line()` are shared with pipeline execution. These parsers become unnecessary when the daemon emits structured events directly. The `AgentHandle` with process handle for cancellation maps to `KillTask` on the daemon. |
 
@@ -69,7 +69,7 @@ These are the high-value migration targets. Each spawns a Claude CLI process, pi
 | **Subsystem** | Review (specialist code reviews: security, performance, architecture, simplicity) |
 | **Current pattern** | Spawns `claude --print` with `--allowed-tools Read,Glob,Grep,WebSearch,WebFetch` (read-only restriction). Pipes review prompt to stdin. Reads stdout via `BufReader::lines()`, accumulating raw text. Waits with timeout (`review_timeout`). No stream-json parsing — collects plain text output. |
 | **Calling context** | `run_claude_review()` — called per specialist type during the review gate after a phase completes. |
-| **Daemon API** | `CreateChildTask` with a review profile (read-only tools). `StreamTaskOutput` or `GetTaskResult` for the review output. |
+| **Daemon API** | `CreateChildTask` with a review profile (read-only tools). `StreamTaskOutput` or `GetTask` plus task artifacts/result metadata for the review output. |
 | **Complexity** | **Medium** — Straightforward spawn-collect-parse pattern. The `--allowed-tools` restriction maps to daemon profile permissions. Timeout handling moves to daemon task-level timeout. |
 | **Notes** | The review prompt construction (`build_review_prompt`, line 579) stays client-side. Only the execution moves to the daemon. |
 
@@ -84,7 +84,7 @@ These are the high-value migration targets. Each spawns a Claude CLI process, pi
 | **Subsystem** | Review (arbiter for gating failure resolution) |
 | **Current pattern** | Spawns `claude --print` with read-only tools. Pipes arbiter prompt to stdin. Reads stdout via `BufReader::lines()`. Parses response with `parse_arbiter_response()` looking for structured JSON decision. Reports duration. |
 | **Calling context** | `invoke_llm_arbiter()` — called when review specialists produce gating failures that need LLM arbitration. |
-| **Daemon API** | `CreateChildTask` with arbiter profile. `GetTaskResult` for the decision. |
+| **Daemon API** | `CreateChildTask` with arbiter profile. `GetTask` plus task artifacts/result metadata for the decision. |
 | **Complexity** | **Medium** — Similar to A4 but with structured response parsing. The arbiter decision parsing stays client-side; only execution moves. |
 | **Notes** | Falls back to rule-based decisions when LLM is unavailable. This fallback stays client-side. |
 
@@ -114,7 +114,7 @@ These are the high-value migration targets. Each spawns a Claude CLI process, pi
 | **Subsystem** | Council (parallel deliberation: multiple Claude workers + chairman) |
 | **Current pattern** | Both `ClaudeWorker` and `CodexWorker` use `run_command()` (lines 223, 623) which calls `Command::new(&self.command).args(args).output().await`. Collects stdout+stderr. `ClaudeWorker` calls `parse_stream_output()` (line 170) which parses stream-json `StreamEvent` variants. `CodexWorker` calls `parse_codex_output()` (line 584) for alternative model output. Both extract text content and token usage. |
 | **Calling context** | `Worker::execute()` and `Worker::review()` trait methods — called by the council engine for each council member during deliberation and review phases. Multiple workers run concurrently in separate worktrees. |
-| **Daemon API** | `CreateChildTask` per council member. Each gets its own worktree (already managed). The daemon replaces process spawning; output parsing stays partly client-side until daemon emits structured events. |
+| **Daemon API** | `CreateChildTask` per council member. Each gets its own worktree (already managed). The daemon replaces process spawning and emits structured runtime events; only council-specific result interpretation stays client-side. |
 | **Complexity** | **Medium** — Two worker types with different output parsers. The `Worker` trait abstraction is clean and can be re-pointed to a daemon client. Token usage extraction must be preserved. |
 | **Notes** | `CodexWorker` supports alternative model backends (e.g., OpenAI Codex). The daemon must support heterogeneous model backends or delegate to the appropriate CLI. |
 
@@ -131,7 +131,7 @@ These are the high-value migration targets. Each spawns a Claude CLI process, pi
 | **Calling context** | `execute_pipeline_streaming()` — the main Factory pipeline runner. Called when an issue is moved to "in progress". |
 | **Daemon API** | `SubmitRun` for the entire pipeline. Daemon events replace stdout parsing. Factory UI subscribes to daemon event stream. |
 | **Complexity** | **High** — Dual parsing path (forge swarm events vs. claude stream-json). Complex WebSocket event routing. File change detection from tool metadata. This is the primary integration point mentioned in spec Section 7.6. |
-| **Notes** | The `RunHandle::Process(child)` stored for cancellation maps to `CancelRun` on the daemon. The sandbox (Docker) path also goes through here — see Part D. |
+| **Notes** | The `RunHandle::Process(child)` stored for cancellation maps to `StopRun` on the daemon. The sandbox (Docker) path also goes through here — see Part D. |
 
 ---
 

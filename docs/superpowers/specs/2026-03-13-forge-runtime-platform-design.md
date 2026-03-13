@@ -32,29 +32,29 @@ Forge currently executes agents by spawning Claude CLI processes directly via `t
 ### 3.1 Three-Process Split
 
 ```
-┌─────────────┐       gRPC/UDS        ┌──────────────────┐
-│  forge CLI   │◄─────────────────────►│  forge-runtime   │
-│  (user-facing)│                      │  (daemon)        │
-└─────────────┘                        │                  │
-                                       │  ┌────────────┐  │
-                                       │  │ Agent Mgr  │  │
-                                       │  │ Nix Eval   │  │
-                                       │  │ Svc Router │  │
-                                       │  └─────┬──────┘  │
-                                       └────────┼─────────┘
-                                                │
-                          ┌─────────────────────┼─────────────────────┐
-                          │                     │                     │
-                    ┌─────▼─────┐         ┌─────▼─────┐        ┌─────▼─────┐
-                    │  Agent 0  │◄───────►│  Agent 1  │◄──────►│  Agent N  │
-                    │ (primary) │  msg    │ (spawned) │  msg   │ (spawned) │
-                    │           │  bus    │           │  bus   │           │
-                    └─────┬─────┘         └─────┬─────┘        └─────┬─────┘
-                          │                     │                    │
-                    ┌─────▼─────────────────────▼────────────────────▼─────┐
-                    │              Shared Services (via UDS)               │
-                    │  Auth │ Cache │ MCP Router │ Key Vault │ Tool Reg    │
-                    └─────────────────────────────────────────────────────┘
+┌──────────────┐      gRPC/UDS       ┌──────────────────────┐
+│ forge CLI /  │◄───────────────────►│ forge-runtime        │
+│ Factory UI   │                     │ (daemon)             │
+└──────────────┘                     │                      │
+                                     │  ┌────────────────┐  │
+                                     │  │ Run API        │  │
+                                     │  │ Orchestrator   │  │
+                                     │  │ Profile Comp.  │  │
+                                     │  │ Service Broker │  │
+                                     │  └──────┬─────────┘  │
+                                     └─────────┼────────────┘
+                                               │
+                        ┌──────────────────────┼──────────────────────┐
+                        │                      │                      │
+                  ┌─────▼─────┐          ┌─────▼─────┐          ┌─────▼─────┐
+                  │  Agent A  │◄────────►│  Agent B  │◄────────►│  Agent N  │
+                  │ TaskNode  │   bus    │ TaskNode  │   bus    │ TaskNode  │
+                  └─────┬─────┘          └─────┬─────┘          └─────┬─────┘
+                        │                      │                      │
+                  ┌─────▼──────────────────────▼──────────────────────▼─────┐
+                  │               Shared Services (via UDS)                 │
+                  │ Auth Proxy │ Cred Broker │ Memory │ Cache │ MCP │ Bus   │
+                  └─────────────────────────────────────────────────────────┘
 ```
 
 ### 3.2 Component Responsibilities
@@ -89,13 +89,19 @@ Forge currently executes agents by spawning Claude CLI processes directly via `t
 forgeLib.mkTrustedProfile {
   name = "implementer";
   tools = [ pkgs.git pkgs.gh pkgs.cargo pkgs.rustc pkgs.nodejs pkgs.npm ];
+  optionalTools = {
+    python3 = pkgs.python3;
+    poetry = pkgs.poetry;
+  };
   mcp-servers = [ "filesystem" "github" ];
   credentials = [ "github-api" "npm-publish" ];
+  optionalCredentials = [ "pypi-publish" ];
   memory = { read = [ "project" "run" ]; write = [ "run" ]; };
   resources = { cpu = 4; memory = "8Gi"; token-budget = 200000; };
   permissions = {
     repo = "read-write";
     network = [ "registry.npmjs.org" "crates.io" ];
+    optionalNetwork = [ "pypi.org" "files.pythonhosted.org" ];
     spawn = { max-children = 10; require-approval-after = 5; };
   };
 }
@@ -107,13 +113,13 @@ forgeLib.mkTrustedProfile {
 extends = "implementer"
 
 [tools]
-allow_additional = ["python3", "poetry"]
+enable = ["python3", "poetry"]
 
 [network]
-allow_additional = ["pypi.org", "files.pythonhosted.org"]
+enable = ["pypi.org", "files.pythonhosted.org"]
 
 [credentials]
-allow = ["pypi-publish"]
+enable = ["pypi-publish"]
 
 [memory]
 write = ["run"]
@@ -124,9 +130,9 @@ max_children = 4
 
 Project overlays are treated as **untrusted capability requests**:
 - They are parsed as data by the daemon, never evaluated as Nix
-- They can only adjust fields explicitly exposed by the trusted base profile schema
+- They can only reduce existing permissions or enable identifiers explicitly exposed by the trusted base profile schema
 - Every requested expansion is re-validated against operator and project policy before a run starts
-- Unknown fields, executable hooks, shell snippets, or custom derivations are rejected outright
+- Unknown fields, undeclared capability identifiers, executable hooks, shell snippets, or custom derivations are rejected outright
 
 ### 4.2 Profile Compilation Produces a Structured Runtime Plan
 
@@ -182,11 +188,24 @@ permissions.spawn = {
 };
 ```
 
-- Children 1–5: daemon auto-creates the child task node, parent notified
-- Children 6–10: parent or operator must explicitly approve child task creation
+- Children 1–5: daemon auto-creates the child task node when the request stays inside the task's pre-approved envelope; parent is notified
+- Children 6–10 inside the same envelope: daemon emits a **parent approval** request to the parent task
+- Any request that expands capabilities or exceeds policy requires **operator approval**
 - Child 11+: denied outright
 
-Approval attaches to **task-node creation**, not to low-level process spawn. Once approved, retries or backend restarts do not re-prompt unless the requested capabilities change.
+**Parent-approvable envelope** (no operator needed):
+- Same milestone or a descendant task under the same milestone
+- Same or narrower trusted profile class
+- Within subtree budget, depth, and concurrency caps
+- No new credential handles, broader network scope, or project-memory write/promotion
+
+**Operator-required cases**:
+- Broader profile/tool/network/credential access than the parent task already has
+- Budget, depth, or concurrency exceptions
+- Writes/promotions into durable project memory
+- Any transition that changes the task's trust boundary
+
+Approval attaches to **task-node creation**, not to low-level process spawn. Once approved, retries or backend restarts do not re-prompt unless the requested capabilities change. Parent approvals are only possible for requests tagged by the daemon as `approver = parent_task`; operator approvals flow through CLI/Factory only.
 
 ### 4.5 AgentRuntime Trait
 
@@ -229,8 +248,8 @@ macOS cannot use Linux namespaces or bubblewrap. Rather than treating it as a de
 **Auto-detection:** Daemon detects platform on startup and selects runtime:
 1. Linux + bwrap available → `BwrapRuntime`
 2. macOS + Docker available → `DockerRuntime`
-3. macOS + no Docker → `HostRuntime` with `sandbox-exec` where available
-4. Any platform + `--host-runtime` flag → `HostRuntime` (no isolation)
+3. Any platform + explicit `--allow-insecure-host-runtime` flag → `HostRuntime`
+4. Otherwise secure runs fail closed with a remediation message instead of silently downgrading
 
 **Documented performance expectations:**
 
@@ -252,11 +271,12 @@ Nix-backed profile mode is the secure default. Agents can run in two modes:
 - No reproducibility guarantees — tools must be pre-installed
 - No claim of equivalent isolation or policy enforcement
 - Disabled by default for protected runs; requires `--allow-insecure-host-runtime` or equivalent operator policy
-- Sensitive capabilities are disabled or downgraded by default:
+- Sensitive capabilities are **hard-disabled**:
+  - no credential broker access
   - no raw credential export
-  - no project-write durable memory
-  - no security-sensitive network allowlist claims
-  - reduced child-task caps
+  - no durable project-memory write or promotion
+  - no child-task creation or approval
+  - no claim of policy-enforced secure network egress
 - Manifest is still compiled from trusted base profile + validated project overlay data:
 
 ```toml
@@ -264,11 +284,21 @@ Nix-backed profile mode is the secure default. Agents can run in two modes:
 extends = "implementer"
 
 [tools]
-allow_additional = ["cargo", "rustc", "nodejs"]
+enable = ["python3"]
 ```
 
 - The daemon marks the run as `insecure_host_runtime` in state, telemetry, and UI
 - The daemon logs a warning at startup: "Running in insecure host mode — isolation and capability guarantees are reduced"
+- A host-mode task is permanently treated as tainted. It cannot be relabeled as secure in place.
+
+**Secure re-materialization** (`insecure -> secure`):
+1. The daemon checkpoints only explicitly allowed artifacts and summaries from the insecure task into a remediation bundle
+2. The insecure agent is terminated
+3. The daemon creates a **new** secure task node with a secure backend and fresh capability evaluation
+4. Approved artifacts are replayed into the new task; host-mode credentials, env, and durable-memory access do not carry over
+5. Any newly requested sensitive capability goes back through operator approval
+
+This is a task replacement, not an in-place upgrade. The original host-mode task remains auditable as insecure.
 
 **Profile mode** (when Nix is installed):
 - Full trusted-profile materialization as described in Sections 4.1-4.4
@@ -325,8 +355,9 @@ Agent → $FORGE_RUNTIME_DIR/agent-$ID/cred.sock → Daemon Credential Broker �
 
 - Long-lived root secrets are stored encrypted at rest in `$FORGE_STATE_DIR/vault.db` (SQLite + age/AEAD)
 - Agents are granted **credential handles** from their compiled manifest, not raw environment variable names
+- Each handle is classified as `proxy_only` or `exportable`; `proxy_only` is the default and should be used for almost all integrations
 - Preferred API: `get_credential(handle, audience, ttl) → scoped_token | signed_request_capability`
-- Raw secret export is disabled by default and requires explicit operator policy plus approval
+- Raw secret export is disabled by default, only valid for handles explicitly marked `exportable`, and still requires explicit operator policy plus approval
 - Secret rotation happens at the broker; agents are notified via bus when scoped credentials must be refreshed
 - Credentials never touch agent filesystem in the normal path
 
@@ -341,13 +372,14 @@ Three scopes:
 | Scope | Lifetime | Default write policy | Use Case |
 |------|----------|----------------------|----------|
 | Scratch | Agent lifetime | Agent-local | Notes, intermediate results |
-| Run-shared | Run lifetime | Parent/child task subtree | Coordination and checkpoints |
+| Run-shared | Run lifetime | Append-only per-task lane; parent publishes checkpoints | Coordination and checkpoints |
 | Project memory | Cross-run durable | Deny by default, promote-only | Long-term memory, approved facts, reusable artifacts |
 
 - API: `query(scope, text)`, `append(scope, entry)`, `checkpoint(task_id, summary)`, `promote(entry_id, target_scope)`
 - Every entry stores provenance: `run_id`, `task_node_id`, `agent_id`, `created_at`, `source`, `trust_level`
-- Untrusted agents can write to scratch by default; writes to project memory require policy and usually approval
+- Untrusted agents can write to scratch by default; writes to run-shared are lane-scoped unless policy grants broader coordination rights; writes to project memory require policy and usually approval
 - Memory retrieval is namespaced and ACL-enforced, just like credentials
+- Cross-task mutation inside run-shared memory is denied by default; parents aggregate child outputs through checkpoints instead of arbitrary shared writes
 - Poisoning controls: promoted memory can require parent approval, reviewer approval, or operator policy before becoming durable
 
 ### 5.4 Cache Service
@@ -461,27 +493,50 @@ struct RunGraph {
     runs: HashMap<RunId, RunState>,
 }
 
+struct RunPlan {
+    version: u32,
+    milestones: Vec<Milestone>,
+    initial_tasks: Vec<TaskTemplate>,
+    global_budget: BudgetEnvelope,
+}
+
+struct Milestone {
+    id: MilestoneId,
+    objective: String,
+    expected_output: String,
+    depends_on: Vec<MilestoneId>,
+    success_criteria: Vec<String>,
+    default_profile: TrustedProfileId,
+    budget: BudgetEnvelope,
+    approval_policy: ApprovalPolicy,
+}
+
 struct RunState {
     id: RunId,
-    milestones: Vec<MilestoneId>,
+    plan: RunPlan,
+    milestones: HashMap<MilestoneId, MilestoneState>,
     tasks: HashMap<TaskNodeId, TaskNode>,
     approvals: HashMap<ApprovalId, PendingApproval>,
     status: RunStatus,
-    scheduler_cursor: SchedulerCursor,
+    last_event_cursor: u64,
 }
 
 struct TaskNode {
     id: TaskNodeId,
     parent_task: Option<TaskNodeId>,
-    milestone: Option<MilestoneId>,
+    milestone: MilestoneId,
+    depends_on: Vec<TaskNodeId>,
     objective: String,
     expected_output: String,
     profile: CompiledProfile,
     budget: BudgetEnvelope,
     memory_scope: MemoryScope,
+    approval_state: ApprovalState,
+    requested_capabilities: CapabilityEnvelope,
     worktree: WorktreePlan,
     assigned_agent: Option<AgentId>,
     children: Vec<TaskNodeId>,
+    result_summary: Option<TaskResultSummary>,
     status: TaskStatus,
 }
 
@@ -505,7 +560,10 @@ enum TaskStatus {
 }
 ```
 
-Top-level phases remain user-visible milestones, but runtime sub-phases are removed. Dynamic decomposition now produces child `TaskNode`s instead.
+`RunPlan` is the canonical operator-submitted plan. It defines top-level milestones, dependencies, success criteria, and budgets. The daemon owns all later task-graph expansion under that plan.
+- The serialized `RunPlan` is what gets persisted, replayed, and attached to approvals; clients should not reconstruct it from stdout or local transient state
+
+Top-level phases remain user-visible milestones, but runtime sub-phases are removed. Dynamic decomposition now produces child `TaskNode`s instead. Child tasks must attach to an existing milestone unless an operator explicitly amends the run plan.
 
 ### 6.3 Profile Compiler
 
@@ -581,7 +639,7 @@ warn_at_percent = 80              # alert parent when task hits 80% of budget
 4. Compiled manifest memory scope vs. policy
 5. Compiled manifest network egress vs. policy allowlist
 6. Profile auto-approve or always-require-approval
-7. Insecure-host-runtime ban or downgrade checks
+7. Insecure-host-runtime ban or explicit fallback checks
 8. Soft cap check → parent or operator approval if exceeded
 
 ### 6.5 State Store & Event Log
@@ -592,13 +650,15 @@ SQLite at `$FORGE_STATE_DIR/runtime.db` plus an append-only event log:
 CREATE TABLE runs (
     id              TEXT PRIMARY KEY,
     project         TEXT NOT NULL,
-    submitted_plan  TEXT NOT NULL,
+    plan_json       TEXT NOT NULL,
+    plan_hash       TEXT NOT NULL,
     policy_snapshot TEXT NOT NULL,
     status          TEXT NOT NULL,
     started_at      TEXT NOT NULL,
     finished_at     TEXT,
     total_tokens    INTEGER DEFAULT 0,
-    estimated_cost_usd REAL DEFAULT 0
+    estimated_cost_usd REAL DEFAULT 0,
+    last_event_cursor INTEGER DEFAULT 0
 );
 
 CREATE TABLE task_nodes (
@@ -611,10 +671,15 @@ CREATE TABLE task_nodes (
     profile         TEXT NOT NULL,
     budget          TEXT NOT NULL,
     memory_scope    TEXT NOT NULL,
+    depends_on      TEXT NOT NULL,
+    approval_state  TEXT NOT NULL,
+    requested_capabilities TEXT NOT NULL,
+    runtime_mode    TEXT NOT NULL,
     status          TEXT NOT NULL,
     assigned_agent_id TEXT,
     created_at      TEXT NOT NULL,
-    finished_at     TEXT
+    finished_at     TEXT,
+    result_summary  TEXT
 );
 
 CREATE TABLE agent_instances (
@@ -660,6 +725,8 @@ CREATE TABLE memory_access (
 ```
 
 The daemon is the source of truth for runtime state. CLI/Factory may maintain derived projections, but attach/replay come from `event_log`, not reconstructed stdout.
+- `event_log.seq` is the authoritative replay cursor used by `AttachRun(after_cursor=...)` and `StreamEvents(after_cursor=...)`
+- Output chunks live in the same event log as task status, approvals, and service activity; `StreamTaskOutput` is only a filtered view over those events
 
 ### 6.6 Orphan Recovery
 
@@ -763,31 +830,59 @@ service ForgeRuntime {
 
 message SubmitRunRequest {
     string project = 1;
-    bytes plan = 2;
+    RunPlan plan = 2;
     string workspace = 3;
+}
+
+message AttachRunRequest {
+    string run_id = 1;
+    uint64 after_cursor = 2;
+    bool replay_from_start = 3;
+}
+
+message StreamEventsRequest {
+    string run_id = 1;
+    uint64 after_cursor = 2;
+    repeated RuntimeEventKind kinds = 3;
 }
 
 message CreateChildTaskRequest {
     string run_id = 1;
     string parent_task_id = 2;
-    string profile = 3;
-    string objective = 4;
-    string expected_output = 5;
+    string milestone_id = 3;
+    string profile = 4;
+    string objective = 5;
+    string expected_output = 6;
+    BudgetEnvelope budget = 7;
+    MemoryScope memory_scope = 8;
+    bool wait_for_completion = 9;
+    CapabilityEnvelope requested_capabilities = 10;
+    repeated string depends_on_task_ids = 11;
 }
 
 message RuntimeEvent {
     string run_id = 1;
+    uint64 cursor = 2;
     oneof event {
-        RunStatusChanged run_status = 2;
-        TaskStatusChanged task_status = 3;
-        ApprovalRequest approval = 4;
-        ResourceSnapshot resources = 5;
-        ServiceEvent service = 6;
+        RunStatusChanged run_status = 3;
+        TaskStatusChanged task_status = 4;
+        OutputChunk output = 5;
+        ApprovalRequest approval = 6;
+        ResourceSnapshot resources = 7;
+        ServiceEvent service = 8;
     }
+}
+
+message TaskOutputEvent {
+    uint64 cursor = 1;
+    string task_id = 2;
+    OutputChunk output = 3;
 }
 ```
 
 The proto above is illustrative of the ownership model. Before implementation begins, `runtime.proto` must define the full request/response surface, replay semantics, and connection identity model for CLI, Factory, and agents.
+
+`AttachRun` / `StreamEvents` are the authoritative replayable event-log APIs. `StreamTaskOutput` is a filtered convenience view over the same durable log for consumers that only care about one task's output.
 
 ### 7.4 Version Negotiation
 
@@ -807,20 +902,21 @@ CLI and daemon are separate binaries that may be updated independently. Protocol
 
 **CLI disconnect behavior:**
 - If CLI disconnects while tasks are running, the daemon **continues execution**
-- CLI can reconnect and resume streaming via `AttachRun` / `StreamEvents` from the durable event log
+- CLI can reconnect and resume streaming via `AttachRun(after_cursor=...)` from the durable event log
 - If no CLI reconnects within a configurable timeout (default: 1 hour), daemon continues and persists final state in the store
 - `forge run --attach <run_id>` reconnects to an in-progress run
+- `StreamEvents` exposes filtered subscriptions over the same event log; `StreamTaskOutput` is a task-scoped projection over that log, not a second source of truth
 
 **Sequence: Simple sequential run (3 phases):**
 ```
 CLI                              Daemon                          Agents
  │                                │                               │
- ├─ SubmitRun(plan=[1,2,3]) ───►│                               │
+ ├─ SubmitRun(plan=RunPlan) ───►│                               │
  │◄── RunInfo(run_id=R1) ───────│                               │
  │                                │                               │
- ├─ AttachRun(R1) ──────────────►│                               │
+ ├─ AttachRun(R1, after_cursor=0)►│                               │
  │◄── RuntimeEvent(task_start) ─│─ schedule milestone 1 ───────►│ Agent A
- │◄── RuntimeEvent(output) ─────│◄── stdout lines ──────────────│
+ │◄── RuntimeEvent(output_chunk)│◄── stdout lines ──────────────│
  │◄── RuntimeEvent(task_done) ──│◄── checkpoint/result ─────────│
  │                                │                               │
  │◄── RuntimeEvent(task_start) ─│─ schedule milestone 2 ───────►│ Agent B
@@ -834,9 +930,9 @@ CLI                              Daemon                          Agents
 ```
 CLI                              Daemon                          Agents
  │                                │                               │
- ├─ SubmitRun(plan=DAG) ───────►│                               │
+ ├─ SubmitRun(plan=RunPlan) ───►│                               │
  │                                │                               │
- ├─ AttachRun(R1) ─────────────►│                               │
+ ├─ AttachRun(R1, after_cursor=0)►│                               │
  │◄── RuntimeEvent(task_start) ─│─ schedule ───────────────────►│ Agent A
  │◄── RuntimeEvent(task_start) ─│─ schedule ───────────────────►│ Agent B
  │                                │                               │
@@ -850,13 +946,14 @@ CLI                              Daemon                          Agents
  │  [Agent A requests 6th child — exceeds soft cap]             │
  │                                │◄── CreateChildTask ─────────│ Agent A
  │                                ├─ PolicyCheck (exceeds cap)   │
- │◄── ApprovalRequest ──────────│                               │
+ │◄── RuntimeEvent(approval) ───│                               │
  │─── ResolveApproval(approve) ►│                               │
  │                                ├─ schedule ─────────────────►│ Agent D
 ```
 
 **Multi-client:** State is in the daemon. Multiple clients can:
-- Stream different task outputs simultaneously
+- Attach to the same replay cursor space and render the same run history
+- Stream different task outputs simultaneously via filtered projections
 - One CLI runs `forge run`, another watches via `forge runtime events`
 - Factory UI connects as another client and consumes daemon event projections
 
@@ -940,12 +1037,12 @@ forge/
 
 Primary agents get task/coordination tools via their MCP socket:
 
-- `forge_create_child_task(profile, objective, expected_output, budget, memory_scope, wait)` — Create a child task node
+- `forge_create_child_task(profile, objective, expected_output, budget, memory_scope, depends_on, wait)` — Create a child task node
 - `forge_message_task(task_id, payload, wait_reply, timeout_secs)` — Message another task in the same namespace
 - `forge_list_tasks()` — List sibling/child tasks with status
 - `forge_kill_task(task_id, reason)` — Terminate a child task
 - `forge_lock_files(paths, timeout_secs)` — Acquire workspace file locks
-- `forge_resolve_child_approval(pending_id)` — Approve a child task request
+- `forge_resolve_child_approval(pending_id, rationale)` — Resolve a child-task approval only when the daemon designated the parent task as the approver
 
 Child agents replace runtime sub-phases. The daemon persists the child task node first, then schedules an agent instance to execute it.
 
@@ -955,6 +1052,7 @@ Child agents replace runtime sub-phases. The daemon persists the child task node
 - `AgentInstance` is the concrete worker process/container executing a task node
 - Parent/child relationships exist between task nodes, not merely between processes
 - Retries, backend failover, and reattachment operate on task nodes, so the execution model survives process death
+- Child tasks extend the submitted run plan under an existing milestone; they do not create a parallel planning system
 
 ### 8.3 Workspace Coordination
 
@@ -1013,7 +1111,7 @@ bus.request(to: reviewers[0].id, payload: review_request).await?;
 
 **Process:** PID namespace (`--unshare-pid`), `--die-with-parent`, `--new-session`, cgroup v2 CPU+memory limits.
 
-**Network:** Private network namespace (`--unshare-net`), userspace networking via slirp4netns, daemon-side proxy enforces allowlisted hosts only. If the runtime cannot enforce this, the run is downgraded to insecure host mode and sensitive capabilities are disabled.
+**Network:** Private network namespace (`--unshare-net`), userspace networking via slirp4netns, daemon-side proxy enforces allowlisted hosts only. If the runtime cannot enforce this, the daemon fails the secure task with remediation guidance unless insecure host mode was explicitly approved.
 
 **Service ACL:** Each UDS socket enforces per-agent ACL derived from the compiled manifest. Credential broker only mints allowed handles, memory service only exposes allowed scopes, MCP router only exposes allowed servers, bus only routes within namespace.
 
@@ -1022,16 +1120,17 @@ bus.request(to: reviewers[0].id, payload: review_request).await?;
 ### 9.3 Credential Management
 
 1. Operator stores long-lived root credentials via `forge vault set <name> <value>` → encrypted with age → stored in vault.db
-2. Policy binds logical credential handles to allowed projects and profiles
+2. Policy binds logical credential handles to allowed projects and profiles and classifies each as `proxy_only` or `exportable`
 3. Agent requests a credential handle via `cred.sock` → daemon checks manifest + policy → grants or denies
 4. Preferred path: auth proxy injects a short-lived credential into outbound requests; agent never sees the root secret
-5. Raw secret export is exceptional, disabled by default, and requires explicit operator policy plus approval
+5. Raw secret export is exceptional, disabled by default, only valid for handles explicitly marked `exportable`, and still requires explicit operator policy plus approval
 6. Credentials never appear in env vars, agent filesystem, stdout capture, or shared cache in the normal path
 
 ### 9.4 Long-Term Memory Integrity
 
 - All durable memory entries carry provenance: `run_id`, `task_id`, `agent_id`, `timestamp`, `source`, `trust_level`
 - Untrusted agents can always write scratch notes; writes to project memory are deny-by-default unless policy allows promotion
+- Run-shared memory is lane-scoped and append-only by default; parents promote child checkpoints instead of allowing arbitrary sibling mutation
 - Promotion gates can require parent approval, reviewer approval, or operator policy
 - Retrieval APIs can filter by trust level and provenance to avoid blindly reusing poisoned memory
 
@@ -1129,7 +1228,7 @@ forge-profiles/                          (ships with forge — base, implementer
 
 **Resolution order:**
 1. Trusted Forge profiles (`forge-profiles/`) define the base environment and capability schema
-2. Project overlay data can request additions or reductions only in fields exposed by the base schema
+2. Project overlay data can only enable optional capability identifiers declared by the base schema, or further reduce permissions
 3. Operator/project policy is applied after overlay compilation and can still deny requested capabilities
 
 ```toml
@@ -1137,23 +1236,23 @@ forge-profiles/                          (ships with forge — base, implementer
 extends = "implementer"
 
 [tools]
-allow_additional = ["python3", "poetry"]
+enable = ["python3", "poetry"]
 
 [credentials]
-allow = ["pypi-publish"]
+enable = ["pypi-publish"]
 
 [network]
-allow_additional = ["pypi.org", "files.pythonhosted.org"]
+enable = ["pypi.org", "files.pythonhosted.org"]
 ```
 
-**Important:** Project overlays do not execute, do not import Forge internals, and cannot define custom derivations or shell hooks.
+**Important:** Project overlays do not execute, do not import Forge internals, and cannot define custom derivations or shell hooks. They may not introduce new capability names that were not predeclared by the trusted base profile.
 
 ### 13.2 Interaction with Project Flakes
 
 If the target project has its own `flake.nix`:
 - Forge profiles remain a **separate trusted flake** — the daemon does not evaluate the project flake as part of capability resolution
 - The project's dev tools may still exist in the workspace, but agent runtime access is determined by the compiled profile only
-- To make project-specific tools available to agents, request them through the project's overlay data and allow them through policy
+- To make project-specific tools available to agents, expose them as optional capabilities in a trusted Forge profile first; project overlays may then enable them subject to policy
 - Tool version pinning: trusted Forge profiles use `forge-profiles/flake.lock`; project overlays are data only and do not carry executable locks
 
 ## 14. Migration Path
@@ -1165,10 +1264,11 @@ The refactor should be additive but staged:
 1. Introduce a shared execution facade in the current crate so all direct model/process execution paths converge behind one interface
 2. Create `crates/forge-runtime/`, `crates/forge-proto/`, and `crates/forge-common/` with a daemon-owned run graph, event log, and task-node model
 3. Move run orchestration, approvals, retries, and cancellation into the daemon; convert CLI/Factory to clients over daemon state
-4. Replace runtime sub-phases with child task nodes; keep top-level phases as operator-facing milestones
-5. Add brokered services incrementally: message bus, credentials, memory, cache, MCP, auth proxy
-6. Migrate all execution fronts to the daemon-backed facade: orchestrator, swarm, review, council, planner, generate, interview, extraction, and Factory
-7. Keep insecure host mode behind an explicit opt-in and disable sensitive capabilities there
+4. Lock the canonical `RunPlan`, approval matrix, and replay/event contracts before migrating consumers; CLI and Factory should project daemon events rather than invent parallel models
+5. Replace runtime sub-phases with child task nodes; keep top-level phases as operator-facing milestones
+6. Add brokered services incrementally: message bus, credentials, memory, cache, MCP, auth proxy
+7. Migrate all execution fronts to the daemon-backed facade: orchestrator, swarm, review, council, planner, generate, interview, extraction, and Factory
+8. Keep insecure host mode behind an explicit opt-in, hard-disable sensitive capabilities there, and require secure re-materialization instead of in-place upgrade
 
 ### 14.2 Future: Docker/k8s Backend
 
@@ -1182,10 +1282,11 @@ The `AgentRuntime` trait enables future backends:
 
 - `forge-runtime` is the authoritative owner of runs, task nodes, approvals, cancellation, and replayable event history
 - CLI disconnect/re-attach works from daemon event history without reconstructing state from stdout
+- `AttachRun` / `StreamEvents` form the single authoritative replay stream; task-output streaming is a filtered projection, not a separate source of truth
 - Project capability inputs are declarative data only; no repo-authored executable code runs in the trusted control plane
 - Brokered credentials are the default path; raw secret export is disabled by default and explicitly audited when enabled
 - Durable memory is namespaced, provenance-tagged, and deny-by-default for project writes
 - Child task nodes replace runtime sub-phases, with subtree budgets and approvals enforced by the daemon
-- Host mode is explicitly marked insecure and disables or downgrades sensitive capabilities
+- Host mode is explicitly marked insecure, hard-disables sensitive capabilities, and can only transition to secure execution through daemon-managed re-materialization into a new task node
 - Factory UI consumes daemon-derived runtime events rather than subprocess stdout parsing
-- Test coverage includes protocol compatibility, daemon restart/replay, task-tree budgeting, credential/memory ACLs, and host-vs-profile mode downgrade behavior
+- Test coverage includes protocol compatibility, daemon restart/replay, task-tree budgeting, credential/memory ACLs, and secure-vs-host fallback/rematerialization behavior
