@@ -1,0 +1,42 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "3c32ca9d34b9",
+  "session_id": "aebe6771-3a41-4a9e-a818-36201c63724b",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-13T17:35:06.836078Z",
+  "branch": "runtime-plan1-foundation",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "crates/forge-common/src/events.rs",
+    "crates/forge-common/src/policy.rs",
+    "docs/superpowers/plans/2026-03-13-runtime-backends.md",
+    "docs/superpowers/plans/2026-03-13-runtime-daemon-core.md",
+    "docs/superpowers/plans/2026-03-13-runtime-observability.md",
+    "docs/superpowers/plans/2026-03-13-runtime-policy-approvals.md",
+    "docs/superpowers/plans/2026-03-13-runtime-shared-services.md",
+    "docs/superpowers/specs/2026-03-13-forge-runtime-platform-design.md",
+    "docs/superpowers/plans/2026-03-13-runtime-master-plan.md",
+    "docs/superpowers/plans/2026-03-13-runtime-migration.md",
+    "docs/superpowers/specs/2026-03-13-spawn-site-migration-checklist.md"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "f00f9af008f3",
+  "checkpoint_transcript_start": 8,
+  "transcript_lines_at_start": 8,
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-13T17:35:06.819174Z",
+    "agent_lines": 2677,
+    "human_added": 8587,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 11264,
+    "agent_percentage": 23.765980113636363
+  }
+}
