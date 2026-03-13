@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "3c32ca9d34b9",
+  "session_id": "9c79c99e-b470-42b7-bd40-f7c4d9e6547b",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-13T17:35:04.397803Z",
+  "branch": "runtime-plan1-foundation",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/forge-common/src/events.rs",
+    "crates/forge-common/src/policy.rs",
+    "docs/superpowers/specs/2026-03-13-forge-runtime-platform-design.md",
+    "docs/superpowers/specs/2026-03-13-spawn-site-migration-checklist.md"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "f8e88f86da74",
+  "token_usage": {
+    "input_tokens": 4157,
+    "cache_creation_tokens": 360144,
+    "cache_read_tokens": 8135691,
+    "output_tokens": 76503,
+    "api_call_count": 88
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-13T17:35:03.506184Z",
+    "agent_lines": 272,
+    "human_added": 10992,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 11264,
+    "agent_percentage": 2.414772727272727
+  }
+}
