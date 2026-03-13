@@ -1,0 +1,964 @@
+// Copyright 2026 Forge Contributors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Forge Runtime Platform — gRPC contract between forge CLI / Factory clients
+// and the forge-runtime daemon. Communicates over a Unix domain socket at
+// $FORGE_RUNTIME_DIR/forge.sock.
+//
+// Design reference: docs/superpowers/specs/2026-03-13-forge-runtime-platform-design.md
+
+syntax = "proto3";
+
+package forge.runtime.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+
+option java_multiple_files = true;
+option java_package = "com.forge.runtime.v1";
+option go_package = "forge/runtime/v1;runtimev1";
+
+// ---------------------------------------------------------------------------
+// Service
+// ---------------------------------------------------------------------------
+
+// ForgeRuntime is the primary API exposed by the forge-runtime daemon.
+// CLI, Factory, and agent processes connect over a Unix domain socket.
+service ForgeRuntime {
+  // ---- Run lifecycle -------------------------------------------------------
+
+  // Submit a new run for execution. The daemon validates policy, persists the
+  // run, and begins scheduling. Returns the initial RunInfo snapshot.
+  rpc SubmitRun(SubmitRunRequest) returns (RunInfo);
+
+  // Attach to a running (or completed) run and receive a replay of events
+  // starting from `since_sequence`, followed by a live tail. Supports
+  // CLI disconnect/reconnect without state loss.
+  rpc AttachRun(AttachRunRequest) returns (stream RuntimeEvent);
+
+  // Request graceful stop of a run. In-flight tasks receive SIGTERM; the
+  // daemon waits a grace period before force-killing.
+  rpc StopRun(StopRunRequest) returns (RunInfo);
+
+  // Fetch the current snapshot of a run.
+  rpc GetRun(GetRunRequest) returns (RunInfo);
+
+  // List runs, optionally filtered by project or status.
+  rpc ListRuns(ListRunsRequest) returns (ListRunsResponse);
+
+  // ---- Task lifecycle ------------------------------------------------------
+
+  // Fetch a single task node.
+  rpc GetTask(GetTaskRequest) returns (TaskInfo);
+
+  // List task nodes within a run.
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
+
+  // Stream stdout/stderr and parsed signals from a running task's agent.
+  rpc StreamTaskOutput(StreamTaskOutputRequest) returns (stream TaskOutputEvent);
+
+  // Create a child task node under an existing parent. The daemon runs the
+  // request through the policy engine and may gate on approval.
+  rpc CreateChildTask(CreateChildTaskRequest) returns (CreateChildTaskResponse);
+
+  // Terminate a task. The daemon sends SIGTERM to the agent, waits a grace
+  // period, then SIGKILL.
+  rpc KillTask(KillTaskRequest) returns (KillTaskResponse);
+
+  // ---- Approval flow -------------------------------------------------------
+
+  // Stream pending approval requests. The daemon pushes new requests as they
+  // arise; the client resolves them via ResolveApproval.
+  rpc PendingApprovals(PendingApprovalsRequest) returns (stream ApprovalRequest);
+
+  // Approve or deny a pending approval request.
+  rpc ResolveApproval(ResolveApprovalRequest) returns (ResolveApprovalResponse);
+
+  // ---- MCP service management ----------------------------------------------
+
+  // Register a new MCP server with the daemon's MCP router at runtime.
+  rpc RegisterMcpServer(RegisterMcpServerRequest) returns (McpServerInfo);
+
+  // List currently registered MCP servers.
+  rpc ListMcpServers(ListMcpServersRequest) returns (ListMcpServersResponse);
+
+  // ---- Observability -------------------------------------------------------
+
+  // Stream daemon-wide runtime events (all runs). Supports replay from a
+  // sequence number for durable consumption.
+  rpc StreamEvents(StreamEventsRequest) returns (stream RuntimeEvent);
+
+  // Fetch a point-in-time metrics snapshot (Prometheus-compatible counters
+  // and gauges).
+  rpc GetMetrics(GetMetricsRequest) returns (MetricsSnapshot);
+
+  // ---- Daemon management ---------------------------------------------------
+
+  // Health check with version negotiation. Clients MUST call this on connect
+  // and verify protocol_version compatibility before issuing other RPCs.
+  rpc Health(HealthRequest) returns (HealthResponse);
+
+  // Initiate graceful daemon shutdown. Running agents receive Shutdown
+  // messages via the bus and are given a grace period.
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+// Status of a run within the daemon.
+enum RunStatus {
+  RUN_STATUS_UNSPECIFIED = 0;
+  RUN_STATUS_SUBMITTED   = 1;
+  RUN_STATUS_SCHEDULING  = 2;
+  RUN_STATUS_RUNNING     = 3;
+  RUN_STATUS_PAUSED      = 4;
+  RUN_STATUS_COMPLETED   = 5;
+  RUN_STATUS_FAILED      = 6;
+  RUN_STATUS_CANCELLED   = 7;
+}
+
+// Status of a task node within the run graph.
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED       = 0;
+  TASK_STATUS_PENDING           = 1;
+  TASK_STATUS_AWAITING_APPROVAL = 2;
+  TASK_STATUS_ENQUEUED          = 3;
+  TASK_STATUS_MATERIALIZING     = 4;
+  TASK_STATUS_RUNNING           = 5;
+  TASK_STATUS_COMPLETED         = 6;
+  TASK_STATUS_FAILED            = 7;
+  TASK_STATUS_KILLED            = 8;
+}
+
+// Runtime backend used to isolate the agent process.
+enum RuntimeBackend {
+  RUNTIME_BACKEND_UNSPECIFIED = 0;
+  RUNTIME_BACKEND_BWRAP       = 1; // Linux bubblewrap namespaces
+  RUNTIME_BACKEND_DOCKER      = 2; // Docker container (macOS primary, Linux optional)
+  RUNTIME_BACKEND_HOST        = 3; // Explicit insecure host mode — no isolation
+}
+
+// Action taken on an approval request.
+enum ApprovalAction {
+  APPROVAL_ACTION_UNSPECIFIED = 0;
+  APPROVAL_ACTION_APPROVE     = 1;
+  APPROVAL_ACTION_DENY        = 2;
+}
+
+// Memory scope for task data.
+enum MemoryScope {
+  MEMORY_SCOPE_UNSPECIFIED = 0;
+  MEMORY_SCOPE_SCRATCH     = 1; // Agent-local, lifetime = agent
+  MEMORY_SCOPE_RUN_SHARED  = 2; // Parent/child subtree, lifetime = run
+  MEMORY_SCOPE_PROJECT     = 3; // Cross-run durable, deny-by-default writes
+}
+
+// ---------------------------------------------------------------------------
+// Run lifecycle messages
+// ---------------------------------------------------------------------------
+
+message SubmitRunRequest {
+  // Project identifier (e.g. repository path or name).
+  string project = 1;
+
+  // Serialized run plan (phases / DAG / milestones). Opaque to the proto
+  // layer; the daemon deserializes using its internal plan schema.
+  bytes plan = 2;
+
+  // Absolute path to the workspace root on the host.
+  string workspace = 3;
+
+  // Optional policy overrides supplied by the operator at submission time.
+  // These are merged on top of project and global policy and may only
+  // tighten constraints, never relax them beyond global policy.
+  PolicyOverrides policy_overrides = 4;
+
+  // Optional runtime backend preference. If unspecified the daemon
+  // auto-detects per Section 4.6.
+  RuntimeBackend runtime_backend = 5;
+
+  // Client-supplied idempotency key. If the daemon has already accepted a
+  // run with this key, it returns the existing RunInfo.
+  string idempotency_key = 6;
+
+  // Client authentication context — daemon may use this for audit and ACL.
+  ClientIdentity client_identity = 7;
+}
+
+// Policy overrides supplied at run submission time.
+message PolicyOverrides {
+  // Maximum total tasks across the entire run.
+  optional int32 max_tasks_total = 1;
+
+  // Maximum children any single task may spawn.
+  optional int32 max_children_per_task = 2;
+
+  // Maximum task tree depth.
+  optional int32 max_depth = 3;
+
+  // Maximum concurrently running agents.
+  optional int32 max_concurrent = 4;
+
+  // Hard cap on total tokens for the run.
+  optional int64 max_tokens_per_run = 5;
+
+  // Hard cap on tokens per individual task.
+  optional int64 max_tokens_per_task = 6;
+
+  // Percentage of budget at which to warn the parent.
+  optional int32 warn_at_percent = 7;
+
+  // Whether to allow insecure host runtime mode.
+  optional bool allow_insecure_host_runtime = 8;
+
+  // Additional network allowlist entries.
+  repeated string network_allowlist = 9;
+
+  // Additional credential handles to allow.
+  repeated string credential_allowlist = 10;
+}
+
+// Snapshot of a run's current state.
+message RunInfo {
+  string id = 1;
+  string project = 2;
+  RunStatus status = 3;
+
+  // Top-level milestones (phases) in execution order.
+  repeated Milestone milestones = 4;
+
+  // Total number of task nodes (including children) in this run.
+  int32 task_count = 5;
+
+  // Cumulative token usage across all tasks in this run.
+  TokenUsage token_usage = 6;
+
+  // Estimated cost in USD.
+  double estimated_cost_usd = 7;
+
+  // Runtime backend in use for this run.
+  RuntimeBackend runtime_backend = 8;
+
+  // Whether the run is executing in insecure host mode.
+  bool insecure_host_runtime = 9;
+
+  google.protobuf.Timestamp submitted_at = 10;
+  google.protobuf.Timestamp started_at = 11;
+  google.protobuf.Timestamp finished_at = 12;
+
+  // Human-readable failure reason when status is FAILED or CANCELLED.
+  string failure_reason = 13;
+}
+
+// A top-level phase / milestone within a run.
+message Milestone {
+  string id = 1;
+  string name = 2;
+  int32 order = 3;
+  RunStatus status = 4;
+  // Task nodes that belong to this milestone.
+  repeated string task_ids = 5;
+}
+
+// Cumulative token usage.
+message TokenUsage {
+  int64 input_tokens = 1;
+  int64 output_tokens = 2;
+  int64 cache_read_tokens = 3;
+  int64 cache_write_tokens = 4;
+  int64 total_tokens = 5;
+}
+
+message AttachRunRequest {
+  string run_id = 1;
+
+  // Sequence number to replay from (inclusive). Set to 0 to replay from the
+  // beginning of the run. The daemon sends all events with seq >= since_sequence
+  // followed by a live tail.
+  int64 since_sequence = 2;
+
+  // Optional filter: only stream events for these task IDs.
+  repeated string task_id_filter = 3;
+
+  ClientIdentity client_identity = 4;
+}
+
+message StopRunRequest {
+  string run_id = 1;
+
+  // Grace period before force-killing agents. If unset, daemon uses its
+  // configured default (typically 30s).
+  google.protobuf.Duration grace_period = 2;
+
+  // Reason for stopping (recorded in audit trail).
+  string reason = 3;
+
+  ClientIdentity client_identity = 4;
+}
+
+message GetRunRequest {
+  string run_id = 1;
+}
+
+message ListRunsRequest {
+  // Filter by project. Empty means all projects.
+  string project = 1;
+
+  // Filter by status. Empty means all statuses.
+  repeated RunStatus status_filter = 2;
+
+  // Pagination.
+  int32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListRunsResponse {
+  repeated RunInfo runs = 1;
+  string next_page_token = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Task lifecycle messages
+// ---------------------------------------------------------------------------
+
+message GetTaskRequest {
+  string task_id = 1;
+}
+
+// Snapshot of a task node within the run graph.
+message TaskInfo {
+  string id = 1;
+  string run_id = 2;
+
+  // Parent task node ID. Empty for root / top-level tasks.
+  string parent_task_id = 3;
+
+  // Milestone this task belongs to (if any).
+  string milestone_id = 4;
+
+  // What the task should accomplish.
+  string objective = 5;
+
+  // What the task is expected to produce.
+  string expected_output = 6;
+
+  // Compiled profile name (e.g. "implementer", "security-reviewer").
+  string profile = 7;
+
+  // Token / resource budget for this task.
+  BudgetEnvelope budget = 8;
+
+  // Memory scope governing scratch, run-shared, or project access.
+  MemoryScope memory_scope = 9;
+
+  TaskStatus status = 10;
+
+  // Agent instance currently assigned to this task (if running).
+  string assigned_agent_id = 11;
+
+  // IDs of direct child task nodes.
+  repeated string children = 12;
+
+  // Resource snapshot of the assigned agent (if running).
+  ResourceSnapshot resource_snapshot = 13;
+
+  // Human-readable failure or kill reason.
+  string failure_reason = 14;
+
+  google.protobuf.Timestamp created_at = 15;
+  google.protobuf.Timestamp started_at = 16;
+  google.protobuf.Timestamp finished_at = 17;
+
+  // Token usage for this task (excluding children).
+  TokenUsage token_usage = 18;
+
+  // Cumulative token usage for this task's entire subtree.
+  TokenUsage subtree_token_usage = 19;
+}
+
+// Budget envelope constraining a task's resource consumption.
+message BudgetEnvelope {
+  // Maximum tokens this task may consume.
+  int64 max_tokens = 1;
+
+  // Maximum wall-clock duration for this task.
+  google.protobuf.Duration max_duration = 2;
+
+  // Maximum number of child tasks this task may create.
+  int32 max_children = 3;
+
+  // Number of children after which approval is required.
+  int32 require_approval_after = 4;
+
+  // Maximum task tree depth below this node.
+  int32 max_depth = 5;
+}
+
+// Point-in-time resource consumption of an agent.
+message ResourceSnapshot {
+  string agent_id = 1;
+  string task_id = 2;
+
+  // CPU usage as a fraction (0.0 – N cores).
+  double cpu_usage = 3;
+
+  // Resident memory in bytes.
+  int64 memory_bytes = 4;
+
+  // Disk usage in bytes (task worktree).
+  int64 disk_bytes = 5;
+
+  // Network egress bytes since agent start.
+  int64 network_egress_bytes = 6;
+
+  // Network ingress bytes since agent start.
+  int64 network_ingress_bytes = 7;
+
+  google.protobuf.Timestamp sampled_at = 8;
+}
+
+message ListTasksRequest {
+  string run_id = 1;
+
+  // Optional: filter to tasks under this parent.
+  string parent_task_id = 2;
+
+  // Optional: filter by status.
+  repeated TaskStatus status_filter = 3;
+
+  // Optional: filter by milestone.
+  string milestone_id = 4;
+
+  int32 page_size = 5;
+  string page_token = 6;
+}
+
+message ListTasksResponse {
+  repeated TaskInfo tasks = 1;
+  string next_page_token = 2;
+}
+
+message StreamTaskOutputRequest {
+  string task_id = 1;
+
+  // Sequence number to replay from. 0 = beginning.
+  int64 since_sequence = 2;
+
+  ClientIdentity client_identity = 3;
+}
+
+// A single output event from a running task's agent process.
+message TaskOutputEvent {
+  string task_id = 1;
+
+  // Monotonically increasing sequence within this task's output stream.
+  int64 sequence = 2;
+
+  google.protobuf.Timestamp timestamp = 3;
+
+  oneof event {
+    // Raw stdout/stderr line from the agent process.
+    StdoutLine stdout_line = 4;
+
+    // Parsed signal tag (<progress>, <blocker>, <pivot>).
+    Signal signal = 5;
+
+    // Promise tag (<promise>DONE</promise>) indicating task completion.
+    Promise promise = 6;
+
+    // Agent requested creation of a child task.
+    ChildTaskRequestEvent child_task_request = 7;
+
+    // Agent process exited.
+    AgentExitedEvent agent_exited = 8;
+  }
+}
+
+message StdoutLine {
+  string line = 1;
+  bool is_stderr = 2;
+}
+
+message Signal {
+  // Signal type: "progress", "blocker", "pivot".
+  string signal_type = 1;
+  string content = 2;
+}
+
+message Promise {
+  string value = 1;
+}
+
+message ChildTaskRequestEvent {
+  string profile = 1;
+  string objective = 2;
+  string expected_output = 3;
+  bool awaiting_approval = 4;
+  string pending_approval_id = 5;
+}
+
+message AgentExitedEvent {
+  int32 exit_code = 1;
+  string reason = 2;
+  // Duration the agent ran.
+  google.protobuf.Duration duration = 3;
+}
+
+message CreateChildTaskRequest {
+  string run_id = 1;
+  string parent_task_id = 2;
+
+  // Profile to use for the child agent (e.g. "implementer", "reviewer").
+  string profile = 3;
+
+  // What the child task should accomplish.
+  string objective = 4;
+
+  // What the child task is expected to produce.
+  string expected_output = 5;
+
+  // Budget overrides for the child. If unset, inherits from parent minus
+  // already consumed resources.
+  BudgetEnvelope budget = 6;
+
+  // Memory scope for the child. If unset, defaults to RUN_SHARED.
+  MemoryScope memory_scope = 7;
+
+  // Whether the parent should block until the child completes.
+  bool wait = 8;
+
+  // Client authentication context for audit.
+  ClientIdentity client_identity = 9;
+}
+
+message CreateChildTaskResponse {
+  // The newly created task node. Status may be PENDING, AWAITING_APPROVAL,
+  // or ENQUEUED depending on policy evaluation.
+  TaskInfo task = 1;
+
+  // True if the child task requires approval before scheduling.
+  bool requires_approval = 2;
+
+  // Approval ID to watch/resolve if requires_approval is true.
+  string approval_id = 3;
+}
+
+message KillTaskRequest {
+  string task_id = 1;
+
+  // Reason for killing (recorded in audit trail and sent to parent).
+  string reason = 2;
+
+  // Grace period before SIGKILL. If unset, daemon default applies.
+  google.protobuf.Duration grace_period = 3;
+
+  ClientIdentity client_identity = 4;
+}
+
+message KillTaskResponse {
+  TaskInfo task = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Approval flow messages
+// ---------------------------------------------------------------------------
+
+message PendingApprovalsRequest {
+  // Optional: scope to a specific run.
+  string run_id = 1;
+
+  ClientIdentity client_identity = 2;
+}
+
+// An approval request generated by the policy engine when a child task
+// creation exceeds soft caps or when the profile requires explicit approval.
+message ApprovalRequest {
+  // Unique approval ID.
+  string id = 1;
+
+  // Run this approval belongs to.
+  string run_id = 2;
+
+  // Parent task that requested the child.
+  string parent_task_id = 3;
+
+  // The compiled manifest of the proposed child task.
+  AgentManifest child_manifest = 4;
+
+  // Capabilities the child task is requesting.
+  repeated string requested_capabilities = 5;
+
+  // Why approval is required (e.g. "soft cap exceeded", "profile requires approval").
+  string reason = 6;
+
+  // Number of children the parent already has (context for the approver).
+  int32 current_child_count = 7;
+
+  // Budget the child would consume.
+  BudgetEnvelope requested_budget = 8;
+
+  google.protobuf.Timestamp requested_at = 9;
+}
+
+// Compiled agent manifest describing the capabilities a task's agent will
+// have at runtime. Derived from trusted base profile + validated project
+// overlay + policy evaluation.
+message AgentManifest {
+  string profile_name = 1;
+  repeated string tools = 2;
+  repeated string mcp_servers = 3;
+  repeated string credential_handles = 4;
+  MemoryPolicy memory_policy = 5;
+  ResourceLimits resource_limits = 6;
+  PermissionSet permissions = 7;
+}
+
+// Memory access policy for an agent.
+message MemoryPolicy {
+  repeated MemoryScope read_scopes = 1;
+  repeated MemoryScope write_scopes = 2;
+}
+
+// Resource limits enforced by the runtime backend.
+message ResourceLimits {
+  // CPU cores (fractional).
+  double cpu = 1;
+
+  // Memory limit (e.g. "8Gi").
+  string memory = 2;
+
+  // Token budget for the agent.
+  int64 token_budget = 3;
+}
+
+// Permission set derived from the compiled profile.
+message PermissionSet {
+  // Repository access level: "read-only", "read-write".
+  string repo_access = 1;
+
+  // Allowed network egress destinations.
+  repeated string network_allowlist = 2;
+
+  // Spawn limits.
+  SpawnPermissions spawn = 3;
+}
+
+message SpawnPermissions {
+  int32 max_children = 1;
+  int32 require_approval_after = 2;
+}
+
+message ResolveApprovalRequest {
+  string approval_id = 1;
+  ApprovalAction action = 2;
+
+  // Optional reason (especially useful for denials).
+  string reason = 3;
+
+  ClientIdentity client_identity = 4;
+}
+
+message ResolveApprovalResponse {
+  // The task that was approved/denied. If approved, its status will have
+  // transitioned from AWAITING_APPROVAL to ENQUEUED.
+  TaskInfo task = 1;
+
+  ApprovalAction action_taken = 2;
+}
+
+// ---------------------------------------------------------------------------
+// MCP service management messages
+// ---------------------------------------------------------------------------
+
+message RegisterMcpServerRequest {
+  // Unique name for this MCP server (e.g. "filesystem", "github", "database").
+  string name = 1;
+
+  // Command to launch the MCP server process.
+  string command = 2;
+
+  // Arguments for the MCP server process.
+  repeated string args = 3;
+
+  // Environment variables to set for the MCP server process.
+  map<string, string> env = 4;
+
+  // Maximum response size in bytes (default: 10MB).
+  int64 max_response_bytes = 5;
+
+  // Per-request timeout.
+  google.protobuf.Duration timeout = 6;
+
+  // Per-agent, per-server rate limit (requests per minute, default: 100).
+  int32 rate_limit_per_minute = 7;
+
+  ClientIdentity client_identity = 8;
+}
+
+message McpServerInfo {
+  string name = 1;
+  string command = 2;
+  repeated string args = 3;
+
+  // Whether the server process is currently running.
+  bool running = 4;
+
+  // Number of agents currently connected through this server.
+  int32 connected_agent_count = 5;
+
+  // Cumulative request count since server start.
+  int64 total_requests = 6;
+
+  google.protobuf.Timestamp registered_at = 7;
+  google.protobuf.Timestamp last_request_at = 8;
+}
+
+message ListMcpServersRequest {}
+
+message ListMcpServersResponse {
+  repeated McpServerInfo servers = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Observability messages
+// ---------------------------------------------------------------------------
+
+message StreamEventsRequest {
+  // Sequence number to replay from (inclusive). 0 = live-only (no replay).
+  int64 since_sequence = 1;
+
+  // Optional: scope to a specific run.
+  string run_id = 2;
+
+  // Optional: filter by event types.
+  repeated string event_type_filter = 3;
+
+  ClientIdentity client_identity = 4;
+}
+
+// A runtime event emitted by the daemon. Events are sequenced per-run and
+// globally, enabling durable replay for both CLI attach and external consumers.
+message RuntimeEvent {
+  // Global sequence number across all runs.
+  int64 sequence = 1;
+
+  // Run this event belongs to (empty for daemon-level events).
+  string run_id = 2;
+
+  // Task this event relates to (empty for run-level events).
+  string task_id = 3;
+
+  // Agent this event relates to (empty for task-level events without an agent).
+  string agent_id = 4;
+
+  google.protobuf.Timestamp timestamp = 5;
+
+  oneof event {
+    RunStatusChangedEvent run_status_changed = 6;
+    TaskStatusChangedEvent task_status_changed = 7;
+    TaskOutputEvent task_output = 8;
+    ApprovalRequest approval_request = 9;
+    ResourceSnapshot resource_snapshot = 10;
+    ServiceEvent service_event = 11;
+    MemoryEvent memory_event = 12;
+  }
+}
+
+message RunStatusChangedEvent {
+  string run_id = 1;
+  RunStatus previous_status = 2;
+  RunStatus new_status = 3;
+  string reason = 4;
+}
+
+message TaskStatusChangedEvent {
+  string task_id = 1;
+  string run_id = 2;
+  TaskStatus previous_status = 3;
+  TaskStatus new_status = 4;
+  string reason = 5;
+  // Agent assigned when transitioning to RUNNING.
+  string assigned_agent_id = 6;
+}
+
+// Event from a shared service (auth, credentials, memory, cache, MCP, bus).
+message ServiceEvent {
+  // Service name: "auth", "credentials", "memory", "cache", "mcp", "bus".
+  string service = 1;
+
+  // Event type within the service (e.g. "credential_issued", "cache_hit",
+  // "mcp_call", "message_sent").
+  string event_type = 2;
+
+  string agent_id = 3;
+  string task_id = 4;
+
+  // Structured payload with service-specific details.
+  google.protobuf.Struct details = 5;
+
+  google.protobuf.Timestamp timestamp = 6;
+}
+
+// Event related to the memory service.
+message MemoryEvent {
+  string agent_id = 1;
+  string task_id = 2;
+
+  // "read", "write", "promote", "checkpoint".
+  string action = 3;
+
+  MemoryScope scope = 4;
+
+  // Entry ID affected (for write/promote).
+  string entry_id = 5;
+
+  // Trust level of the entry.
+  string trust_level = 6;
+
+  google.protobuf.Timestamp timestamp = 7;
+}
+
+message GetMetricsRequest {}
+
+// Point-in-time daemon metrics snapshot.
+message MetricsSnapshot {
+  // Prometheus text exposition format.
+  string prometheus_text = 1;
+
+  // Structured metrics for programmatic consumption.
+  DaemonMetrics daemon = 2;
+  repeated RunMetrics runs = 3;
+
+  google.protobuf.Timestamp sampled_at = 4;
+}
+
+message DaemonMetrics {
+  // Daemon uptime.
+  google.protobuf.Duration uptime = 1;
+
+  // Total runs managed (all states).
+  int32 total_runs = 2;
+
+  // Currently active runs.
+  int32 active_runs = 3;
+
+  // Currently running agent instances.
+  int32 active_agents = 4;
+
+  // Pending approval requests.
+  int32 pending_approvals = 5;
+
+  // Total events in the event log.
+  int64 total_events = 6;
+
+  // Shared service metrics.
+  CacheMetrics cache = 7;
+  McpRouterMetrics mcp_router = 8;
+
+  // Nix store size in bytes (0 if host mode).
+  int64 nix_store_bytes = 9;
+}
+
+message CacheMetrics {
+  int64 hits = 1;
+  int64 misses = 2;
+  int64 evictions = 3;
+  int64 size_bytes = 4;
+}
+
+message McpRouterMetrics {
+  int32 server_count = 1;
+  int64 total_requests = 2;
+  int64 total_errors = 3;
+  double avg_latency_ms = 4;
+}
+
+message RunMetrics {
+  string run_id = 1;
+  int32 task_count = 2;
+  int32 active_tasks = 3;
+  TokenUsage token_usage = 4;
+  double estimated_cost_usd = 5;
+  google.protobuf.Duration elapsed = 6;
+}
+
+// ---------------------------------------------------------------------------
+// Daemon management messages
+// ---------------------------------------------------------------------------
+
+message HealthRequest {}
+
+message HealthResponse {
+  // Protocol version (starts at 1). Clients MUST check this and refuse to
+  // operate if it indicates an incompatible protocol.
+  uint32 protocol_version = 1;
+
+  // Semantic version of the forge-runtime daemon binary.
+  string daemon_version = 2;
+
+  // How long the daemon has been running.
+  double uptime_seconds = 3;
+
+  // Feature flags the daemon supports. Clients use these for capability
+  // negotiation (e.g. "attach_run_v1", "child_task_v1", "memory_service_v1",
+  // "mcp_router_v1", "streaming_v1").
+  repeated string supported_capabilities = 4;
+
+  // Current number of running agent instances.
+  int32 agent_count = 5;
+
+  // Current number of active runs.
+  int32 run_count = 6;
+
+  // Runtime backend auto-detected or configured for this daemon instance.
+  RuntimeBackend runtime_backend = 7;
+
+  // Whether the daemon is operating in insecure host mode.
+  bool insecure_host_runtime = 8;
+
+  // Whether Nix is available for profile materialization.
+  bool nix_available = 9;
+}
+
+message ShutdownRequest {
+  // Grace period for running agents. If unset, daemon uses its configured
+  // default.
+  google.protobuf.Duration grace_period = 1;
+
+  // Reason for shutdown (recorded in audit trail).
+  string reason = 2;
+
+  ClientIdentity client_identity = 3;
+}
+
+message ShutdownResponse {
+  // Number of agents that were still running and received shutdown signals.
+  int32 agents_signaled = 1;
+
+  // Estimated time until the daemon fully exits.
+  google.protobuf.Duration estimated_shutdown_duration = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Identity model
+// ---------------------------------------------------------------------------
+
+// Client authentication context attached to requests. The daemon uses this
+// for audit logging and access control.
+message ClientIdentity {
+  // Client type: "cli", "factory", "agent".
+  string client_type = 1;
+
+  // Opaque client identifier (e.g. CLI session ID, Factory instance ID,
+  // or agent ID for agent-originated requests).
+  string client_id = 2;
+
+  // Process ID of the client (for local UDS authentication).
+  int32 pid = 3;
+
+  // User ID of the client process (for local UDS authentication).
+  int32 uid = 4;
+}
