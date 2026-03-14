@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "89c8104c9c6a",
+  "strategy": "manual-commit",
+  "branch": "runtime-daemon-dispatch",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "crates/forge-common/src/events.rs",
+    "crates/forge-runtime/src/event_stream.rs",
+    "crates/forge-runtime/src/profile_compiler.rs",
+    "crates/forge-runtime/src/run_orchestrator.rs",
+    "crates/forge-runtime/src/runtime/io.rs",
+    "crates/forge-runtime/src/server.rs",
+    "crates/forge-runtime/src/state/events.rs",
+    "crates/forge-runtime/src/state/runs.rs",
+    "crates/forge-runtime/src/task_manager.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/89/c8104c9c6a/0/metadata.json",
+      "transcript": "/89/c8104c9c6a/0/full.jsonl",
+      "context": "",
+      "content_hash": "/89/c8104c9c6a/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
