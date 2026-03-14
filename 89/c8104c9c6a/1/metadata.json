@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "89c8104c9c6a",
+  "session_id": "411ebf30-bab7-466b-afde-56bc6c3abacc",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-14T23:29:19.067259Z",
+  "branch": "runtime-daemon-dispatch",
+  "checkpoints_count": 6,
+  "files_touched": [
+    "crates/forge-runtime/src/profile_compiler.rs",
+    "crates/forge-runtime/src/run_orchestrator.rs",
+    "crates/forge-runtime/src/server.rs"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "3ec6c4f6d350",
+  "token_usage": {
+    "input_tokens": 39,
+    "cache_creation_tokens": 107447,
+    "cache_read_tokens": 684593,
+    "output_tokens": 11047,
+    "api_call_count": 19
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-14T23:29:18.931279Z",
+    "agent_lines": 661,
+    "human_added": 231,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 892,
+    "agent_percentage": 74.10313901345292
+  }
+}
