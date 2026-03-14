@@ -19,20 +19,24 @@ use forge_common::runtime::{AgentRuntime, AgentStatus, PreparedAgentLaunch};
 use tokio::process::Command;
 use tokio::sync::RwLock;
 
-use crate::runtime::io::{TrackedChild, status_from_exit_status};
+use crate::runtime::io::{
+    RuntimeOutputEmitter, RuntimeOutputSink, TrackedChild, status_from_exit_status,
+};
 
 /// Host runtime backend — direct subprocess spawning with no isolation.
 #[derive(Debug)]
 pub struct HostRuntime {
     socket_base_dir: PathBuf,
+    output_sink: RuntimeOutputSink,
     processes: RwLock<HashMap<AgentId, Arc<TrackedChild>>>,
 }
 
 impl HostRuntime {
     /// Create a new host runtime rooted at the provided socket base directory.
-    pub fn new(socket_base_dir: PathBuf) -> Self {
+    pub fn new(socket_base_dir: PathBuf, output_sink: RuntimeOutputSink) -> Self {
         Self {
             socket_base_dir,
+            output_sink,
             processes: RwLock::new(HashMap::new()),
         }
     }
@@ -113,8 +117,15 @@ impl AgentRuntime for HostRuntime {
         let pid = child
             .id()
             .context("spawned host runtime child missing pid")?;
+        let emitter = RuntimeOutputEmitter::new(
+            prepared.run_id.clone(),
+            prepared.task_id.clone(),
+            prepared.agent_id.clone(),
+            prepared.launch.output_mode,
+            self.output_sink.clone(),
+        );
         let tracked_child = Arc::new(
-            TrackedChild::new(child, prepared.launch.stdin_payload.clone())
+            TrackedChild::new(child, prepared.launch.stdin_payload.clone(), emitter)
                 .await
                 .context("failed to initialize tracked host child")?,
         );
@@ -351,7 +362,10 @@ mod tests {
     #[tokio::test]
     async fn host_runtime_spawn_uses_prepared_launch_contract() {
         let temp_dir = TempDir::new().unwrap();
-        let runtime = HostRuntime::new(temp_dir.path().join("sockets"));
+        let runtime = HostRuntime::new(
+            temp_dir.path().join("sockets"),
+            crate::runtime::RuntimeOutputSink::disabled(),
+        );
         let socket_dir = temp_dir.path().join("prepared-socket");
         let launch = make_prepared_launch(
             temp_dir.path(),
@@ -394,7 +408,10 @@ mod tests {
     #[tokio::test]
     async fn host_runtime_status_reports_running_then_exited() {
         let temp_dir = TempDir::new().unwrap();
-        let runtime = HostRuntime::new(temp_dir.path().join("sockets"));
+        let runtime = HostRuntime::new(
+            temp_dir.path().join("sockets"),
+            crate::runtime::RuntimeOutputSink::disabled(),
+        );
         let handle = runtime
             .spawn(make_prepared_launch(
                 temp_dir.path(),
@@ -419,7 +436,10 @@ mod tests {
     #[tokio::test]
     async fn host_runtime_kill_terminates_process() {
         let temp_dir = TempDir::new().unwrap();
-        let runtime = HostRuntime::new(temp_dir.path().join("sockets"));
+        let runtime = HostRuntime::new(
+            temp_dir.path().join("sockets"),
+            crate::runtime::RuntimeOutputSink::disabled(),
+        );
         let handle = runtime
             .spawn(make_prepared_launch(
                 temp_dir.path(),
@@ -442,7 +462,10 @@ mod tests {
     #[tokio::test]
     async fn host_runtime_rejects_non_host_env_plan() {
         let temp_dir = TempDir::new().unwrap();
-        let runtime = HostRuntime::new(temp_dir.path().join("sockets"));
+        let runtime = HostRuntime::new(
+            temp_dir.path().join("sockets"),
+            crate::runtime::RuntimeOutputSink::disabled(),
+        );
         let mut prepared = make_prepared_launch(
             temp_dir.path(),
             &temp_dir.path().join("socket-bad-plan"),

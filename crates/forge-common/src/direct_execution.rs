@@ -17,6 +17,9 @@ use crate::facade::{
     ExecutionBackendHealth, ExecutionEvent, ExecutionFacade, ExecutionHandle, ExecutionId,
     ExecutionOutcome, ExecutionOutputMode, ExecutionRequest,
 };
+use crate::output_parser::{
+    ParsedOutputEvent, ParsedOutputMode, ParsedOutputState, parse_output_line,
+};
 
 #[derive(Clone, Default)]
 pub struct DirectExecutionFacade {
@@ -299,204 +302,85 @@ async fn handle_stdout_line(
     output_mode: ExecutionOutputMode,
     line: String,
 ) -> Result<()> {
-    match output_mode {
-        ExecutionOutputMode::Text => {
-            send_event(
-                events_tx,
-                collected,
-                ExecutionEvent::Output(TaskOutput::Stdout(line)),
-                "stdout output",
-            )
-            .await;
-        }
-        ExecutionOutputMode::StreamJson => {
-            if let Ok(json) = serde_json::from_str::<Value>(&line) {
-                handle_stream_json_event(events_tx, collected, &json).await?;
-            } else {
-                send_event(
-                    events_tx,
-                    collected,
-                    ExecutionEvent::Output(TaskOutput::Stdout(line)),
-                    "stdout output",
-                )
-                .await;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-async fn handle_stream_json_event(
-    events_tx: &mpsc::Sender<ExecutionEvent>,
-    collected: &Arc<Mutex<CollectedOutput>>,
-    json: &Value,
-) -> Result<()> {
-    if let Some(session_id) = json.get("session_id").and_then(Value::as_str) {
+    let mode = match output_mode {
+        ExecutionOutputMode::Text => ParsedOutputMode::Text,
+        ExecutionOutputMode::StreamJson => ParsedOutputMode::StreamJson,
+    };
+    let parsed = {
         let mut state = collected.lock().await;
-        let should_emit = state.session_id.as_deref() != Some(session_id);
-        if should_emit {
-            state.session_id = Some(session_id.to_string());
-            drop(state);
-            send_event(
-                events_tx,
-                collected,
-                ExecutionEvent::SessionCaptured(session_id.to_string()),
-                "session capture",
-            )
-            .await;
-        }
-    }
-
-    if let Some(usage) = json.get("usage") {
-        if let Some(cumulative) = extract_total_tokens(usage) {
-            send_event(
-                events_tx,
-                collected,
-                ExecutionEvent::Output(TaskOutput::TokenUsage {
-                    tokens: cumulative,
-                    cumulative,
-                }),
-                "token usage",
-            )
-            .await;
-        }
-    }
-
-    if let Some(event_type) = json.get("type").and_then(Value::as_str) {
-        match event_type {
-            "assistant" => emit_assistant_events(events_tx, collected, json).await,
-            "content_block_delta" => emit_delta_events(events_tx, collected, json).await,
-            "result" | "response.completed" => {
-                if let Some(result_text) = json.get("result").and_then(Value::as_str) {
-                    emit_text_signals(events_tx, collected, result_text).await;
-                }
-                if let Some(output_text) = json
-                    .get("response")
-                    .and_then(|response| response.get("output_text"))
-                    .and_then(Value::as_str)
-                {
-                    emit_text_signals(events_tx, collected, output_text).await;
-                }
-                {
-                    let mut state = collected.lock().await;
-                    state.final_payload = Some(json.clone());
-                }
-                send_event(
-                    events_tx,
-                    collected,
-                    ExecutionEvent::FinalPayload(json.clone()),
-                    "final payload",
-                )
-                .await;
-            }
-            _ => {}
-        }
-    }
-
-    Ok(())
-}
-
-async fn emit_assistant_events(
-    events_tx: &mpsc::Sender<ExecutionEvent>,
-    collected: &Arc<Mutex<CollectedOutput>>,
-    json: &Value,
-) {
-    let Some(content) = json
-        .get("message")
-        .and_then(|message| message.get("content"))
-        .and_then(Value::as_array)
-    else {
-        return;
+        let mut parser_state = ParsedOutputState {
+            session_id: state.session_id.clone(),
+            final_payload: state.final_payload.clone(),
+        };
+        let parsed = parse_output_line(&mut parser_state, mode, line);
+        state.session_id = parser_state.session_id;
+        state.final_payload = parser_state.final_payload;
+        parsed
     };
 
-    for block in content {
-        match block.get("type").and_then(Value::as_str) {
-            Some("text") => {
-                if let Some(text) = block.get("text").and_then(Value::as_str) {
-                    send_event(
-                        events_tx,
-                        collected,
-                        ExecutionEvent::AssistantText(text.to_string()),
-                        "assistant text",
-                    )
-                    .await;
-                    emit_text_signals(events_tx, collected, text).await;
-                }
-            }
-            Some("tool_use") => {
+    emit_parsed_events(events_tx, collected, parsed).await;
+
+    Ok(())
+}
+
+async fn emit_parsed_events(
+    events_tx: &mpsc::Sender<ExecutionEvent>,
+    collected: &Arc<Mutex<CollectedOutput>>,
+    events: Vec<ParsedOutputEvent>,
+) {
+    for event in events {
+        match event {
+            ParsedOutputEvent::TaskOutput(output) => {
                 send_event(
                     events_tx,
                     collected,
-                    ExecutionEvent::ToolCall {
-                        name: block
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .unwrap_or("tool")
-                            .to_string(),
-                        input: block.get("input").cloned().unwrap_or(Value::Null),
-                    },
+                    ExecutionEvent::Output(output),
+                    "task output",
+                )
+                .await;
+            }
+            ParsedOutputEvent::AssistantText(text) => {
+                send_event(
+                    events_tx,
+                    collected,
+                    ExecutionEvent::AssistantText(text),
+                    "assistant text",
+                )
+                .await;
+            }
+            ParsedOutputEvent::Thinking(thinking) => {
+                send_event(
+                    events_tx,
+                    collected,
+                    ExecutionEvent::Thinking(thinking),
+                    "thinking delta",
+                )
+                .await;
+            }
+            ParsedOutputEvent::ToolCall { name, input } => {
+                send_event(
+                    events_tx,
+                    collected,
+                    ExecutionEvent::ToolCall { name, input },
                     "tool call",
                 )
                 .await;
             }
-            _ => {}
-        }
-    }
-}
-
-async fn emit_delta_events(
-    events_tx: &mpsc::Sender<ExecutionEvent>,
-    collected: &Arc<Mutex<CollectedOutput>>,
-    json: &Value,
-) {
-    if let Some(delta) = json.get("delta") {
-        if let Some(thinking) = delta
-            .get("thinking")
-            .or_else(|| delta.get("thinking_delta"))
-            .and_then(Value::as_str)
-        {
-            send_event(
-                events_tx,
-                collected,
-                ExecutionEvent::Thinking(thinking.to_string()),
-                "thinking delta",
-            )
-            .await;
-        }
-    }
-}
-
-async fn emit_text_signals(
-    events_tx: &mpsc::Sender<ExecutionEvent>,
-    collected: &Arc<Mutex<CollectedOutput>>,
-    text: &str,
-) {
-    if text.contains("<promise>DONE</promise>") {
-        send_event(
-            events_tx,
-            collected,
-            ExecutionEvent::Output(TaskOutput::PromiseDone),
-            "promise completion",
-        )
-        .await;
-    }
-
-    for signal_name in ["progress", "blocker", "pivot"] {
-        let open = format!("<{signal_name}>");
-        let close = format!("</{signal_name}>");
-        if let Some(start) = text.find(&open) {
-            let content_start = start + open.len();
-            if let Some(relative_end) = text[content_start..].find(&close) {
-                let content_end = content_start + relative_end;
+            ParsedOutputEvent::SessionCaptured(session_id) => {
                 send_event(
                     events_tx,
                     collected,
-                    ExecutionEvent::Output(TaskOutput::Signal {
-                        kind: signal_name.to_string(),
-                        content: text[content_start..content_end].to_string(),
-                    }),
-                    signal_name,
+                    ExecutionEvent::SessionCaptured(session_id),
+                    "session capture",
+                )
+                .await;
+            }
+            ParsedOutputEvent::FinalPayload(payload) => {
+                send_event(
+                    events_tx,
+                    collected,
+                    ExecutionEvent::FinalPayload(payload),
+                    "final payload",
                 )
                 .await;
             }
@@ -577,32 +461,6 @@ fn append_internal_error(collected: &mut CollectedOutput, message: &str) {
     collected
         .stderr
         .push_str(&format!("[forge-common::direct_execution] {message}\n"));
-}
-
-fn extract_total_tokens(usage: &Value) -> Option<u64> {
-    usage
-        .get("total_tokens")
-        .and_then(Value::as_u64)
-        .or_else(|| {
-            let input = usage
-                .get("input_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let output = usage
-                .get("output_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let cache_read = usage
-                .get("cache_read_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let cache_write = usage
-                .get("cache_write_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let total = input + output + cache_read + cache_write;
-            (total > 0).then_some(total)
-        })
 }
 
 #[cfg(test)]

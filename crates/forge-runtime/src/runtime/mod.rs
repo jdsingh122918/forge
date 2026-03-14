@@ -18,6 +18,7 @@ mod io;
 pub use bwrap::BwrapRuntime;
 pub use docker::DockerRuntime;
 pub use host::HostRuntime;
+pub use io::{RuntimeOutputEnvelope, RuntimeOutputSink};
 
 /// Selected runtime backend plus the constructed runtime implementation.
 pub struct SelectedRuntime {
@@ -35,6 +36,8 @@ pub struct RuntimeConfig {
     pub force_backend: Option<RuntimeBackend>,
     /// Base directory for per-agent socket directories.
     pub socket_base_dir: PathBuf,
+    /// Daemon-local sink for live runtime output.
+    pub output_sink: RuntimeOutputSink,
 }
 
 /// Runtime-relevant platform capabilities discovered at startup.
@@ -100,7 +103,10 @@ pub async fn select_runtime_with_metadata(
                 Ok(SelectedRuntime {
                     backend: RuntimeBackend::Host,
                     insecure_host_runtime: true,
-                    runtime: Box::new(HostRuntime::new(config.socket_base_dir.clone())),
+                    runtime: Box::new(HostRuntime::new(
+                        config.socket_base_dir.clone(),
+                        config.output_sink.clone(),
+                    )),
                 })
             }
             RuntimeBackend::Bwrap => {
@@ -113,13 +119,19 @@ pub async fn select_runtime_with_metadata(
                 Ok(SelectedRuntime {
                     backend: RuntimeBackend::Bwrap,
                     insecure_host_runtime: false,
-                    runtime: Box::new(BwrapRuntime::new(config.socket_base_dir.clone())),
+                    runtime: Box::new(BwrapRuntime::new(
+                        config.socket_base_dir.clone(),
+                        config.output_sink.clone(),
+                    )),
                 })
             }
             RuntimeBackend::Docker => {
-                let runtime = DockerRuntime::new(config.socket_base_dir.clone())
-                    .await
-                    .map_err(|error| RuntimeSelectionError::DockerInitFailed(error.to_string()))?;
+                let runtime =
+                    DockerRuntime::new(config.socket_base_dir.clone(), config.output_sink.clone())
+                        .await
+                        .map_err(|error| {
+                            RuntimeSelectionError::DockerInitFailed(error.to_string())
+                        })?;
                 info!("forced docker runtime selection");
                 Ok(SelectedRuntime {
                     backend: RuntimeBackend::Docker,
@@ -138,14 +150,18 @@ pub async fn select_runtime_with_metadata(
         return Ok(SelectedRuntime {
             backend: RuntimeBackend::Bwrap,
             insecure_host_runtime: false,
-            runtime: Box::new(BwrapRuntime::new(config.socket_base_dir.clone())),
+            runtime: Box::new(BwrapRuntime::new(
+                config.socket_base_dir.clone(),
+                config.output_sink.clone(),
+            )),
         });
     }
 
     if caps.is_macos && caps.docker_available {
-        let runtime = DockerRuntime::new(config.socket_base_dir.clone())
-            .await
-            .map_err(|error| RuntimeSelectionError::DockerInitFailed(error.to_string()))?;
+        let runtime =
+            DockerRuntime::new(config.socket_base_dir.clone(), config.output_sink.clone())
+                .await
+                .map_err(|error| RuntimeSelectionError::DockerInitFailed(error.to_string()))?;
         info!("auto-selected docker runtime on macOS");
         return Ok(SelectedRuntime {
             backend: RuntimeBackend::Docker,
@@ -155,9 +171,10 @@ pub async fn select_runtime_with_metadata(
     }
 
     if caps.is_linux && caps.docker_available {
-        let runtime = DockerRuntime::new(config.socket_base_dir.clone())
-            .await
-            .map_err(|error| RuntimeSelectionError::DockerInitFailed(error.to_string()))?;
+        let runtime =
+            DockerRuntime::new(config.socket_base_dir.clone(), config.output_sink.clone())
+                .await
+                .map_err(|error| RuntimeSelectionError::DockerInitFailed(error.to_string()))?;
         info!("auto-selected docker runtime on Linux");
         return Ok(SelectedRuntime {
             backend: RuntimeBackend::Docker,
@@ -171,7 +188,10 @@ pub async fn select_runtime_with_metadata(
         return Ok(SelectedRuntime {
             backend: RuntimeBackend::Host,
             insecure_host_runtime: true,
-            runtime: Box::new(HostRuntime::new(config.socket_base_dir.clone())),
+            runtime: Box::new(HostRuntime::new(
+                config.socket_base_dir.clone(),
+                config.output_sink.clone(),
+            )),
         });
     }
 
@@ -189,6 +209,7 @@ mod tests {
             allow_insecure_host_runtime: false,
             force_backend: None,
             socket_base_dir: PathBuf::from("/tmp/forge-runtime-tests"),
+            output_sink: RuntimeOutputSink::disabled(),
         };
         assert!(!config.allow_insecure_host_runtime);
         assert!(config.force_backend.is_none());
@@ -211,6 +232,7 @@ mod tests {
             allow_insecure_host_runtime: true,
             force_backend: Some(RuntimeBackend::Host),
             socket_base_dir: temp_dir.path().to_path_buf(),
+            output_sink: RuntimeOutputSink::disabled(),
         };
 
         let runtime = select_runtime(&config).await;
@@ -224,6 +246,7 @@ mod tests {
             allow_insecure_host_runtime: false,
             force_backend: None,
             socket_base_dir: temp_dir.path().to_path_buf(),
+            output_sink: RuntimeOutputSink::disabled(),
         };
 
         let result = select_runtime(&config).await;

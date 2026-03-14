@@ -10,7 +10,7 @@ use forge_common::run_graph::RuntimeBackend;
 use forge_runtime::event_stream::EventStreamCoordinator;
 use forge_runtime::recovery::{rebuild_run_graph, recover_orphans};
 use forge_runtime::run_orchestrator::RunOrchestrator;
-use forge_runtime::runtime::{RuntimeConfig, select_runtime_with_metadata};
+use forge_runtime::runtime::{RuntimeConfig, RuntimeOutputSink, select_runtime_with_metadata};
 use forge_runtime::shutdown::{NoopAgentSupervisor, ShutdownCoordinator};
 use forge_runtime::task_manager::TaskManager;
 use forge_runtime::{resolve_socket_path, resolve_state_dir, server, state::StateStore};
@@ -78,10 +78,12 @@ async fn main() -> Result<()> {
         .parent()
         .context("runtime socket path must have a parent directory")?
         .to_path_buf();
+    let (output_sink, output_rx) = RuntimeOutputSink::channel();
     let selected_runtime = select_runtime_with_metadata(&RuntimeConfig {
         allow_insecure_host_runtime: cli.allow_insecure_host_runtime,
         force_backend: cli.runtime_backend.map(Into::into),
         socket_base_dir: runtime_dir.clone(),
+        output_sink,
     })
     .await
     .context("failed to select runtime backend")?;
@@ -114,6 +116,7 @@ async fn main() -> Result<()> {
     let task_manager = Arc::new(TaskManager::new(
         Arc::clone(&orchestrator),
         Arc::clone(&state_store),
+        output_rx,
         runtime,
         runtime_backend,
         insecure_host_runtime,
@@ -136,6 +139,9 @@ async fn main() -> Result<()> {
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
+                    if let Err(error) = lifecycle_manager.drain_runtime_output().await {
+                        tracing::warn!(%error, "task-manager output drain cycle failed");
+                    }
                     if let Err(error) = lifecycle_manager.dispatch_enqueued_tasks().await {
                         tracing::warn!(%error, "task-manager dispatch cycle failed");
                     }

@@ -26,20 +26,22 @@ use forge_common::ids::AgentId;
 use forge_common::manifest::{DockerMount, RuntimeEnvPlan};
 use forge_common::run_graph::{AgentHandle, RuntimeBackend};
 use forge_common::runtime::{AgentRuntime, AgentStatus, PreparedAgentLaunch};
-use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use tokio_stream::StreamExt;
+
+use crate::runtime::io::{RuntimeOutputEmitter, RuntimeOutputSink, spawn_docker_attach_task};
 
 /// Docker runtime backend — containerized execution using a local Docker daemon.
 pub struct DockerRuntime {
     client: Docker,
     socket_base_dir: PathBuf,
+    output_sink: RuntimeOutputSink,
     kill_reasons: RwLock<HashMap<String, String>>,
 }
 
 impl DockerRuntime {
     /// Create a new Docker runtime connected to the local Docker daemon.
-    pub async fn new(socket_base_dir: PathBuf) -> Result<Self> {
+    pub async fn new(socket_base_dir: PathBuf, output_sink: RuntimeOutputSink) -> Result<Self> {
         let client =
             Docker::connect_with_local_defaults().context("failed to connect to Docker daemon")?;
         client
@@ -50,6 +52,7 @@ impl DockerRuntime {
         Ok(Self {
             client,
             socket_base_dir,
+            output_sink,
             kill_reasons: RwLock::new(HashMap::new()),
         })
     }
@@ -168,66 +171,6 @@ impl DockerRuntime {
         Ok((vec![program], cmd))
     }
 
-    async fn forward_stdin_payload(&self, container_id: &str, payload: Vec<u8>) -> Result<()> {
-        if payload.is_empty() {
-            return Ok(());
-        }
-
-        let AttachContainerResults {
-            mut output,
-            mut input,
-        } = self
-            .client
-            .attach_container(
-                container_id,
-                Some(
-                    AttachContainerOptionsBuilder::default()
-                        .stdin(true)
-                        .stdout(true)
-                        .stderr(true)
-                        .stream(true)
-                        .build(),
-                ),
-            )
-            .await
-            .with_context(|| {
-                format!("failed to attach stdin stream to Docker container {container_id}")
-            })?;
-
-        let container_id = container_id.to_string();
-        tokio::spawn(async move {
-            if let Err(error) = input.write_all(&payload).await {
-                tracing::warn!(
-                    container_id = %container_id,
-                    error = %error,
-                    "failed to write prepared stdin payload to Docker container"
-                );
-                return;
-            }
-
-            if let Err(error) = input.shutdown().await {
-                tracing::debug!(
-                    container_id = %container_id,
-                    error = %error,
-                    "failed to close Docker attach stdin stream"
-                );
-            }
-
-            while let Some(item) = output.next().await {
-                if let Err(error) = item {
-                    tracing::debug!(
-                        container_id = %container_id,
-                        error = %error,
-                        "docker attach stream ended with error"
-                    );
-                    break;
-                }
-            }
-        });
-
-        Ok(())
-    }
-
     async fn best_effort_remove_container(&self, container_id: &str) {
         if let Err(error) = self
             .client
@@ -283,6 +226,13 @@ impl AgentRuntime for DockerRuntime {
             "forge-agent-{}",
             sanitize_container_name(&prepared.agent_id)
         );
+        let emitter = RuntimeOutputEmitter::new(
+            prepared.run_id.clone(),
+            prepared.task_id.clone(),
+            prepared.agent_id.clone(),
+            prepared.launch.output_mode,
+            self.output_sink.clone(),
+        );
 
         tracing::info!(
             agent_id = %prepared.agent_id,
@@ -303,8 +253,8 @@ impl AgentRuntime for DockerRuntime {
             labels: Some(labels),
             working_dir: Some(prepared.workspace.display().to_string()),
             attach_stdin: Some(has_stdin),
-            attach_stdout: Some(has_stdin),
-            attach_stderr: Some(has_stdin),
+            attach_stdout: Some(true),
+            attach_stderr: Some(true),
             open_stdin: Some(has_stdin),
             stdin_once: Some(has_stdin),
             network_disabled: Some(
@@ -344,19 +294,40 @@ impl AgentRuntime for DockerRuntime {
             })?;
 
         let container_id = response.id;
-
-        self.client
-            .start_container(&container_id, None::<StartContainerOptions>)
+        let AttachContainerResults { output, input } = self
+            .client
+            .attach_container(
+                &container_id,
+                Some(
+                    AttachContainerOptionsBuilder::default()
+                        .stdin(has_stdin)
+                        .stdout(true)
+                        .stderr(true)
+                        .stream(true)
+                        .build(),
+                ),
+            )
             .await
-            .with_context(|| format!("failed to start Docker container {container_id}"))?;
+            .with_context(|| {
+                format!("failed to attach IO streams to Docker container {container_id}")
+            })?;
 
         if let Err(error) = self
-            .forward_stdin_payload(&container_id, prepared.launch.stdin_payload.clone())
+            .client
+            .start_container(&container_id, None::<StartContainerOptions>)
             .await
+            .with_context(|| format!("failed to start Docker container {container_id}"))
         {
             self.best_effort_remove_container(&container_id).await;
             return Err(error);
         }
+
+        spawn_docker_attach_task(
+            output,
+            has_stdin.then_some(input),
+            prepared.launch.stdin_payload.clone(),
+            emitter,
+        );
 
         Ok(AgentHandle {
             agent_id: prepared.agent_id,
@@ -594,7 +565,12 @@ mod tests {
             return None;
         }
 
-        let runtime = match DockerRuntime::new(socket_base_dir).await {
+        let runtime = match DockerRuntime::new(
+            socket_base_dir,
+            crate::runtime::RuntimeOutputSink::disabled(),
+        )
+        .await
+        {
             Ok(runtime) => runtime,
             Err(error) => {
                 eprintln!("SKIPPING: failed to connect to Docker: {error:#}");

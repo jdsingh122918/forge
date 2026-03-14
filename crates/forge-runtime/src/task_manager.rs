@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
+use forge_common::events::{RuntimeEventKind, TaskOutput};
 use forge_common::ids::{AgentId, RunId, TaskNodeId};
 use forge_common::manifest::WorktreePlan;
 use forge_common::run_graph::{
@@ -25,10 +26,11 @@ use forge_common::run_graph::{
 use forge_common::runtime::{
     AgentLaunchSpec, AgentOutputMode, AgentRuntime, AgentStatus, PreparedAgentLaunch,
 };
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tonic::async_trait;
 
 use crate::run_orchestrator::RunOrchestrator;
+use crate::runtime::RuntimeOutputEnvelope;
 use crate::shutdown::{ActiveAgent, AgentSupervisor};
 use crate::state::StateStore;
 use crate::state::agent_instances::AgentInstanceRow;
@@ -99,6 +101,14 @@ impl AgentTracker {
     pub async fn active_count(&self) -> usize {
         self.agents.read().await.len()
     }
+
+    /// Update the last known cumulative token usage for an active task.
+    pub async fn update_tokens_consumed(&self, task_id: &TaskNodeId, cumulative: u64) {
+        if let Some(instance) = self.agents.write().await.get_mut(task_id) {
+            instance.resource_usage.tokens_consumed = cumulative;
+            instance.resource_usage.sampled_at = Some(Utc::now());
+        }
+    }
 }
 
 /// Task lifecycle manager around a selected runtime backend.
@@ -106,6 +116,7 @@ impl AgentTracker {
 pub struct TaskManager {
     orchestrator: Arc<Mutex<RunOrchestrator>>,
     state_store: Arc<StateStore>,
+    runtime_output_rx: Arc<Mutex<mpsc::UnboundedReceiver<RuntimeOutputEnvelope>>>,
     runtime: Arc<dyn AgentRuntime>,
     tracker: Arc<AgentTracker>,
     runtime_backend: RuntimeBackend,
@@ -123,6 +134,7 @@ impl TaskManager {
     pub fn new(
         orchestrator: Arc<Mutex<RunOrchestrator>>,
         state_store: Arc<StateStore>,
+        runtime_output_rx: mpsc::UnboundedReceiver<RuntimeOutputEnvelope>,
         runtime: Arc<dyn AgentRuntime>,
         runtime_backend: RuntimeBackend,
         insecure_host_runtime: bool,
@@ -130,6 +142,7 @@ impl TaskManager {
         Self {
             orchestrator,
             state_store,
+            runtime_output_rx: Arc::new(Mutex::new(runtime_output_rx)),
             runtime,
             tracker: Arc::new(AgentTracker::new()),
             runtime_backend,
@@ -155,6 +168,28 @@ impl TaskManager {
     /// Whether the task manager is actively tracking a task's agent.
     pub async fn is_tracking(&self, task_id: &TaskNodeId) -> bool {
         self.tracker.get(task_id).await.is_some()
+    }
+
+    /// Drain runtime-owned output envelopes and persist them as task output events.
+    pub async fn drain_runtime_output(&self) -> Result<usize> {
+        let mut envelopes = Vec::new();
+        {
+            let mut rx = self.runtime_output_rx.lock().await;
+            while let Ok(envelope) = rx.try_recv() {
+                envelopes.push(envelope);
+            }
+        }
+
+        for envelope in &envelopes {
+            if let TaskOutput::TokenUsage { cumulative, .. } = &envelope.output {
+                self.tracker
+                    .update_tokens_consumed(&envelope.task_id, *cumulative)
+                    .await;
+            }
+            self.append_task_output_event(envelope).await?;
+        }
+
+        Ok(envelopes.len())
     }
 
     /// Launch every currently enqueued task exactly once.
@@ -302,6 +337,14 @@ impl TaskManager {
             .await
             .with_context(|| format!("failed to query runtime status for task {}", task_id))?;
 
+        if matches!(
+            status,
+            AgentStatus::Exited { .. } | AgentStatus::Killed { .. } | AgentStatus::Crashed { .. }
+        ) {
+            tokio::task::yield_now().await;
+            self.drain_runtime_output().await?;
+        }
+
         match &status {
             AgentStatus::Initializing | AgentStatus::Running | AgentStatus::Unknown => Ok(None),
             AgentStatus::Exited { .. } => {
@@ -446,6 +489,28 @@ impl TaskManager {
             },
         )
         .await
+    }
+
+    async fn append_task_output_event(&self, envelope: &RuntimeOutputEnvelope) -> Result<()> {
+        let mut orchestrator = self.orchestrator.lock().await;
+        orchestrator
+            .record_runtime_event_for_agent(
+                &envelope.run_id,
+                Some(envelope.task_id.clone()),
+                Some(envelope.agent_id.clone()),
+                RuntimeEventKind::TaskOutput {
+                    output: envelope.output.clone(),
+                },
+                envelope.timestamp,
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to append task output for task {} agent {}",
+                    envelope.task_id, envelope.agent_id
+                )
+            })?;
+        Ok(())
     }
 
     async fn run_id_for_task(&self, task_id: &TaskNodeId) -> Result<RunId> {
@@ -679,10 +744,13 @@ mod tests {
             .unwrap();
 
         let orchestrator = Arc::new(Mutex::new(orchestrator));
-        let runtime: Arc<dyn AgentRuntime> = Arc::new(HostRuntime::new(temp.path().to_path_buf()));
+        let (output_sink, output_rx) = crate::runtime::RuntimeOutputSink::channel();
+        let runtime: Arc<dyn AgentRuntime> =
+            Arc::new(HostRuntime::new(temp.path().to_path_buf(), output_sink));
         let manager = TaskManager::new(
             Arc::clone(&orchestrator),
             Arc::clone(&state_store),
+            output_rx,
             runtime,
             RuntimeBackend::Host,
             true,
@@ -819,6 +887,120 @@ mod tests {
 
         unsafe {
             std::env::remove_var("CLAUDE_CMD");
+        }
+    }
+
+    #[tokio::test]
+    async fn drain_runtime_output_persists_task_output_events() {
+        let (temp, orchestrator, manager, run_id, task_id) = make_manager_harness().await;
+        let launch = {
+            let orchestrator = orchestrator.lock().await;
+            let task = orchestrator
+                .get_task_in_run(&run_id, &task_id)
+                .unwrap()
+                .clone();
+            PreparedAgentLaunch {
+                agent_id: AgentId::generate(),
+                run_id: run_id.clone(),
+                task_id: task_id.clone(),
+                profile: task.profile.clone(),
+                task,
+                workspace: temp.path().to_path_buf(),
+                socket_dir: PathBuf::new(),
+                launch: AgentLaunchSpec {
+                    program: PathBuf::from("/bin/sh"),
+                    args: vec![
+                        "-c".to_string(),
+                        "printf '%s\\n' \
+                        '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hello <progress>50%</progress>\"}]}}' \
+                        '{\"type\":\"result\",\"result\":\"done <promise>DONE</promise>\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}'"
+                            .to_string(),
+                    ],
+                    env: BTreeMap::new(),
+                    stdin_payload: Vec::new(),
+                    output_mode: AgentOutputMode::StreamJson,
+                    session_capture: true,
+                },
+            }
+        };
+
+        manager.spawn_prepared(launch).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let drained = manager.drain_runtime_output().await.unwrap();
+        assert!(drained >= 3);
+
+        let events = manager
+            .state_store
+            .replay_events(0, Some(run_id.as_str()), 32)
+            .unwrap();
+        let output_events = events
+            .iter()
+            .filter(|event| event.event_type == "TaskOutput")
+            .map(|event| event.decode_task_output_event().unwrap().unwrap())
+            .collect::<Vec<_>>();
+        assert!(output_events.iter().any(|event| matches!(
+            event.output,
+            TaskOutput::Signal { ref kind, ref content } if kind == "progress" && content == "50%"
+        )));
+        assert!(
+            output_events
+                .iter()
+                .any(|event| matches!(event.output, TaskOutput::PromiseDone))
+        );
+        assert!(output_events.iter().any(|event| matches!(
+            event.output,
+            TaskOutput::TokenUsage { cumulative, .. } if cumulative == 3
+        )));
+
+        let orchestrator = orchestrator.lock().await;
+        let run = orchestrator.get_run(&run_id).unwrap();
+        assert_eq!(run.last_event_cursor, events.last().unwrap().seq as u64);
+    }
+
+    #[tokio::test]
+    async fn check_agent_status_drains_final_token_usage_before_completion() {
+        let (temp, orchestrator, manager, run_id, task_id) = make_manager_harness().await;
+        let launch = {
+            let orchestrator = orchestrator.lock().await;
+            let task = orchestrator
+                .get_task_in_run(&run_id, &task_id)
+                .unwrap()
+                .clone();
+            PreparedAgentLaunch {
+                agent_id: AgentId::generate(),
+                run_id: run_id.clone(),
+                task_id: task_id.clone(),
+                profile: task.profile.clone(),
+                task,
+                workspace: temp.path().to_path_buf(),
+                socket_dir: PathBuf::new(),
+                launch: AgentLaunchSpec {
+                    program: PathBuf::from("/bin/sh"),
+                    args: vec![
+                        "-c".to_string(),
+                        "printf '%s\\n' '{\"type\":\"result\",\"result\":\"done <promise>DONE</promise>\",\"usage\":{\"input_tokens\":2,\"output_tokens\":3}}'"
+                            .to_string(),
+                    ],
+                    env: BTreeMap::new(),
+                    stdin_payload: Vec::new(),
+                    output_mode: AgentOutputMode::StreamJson,
+                    session_capture: true,
+                },
+            }
+        };
+
+        manager.spawn_prepared(launch).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let status = manager.check_agent_status(&task_id).await.unwrap();
+        assert!(matches!(status, Some(AgentStatus::Exited { exit_code: 0 })));
+
+        let orchestrator = orchestrator.lock().await;
+        let task = orchestrator.get_task_in_run(&run_id, &task_id).unwrap();
+        match &task.status {
+            TaskStatus::Completed { result, .. } => assert_eq!(result.tokens_consumed, 5),
+            other => panic!("expected completed task, got {other:?}"),
         }
     }
 

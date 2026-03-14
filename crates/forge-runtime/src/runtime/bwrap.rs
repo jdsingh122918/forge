@@ -21,21 +21,25 @@ use forge_common::runtime::{AgentRuntime, AgentStatus, PreparedAgentLaunch};
 use tokio::process::Command;
 use tokio::sync::RwLock;
 
-use crate::runtime::io::{TrackedChild, status_from_exit_status};
+use crate::runtime::io::{
+    RuntimeOutputEmitter, RuntimeOutputSink, TrackedChild, status_from_exit_status,
+};
 
 /// Bubblewrap runtime backend with process tracking.
 #[derive(Debug)]
 pub struct BwrapRuntime {
     socket_base_dir: PathBuf,
+    output_sink: RuntimeOutputSink,
     processes: RwLock<HashMap<AgentId, Arc<TrackedChild>>>,
 }
 
 impl BwrapRuntime {
     /// Create a new bubblewrap runtime rooted at the provided socket base
     /// directory.
-    pub fn new(socket_base_dir: PathBuf) -> Self {
+    pub fn new(socket_base_dir: PathBuf, output_sink: RuntimeOutputSink) -> Self {
         Self {
             socket_base_dir,
+            output_sink,
             processes: RwLock::new(HashMap::new()),
         }
     }
@@ -239,8 +243,15 @@ impl AgentRuntime for BwrapRuntime {
         let pid = child
             .id()
             .context("spawned bwrap runtime child missing pid")?;
+        let emitter = RuntimeOutputEmitter::new(
+            prepared.run_id.clone(),
+            prepared.task_id.clone(),
+            prepared.agent_id.clone(),
+            prepared.launch.output_mode,
+            self.output_sink.clone(),
+        );
         let tracked_child = Arc::new(
-            TrackedChild::new(child, prepared.launch.stdin_payload.clone())
+            TrackedChild::new(child, prepared.launch.stdin_payload.clone(), emitter)
                 .await
                 .context("failed to initialize tracked bwrap child")?,
         );
@@ -573,7 +584,10 @@ mod tests {
     #[test]
     fn build_bwrap_args_reflects_prepared_launch_contract() {
         let temp_dir = TempDir::new().unwrap();
-        let runtime = BwrapRuntime::new(temp_dir.path().join("sockets"));
+        let runtime = BwrapRuntime::new(
+            temp_dir.path().join("sockets"),
+            crate::runtime::RuntimeOutputSink::disabled(),
+        );
         let socket_dir = temp_dir.path().join("sockets").join("agent-bwrap-1");
         let prepared = make_prepared_launch(
             temp_dir.path(),
@@ -607,7 +621,10 @@ mod tests {
         }
 
         let temp_dir = TempDir::new().unwrap();
-        let runtime = BwrapRuntime::new(temp_dir.path().join("sockets"));
+        let runtime = BwrapRuntime::new(
+            temp_dir.path().join("sockets"),
+            crate::runtime::RuntimeOutputSink::disabled(),
+        );
         let launch = make_prepared_launch(
             temp_dir.path(),
             Path::new("prepared-socket"),
@@ -662,7 +679,10 @@ mod tests {
         }
 
         let temp_dir = TempDir::new().unwrap();
-        let runtime = BwrapRuntime::new(temp_dir.path().join("sockets"));
+        let runtime = BwrapRuntime::new(
+            temp_dir.path().join("sockets"),
+            crate::runtime::RuntimeOutputSink::disabled(),
+        );
         let handle = runtime
             .spawn(make_prepared_launch(
                 temp_dir.path(),

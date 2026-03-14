@@ -13,6 +13,7 @@ pub mod events;
 pub mod facade;
 pub mod ids;
 pub mod manifest;
+pub mod output_parser;
 pub mod policy;
 pub mod run_graph;
 pub mod runtime;

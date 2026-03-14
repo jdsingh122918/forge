@@ -1086,6 +1086,44 @@ impl RunOrchestrator {
             .await
             .map_err(internal_status)
     }
+
+    /// Append an event and advance the run cursor durably and in memory.
+    pub async fn record_runtime_event_for_agent(
+        &mut self,
+        run_id: &RunId,
+        task_id: Option<TaskNodeId>,
+        agent_id: Option<AgentId>,
+        event_kind: RuntimeEventKind,
+        created_at: DateTime<Utc>,
+    ) -> Result<i64, Status> {
+        let cursor = self
+            .append_runtime_event_for_agent(run_id, task_id, agent_id, event_kind, created_at)
+            .await?;
+
+        {
+            let state_store = Arc::clone(&self.state_store);
+            let persisted_run_id = run_id.to_string();
+            tokio::task::spawn_blocking(move || {
+                state_store.update_run_cursor(&persisted_run_id, cursor)
+            })
+            .await
+            .map_err(|error| {
+                Status::internal(format!(
+                    "runtime event cursor persistence task failed: {error}"
+                ))
+            })?
+            .map_err(internal_status)?;
+        }
+
+        let run = self
+            .run_graph
+            .get_run_mut(run_id)
+            .ok_or_else(|| Status::not_found("run not found"))?;
+        run.last_event_cursor = u64::try_from(cursor)
+            .map_err(|error| Status::internal(format!("invalid event cursor: {error}")))?;
+
+        Ok(cursor)
+    }
 }
 
 fn seed_milestones(milestones: &[MilestoneInfo]) -> HashMap<MilestoneId, MilestoneState> {
