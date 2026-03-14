@@ -43,6 +43,7 @@ impl Harness {
             orchestrator
                 .submit_run(
                     "project-create-child".to_string(),
+                    temp_dir.path().join("workspace"),
                     RunPlan::try_from(&make_plan()).unwrap(),
                 )
                 .await

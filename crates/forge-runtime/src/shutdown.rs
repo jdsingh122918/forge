@@ -437,7 +437,11 @@ mod tests {
         let mut orchestrator =
             RunOrchestrator::new(Arc::clone(&state_store), Arc::clone(&event_stream));
         let run = orchestrator
-            .submit_run("project-a".to_string(), make_test_plan())
+            .submit_run(
+                "project-a".to_string(),
+                std::env::temp_dir().join("forge-runtime-shutdown-tests"),
+                make_test_plan(),
+            )
             .await
             .unwrap();
         let task_id = run.tasks.values().next().unwrap().id.clone();

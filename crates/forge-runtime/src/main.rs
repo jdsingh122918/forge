@@ -5,15 +5,35 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+use forge_common::run_graph::RuntimeBackend;
 use forge_runtime::event_stream::EventStreamCoordinator;
 use forge_runtime::recovery::{rebuild_run_graph, recover_orphans};
 use forge_runtime::run_orchestrator::RunOrchestrator;
+use forge_runtime::runtime::{RuntimeConfig, select_runtime_with_metadata};
 use forge_runtime::shutdown::{NoopAgentSupervisor, ShutdownCoordinator};
+use forge_runtime::task_manager::TaskManager;
 use forge_runtime::{resolve_socket_path, resolve_state_dir, server, state::StateStore};
 use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliRuntimeBackend {
+    Host,
+    Bwrap,
+    Docker,
+}
+
+impl From<CliRuntimeBackend> for RuntimeBackend {
+    fn from(value: CliRuntimeBackend) -> Self {
+        match value {
+            CliRuntimeBackend::Host => RuntimeBackend::Host,
+            CliRuntimeBackend::Bwrap => RuntimeBackend::Bwrap,
+            CliRuntimeBackend::Docker => RuntimeBackend::Docker,
+        }
+    }
+}
 
 /// Forge runtime daemon - authoritative run orchestration over gRPC/UDS.
 #[derive(Debug, Parser)]
@@ -30,6 +50,18 @@ struct Cli {
     /// Log level filter (for example "info" or "forge_runtime=debug").
     #[arg(long, env = "FORGE_LOG", default_value = "info")]
     log_level: String,
+
+    /// Explicitly allow insecure host execution when no secure backend is available.
+    #[arg(
+        long,
+        env = "FORGE_ALLOW_INSECURE_HOST_RUNTIME",
+        default_value_t = false
+    )]
+    allow_insecure_host_runtime: bool,
+
+    /// Force a specific runtime backend instead of auto-detection.
+    #[arg(long, env = "FORGE_RUNTIME_BACKEND", value_enum)]
+    runtime_backend: Option<CliRuntimeBackend>,
 }
 
 #[tokio::main]
@@ -46,6 +78,16 @@ async fn main() -> Result<()> {
         .parent()
         .context("runtime socket path must have a parent directory")?
         .to_path_buf();
+    let selected_runtime = select_runtime_with_metadata(&RuntimeConfig {
+        allow_insecure_host_runtime: cli.allow_insecure_host_runtime,
+        force_backend: cli.runtime_backend.map(Into::into),
+        socket_base_dir: runtime_dir.clone(),
+    })
+    .await
+    .context("failed to select runtime backend")?;
+    let runtime_backend = selected_runtime.backend;
+    let insecure_host_runtime = selected_runtime.insecure_host_runtime;
+    let runtime = Arc::from(selected_runtime.runtime);
     let stale_sockets_cleaned = clean_runtime_socket_artifacts(&runtime_dir)?;
     let mut recovery_result = recover_orphans(
         Arc::clone(&state_store),
@@ -69,16 +111,42 @@ async fn main() -> Result<()> {
         Arc::clone(&state_store),
         Arc::clone(&event_stream),
     )));
+    let task_manager = Arc::new(TaskManager::new(
+        Arc::clone(&orchestrator),
+        Arc::clone(&state_store),
+        runtime,
+        runtime_backend,
+        insecure_host_runtime,
+    ));
     let shutdown_signal = Arc::new(Notify::new());
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new(
         CancellationToken::new(),
         Arc::clone(&orchestrator),
         Arc::clone(&state_store),
         Arc::clone(&event_stream),
-        agent_supervisor,
+        task_manager.clone(),
         Arc::clone(&shutdown_signal),
         Duration::from_secs(5),
     ));
+
+    let lifecycle_manager = Arc::clone(&task_manager);
+    let lifecycle_token = shutdown_coordinator.cancellation_token();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_millis(250));
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    if let Err(error) = lifecycle_manager.dispatch_enqueued_tasks().await {
+                        tracing::warn!(%error, "task-manager dispatch cycle failed");
+                    }
+                    if let Err(error) = lifecycle_manager.poll_active_agents().await {
+                        tracing::warn!(%error, "task-manager poll cycle failed");
+                    }
+                }
+                _ = lifecycle_token.cancelled() => break,
+            }
+        }
+    });
 
     let signal_shutdown = Arc::clone(&shutdown_coordinator);
     tokio::spawn(async move {
@@ -95,6 +163,7 @@ async fn main() -> Result<()> {
         shutdown_signal,
         orchestrator,
         event_stream,
+        Some(task_manager),
         shutdown_coordinator,
     )
     .await

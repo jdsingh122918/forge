@@ -357,12 +357,13 @@ mod tests {
             .with_connection(|conn| {
                 conn.execute(
                     "INSERT INTO runs (
-                        id, project, plan_json, plan_hash, policy_snapshot, status,
+                        id, project, workspace, plan_json, plan_hash, policy_snapshot, status,
                         started_at, finished_at, total_tokens, estimated_cost_usd, last_event_cursor
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, 0, 0.0, 0)",
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, 0, 0.0, 0)",
                     params![
                         run_id,
                         format!("project-{run_id}"),
+                        format!("/tmp/{run_id}"),
                         "{}",
                         "plan-hash",
                         "{}",

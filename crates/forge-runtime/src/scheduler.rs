@@ -148,7 +148,11 @@ mod tests {
         let event_stream = Arc::new(EventStreamCoordinator::new(Arc::clone(&state_store)));
         let mut orchestrator = RunOrchestrator::new(Arc::clone(&state_store), event_stream);
         let run = orchestrator
-            .submit_run("project-a".to_string(), make_test_plan(task_count))
+            .submit_run(
+                "project-a".to_string(),
+                std::env::temp_dir().join("forge-runtime-scheduler-tests"),
+                make_test_plan(task_count),
+            )
             .await
             .unwrap();
         let orchestrator = Arc::new(Mutex::new(orchestrator));

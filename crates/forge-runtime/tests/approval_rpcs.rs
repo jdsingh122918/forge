@@ -54,6 +54,7 @@ impl Harness {
             orchestrator
                 .submit_run(
                     "project-approval-rpcs".to_string(),
+                    temp_dir.path().join("workspace"),
                     RunPlan::try_from(&make_plan()).unwrap(),
                 )
                 .await

@@ -1,21 +1,21 @@
 //! Minimal SubmitRun orchestration over the durable state store.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use forge_common::events::RuntimeEventKind;
-use forge_common::ids::{ApprovalId, MilestoneId, RunId, TaskNodeId};
+use forge_common::ids::{AgentId, ApprovalId, MilestoneId, RunId, TaskNodeId};
 use forge_common::manifest::{
     AgentManifest, CapabilityEnvelope, CompiledProfile, MemoryPolicy, MemoryScope, PermissionSet,
     RepoAccess, ResourceLimits, RunSharedWriteMode, RuntimeEnvPlan, SpawnLimits, WorktreePlan,
 };
 use forge_common::run_graph::{
     ApprovalActorKind, ApprovalReasonKind, ApprovalState, MilestoneInfo, MilestoneState,
-    MilestoneStatus, PendingApproval, RunGraph, RunPlan, RunState, RunStatus, TaskNode, TaskStatus,
-    TaskTemplate, TaskWaitMode,
+    MilestoneStatus, PendingApproval, RunGraph, RunPlan, RunState, RunStatus, TaskNode,
+    TaskResultSummary, TaskStatus, TaskTemplate, TaskWaitMode,
 };
 use serde::Serialize;
 use tonic::Status;
@@ -132,8 +132,18 @@ impl RunOrchestrator {
     }
 
     /// Accept, persist, and publish a new run.
-    pub async fn submit_run(&mut self, project: String, plan: RunPlan) -> Result<RunState, Status> {
+    pub async fn submit_run(
+        &mut self,
+        project: String,
+        workspace: PathBuf,
+        plan: RunPlan,
+    ) -> Result<RunState, Status> {
         self.validate_run_plan(&plan)?;
+        if !workspace.is_absolute() {
+            return Err(Status::invalid_argument(
+                "workspace must be an absolute host path",
+            ));
+        }
 
         let submitted_at = Utc::now();
         let run_id = RunId::generate();
@@ -143,7 +153,7 @@ impl RunOrchestrator {
         let mut tasks = HashMap::with_capacity(plan.initial_tasks.len());
 
         for template in &plan.initial_tasks {
-            let task = build_root_task(template, submitted_at);
+            let task = build_root_task(template, workspace.as_path(), submitted_at);
             let task_row = task_to_row(&run_id, &task).map_err(internal_status)?;
 
             let milestone_state = milestones
@@ -169,6 +179,7 @@ impl RunOrchestrator {
         let mut run_state = RunState {
             id: run_id.clone(),
             project: project.clone(),
+            workspace: workspace.clone(),
             plan: plan.clone(),
             milestones,
             tasks,
@@ -184,6 +195,7 @@ impl RunOrchestrator {
         let run_row = RunRow {
             id: run_id.to_string(),
             project: project.clone(),
+            workspace: workspace.display().to_string(),
             plan_json,
             plan_hash: plan_hash(&run_state.plan).map_err(internal_status)?,
             policy_snapshot: "{}".to_string(),
@@ -300,6 +312,29 @@ impl RunOrchestrator {
         self.run_graph
             .get_run(run_id)
             .and_then(|run| run.tasks.get(task_id))
+    }
+
+    /// Snapshot all tasks currently waiting for runtime materialization.
+    pub fn enqueued_tasks(&self) -> Vec<(RunId, TaskNode)> {
+        let mut tasks = self
+            .run_graph
+            .runs
+            .values()
+            .filter(|run| run.status == RunStatus::Running)
+            .flat_map(|run| {
+                run.tasks.values().filter_map(|task| {
+                    matches!(task.status, TaskStatus::Enqueued)
+                        .then(|| (run.id.clone(), task.clone()))
+                })
+            })
+            .collect::<Vec<_>>();
+        tasks.sort_by(|a, b| {
+            a.1.created_at
+                .cmp(&b.1.created_at)
+                .then_with(|| a.0.as_str().cmp(b.0.as_str()))
+                .then_with(|| a.1.id.as_str().cmp(b.1.id.as_str()))
+        });
+        tasks
     }
 
     /// Find a task across all runs.
@@ -983,6 +1018,39 @@ impl RunOrchestrator {
         Ok(())
     }
 
+    /// Persist a task result summary independently from the live task status.
+    pub async fn update_task_result_summary(
+        &mut self,
+        run_id: &RunId,
+        task_id: &TaskNodeId,
+        summary: TaskResultSummary,
+    ) -> Result<()> {
+        let summary_json = serialize_json(&summary)?;
+
+        {
+            let state_store = Arc::clone(&self.state_store);
+            let task_id = task_id.to_string();
+            let summary_json = summary_json.clone();
+            tokio::task::spawn_blocking(move || {
+                state_store.update_task_result(&task_id, &summary_json)
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("task result persistence task failed: {error}"))??;
+        }
+
+        let run = self
+            .run_graph
+            .get_run_mut(run_id)
+            .ok_or_else(|| anyhow::anyhow!("run not found: {}", run_id))?;
+        let task = run
+            .tasks
+            .get_mut(task_id)
+            .ok_or_else(|| anyhow::anyhow!("task not found: {}", task_id))?;
+        task.result_summary = Some(summary);
+
+        Ok(())
+    }
+
     async fn append_runtime_event(
         &self,
         run_id: &RunId,
@@ -990,11 +1058,24 @@ impl RunOrchestrator {
         event_kind: RuntimeEventKind,
         created_at: DateTime<Utc>,
     ) -> Result<i64, Status> {
+        self.append_runtime_event_for_agent(run_id, task_id, None, event_kind, created_at)
+            .await
+    }
+
+    /// Append an event with optional agent scoping and wake any listeners.
+    pub async fn append_runtime_event_for_agent(
+        &self,
+        run_id: &RunId,
+        task_id: Option<TaskNodeId>,
+        agent_id: Option<AgentId>,
+        event_kind: RuntimeEventKind,
+        created_at: DateTime<Utc>,
+    ) -> Result<i64, Status> {
         let payload = serialize_json(&event_kind).map_err(internal_status)?;
         let event = AppendEvent {
             run_id: run_id.to_string(),
             task_id: task_id.map(|id| id.to_string()),
-            agent_id: None,
+            agent_id: agent_id.map(|id| id.to_string()),
             event_type: runtime_event_name(&event_kind).to_string(),
             payload,
             created_at,
@@ -1023,7 +1104,11 @@ fn seed_milestones(milestones: &[MilestoneInfo]) -> HashMap<MilestoneId, Milesto
         .collect()
 }
 
-fn build_root_task(template: &TaskTemplate, created_at: DateTime<Utc>) -> TaskNode {
+fn build_root_task(
+    template: &TaskTemplate,
+    workspace: &Path,
+    created_at: DateTime<Utc>,
+) -> TaskNode {
     let profile = stub_profile(
         &template.profile_hint,
         template.budget.allocated,
@@ -1047,7 +1132,7 @@ fn build_root_task(template: &TaskTemplate, created_at: DateTime<Utc>) -> TaskNo
         ),
         wait_mode: TaskWaitMode::Async,
         worktree: WorktreePlan::Shared {
-            workspace_path: PathBuf::from("."),
+            workspace_path: workspace.to_path_buf(),
         },
         assigned_agent: None,
         children: Vec::new(),
@@ -1153,6 +1238,7 @@ fn task_to_row(run_id: &RunId, task: &TaskNode) -> Result<TaskNodeRow> {
         depends_on: serialize_json(&task.depends_on)?,
         approval_state: serialize_json(&task.approval_state)?,
         requested_capabilities: serialize_json(&task.requested_capabilities)?,
+        worktree: serialize_json(&task.worktree)?,
         runtime_mode: "host".to_string(),
         status: task_status_label(&task.status).to_string(),
         assigned_agent_id: task.assigned_agent.as_ref().map(ToString::to_string),
@@ -1345,13 +1431,17 @@ mod tests {
         task_ids
     }
 
+    fn test_workspace() -> PathBuf {
+        std::env::temp_dir().join("forge-runtime-orchestrator-tests")
+    }
+
     async fn seed_running_parent(
         orchestrator: &mut RunOrchestrator,
         max_children: u32,
         require_approval_after: u32,
     ) -> (RunId, TaskNodeId) {
         let run = orchestrator
-            .submit_run("project-a".to_string(), make_test_plan(1))
+            .submit_run("project-a".to_string(), test_workspace(), make_test_plan(1))
             .await
             .unwrap();
         let parent_id = sorted_task_ids(&run).into_iter().next().unwrap();
@@ -1390,22 +1480,33 @@ mod tests {
     #[tokio::test]
     async fn submit_run_creates_run_with_seeded_tasks() {
         let (mut orchestrator, state_store) = make_test_orchestrator();
+        let workspace = test_workspace();
         let run = orchestrator
-            .submit_run("project-a".to_string(), make_test_plan(2))
+            .submit_run(
+                "project-a".to_string(),
+                workspace.clone(),
+                make_test_plan(2),
+            )
             .await
             .unwrap();
 
         assert_eq!(run.status, RunStatus::Running);
+        assert_eq!(run.workspace, workspace);
         assert_eq!(run.tasks.len(), 2);
         assert!(
             run.tasks
                 .values()
                 .all(|task| matches!(task.status, TaskStatus::Pending))
         );
+        assert!(run.tasks.values().all(|task| matches!(
+            &task.worktree,
+            WorktreePlan::Shared { workspace_path } if workspace_path == &workspace
+        )));
         assert!(orchestrator.run_graph.get_run(&run.id).is_some());
 
         let persisted = state_store.get_run(run.id.as_str()).unwrap().unwrap();
         assert_eq!(persisted.status, "Running");
+        assert_eq!(persisted.workspace, workspace.display().to_string());
         assert_eq!(
             state_store
                 .list_tasks_for_run(run.id.as_str())
@@ -1413,6 +1514,23 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn submit_run_rejects_relative_workspace() {
+        let (mut orchestrator, _) = make_test_orchestrator();
+
+        let error = orchestrator
+            .submit_run(
+                "project-a".to_string(),
+                PathBuf::from("relative-workspace"),
+                make_test_plan(1),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        assert!(error.message().contains("absolute host path"));
     }
 
     #[tokio::test]
@@ -1426,7 +1544,7 @@ mod tests {
         };
 
         let error = orchestrator
-            .submit_run("project-a".to_string(), plan)
+            .submit_run("project-a".to_string(), test_workspace(), plan)
             .await
             .unwrap_err();
 
@@ -1441,7 +1559,7 @@ mod tests {
         plan.initial_tasks[0].milestone = MilestoneId::new("missing");
 
         let error = orchestrator
-            .submit_run("project-a".to_string(), plan)
+            .submit_run("project-a".to_string(), test_workspace(), plan)
             .await
             .unwrap_err();
 
@@ -1456,7 +1574,7 @@ mod tests {
         plan.initial_tasks[0].depends_on = vec![TaskNodeId::new("template-root")];
 
         let error = orchestrator
-            .submit_run("project-a".to_string(), plan)
+            .submit_run("project-a".to_string(), test_workspace(), plan)
             .await
             .unwrap_err();
 
@@ -1468,7 +1586,7 @@ mod tests {
     async fn submit_run_emits_events() {
         let (mut orchestrator, state_store) = make_test_orchestrator();
         let run = orchestrator
-            .submit_run("project-a".to_string(), make_test_plan(2))
+            .submit_run("project-a".to_string(), test_workspace(), make_test_plan(2))
             .await
             .unwrap();
 
@@ -1492,11 +1610,11 @@ mod tests {
     async fn find_task_searches_across_runs() {
         let (mut orchestrator, _) = make_test_orchestrator();
         let run_a = orchestrator
-            .submit_run("project-a".to_string(), make_test_plan(1))
+            .submit_run("project-a".to_string(), test_workspace(), make_test_plan(1))
             .await
             .unwrap();
         let run_b = orchestrator
-            .submit_run("project-b".to_string(), make_test_plan(1))
+            .submit_run("project-b".to_string(), test_workspace(), make_test_plan(1))
             .await
             .unwrap();
         let task_id = run_b.tasks.values().next().unwrap().id.clone();
@@ -1509,10 +1627,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn enqueued_tasks_returns_ordered_launch_queue() {
+        let (mut orchestrator, _) = make_test_orchestrator();
+        let run = orchestrator
+            .submit_run("project-a".to_string(), test_workspace(), make_test_plan(2))
+            .await
+            .unwrap();
+        let task_ids = sorted_task_ids(&run);
+
+        orchestrator
+            .transition_task(&run.id, &task_ids[1], TaskStatus::Enqueued)
+            .await
+            .unwrap();
+        orchestrator
+            .transition_task(&run.id, &task_ids[0], TaskStatus::Enqueued)
+            .await
+            .unwrap();
+
+        let queued = orchestrator.enqueued_tasks();
+
+        assert_eq!(queued.len(), 2);
+        assert_eq!(queued[0].0, run.id);
+        assert_eq!(queued[0].1.id, task_ids[0]);
+        assert_eq!(queued[1].1.id, task_ids[1]);
+    }
+
+    #[tokio::test]
+    async fn update_task_result_summary_persists_runtime_projection() {
+        let (mut orchestrator, state_store) = make_test_orchestrator();
+        let run = orchestrator
+            .submit_run("project-a".to_string(), test_workspace(), make_test_plan(1))
+            .await
+            .unwrap();
+        let task_id = sorted_task_ids(&run).into_iter().next().unwrap();
+        let summary = TaskResultSummary {
+            summary: "completed the task".to_string(),
+            artifacts: vec![PathBuf::from("artifacts/result.txt")],
+            commit_sha: Some("abc123".to_string()),
+        };
+
+        orchestrator
+            .update_task_result_summary(&run.id, &task_id, summary.clone())
+            .await
+            .unwrap();
+
+        let persisted = state_store.get_task(task_id.as_str()).unwrap().unwrap();
+        assert!(persisted.result_summary.is_some());
+        let decoded: TaskResultSummary =
+            serde_json::from_str(persisted.result_summary.as_deref().unwrap()).unwrap();
+        assert_eq!(decoded, summary);
+        assert_eq!(
+            orchestrator
+                .get_task_in_run(&run.id, &task_id)
+                .unwrap()
+                .result_summary
+                .clone()
+                .unwrap(),
+            summary
+        );
+    }
+
+    #[tokio::test]
     async fn kill_task_kills_subtree() {
         let (mut orchestrator, state_store) = make_test_orchestrator();
         let run = orchestrator
-            .submit_run("project-a".to_string(), make_test_plan(3))
+            .submit_run("project-a".to_string(), test_workspace(), make_test_plan(3))
             .await
             .unwrap();
         let task_ids = sorted_task_ids(&run);
@@ -1579,7 +1758,7 @@ mod tests {
     async fn stop_run_cancels_and_persists_durable_status_change() {
         let (mut orchestrator, state_store) = make_test_orchestrator();
         let run = orchestrator
-            .submit_run("project-a".to_string(), make_test_plan(2))
+            .submit_run("project-a".to_string(), test_workspace(), make_test_plan(2))
             .await
             .unwrap();
         let task_ids = sorted_task_ids(&run);
@@ -1647,10 +1826,15 @@ mod tests {
     #[test]
     fn task_rows_round_trip_serialized_fields() {
         let created_at = Utc.with_ymd_and_hms(2026, 3, 13, 12, 0, 0).unwrap();
-        let task = build_root_task(&make_test_plan(1).initial_tasks[0], created_at);
+        let workspace = PathBuf::from("/tmp/forge-runtime-task-row");
+        let task = build_root_task(&make_test_plan(1).initial_tasks[0], &workspace, created_at);
         let row = task_to_row(&RunId::new("run-1"), &task).unwrap();
 
         assert_eq!(row.status, "Pending");
+        assert_eq!(
+            row.worktree,
+            r#"{"Shared":{"workspace_path":"/tmp/forge-runtime-task-row"}}"#
+        );
         assert_eq!(row.runtime_mode, "host");
         assert_eq!(row.finished_at, None);
     }
@@ -1822,7 +2006,7 @@ mod tests {
     async fn create_child_fails_for_nonexistent_parent() {
         let (mut orchestrator, _) = make_test_orchestrator();
         let run = orchestrator
-            .submit_run("project-a".to_string(), make_test_plan(1))
+            .submit_run("project-a".to_string(), test_workspace(), make_test_plan(1))
             .await
             .unwrap();
 
@@ -1843,7 +2027,7 @@ mod tests {
     async fn create_child_fails_for_non_running_parent() {
         let (mut orchestrator, _) = make_test_orchestrator();
         let run = orchestrator
-            .submit_run("project-a".to_string(), make_test_plan(1))
+            .submit_run("project-a".to_string(), test_workspace(), make_test_plan(1))
             .await
             .unwrap();
         let parent_id = sorted_task_ids(&run).into_iter().next().unwrap();

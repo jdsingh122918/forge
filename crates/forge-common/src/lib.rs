@@ -37,3 +37,6 @@ pub use run_graph::{
     PendingApproval, ResourceSnapshot, RunGraph, RunPlan, RunState, RunStatus, TaskNode,
     TaskResultSummary, TaskStatus, TaskTemplate, TaskWaitMode,
 };
+pub use runtime::{
+    AgentLaunchSpec, AgentOutputMode, AgentRuntime, AgentStatus, PreparedAgentLaunch,
+};

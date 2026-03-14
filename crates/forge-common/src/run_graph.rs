@@ -99,6 +99,9 @@ pub struct RunState {
     /// Project path or name this run is executing against.
     pub project: String,
 
+    /// Absolute workspace root for this run on the host.
+    pub workspace: PathBuf,
+
     /// Canonical daemon-owned submitted plan.
     pub plan: RunPlan,
 
@@ -755,6 +758,7 @@ mod tests {
         RunState {
             id: RunId::new("run-1"),
             project: "test-project".into(),
+            workspace: "/tmp/test".into(),
             plan: RunPlan {
                 version: 1,
                 milestones: vec![MilestoneInfo {

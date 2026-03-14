@@ -40,6 +40,7 @@ use crate::run_orchestrator::{CreateChildTaskParams, PendingApprovalView, RunOrc
 use crate::scheduler::Scheduler;
 use crate::shutdown::{NoopAgentSupervisor, ShutdownCoordinator};
 use crate::state::StateStore;
+use crate::task_manager::TaskManager;
 use crate::version::{DAEMON_VERSION, PROTOCOL_VERSION, SUPPORTED_CAPABILITIES};
 
 /// Initial daemon service implementation.
@@ -48,6 +49,7 @@ pub struct RuntimeService {
     orchestrator: Arc<Mutex<RunOrchestrator>>,
     event_stream: Arc<EventStreamCoordinator>,
     state_store: Arc<StateStore>,
+    task_manager: Option<Arc<TaskManager>>,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
 }
 
@@ -72,6 +74,7 @@ impl RuntimeService {
             state_store,
             orchestrator,
             event_stream,
+            None,
             shutdown_coordinator,
         )
     }
@@ -81,6 +84,7 @@ impl RuntimeService {
         state_store: Arc<StateStore>,
         orchestrator: Arc<Mutex<RunOrchestrator>>,
         event_stream: Arc<EventStreamCoordinator>,
+        task_manager: Option<Arc<TaskManager>>,
         shutdown_coordinator: Arc<ShutdownCoordinator>,
     ) -> Self {
         Self {
@@ -88,6 +92,7 @@ impl RuntimeService {
             orchestrator,
             event_stream,
             state_store,
+            task_manager,
             shutdown_coordinator,
         }
     }
@@ -112,6 +117,22 @@ impl RuntimeService {
         }
 
         Ok(())
+    }
+
+    fn runtime_backend_proto(&self) -> i32 {
+        let backend = self
+            .task_manager
+            .as_ref()
+            .map(|manager| manager.runtime_backend())
+            .unwrap_or(forge_common::run_graph::RuntimeBackend::Host);
+        runtime_backend_to_proto(backend) as i32
+    }
+
+    fn insecure_host_runtime(&self) -> bool {
+        self.task_manager
+            .as_ref()
+            .map(|manager| manager.insecure_host_runtime())
+            .unwrap_or(true)
     }
 }
 
@@ -157,6 +178,7 @@ pub async fn run_server(
         shutdown_signal,
         orchestrator,
         event_stream,
+        None,
         shutdown_coordinator,
     )
     .await
@@ -169,6 +191,7 @@ pub async fn run_server_with_components(
     shutdown_signal: Arc<Notify>,
     orchestrator: Arc<Mutex<RunOrchestrator>>,
     event_stream: Arc<EventStreamCoordinator>,
+    task_manager: Option<Arc<TaskManager>>,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
 ) -> Result<()> {
     if let Some(parent) = socket_path.parent() {
@@ -218,6 +241,7 @@ pub async fn run_server_with_components(
         state_store,
         orchestrator,
         event_stream,
+        task_manager,
         shutdown_coordinator,
     );
     let shutdown_future = {
@@ -268,10 +292,20 @@ impl ForgeRuntime for RuntimeService {
             .ok_or_else(|| Status::invalid_argument("missing run plan"))?;
         let plan = forge_common::run_graph::RunPlan::try_from(plan_proto)
             .map_err(|error| Status::invalid_argument(format!("invalid run plan: {error}")))?;
+        if request.workspace.is_empty() {
+            return Err(Status::invalid_argument("missing workspace"));
+        }
+        let workspace = PathBuf::from(&request.workspace);
 
         let mut orchestrator = self.orchestrator.lock().await;
-        let run_state = orchestrator.submit_run(request.project, plan).await?;
-        Ok(Response::new(run_state_to_proto(&run_state)))
+        let run_state = orchestrator
+            .submit_run(request.project, workspace, plan)
+            .await?;
+        Ok(Response::new(run_state_to_proto(
+            &run_state,
+            self.runtime_backend_proto(),
+            self.insecure_host_runtime(),
+        )))
     }
 
     async fn attach_run(
@@ -310,9 +344,37 @@ impl ForgeRuntime for RuntimeService {
             request.reason
         };
 
+        if let Some(task_manager) = &self.task_manager {
+            let task_ids = {
+                let orchestrator = self.orchestrator.lock().await;
+                orchestrator
+                    .get_run(&run_id)
+                    .map(|run| run.tasks.keys().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default()
+            };
+
+            for task_id in task_ids {
+                if task_manager.is_tracking(&task_id).await {
+                    task_manager
+                        .kill_agent(&task_id, reason.clone())
+                        .await
+                        .map_err(|error| {
+                            Status::internal(format!(
+                                "failed to stop active task {} before run shutdown: {error}",
+                                task_id
+                            ))
+                        })?;
+                }
+            }
+        }
+
         let mut orchestrator = self.orchestrator.lock().await;
         let run_state = orchestrator.stop_run(&run_id, reason).await?;
-        Ok(Response::new(run_state_to_proto(&run_state)))
+        Ok(Response::new(run_state_to_proto(
+            &run_state,
+            self.runtime_backend_proto(),
+            self.insecure_host_runtime(),
+        )))
     }
 
     async fn get_run(
@@ -325,7 +387,11 @@ impl ForgeRuntime for RuntimeService {
         let run = orchestrator
             .get_run(&run_id)
             .ok_or_else(|| Status::not_found("run not found"))?;
-        Ok(Response::new(run_state_to_proto(run)))
+        Ok(Response::new(run_state_to_proto(
+            run,
+            self.runtime_backend_proto(),
+            self.insecure_host_runtime(),
+        )))
     }
 
     async fn list_runs(
@@ -359,7 +425,16 @@ impl ForgeRuntime for RuntimeService {
         runs = runs[start_index..end_index].to_vec();
 
         Ok(Response::new(proto::ListRunsResponse {
-            runs: runs.into_iter().map(run_state_to_proto).collect(),
+            runs: runs
+                .into_iter()
+                .map(|run| {
+                    run_state_to_proto(
+                        run,
+                        self.runtime_backend_proto(),
+                        self.insecure_host_runtime(),
+                    )
+                })
+                .collect(),
             next_page_token,
         }))
     }
@@ -374,7 +449,12 @@ impl ForgeRuntime for RuntimeService {
         let (run, task) = orchestrator
             .find_task(&task_id)
             .ok_or_else(|| Status::not_found("task not found"))?;
-        Ok(Response::new(task_node_to_proto(run.id.as_str(), task)?))
+        Ok(Response::new(task_node_to_proto(
+            run.id.as_str(),
+            task,
+            self.runtime_backend_proto(),
+            self.insecure_host_runtime(),
+        )?))
     }
 
     async fn list_tasks(
@@ -427,7 +507,14 @@ impl ForgeRuntime for RuntimeService {
         Ok(Response::new(proto::ListTasksResponse {
             tasks: tasks
                 .into_iter()
-                .map(|task| task_node_to_proto(run.id.as_str(), task))
+                .map(|task| {
+                    task_node_to_proto(
+                        run.id.as_str(),
+                        task,
+                        self.runtime_backend_proto(),
+                        self.insecure_host_runtime(),
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()?,
             next_page_token,
         }))
@@ -496,7 +583,12 @@ impl ForgeRuntime for RuntimeService {
             .create_child_task(&run_id, &parent_task_id, params)
             .await?;
         Ok(Response::new(proto::CreateChildTaskResponse {
-            task: Some(task_node_to_proto(run_id.as_str(), &task)?),
+            task: Some(task_node_to_proto(
+                run_id.as_str(),
+                &task,
+                self.runtime_backend_proto(),
+                self.insecure_host_runtime(),
+            )?),
             requires_approval,
             approval_id: approval_id.map(|id| id.to_string()).unwrap_or_default(),
         }))
@@ -514,10 +606,37 @@ impl ForgeRuntime for RuntimeService {
             request.reason
         };
 
-        let mut orchestrator = self.orchestrator.lock().await;
-        let (run_id, task) = orchestrator.kill_task(&task_id, reason).await?;
+        let (run_id, task) = if let Some(task_manager) = &self.task_manager {
+            if task_manager.is_tracking(&task_id).await {
+                task_manager
+                    .kill_agent(&task_id, reason.clone())
+                    .await
+                    .map_err(|error| {
+                        Status::internal(format!(
+                            "failed to kill active runtime task {}: {error}",
+                            task_id
+                        ))
+                    })?;
+                let orchestrator = self.orchestrator.lock().await;
+                orchestrator
+                    .find_task(&task_id)
+                    .map(|(run, task)| (run.id.clone(), task.clone()))
+                    .ok_or_else(|| Status::not_found("task not found after runtime kill"))?
+            } else {
+                let mut orchestrator = self.orchestrator.lock().await;
+                orchestrator.kill_task(&task_id, reason).await?
+            }
+        } else {
+            let mut orchestrator = self.orchestrator.lock().await;
+            orchestrator.kill_task(&task_id, reason).await?
+        };
         Ok(Response::new(proto::KillTaskResponse {
-            task: Some(task_node_to_proto(run_id.as_str(), &task)?),
+            task: Some(task_node_to_proto(
+                run_id.as_str(),
+                &task,
+                self.runtime_backend_proto(),
+                self.insecure_host_runtime(),
+            )?),
         }))
     }
 
@@ -635,7 +754,12 @@ impl ForgeRuntime for RuntimeService {
             .await?;
 
         Ok(Response::new(proto::ResolveApprovalResponse {
-            task: Some(task_node_to_proto(run_id.as_str(), &task)?),
+            task: Some(task_node_to_proto(
+                run_id.as_str(),
+                &task,
+                self.runtime_backend_proto(),
+                self.insecure_host_runtime(),
+            )?),
             action_taken: action as i32,
         }))
     }
@@ -709,8 +833,8 @@ impl ForgeRuntime for RuntimeService {
                 .collect(),
             agent_count: counts.agent_count,
             run_count,
-            runtime_backend: proto::RuntimeBackend::Host as i32,
-            insecure_host_runtime: true,
+            runtime_backend: self.runtime_backend_proto(),
+            insecure_host_runtime: self.insecure_host_runtime(),
             nix_available: false,
         }))
     }
@@ -744,7 +868,11 @@ impl ForgeRuntime for RuntimeService {
     }
 }
 
-fn run_state_to_proto(run_state: &RunState) -> proto::RunInfo {
+fn run_state_to_proto(
+    run_state: &RunState,
+    runtime_backend: i32,
+    insecure_host_runtime: bool,
+) -> proto::RunInfo {
     proto::RunInfo {
         id: run_state.id.to_string(),
         project: run_state.project.clone(),
@@ -785,8 +913,8 @@ fn run_state_to_proto(run_state: &RunState) -> proto::RunInfo {
             total_tokens: i64::try_from(run_state.total_tokens).unwrap_or(i64::MAX),
         }),
         estimated_cost_usd: run_state.estimated_cost_usd,
-        runtime_backend: proto::RuntimeBackend::Host as i32,
-        insecure_host_runtime: true,
+        runtime_backend,
+        insecure_host_runtime,
         submitted_at: Some(datetime_to_timestamp(run_state.submitted_at)),
         started_at: run_started_at(run_state).map(datetime_to_timestamp),
         finished_at: run_state.finished_at.map(datetime_to_timestamp),
@@ -795,7 +923,12 @@ fn run_state_to_proto(run_state: &RunState) -> proto::RunInfo {
     }
 }
 
-fn task_node_to_proto(run_id: &str, task: &TaskNode) -> Result<proto::TaskInfo, Status> {
+fn task_node_to_proto(
+    run_id: &str,
+    task: &TaskNode,
+    _runtime_backend: i32,
+    _insecure_host_runtime: bool,
+) -> Result<proto::TaskInfo, Status> {
     Ok(proto::TaskInfo {
         id: task.id.to_string(),
         run_id: run_id.to_string(),
@@ -848,6 +981,16 @@ fn task_node_to_proto(run_id: &str, task: &TaskNode) -> Result<proto::TaskInfo, 
             .as_ref()
             .map(task_result_summary_to_proto),
     })
+}
+
+fn runtime_backend_to_proto(
+    backend: forge_common::run_graph::RuntimeBackend,
+) -> proto::RuntimeBackend {
+    match backend {
+        forge_common::run_graph::RuntimeBackend::Bwrap => proto::RuntimeBackend::Bwrap,
+        forge_common::run_graph::RuntimeBackend::Docker => proto::RuntimeBackend::Docker,
+        forge_common::run_graph::RuntimeBackend::Host => proto::RuntimeBackend::Host,
+    }
 }
 
 fn datetime_to_timestamp(timestamp: chrono::DateTime<chrono::Utc>) -> prost_types::Timestamp {

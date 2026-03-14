@@ -132,6 +132,28 @@ fn recover_tasks(
         }
     }
 
+    for instance in state_store.query_active_agent_instances()? {
+        let still_live = live_by_task
+            .get(instance.task_id.as_str())
+            .map(|agent| agent.agent_id.as_str() == instance.id.as_str())
+            .unwrap_or(false);
+        if !still_live {
+            state_store
+                .update_agent_instance_terminal(
+                    &instance.id,
+                    "Lost",
+                    now,
+                    instance.resource_peak.as_deref(),
+                )
+                .with_context(|| {
+                    format!(
+                        "failed to reconcile stale agent instance {} during recovery",
+                        instance.id
+                    )
+                })?;
+        }
+    }
+
     Ok((result, per_run_counts))
 }
 
@@ -260,6 +282,7 @@ fn reconstruct_run_state(run_row: RunRow, task_rows: Vec<TaskNodeRow>) -> Result
     Ok(RunState {
         id: run_id,
         project: run_row.project,
+        workspace: PathBuf::from(run_row.workspace),
         plan,
         milestones,
         tasks,
@@ -417,9 +440,7 @@ fn reconstruct_task_node(row: &TaskNodeRow) -> Result<TaskNode> {
             "task_nodes.requested_capabilities",
         )?,
         wait_mode: TaskWaitMode::Async,
-        worktree: WorktreePlan::Shared {
-            workspace_path: PathBuf::from("."),
-        },
+        worktree: decode_json::<WorktreePlan>(&row.worktree, "task_nodes.worktree")?,
         assigned_agent: assigned_agent.clone(),
         children: Vec::new(),
         result_summary: result_summary.clone(),
@@ -729,6 +750,7 @@ mod tests {
             .insert_run(&RunRow {
                 id: run_id.to_string(),
                 project: "project-a".to_string(),
+                workspace: "/tmp/project-a".to_string(),
                 plan_json: serde_json::to_string(&sample_plan()).unwrap(),
                 plan_hash: format!("hash-{run_id}"),
                 policy_snapshot: "{}".to_string(),
@@ -765,6 +787,7 @@ mod tests {
             depends_on: serde_json::to_string(&Vec::<TaskNodeId>::new()).unwrap(),
             approval_state: serde_json::to_string(&approval_state).unwrap(),
             requested_capabilities: serde_json::to_string(&sample_capabilities(5, 3)).unwrap(),
+            worktree: r#"{"Shared":{"workspace_path":"/tmp/project-a"}}"#.to_string(),
             runtime_mode: "host".to_string(),
             status: status.to_string(),
             assigned_agent_id: assigned_agent_id.map(str::to_string),
@@ -844,6 +867,34 @@ mod tests {
                 .status,
             "Running"
         );
+    }
+
+    #[tokio::test]
+    async fn recovery_preserves_workspace_context() {
+        let harness = TestHarness::new();
+        insert_run(harness.state_store.as_ref(), "run-1", "Submitted");
+        harness
+            .state_store
+            .insert_task(&sample_task_row(
+                "task-root",
+                "run-1",
+                None,
+                "Pending",
+                ApprovalState::NotRequired,
+                None,
+                0,
+            ))
+            .unwrap();
+
+        let graph = rebuild_run_graph(harness.state_store.as_ref()).unwrap();
+        let run = graph.get_run(&RunId::new("run-1")).unwrap();
+        let task = run.tasks.get(&TaskNodeId::new("task-root")).unwrap();
+
+        assert_eq!(run.workspace, PathBuf::from("/tmp/project-a"));
+        assert!(matches!(
+            &task.worktree,
+            WorktreePlan::Shared { workspace_path } if *workspace_path == PathBuf::from("/tmp/project-a")
+        ));
     }
 
     #[tokio::test]
@@ -931,6 +982,61 @@ mod tests {
                 .unwrap()
                 .status,
             "Failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_marks_stale_agent_instances_terminal() {
+        let harness = TestHarness::new();
+        insert_run(harness.state_store.as_ref(), "run-1", "Running");
+        harness
+            .state_store
+            .insert_task(&sample_task_row(
+                "task-running",
+                "run-1",
+                None,
+                "Running",
+                ApprovalState::NotRequired,
+                Some("agent-missing"),
+                0,
+            ))
+            .unwrap();
+        harness
+            .state_store
+            .insert_agent_instance(&crate::state::agent_instances::AgentInstanceRow {
+                id: "agent-missing".to_string(),
+                task_id: "task-running".to_string(),
+                runtime_backend: "Host".to_string(),
+                pid: Some(1234),
+                container_id: None,
+                status: "Running".to_string(),
+                started_at: sample_timestamp(0),
+                finished_at: None,
+                resource_peak: None,
+            })
+            .unwrap();
+
+        recover_orphans(
+            Arc::clone(&harness.state_store),
+            &harness.event_stream,
+            &FakeSupervisor::default(),
+        )
+        .await
+        .unwrap();
+
+        let recovered = harness
+            .state_store
+            .get_agent_instance("agent-missing")
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.status, "Lost");
+        assert!(recovered.finished_at.is_some());
+        assert!(
+            harness
+                .state_store
+                .list_active_agent_instances()
+                .unwrap()
+                .is_empty()
         );
     }
 

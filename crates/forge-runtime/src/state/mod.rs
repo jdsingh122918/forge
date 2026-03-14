@@ -1,5 +1,6 @@
 //! SQLite-backed runtime state store.
 
+pub mod agent_instances;
 pub mod events;
 pub mod runs;
 pub mod schema;

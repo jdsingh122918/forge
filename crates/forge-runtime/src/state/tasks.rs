@@ -22,6 +22,7 @@ pub struct TaskNodeRow {
     pub depends_on: String,
     pub approval_state: String,
     pub requested_capabilities: String,
+    pub worktree: String,
     pub runtime_mode: String,
     pub status: String,
     pub assigned_agent_id: Option<String>,
@@ -38,11 +39,11 @@ impl StateStore {
                 "INSERT INTO task_nodes (
                     id, run_id, parent_task_id, milestone_id, objective, expected_output,
                     profile, budget, memory_scope, depends_on, approval_state,
-                    requested_capabilities, runtime_mode, status, assigned_agent_id,
-                    created_at, finished_at, result_summary
+                    requested_capabilities, worktree, runtime_mode, status,
+                    assigned_agent_id, created_at, finished_at, result_summary
                  ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-                    ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
+                    ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
                  )",
                 params![
                     row.id,
@@ -57,6 +58,7 @@ impl StateStore {
                     row.depends_on,
                     row.approval_state,
                     row.requested_capabilities,
+                    row.worktree,
                     row.runtime_mode,
                     row.status,
                     row.assigned_agent_id,
@@ -77,8 +79,8 @@ impl StateStore {
                 "SELECT
                     id, run_id, parent_task_id, milestone_id, objective, expected_output,
                     profile, budget, memory_scope, depends_on, approval_state,
-                    requested_capabilities, runtime_mode, status, assigned_agent_id,
-                    created_at, finished_at, result_summary
+                    requested_capabilities, worktree, runtime_mode, status,
+                    assigned_agent_id, created_at, finished_at, result_summary
                  FROM task_nodes
                  WHERE id = ?1",
                 params![id],
@@ -148,8 +150,8 @@ impl StateStore {
                     "SELECT
                         id, run_id, parent_task_id, milestone_id, objective, expected_output,
                         profile, budget, memory_scope, depends_on, approval_state,
-                        requested_capabilities, runtime_mode, status, assigned_agent_id,
-                        created_at, finished_at, result_summary
+                        requested_capabilities, worktree, runtime_mode, status,
+                        assigned_agent_id, created_at, finished_at, result_summary
                      FROM task_nodes
                      WHERE run_id = ?1
                      ORDER BY created_at ASC, id ASC",
@@ -177,8 +179,8 @@ impl StateStore {
                         "SELECT
                             id, run_id, parent_task_id, milestone_id, objective, expected_output,
                             profile, budget, memory_scope, depends_on, approval_state,
-                            requested_capabilities, runtime_mode, status, assigned_agent_id,
-                            created_at, finished_at, result_summary
+                            requested_capabilities, worktree, runtime_mode, status,
+                            assigned_agent_id, created_at, finished_at, result_summary
                          FROM task_nodes
                          ORDER BY created_at ASC, id ASC",
                     )
@@ -196,8 +198,8 @@ impl StateStore {
                 "SELECT
                     id, run_id, parent_task_id, milestone_id, objective, expected_output,
                     profile, budget, memory_scope, depends_on, approval_state,
-                    requested_capabilities, runtime_mode, status, assigned_agent_id,
-                    created_at, finished_at, result_summary
+                    requested_capabilities, worktree, runtime_mode, status,
+                    assigned_agent_id, created_at, finished_at, result_summary
                  FROM task_nodes
                  WHERE status IN (",
             );
@@ -227,8 +229,8 @@ impl StateStore {
                     "SELECT
                         id, run_id, parent_task_id, milestone_id, objective, expected_output,
                         profile, budget, memory_scope, depends_on, approval_state,
-                        requested_capabilities, runtime_mode, status, assigned_agent_id,
-                        created_at, finished_at, result_summary
+                        requested_capabilities, worktree, runtime_mode, status,
+                        assigned_agent_id, created_at, finished_at, result_summary
                      FROM task_nodes
                      WHERE parent_task_id = ?1
                      ORDER BY created_at ASC, id ASC",
@@ -282,12 +284,13 @@ fn map_task_row(row: &Row<'_>) -> rusqlite::Result<TaskNodeRow> {
         depends_on: row.get(9)?,
         approval_state: row.get(10)?,
         requested_capabilities: row.get(11)?,
-        runtime_mode: row.get(12)?,
-        status: row.get(13)?,
-        assigned_agent_id: row.get(14)?,
-        created_at: parse_timestamp(row.get(15)?, 15)?,
-        finished_at: parse_optional_timestamp(row.get(16)?, 16)?,
-        result_summary: row.get(17)?,
+        worktree: row.get(12)?,
+        runtime_mode: row.get(13)?,
+        status: row.get(14)?,
+        assigned_agent_id: row.get(15)?,
+        created_at: parse_timestamp(row.get(16)?, 16)?,
+        finished_at: parse_optional_timestamp(row.get(17)?, 17)?,
+        result_summary: row.get(18)?,
     })
 }
 
@@ -333,6 +336,7 @@ mod tests {
                 plan_hash: format!("hash-{run_id}"),
                 policy_snapshot: r#"{"policy":"default"}"#.to_string(),
                 status: "running".to_string(),
+                workspace: "/tmp/proj-a".to_string(),
                 started_at: sample_timestamp(0),
                 finished_at: None,
                 total_tokens: 0,
@@ -361,6 +365,7 @@ mod tests {
             depends_on: "[]".to_string(),
             approval_state: r#"{"state":"not_required"}"#.to_string(),
             requested_capabilities: r#"{"tools":["rg"]}"#.to_string(),
+            worktree: r#"{"Shared":{"workspace_path":"/tmp/proj-a"}}"#.to_string(),
             runtime_mode: "host".to_string(),
             status: "pending".to_string(),
             assigned_agent_id: None,
