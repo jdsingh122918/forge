@@ -1,0 +1,46 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "e80d156a82c3",
+  "strategy": "manual-commit",
+  "branch": "runtime-daemon-dispatch",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "Cargo.lock",
+    "crates/forge-common/src/lib.rs",
+    "crates/forge-common/src/run_graph.rs",
+    "crates/forge-common/src/runtime.rs",
+    "crates/forge-runtime/Cargo.toml",
+    "crates/forge-runtime/src/event_stream.rs",
+    "crates/forge-runtime/src/lib.rs",
+    "crates/forge-runtime/src/main.rs",
+    "crates/forge-runtime/src/profile_compiler.rs",
+    "crates/forge-runtime/src/recovery.rs",
+    "crates/forge-runtime/src/run_orchestrator.rs",
+    "crates/forge-runtime/src/runtime/bwrap.rs",
+    "crates/forge-runtime/src/runtime/docker.rs",
+    "crates/forge-runtime/src/runtime/host.rs",
+    "crates/forge-runtime/src/runtime/io.rs",
+    "crates/forge-runtime/src/runtime/mod.rs",
+    "crates/forge-runtime/src/scheduler.rs",
+    "crates/forge-runtime/src/server.rs",
+    "crates/forge-runtime/src/shutdown.rs",
+    "crates/forge-runtime/src/state/agent_instances.rs",
+    "crates/forge-runtime/src/state/events.rs",
+    "crates/forge-runtime/src/state/mod.rs",
+    "crates/forge-runtime/src/state/runs.rs",
+    "crates/forge-runtime/src/state/schema.rs",
+    "crates/forge-runtime/src/state/tasks.rs",
+    "crates/forge-runtime/src/task_manager.rs",
+    "crates/forge-runtime/tests/approval_rpcs.rs",
+    "crates/forge-runtime/tests/create_child_task.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/e8/0d156a82c3/0/metadata.json",
+      "transcript": "/e8/0d156a82c3/0/full.jsonl",
+      "context": "",
+      "content_hash": "/e8/0d156a82c3/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
