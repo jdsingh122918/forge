@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "89c8104c9c6a",
+  "session_id": "c3679989-9b4f-4167-bb5a-8576e22b7bb5",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-14T23:29:22.418078Z",
+  "branch": "runtime-daemon-dispatch",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "crates/forge-runtime/src/state/events.rs",
+    "crates/forge-runtime/src/task_manager.rs",
+    "crates/forge-common/src/events.rs",
+    "crates/forge-runtime/src/run_orchestrator.rs",
+    "crates/forge-runtime/src/state/runs.rs",
+    "crates/forge-runtime/src/event_stream.rs",
+    "crates/forge-runtime/src/profile_compiler.rs",
+    "crates/forge-runtime/src/runtime/io.rs",
+    "crates/forge-runtime/src/server.rs"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "37273e539501",
+  "checkpoint_transcript_start": 8,
+  "transcript_lines_at_start": 8,
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-14T23:29:22.399123Z",
+    "agent_lines": 892,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 892,
+    "agent_percentage": 100
+  }
+}
