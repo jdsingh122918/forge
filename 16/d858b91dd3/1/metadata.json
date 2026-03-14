@@ -1,7 +1,9 @@
 {
   "cli_version": "0.4.9",
   "checkpoint_id": "16d858b91dd3",
+  "session_id": "411ebf30-bab7-466b-afde-56bc6c3abacc",
   "strategy": "manual-commit",
+  "created_at": "2026-03-14T22:55:17.321961Z",
   "branch": "runtime-daemon-dispatch",
   "checkpoints_count": 5,
   "files_touched": [
@@ -15,30 +17,24 @@
     "crates/forge-runtime/src/runtime/host.rs",
     "crates/forge-runtime/src/runtime/io.rs",
     "crates/forge-runtime/src/runtime/mod.rs",
-    "crates/forge-runtime/src/task_manager.rs",
-    "crates/forge-runtime/tests/event_streaming.rs"
+    "crates/forge-runtime/src/task_manager.rs"
   ],
-  "sessions": [
-    {
-      "metadata": "/16/d858b91dd3/0/metadata.json",
-      "transcript": "/16/d858b91dd3/0/full.jsonl",
-      "context": "",
-      "content_hash": "/16/d858b91dd3/0/content_hash.txt",
-      "prompt": ""
-    },
-    {
-      "metadata": "/16/d858b91dd3/1/metadata.json",
-      "transcript": "/16/d858b91dd3/1/full.jsonl",
-      "context": "/16/d858b91dd3/1/context.md",
-      "content_hash": "/16/d858b91dd3/1/content_hash.txt",
-      "prompt": "/16/d858b91dd3/1/prompt.txt"
-    }
-  ],
+  "agent": "Claude Code",
+  "turn_id": "a76d07031f07",
   "token_usage": {
     "input_tokens": 21,
     "cache_creation_tokens": 51815,
     "cache_read_tokens": 292720,
     "output_tokens": 5829,
     "api_call_count": 11
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-14T22:55:17.261072Z",
+    "agent_lines": 527,
+    "human_added": 250,
+    "human_modified": 231,
+    "human_removed": 0,
+    "total_committed": 995,
+    "agent_percentage": 52.96482412060301
   }
 }
