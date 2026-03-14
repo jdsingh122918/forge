@@ -144,6 +144,38 @@ pub enum RuntimeEventKind {
         output: TaskOutput,
     },
 
+    /// Assistant-facing text extracted from stream-json output.
+    AssistantText {
+        /// The text content emitted by the assistant.
+        text: String,
+    },
+
+    /// Thinking delta extracted from stream-json output.
+    Thinking {
+        /// The thinking content emitted by the assistant.
+        text: String,
+    },
+
+    /// Tool invocation extracted from stream-json output.
+    ToolCall {
+        /// Tool name reported by the model.
+        name: String,
+        /// Structured tool input payload.
+        input: Value,
+    },
+
+    /// Session identifier captured from stream-json output.
+    SessionCaptured {
+        /// Runtime session identifier.
+        session_id: String,
+    },
+
+    /// Final structured payload emitted by the runtime backend.
+    FinalPayload {
+        /// Structured terminal payload returned by the model/runtime.
+        payload: Value,
+    },
+
     // ── Agent lifecycle ──────────────────────────────────────────────
     /// An agent instance was spawned to execute a task.
     AgentSpawned {

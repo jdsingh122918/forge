@@ -12,8 +12,9 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use dashmap::DashMap;
 use forge_common::manifest::{
-    AgentManifest, CompiledProfile, CredentialGrant, MemoryPolicy, MemoryScope, PermissionSet,
-    ResourceLimits, RuntimeEnvPlan, SpawnLimits,
+    AgentManifest, CompiledProfile, CredentialAccessMode, CredentialGrant, MemoryPolicy,
+    MemoryScope, PermissionSet, RepoAccess, ResourceLimits, RunSharedWriteMode, RuntimeEnvPlan,
+    SpawnLimits,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -124,10 +125,21 @@ pub struct SpawnOverlay {
 }
 
 /// Compiler for trusted base profiles plus untrusted project overlays.
+#[derive(Debug)]
 pub struct ProfileCompiler {
     base_profiles: BTreeMap<String, TrustedBaseProfile>,
     compiled_cache: DashMap<ProfileKey, CompiledProfile>,
     compile_lock: Semaphore,
+}
+
+/// Build the default trusted base profiles shipped with the runtime daemon.
+pub fn default_trusted_base_profiles() -> Vec<TrustedBaseProfile> {
+    vec![default_implementer_base_profile()]
+}
+
+/// Build the default profile compiler used by daemon bootstrap.
+pub fn default_profile_compiler() -> Result<ProfileCompiler> {
+    ProfileCompiler::new(default_trusted_base_profiles())
 }
 
 impl ProfileCompiler {
@@ -492,67 +504,69 @@ fn push_unique_credential(values: &mut Vec<CredentialGrant>, value: CredentialGr
     }
 }
 
+fn default_implementer_base_profile() -> TrustedBaseProfile {
+    TrustedBaseProfile {
+        name: "implementer".into(),
+        env_plan: RuntimeEnvPlan::Host {
+            explicit_opt_in: true,
+        },
+        tools: vec!["git".into(), "cargo".into()],
+        optional_tools: BTreeMap::from([
+            ("python3".into(), "python3".into()),
+            ("poetry".into(), "poetry".into()),
+        ]),
+        mcp_servers: vec!["filesystem".into(), "github".into()],
+        credentials: vec![CredentialGrant {
+            handle: "github-api".into(),
+            access_mode: CredentialAccessMode::ProxyOnly,
+        }],
+        optional_credentials: BTreeMap::from([(
+            "pypi-publish".into(),
+            CredentialGrant {
+                handle: "pypi-publish".into(),
+                access_mode: CredentialAccessMode::ProxyOnly,
+            },
+        )]),
+        memory_policy: MemoryPolicy {
+            read_scopes: vec![
+                MemoryScope::Scratch,
+                MemoryScope::RunShared,
+                MemoryScope::Project,
+            ],
+            write_scopes: vec![MemoryScope::Scratch, MemoryScope::RunShared],
+            run_shared_write_mode: RunSharedWriteMode::AppendOnlyLane,
+        },
+        resources: ResourceLimits {
+            cpu: 4.0,
+            memory_bytes: 8 * 1024 * 1024 * 1024,
+            token_budget: 200_000,
+        },
+        permissions: PermissionSet {
+            repo_access: RepoAccess::ReadWrite,
+            network_allowlist: HashSet::from([
+                "crates.io".to_string(),
+                "registry.npmjs.org".to_string(),
+            ]),
+            spawn_limits: SpawnLimits {
+                max_children: 10,
+                require_approval_after: 5,
+            },
+            allow_project_memory_promotion: false,
+        },
+        optional_network_allowlist: BTreeSet::from([
+            "files.pythonhosted.org".to_string(),
+            "pypi.org".to_string(),
+        ]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use forge_common::manifest::{CredentialAccessMode, RepoAccess, RunSharedWriteMode};
     use tempfile::TempDir;
 
     fn make_implementer_base() -> TrustedBaseProfile {
-        TrustedBaseProfile {
-            name: "implementer".into(),
-            env_plan: RuntimeEnvPlan::Host {
-                explicit_opt_in: true,
-            },
-            tools: vec!["git".into(), "cargo".into()],
-            optional_tools: BTreeMap::from([
-                ("python3".into(), "python3".into()),
-                ("poetry".into(), "poetry".into()),
-            ]),
-            mcp_servers: vec!["filesystem".into(), "github".into()],
-            credentials: vec![CredentialGrant {
-                handle: "github-api".into(),
-                access_mode: CredentialAccessMode::ProxyOnly,
-            }],
-            optional_credentials: BTreeMap::from([(
-                "pypi-publish".into(),
-                CredentialGrant {
-                    handle: "pypi-publish".into(),
-                    access_mode: CredentialAccessMode::ProxyOnly,
-                },
-            )]),
-            memory_policy: MemoryPolicy {
-                read_scopes: vec![
-                    MemoryScope::Scratch,
-                    MemoryScope::RunShared,
-                    MemoryScope::Project,
-                ],
-                write_scopes: vec![MemoryScope::Scratch, MemoryScope::RunShared],
-                run_shared_write_mode: RunSharedWriteMode::AppendOnlyLane,
-            },
-            resources: ResourceLimits {
-                cpu: 4.0,
-                memory_bytes: 8 * 1024 * 1024 * 1024,
-                token_budget: 200_000,
-            },
-            permissions: PermissionSet {
-                repo_access: RepoAccess::ReadWrite,
-                network_allowlist: HashSet::from([
-                    "crates.io".to_string(),
-                    "registry.npmjs.org".to_string(),
-                ]),
-                spawn_limits: SpawnLimits {
-                    max_children: 10,
-                    require_approval_after: 5,
-                },
-                allow_project_memory_promotion: false,
-            },
-            optional_network_allowlist: BTreeSet::from([
-                "files.pythonhosted.org".to_string(),
-                "pypi.org".to_string(),
-            ]),
-        }
+        default_implementer_base_profile()
     }
 
     #[test]

@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use bollard::container::LogOutput;
 use bollard::errors::Error as BollardError;
 use chrono::{DateTime, Utc};
-use forge_common::events::TaskOutput;
+use forge_common::events::{RuntimeEventKind, TaskOutput};
 use forge_common::ids::{AgentId, RunId, TaskNodeId};
 use forge_common::output_parser::{
     ParsedOutputEvent, ParsedOutputMode, ParsedOutputState, parse_output_line,
@@ -24,7 +24,7 @@ pub struct RuntimeOutputEnvelope {
     pub run_id: RunId,
     pub task_id: TaskNodeId,
     pub agent_id: AgentId,
-    pub output: TaskOutput,
+    pub event: RuntimeEventKind,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -81,22 +81,38 @@ impl RuntimeOutputEmitter {
 
     pub fn emit_stdout_line(&self, state: &mut ParsedOutputState, line: String) {
         for event in parse_output_line(state, self.output_mode, line) {
-            if let ParsedOutputEvent::TaskOutput(output) = event {
-                self.emit(output);
-            }
+            self.emit_parsed_event(event);
         }
     }
 
     pub fn emit_stderr_line(&self, line: String) {
-        self.emit(TaskOutput::Stderr(line));
+        self.emit(RuntimeEventKind::TaskOutput {
+            output: TaskOutput::Stderr(line),
+        });
     }
 
-    fn emit(&self, output: TaskOutput) {
+    fn emit_parsed_event(&self, event: ParsedOutputEvent) {
+        let event = match event {
+            ParsedOutputEvent::TaskOutput(output) => RuntimeEventKind::TaskOutput { output },
+            ParsedOutputEvent::AssistantText(text) => RuntimeEventKind::AssistantText { text },
+            ParsedOutputEvent::Thinking(text) => RuntimeEventKind::Thinking { text },
+            ParsedOutputEvent::ToolCall { name, input } => {
+                RuntimeEventKind::ToolCall { name, input }
+            }
+            ParsedOutputEvent::SessionCaptured(session_id) => {
+                RuntimeEventKind::SessionCaptured { session_id }
+            }
+            ParsedOutputEvent::FinalPayload(payload) => RuntimeEventKind::FinalPayload { payload },
+        };
+        self.emit(event);
+    }
+
+    fn emit(&self, event: RuntimeEventKind) {
         self.sink.emit(RuntimeOutputEnvelope {
             run_id: self.run_id.clone(),
             task_id: self.task_id.clone(),
             agent_id: self.agent_id.clone(),
-            output,
+            event,
             timestamp: Utc::now(),
         });
     }

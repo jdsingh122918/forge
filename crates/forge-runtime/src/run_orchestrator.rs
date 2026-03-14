@@ -9,8 +9,8 @@ use chrono::{DateTime, Utc};
 use forge_common::events::RuntimeEventKind;
 use forge_common::ids::{AgentId, ApprovalId, MilestoneId, RunId, TaskNodeId};
 use forge_common::manifest::{
-    AgentManifest, CapabilityEnvelope, CompiledProfile, MemoryPolicy, MemoryScope, PermissionSet,
-    RepoAccess, ResourceLimits, RunSharedWriteMode, RuntimeEnvPlan, SpawnLimits, WorktreePlan,
+    CapabilityEnvelope, CompiledProfile, CredentialGrant, MemoryScope, RepoAccess,
+    RunSharedWriteMode, WorktreePlan,
 };
 use forge_common::run_graph::{
     ApprovalActorKind, ApprovalReasonKind, ApprovalState, MilestoneInfo, MilestoneState,
@@ -21,6 +21,7 @@ use serde::Serialize;
 use tonic::Status;
 
 use crate::event_stream::EventStreamCoordinator;
+use crate::profile_compiler::{ProfileCompiler, ProjectOverlay, default_profile_compiler};
 use crate::state::StateStore;
 use crate::state::events::AppendEvent;
 use crate::state::runs::RunRow;
@@ -33,6 +34,7 @@ pub struct RunOrchestrator {
     pub run_graph: RunGraph,
     state_store: Arc<StateStore>,
     event_stream: Arc<EventStreamCoordinator>,
+    profile_compiler: Arc<ProfileCompiler>,
 }
 
 /// Parameters for dynamically creating a child task under an existing parent.
@@ -58,10 +60,27 @@ pub struct PendingApprovalView {
     pub current_child_count: u32,
 }
 
+/// Durable runtime event append request scoped to a run/task/agent triple.
+#[derive(Debug, Clone)]
+pub struct RuntimeEventAppend {
+    pub run_id: RunId,
+    pub task_id: Option<TaskNodeId>,
+    pub agent_id: Option<AgentId>,
+    pub event_kind: RuntimeEventKind,
+    pub created_at: DateTime<Utc>,
+}
+
 impl RunOrchestrator {
     /// Create a new empty orchestrator.
     pub fn new(state_store: Arc<StateStore>, event_stream: Arc<EventStreamCoordinator>) -> Self {
-        Self::with_run_graph(RunGraph::new(), state_store, event_stream)
+        let profile_compiler =
+            Arc::new(default_profile_compiler().expect("default trusted profiles must be valid"));
+        Self::with_run_graph_and_profile_compiler(
+            RunGraph::new(),
+            state_store,
+            event_stream,
+            profile_compiler,
+        )
     }
 
     /// Create an orchestrator seeded from an existing run graph.
@@ -70,10 +89,28 @@ impl RunOrchestrator {
         state_store: Arc<StateStore>,
         event_stream: Arc<EventStreamCoordinator>,
     ) -> Self {
+        let profile_compiler =
+            Arc::new(default_profile_compiler().expect("default trusted profiles must be valid"));
+        Self::with_run_graph_and_profile_compiler(
+            run_graph,
+            state_store,
+            event_stream,
+            profile_compiler,
+        )
+    }
+
+    /// Create an orchestrator with an explicit profile compiler.
+    pub fn with_run_graph_and_profile_compiler(
+        run_graph: RunGraph,
+        state_store: Arc<StateStore>,
+        event_stream: Arc<EventStreamCoordinator>,
+        profile_compiler: Arc<ProfileCompiler>,
+    ) -> Self {
         Self {
             run_graph,
             state_store,
             event_stream,
+            profile_compiler,
         }
     }
 
@@ -153,7 +190,12 @@ impl RunOrchestrator {
         let mut tasks = HashMap::with_capacity(plan.initial_tasks.len());
 
         for template in &plan.initial_tasks {
-            let task = build_root_task(template, workspace.as_path(), submitted_at);
+            let task = build_root_task_with_compiler(
+                template,
+                workspace.as_path(),
+                submitted_at,
+                self.profile_compiler.as_ref(),
+            )?;
             let task_row = task_to_row(&run_id, &task).map_err(internal_status)?;
 
             let milestone_state = milestones
@@ -442,6 +484,7 @@ impl RunOrchestrator {
         } else {
             TaskStatus::Pending
         };
+        let child_workspace = worktree_workspace_path(&parent_worktree)?;
         let child = TaskNode {
             id: TaskNodeId::generate(),
             parent_task: Some(parent_task_id.clone()),
@@ -449,11 +492,11 @@ impl RunOrchestrator {
             depends_on: request.depends_on.clone(),
             objective: request.objective.clone(),
             expected_output: request.expected_output.clone(),
-            profile: stub_profile_from_capabilities(
-                &request.profile,
-                &request.requested_capabilities,
-                &request.budget,
-            ),
+            profile: compile_child_task_profile(
+                self.profile_compiler.as_ref(),
+                child_workspace.as_path(),
+                &request,
+            )?,
             budget: request.budget.clone(),
             memory_scope: request.memory_scope,
             approval_state,
@@ -1124,6 +1167,75 @@ impl RunOrchestrator {
 
         Ok(cursor)
     }
+
+    /// Append multiple runtime events and advance affected run cursors in batch.
+    pub async fn record_runtime_events_for_agents(
+        &mut self,
+        events: Vec<RuntimeEventAppend>,
+    ) -> Result<Vec<i64>, Status> {
+        if events.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let prepared = events
+            .into_iter()
+            .map(|event| {
+                let payload = serialize_json(&event.event_kind).map_err(internal_status)?;
+                let run_id = event.run_id;
+                Ok((
+                    run_id.clone(),
+                    AppendEvent {
+                        run_id: run_id.to_string(),
+                        task_id: event.task_id.map(|id| id.to_string()),
+                        agent_id: event.agent_id.map(|id| id.to_string()),
+                        event_type: runtime_event_name(&event.event_kind).to_string(),
+                        payload,
+                        created_at: event.created_at,
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>, Status>>()?;
+
+        let append_events = prepared
+            .iter()
+            .map(|(_, event)| event.clone())
+            .collect::<Vec<_>>();
+        let seqs = self
+            .event_stream
+            .append_many_and_wake(append_events)
+            .await
+            .map_err(internal_status)?;
+
+        let mut run_cursors = HashMap::<RunId, i64>::new();
+        for ((run_id, _), cursor) in prepared.iter().zip(seqs.iter().copied()) {
+            run_cursors.insert(run_id.clone(), cursor);
+        }
+
+        let persisted_cursors = run_cursors
+            .iter()
+            .map(|(run_id, cursor)| (run_id.to_string(), *cursor))
+            .collect::<Vec<_>>();
+        let state_store = Arc::clone(&self.state_store);
+        tokio::task::spawn_blocking(move || state_store.update_run_cursors(&persisted_cursors))
+            .await
+            .map_err(|error| {
+                Status::internal(format!(
+                    "runtime event cursor persistence task failed: {error}"
+                ))
+            })?
+            .map_err(internal_status)?;
+
+        for (run_id, cursor) in run_cursors {
+            let run = self
+                .run_graph
+                .get_run_mut(&run_id)
+                .ok_or_else(|| Status::not_found(format!("run not found: {run_id}")))?;
+            run.last_event_cursor = u64::try_from(cursor)
+                .map_err(|error| Status::internal(format!("invalid event cursor: {error}")))?;
+        }
+
+        Ok(seqs)
+    }
 }
 
 fn seed_milestones(milestones: &[MilestoneInfo]) -> HashMap<MilestoneId, MilestoneState> {
@@ -1142,18 +1254,35 @@ fn seed_milestones(milestones: &[MilestoneInfo]) -> HashMap<MilestoneId, Milesto
         .collect()
 }
 
+#[cfg(test)]
 fn build_root_task(
     template: &TaskTemplate,
     workspace: &Path,
     created_at: DateTime<Utc>,
-) -> TaskNode {
-    let profile = stub_profile(
-        &template.profile_hint,
-        template.budget.allocated,
-        template.memory_scope,
-    );
+) -> Result<TaskNode, Status> {
+    build_root_task_with_compiler(
+        template,
+        workspace,
+        created_at,
+        &default_profile_compiler().expect("default trusted profiles must be valid"),
+    )
+}
 
-    TaskNode {
+fn build_root_task_with_compiler(
+    template: &TaskTemplate,
+    workspace: &Path,
+    created_at: DateTime<Utc>,
+    profile_compiler: &ProfileCompiler,
+) -> Result<TaskNode, Status> {
+    let profile = compile_root_task_profile(
+        profile_compiler,
+        workspace,
+        &template.profile_hint,
+        &template.budget,
+    )?;
+    let requested_capabilities = capability_envelope_from_profile(&profile);
+
+    Ok(TaskNode {
         id: TaskNodeId::generate(),
         parent_task: None,
         milestone: template.milestone.clone(),
@@ -1164,10 +1293,7 @@ fn build_root_task(
         budget: template.budget.clone(),
         memory_scope: template.memory_scope,
         approval_state: ApprovalState::NotRequired,
-        requested_capabilities: stub_capability_envelope(
-            template.memory_scope,
-            template.budget.allocated,
-        ),
+        requested_capabilities,
         wait_mode: TaskWaitMode::Async,
         worktree: WorktreePlan::Shared {
             workspace_path: workspace.to_path_buf(),
@@ -1178,72 +1304,313 @@ fn build_root_task(
         status: TaskStatus::Pending,
         created_at,
         finished_at: None,
-    }
+    })
 }
 
-fn stub_profile(
+fn compile_root_task_profile(
+    profile_compiler: &ProfileCompiler,
+    workspace: &Path,
     profile_hint: &str,
-    token_budget: u64,
-    memory_scope: MemoryScope,
-) -> CompiledProfile {
-    let requested_capabilities = stub_capability_envelope(memory_scope, token_budget);
-    stub_profile_from_capabilities(
-        profile_hint,
-        &requested_capabilities,
-        &forge_common::manifest::BudgetEnvelope::new(token_budget, 80),
-    )
+    budget: &forge_common::manifest::BudgetEnvelope,
+) -> Result<CompiledProfile, Status> {
+    let overlay = load_profile_overlay(workspace, profile_hint)?;
+    let compiled = profile_compiler
+        .compile_sync(profile_hint, overlay.as_ref())
+        .map_err(|error| {
+            Status::invalid_argument(format!(
+                "failed to compile root task profile '{profile_hint}': {error}"
+            ))
+        })?;
+
+    Ok(apply_budget_to_profile(compiled, budget.allocated))
 }
 
-fn stub_profile_from_capabilities(
-    profile_hint: &str,
+fn compile_child_task_profile(
+    profile_compiler: &ProfileCompiler,
+    workspace: &Path,
+    request: &CreateChildTaskParams,
+) -> Result<CompiledProfile, Status> {
+    let overlay = load_profile_overlay(workspace, &request.profile)?;
+    let compiled = profile_compiler
+        .compile_sync(&request.profile, overlay.as_ref())
+        .map_err(|error| {
+            Status::invalid_argument(format!(
+                "failed to compile child task profile '{}': {error}",
+                request.profile
+            ))
+        })?;
+
+    constrain_profile_to_capabilities(compiled, &request.requested_capabilities, &request.budget)
+}
+
+fn constrain_profile_to_capabilities(
+    profile: CompiledProfile,
     requested_capabilities: &CapabilityEnvelope,
     budget: &forge_common::manifest::BudgetEnvelope,
-) -> CompiledProfile {
-    CompiledProfile {
-        base_profile: profile_hint.to_string(),
-        overlay_hash: None,
-        manifest: AgentManifest {
-            name: profile_hint.to_string(),
-            tools: requested_capabilities.tools.clone(),
-            mcp_servers: requested_capabilities.mcp_servers.clone(),
-            credentials: requested_capabilities.credentials.clone(),
-            memory_policy: requested_capabilities.memory_policy.clone(),
-            resources: ResourceLimits {
-                cpu: 1.0,
-                memory_bytes: 512 * 1024 * 1024,
-                token_budget: budget.allocated,
-            },
-            permissions: PermissionSet {
-                repo_access: requested_capabilities.repo_access,
-                network_allowlist: requested_capabilities.network_allowlist.clone(),
-                spawn_limits: requested_capabilities.spawn_limits.clone(),
-                allow_project_memory_promotion: requested_capabilities
-                    .allow_project_memory_promotion,
-            },
-        },
-        env_plan: RuntimeEnvPlan::Host {
-            explicit_opt_in: true,
-        },
+) -> Result<CompiledProfile, Status> {
+    validate_capability_subset(&profile, requested_capabilities)?;
+
+    let mut constrained = profile;
+    constrained.manifest.tools = requested_capabilities.tools.clone();
+    constrained.manifest.mcp_servers = requested_capabilities.mcp_servers.clone();
+    constrained.manifest.credentials = requested_capabilities.credentials.clone();
+    constrained.manifest.memory_policy = requested_capabilities.memory_policy.clone();
+    constrained.manifest.permissions.repo_access = requested_capabilities.repo_access;
+    constrained.manifest.permissions.network_allowlist =
+        requested_capabilities.network_allowlist.clone();
+    constrained.manifest.permissions.spawn_limits = requested_capabilities.spawn_limits.clone();
+    constrained
+        .manifest
+        .permissions
+        .allow_project_memory_promotion = requested_capabilities.allow_project_memory_promotion;
+    constrained.manifest.resources.token_budget = constrained
+        .manifest
+        .resources
+        .token_budget
+        .min(budget.allocated);
+
+    Ok(constrained)
+}
+
+fn capability_envelope_from_profile(profile: &CompiledProfile) -> CapabilityEnvelope {
+    CapabilityEnvelope {
+        tools: profile.manifest.tools.clone(),
+        mcp_servers: profile.manifest.mcp_servers.clone(),
+        credentials: profile.manifest.credentials.clone(),
+        network_allowlist: profile.manifest.permissions.network_allowlist.clone(),
+        memory_policy: profile.manifest.memory_policy.clone(),
+        repo_access: profile.manifest.permissions.repo_access,
+        spawn_limits: profile.manifest.permissions.spawn_limits.clone(),
+        allow_project_memory_promotion: profile.manifest.permissions.allow_project_memory_promotion,
     }
 }
 
-fn stub_capability_envelope(memory_scope: MemoryScope, token_budget: u64) -> CapabilityEnvelope {
+fn load_profile_overlay(
+    workspace: &Path,
+    profile_hint: &str,
+) -> Result<Option<ProjectOverlay>, Status> {
+    let overlay_path = workspace
+        .join(".forge")
+        .join("runtime")
+        .join("profile-overlays")
+        .join(format!("{profile_hint}.toml"));
+    if !overlay_path.exists() {
+        return Ok(None);
+    }
+
+    ProfileCompiler::parse_overlay(&overlay_path)
+        .map(Some)
+        .map_err(|error| {
+            Status::invalid_argument(format!(
+                "failed to parse profile overlay {}: {error}",
+                overlay_path.display()
+            ))
+        })
+}
+
+fn apply_budget_to_profile(mut profile: CompiledProfile, token_budget: u64) -> CompiledProfile {
+    profile.manifest.resources.token_budget =
+        profile.manifest.resources.token_budget.min(token_budget);
+    profile
+}
+
+fn worktree_workspace_path(worktree: &WorktreePlan) -> Result<PathBuf, Status> {
+    let workspace = match worktree {
+        WorktreePlan::Dedicated { worktree_path, .. }
+        | WorktreePlan::Isolated { worktree_path, .. } => worktree_path.clone(),
+        WorktreePlan::Shared { workspace_path } => workspace_path.clone(),
+    };
+
+    if !workspace.is_absolute() {
+        return Err(Status::invalid_argument(format!(
+            "task worktree path must be absolute: {}",
+            workspace.display()
+        )));
+    }
+
+    Ok(workspace)
+}
+
+fn validate_capability_subset(
+    profile: &CompiledProfile,
+    requested_capabilities: &CapabilityEnvelope,
+) -> Result<(), Status> {
+    let allowed_tools: HashSet<&str> = profile.manifest.tools.iter().map(String::as_str).collect();
+    for tool in &requested_capabilities.tools {
+        if !allowed_tools.contains(tool.as_str()) {
+            return Err(Status::invalid_argument(format!(
+                "requested tool '{}' is not allowed by compiled profile '{}'",
+                tool, profile.base_profile
+            )));
+        }
+    }
+
+    let allowed_mcp_servers: HashSet<&str> = profile
+        .manifest
+        .mcp_servers
+        .iter()
+        .map(String::as_str)
+        .collect();
+    for server in &requested_capabilities.mcp_servers {
+        if !allowed_mcp_servers.contains(server.as_str()) {
+            return Err(Status::invalid_argument(format!(
+                "requested MCP server '{}' is not allowed by compiled profile '{}'",
+                server, profile.base_profile
+            )));
+        }
+    }
+
+    for credential in &requested_capabilities.credentials {
+        if !profile
+            .manifest
+            .credentials
+            .iter()
+            .any(|allowed| same_credential_grant(allowed, credential))
+        {
+            return Err(Status::invalid_argument(format!(
+                "requested credential '{}' is not allowed by compiled profile '{}'",
+                credential.handle, profile.base_profile
+            )));
+        }
+    }
+
+    for host in &requested_capabilities.network_allowlist {
+        if !profile
+            .manifest
+            .permissions
+            .network_allowlist
+            .contains(host)
+        {
+            return Err(Status::invalid_argument(format!(
+                "requested network host '{}' is not allowed by compiled profile '{}'",
+                host, profile.base_profile
+            )));
+        }
+    }
+
+    validate_memory_scope_subset(
+        "read",
+        &requested_capabilities.memory_policy.read_scopes,
+        &profile.manifest.memory_policy.read_scopes,
+        &profile.base_profile,
+    )?;
+    validate_memory_scope_subset(
+        "write",
+        &requested_capabilities.memory_policy.write_scopes,
+        &profile.manifest.memory_policy.write_scopes,
+        &profile.base_profile,
+    )?;
+    if run_shared_write_mode_rank(requested_capabilities.memory_policy.run_shared_write_mode)
+        > run_shared_write_mode_rank(profile.manifest.memory_policy.run_shared_write_mode)
+    {
+        return Err(Status::invalid_argument(format!(
+            "requested run-shared write mode exceeds compiled profile '{}'",
+            profile.base_profile
+        )));
+    }
+
+    if repo_access_rank(requested_capabilities.repo_access)
+        > repo_access_rank(profile.manifest.permissions.repo_access)
+    {
+        return Err(Status::invalid_argument(format!(
+            "requested repo access exceeds compiled profile '{}'",
+            profile.base_profile
+        )));
+    }
+
+    let requested_spawn_limits = &requested_capabilities.spawn_limits;
+    let allowed_spawn_limits = &profile.manifest.permissions.spawn_limits;
+    if requested_spawn_limits.max_children > allowed_spawn_limits.max_children {
+        return Err(Status::invalid_argument(format!(
+            "requested max_children={} exceeds compiled profile '{}' limit of {}",
+            requested_spawn_limits.max_children,
+            profile.base_profile,
+            allowed_spawn_limits.max_children
+        )));
+    }
+    if requested_spawn_limits.require_approval_after > allowed_spawn_limits.require_approval_after {
+        return Err(Status::invalid_argument(format!(
+            "requested require_approval_after={} exceeds compiled profile '{}' limit of {}",
+            requested_spawn_limits.require_approval_after,
+            profile.base_profile,
+            allowed_spawn_limits.require_approval_after
+        )));
+    }
+    if requested_spawn_limits.require_approval_after > requested_spawn_limits.max_children {
+        return Err(Status::invalid_argument(format!(
+            "requested require_approval_after={} exceeds requested max_children={}",
+            requested_spawn_limits.require_approval_after, requested_spawn_limits.max_children
+        )));
+    }
+
+    if requested_capabilities.allow_project_memory_promotion
+        && !profile.manifest.permissions.allow_project_memory_promotion
+    {
+        return Err(Status::invalid_argument(format!(
+            "requested project-memory promotion is not allowed by compiled profile '{}'",
+            profile.base_profile
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_memory_scope_subset(
+    scope_kind: &str,
+    requested: &[MemoryScope],
+    allowed: &[MemoryScope],
+    profile_name: &str,
+) -> Result<(), Status> {
+    let allowed_scopes: HashSet<MemoryScope> = allowed.iter().copied().collect();
+    for scope in requested {
+        if !allowed_scopes.contains(scope) {
+            return Err(Status::invalid_argument(format!(
+                "requested {scope_kind} memory scope '{scope:?}' is not allowed by compiled profile '{}'",
+                profile_name
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn same_credential_grant(left: &CredentialGrant, right: &CredentialGrant) -> bool {
+    left.handle == right.handle && left.access_mode == right.access_mode
+}
+
+fn repo_access_rank(access: RepoAccess) -> u8 {
+    match access {
+        RepoAccess::None => 0,
+        RepoAccess::ReadOnly => 1,
+        RepoAccess::ReadWrite => 2,
+    }
+}
+
+fn run_shared_write_mode_rank(mode: RunSharedWriteMode) -> u8 {
+    match mode {
+        RunSharedWriteMode::AppendOnlyLane => 0,
+        RunSharedWriteMode::CoordinatedSharedWrite => 1,
+    }
+}
+
+#[cfg(test)]
+fn stub_capability_envelope(memory_scope: MemoryScope, _token_budget: u64) -> CapabilityEnvelope {
     CapabilityEnvelope {
         tools: Vec::new(),
         mcp_servers: Vec::new(),
         credentials: Vec::new(),
         network_allowlist: HashSet::new(),
-        memory_policy: MemoryPolicy {
+        memory_policy: forge_common::manifest::MemoryPolicy {
             read_scopes: vec![memory_scope],
             write_scopes: vec![memory_scope],
             run_shared_write_mode: RunSharedWriteMode::AppendOnlyLane,
         },
         repo_access: RepoAccess::ReadWrite,
-        spawn_limits: SpawnLimits {
+        spawn_limits: forge_common::manifest::SpawnLimits {
             max_children: 5,
             require_approval_after: 3,
         },
-        allow_project_memory_promotion: token_budget > 0,
+        allow_project_memory_promotion: false,
     }
 }
 
@@ -1337,6 +1704,11 @@ fn runtime_event_name(event_kind: &RuntimeEventKind) -> &'static str {
         RuntimeEventKind::TaskFailed { .. } => "TaskFailed",
         RuntimeEventKind::TaskKilled { .. } => "TaskKilled",
         RuntimeEventKind::TaskOutput { .. } => "TaskOutput",
+        RuntimeEventKind::AssistantText { .. } => "AssistantText",
+        RuntimeEventKind::Thinking { .. } => "Thinking",
+        RuntimeEventKind::ToolCall { .. } => "ToolCall",
+        RuntimeEventKind::SessionCaptured { .. } => "SessionCaptured",
+        RuntimeEventKind::FinalPayload { .. } => "FinalPayload",
         RuntimeEventKind::AgentSpawned { .. } => "AgentSpawned",
         RuntimeEventKind::AgentTerminated { .. } => "AgentTerminated",
         RuntimeEventKind::ChildTaskRequested { .. } => "ChildTaskRequested",
@@ -1421,7 +1793,9 @@ mod tests {
     use crate::event_stream::EventStreamCoordinator;
     use chrono::TimeZone;
     use forge_common::manifest::BudgetEnvelope;
+    use forge_common::manifest::SpawnLimits;
     use forge_common::run_graph::ApprovalMode;
+    use tempfile::TempDir;
 
     fn make_test_orchestrator() -> (RunOrchestrator, Arc<StateStore>) {
         let state_store = Arc::new(StateStore::open_in_memory().unwrap());
@@ -1470,7 +1844,19 @@ mod tests {
     }
 
     fn test_workspace() -> PathBuf {
-        std::env::temp_dir().join("forge-runtime-orchestrator-tests")
+        std::env::temp_dir().join(format!(
+            "forge-runtime-orchestrator-tests-{}",
+            RunId::generate()
+        ))
+    }
+
+    fn write_profile_overlay(workspace: &Path, profile_name: &str, contents: &str) {
+        let overlay_dir = workspace
+            .join(".forge")
+            .join("runtime")
+            .join("profile-overlays");
+        std::fs::create_dir_all(&overlay_dir).unwrap();
+        std::fs::write(overlay_dir.join(format!("{profile_name}.toml")), contents).unwrap();
     }
 
     async fn seed_running_parent(
@@ -1504,7 +1890,7 @@ mod tests {
     fn make_child_params(label: &str) -> CreateChildTaskParams {
         CreateChildTaskParams {
             milestone_id: MilestoneId::new("m1"),
-            profile: format!("child-{label}"),
+            profile: "implementer".to_string(),
             objective: format!("child-objective-{label}"),
             expected_output: format!("child-output-{label}"),
             budget: BudgetEnvelope::new(2_000, 80),
@@ -1642,6 +2028,98 @@ mod tests {
 
         let persisted_run = state_store.get_run(run.id.as_str()).unwrap().unwrap();
         assert_eq!(persisted_run.last_event_cursor, events.last().unwrap().seq);
+    }
+
+    #[tokio::test]
+    async fn submit_run_compiles_profile_overlay_when_present() {
+        let (mut orchestrator, _) = make_test_orchestrator();
+        let temp_dir = TempDir::new().unwrap();
+        write_profile_overlay(
+            temp_dir.path(),
+            "implementer",
+            r#"
+extends = "implementer"
+
+[tools]
+enable = ["python3"]
+
+[network]
+enable = ["pypi.org"]
+
+[spawn]
+max_children = 4
+"#,
+        );
+
+        let run = orchestrator
+            .submit_run(
+                "project-a".to_string(),
+                temp_dir.path().to_path_buf(),
+                make_test_plan(1),
+            )
+            .await
+            .unwrap();
+        let task = run.tasks.values().next().unwrap();
+
+        assert_eq!(task.profile.base_profile, "implementer");
+        assert!(task.profile.overlay_hash.is_some());
+        assert!(
+            task.profile
+                .manifest
+                .tools
+                .iter()
+                .any(|tool| tool == "python3")
+        );
+        assert!(
+            task.profile
+                .manifest
+                .permissions
+                .network_allowlist
+                .contains("pypi.org")
+        );
+        assert_eq!(
+            task.profile.manifest.permissions.spawn_limits.max_children,
+            4
+        );
+        assert_eq!(task.profile.manifest.resources.token_budget, 5_000);
+        assert!(
+            task.requested_capabilities
+                .tools
+                .iter()
+                .any(|tool| tool == "python3")
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_run_rejects_invalid_profile_overlay() {
+        let (mut orchestrator, _) = make_test_orchestrator();
+        let temp_dir = TempDir::new().unwrap();
+        write_profile_overlay(
+            temp_dir.path(),
+            "implementer",
+            r#"
+extends = "implementer"
+
+[tools]
+enable = ["not-allowed"]
+"#,
+        );
+
+        let error = orchestrator
+            .submit_run(
+                "project-a".to_string(),
+                temp_dir.path().to_path_buf(),
+                make_test_plan(1),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        assert!(
+            error
+                .message()
+                .contains("failed to compile root task profile")
+        );
     }
 
     #[tokio::test]
@@ -1865,7 +2343,8 @@ mod tests {
     fn task_rows_round_trip_serialized_fields() {
         let created_at = Utc.with_ymd_and_hms(2026, 3, 13, 12, 0, 0).unwrap();
         let workspace = PathBuf::from("/tmp/forge-runtime-task-row");
-        let task = build_root_task(&make_test_plan(1).initial_tasks[0], &workspace, created_at);
+        let task =
+            build_root_task(&make_test_plan(1).initial_tasks[0], &workspace, created_at).unwrap();
         let row = task_to_row(&RunId::new("run-1"), &task).unwrap();
 
         assert_eq!(row.status, "Pending");
@@ -1954,6 +2433,45 @@ mod tests {
                 .iter()
                 .all(|event| !event.payload.contains("ApprovalRequested"))
         );
+    }
+
+    #[tokio::test]
+    async fn create_child_compiles_profile_from_requested_capabilities() {
+        let (mut orchestrator, _) = make_test_orchestrator();
+        let (run_id, parent_id) = seed_running_parent(&mut orchestrator, 5, 5).await;
+        let mut params = make_child_params("with-git");
+        params.requested_capabilities.tools = vec!["git".to_string()];
+        params.requested_capabilities.spawn_limits = SpawnLimits {
+            max_children: 2,
+            require_approval_after: 1,
+        };
+
+        let (child, requires_approval, approval_id) = orchestrator
+            .create_child_task(&run_id, &parent_id, params.clone())
+            .await
+            .unwrap();
+
+        assert!(!requires_approval);
+        assert!(approval_id.is_none());
+        assert_eq!(child.profile.base_profile, "implementer");
+        assert_eq!(child.profile.manifest.tools, vec!["git".to_string()]);
+        assert_eq!(
+            child.profile.manifest.permissions.spawn_limits.max_children,
+            params.requested_capabilities.spawn_limits.max_children
+        );
+        assert_eq!(
+            child
+                .profile
+                .manifest
+                .permissions
+                .spawn_limits
+                .require_approval_after,
+            params
+                .requested_capabilities
+                .spawn_limits
+                .require_approval_after
+        );
+        assert_eq!(child.profile.manifest.resources.token_budget, 2_000);
     }
 
     #[tokio::test]

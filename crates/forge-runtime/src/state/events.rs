@@ -59,6 +59,60 @@ impl StateStore {
         })
     }
 
+    /// Append multiple events to the durable log under one connection lock.
+    pub fn append_events(&self, events: &[AppendEvent]) -> Result<Vec<i64>> {
+        if events.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.with_connection(|conn| {
+            conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")
+                .context("failed to begin event-log append transaction")?;
+
+            let result = (|| -> Result<Vec<i64>> {
+                let mut seqs = Vec::with_capacity(events.len());
+                let mut stmt = conn
+                    .prepare(
+                        "INSERT INTO event_log (run_id, task_id, agent_id, event_type, payload, created_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    )
+                    .context("failed to prepare batched event-log insert")?;
+
+                for event in events {
+                    stmt.execute(params![
+                        event.run_id,
+                        event.task_id,
+                        event.agent_id,
+                        event.event_type,
+                        event.payload,
+                        event.created_at.to_rfc3339(),
+                    ])
+                    .with_context(|| {
+                        format!(
+                            "failed to append event `{}` for run `{}`",
+                            event.event_type, event.run_id
+                        )
+                    })?;
+                    seqs.push(conn.last_insert_rowid());
+                }
+
+                Ok(seqs)
+            })();
+
+            match result {
+                Ok(seqs) => {
+                    conn.execute_batch("COMMIT")
+                        .context("failed to commit event-log append transaction")?;
+                    Ok(seqs)
+                }
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })
+    }
+
     /// Replay raw event rows after a cursor, optionally scoped to a single run.
     pub fn replay_events(
         &self,

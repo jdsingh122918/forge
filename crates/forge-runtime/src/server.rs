@@ -1147,7 +1147,7 @@ fn decode_approval_actor_kind(value: i32) -> Result<DomainApprovalActorKind, Sta
 
 fn default_child_capabilities(
     memory_scope: DomainMemoryScope,
-    budget: &DomainBudgetEnvelope,
+    _budget: &DomainBudgetEnvelope,
 ) -> DomainCapabilityEnvelope {
     DomainCapabilityEnvelope {
         tools: Vec::new(),
@@ -1164,7 +1164,7 @@ fn default_child_capabilities(
             max_children: 5,
             require_approval_after: 3,
         },
-        allow_project_memory_promotion: budget.allocated > 0,
+        allow_project_memory_promotion: false,
     }
 }
 
@@ -1463,6 +1463,11 @@ fn runtime_event_kind_name(event: &RuntimeEventKind) -> &'static str {
         RuntimeEventKind::TaskFailed { .. } => "TaskFailed",
         RuntimeEventKind::TaskKilled { .. } => "TaskKilled",
         RuntimeEventKind::TaskOutput { .. } => "TaskOutput",
+        RuntimeEventKind::AssistantText { .. } => "AssistantText",
+        RuntimeEventKind::Thinking { .. } => "Thinking",
+        RuntimeEventKind::ToolCall { .. } => "ToolCall",
+        RuntimeEventKind::SessionCaptured { .. } => "SessionCaptured",
+        RuntimeEventKind::FinalPayload { .. } => "FinalPayload",
         RuntimeEventKind::AgentSpawned { .. } => "AgentSpawned",
         RuntimeEventKind::AgentTerminated { .. } => "AgentTerminated",
         RuntimeEventKind::ChildTaskRequested { .. } => "ChildTaskRequested",

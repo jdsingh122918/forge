@@ -29,7 +29,7 @@ use forge_common::runtime::{
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tonic::async_trait;
 
-use crate::run_orchestrator::RunOrchestrator;
+use crate::run_orchestrator::{RunOrchestrator, RuntimeEventAppend};
 use crate::runtime::RuntimeOutputEnvelope;
 use crate::shutdown::{ActiveAgent, AgentSupervisor};
 use crate::state::StateStore;
@@ -170,7 +170,7 @@ impl TaskManager {
         self.tracker.get(task_id).await.is_some()
     }
 
-    /// Drain runtime-owned output envelopes and persist them as task output events.
+    /// Drain runtime-owned output envelopes and persist them as runtime events.
     pub async fn drain_runtime_output(&self) -> Result<usize> {
         let mut envelopes = Vec::new();
         {
@@ -181,13 +181,16 @@ impl TaskManager {
         }
 
         for envelope in &envelopes {
-            if let TaskOutput::TokenUsage { cumulative, .. } = &envelope.output {
+            if let RuntimeEventKind::TaskOutput {
+                output: TaskOutput::TokenUsage { cumulative, .. },
+            } = &envelope.event
+            {
                 self.tracker
                     .update_tokens_consumed(&envelope.task_id, *cumulative)
                     .await;
             }
-            self.append_task_output_event(envelope).await?;
         }
+        self.append_runtime_output_events(&envelopes).await?;
 
         Ok(envelopes.len())
     }
@@ -491,23 +494,38 @@ impl TaskManager {
         .await
     }
 
-    async fn append_task_output_event(&self, envelope: &RuntimeOutputEnvelope) -> Result<()> {
+    async fn append_runtime_output_events(
+        &self,
+        envelopes: &[RuntimeOutputEnvelope],
+    ) -> Result<()> {
+        if envelopes.is_empty() {
+            return Ok(());
+        }
+
+        let first = envelopes
+            .first()
+            .expect("runtime output envelopes must be non-empty");
+        let appends = envelopes
+            .iter()
+            .map(|envelope| RuntimeEventAppend {
+                run_id: envelope.run_id.clone(),
+                task_id: Some(envelope.task_id.clone()),
+                agent_id: Some(envelope.agent_id.clone()),
+                event_kind: envelope.event.clone(),
+                created_at: envelope.timestamp,
+            })
+            .collect::<Vec<_>>();
+
         let mut orchestrator = self.orchestrator.lock().await;
         orchestrator
-            .record_runtime_event_for_agent(
-                &envelope.run_id,
-                Some(envelope.task_id.clone()),
-                Some(envelope.agent_id.clone()),
-                RuntimeEventKind::TaskOutput {
-                    output: envelope.output.clone(),
-                },
-                envelope.timestamp,
-            )
+            .record_runtime_events_for_agents(appends)
             .await
             .with_context(|| {
                 format!(
-                    "failed to append task output for task {} agent {}",
-                    envelope.task_id, envelope.agent_id
+                    "failed to append {} runtime output events starting with task {} agent {}",
+                    envelopes.len(),
+                    first.task_id,
+                    first.agent_id
                 )
             })?;
         Ok(())
@@ -912,7 +930,8 @@ mod tests {
                     args: vec![
                         "-c".to_string(),
                         "printf '%s\\n' \
-                        '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hello <progress>50%</progress>\"}]}}' \
+                        '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hello <progress>50%</progress>\"},{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"src/main.rs\"}}]},\"session_id\":\"session-1\"}' \
+                        '{\"type\":\"content_block_delta\",\"delta\":{\"thinking\":\"considering\"}}' \
                         '{\"type\":\"result\",\"result\":\"done <promise>DONE</promise>\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}'"
                             .to_string(),
                     ],
@@ -934,11 +953,38 @@ mod tests {
             .state_store
             .replay_events(0, Some(run_id.as_str()), 32)
             .unwrap();
+        let runtime_events = events
+            .iter()
+            .map(|event| event.decode_runtime_event().unwrap())
+            .collect::<Vec<_>>();
         let output_events = events
             .iter()
             .filter(|event| event.event_type == "TaskOutput")
             .map(|event| event.decode_task_output_event().unwrap().unwrap())
             .collect::<Vec<_>>();
+        assert!(runtime_events.iter().any(|event| matches!(
+            event.event,
+            RuntimeEventKind::AssistantText { ref text } if text.contains("hello")
+        )));
+        assert!(runtime_events.iter().any(|event| matches!(
+            event.event,
+            RuntimeEventKind::ToolCall { ref name, ref input }
+                if name == "Read"
+                    && input.get("file_path").and_then(|value| value.as_str()) == Some("src/main.rs")
+        )));
+        assert!(runtime_events.iter().any(|event| matches!(
+            event.event,
+            RuntimeEventKind::Thinking { ref text } if text == "considering"
+        )));
+        assert!(runtime_events.iter().any(|event| matches!(
+            event.event,
+            RuntimeEventKind::SessionCaptured { ref session_id } if session_id == "session-1"
+        )));
+        assert!(runtime_events.iter().any(|event| matches!(
+            event.event,
+            RuntimeEventKind::FinalPayload { ref payload }
+                if payload.get("type").and_then(|value| value.as_str()) == Some("result")
+        )));
         assert!(output_events.iter().any(|event| matches!(
             event.output,
             TaskOutput::Signal { ref kind, ref content } if kind == "progress" && content == "50%"

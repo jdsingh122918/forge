@@ -62,6 +62,21 @@ impl EventStreamCoordinator {
         Ok(seq)
     }
 
+    /// Append multiple events durably, then wake any listeners once.
+    pub async fn append_many_and_wake(&self, events: Vec<AppendEvent>) -> Result<Vec<i64>> {
+        if events.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let state_store = Arc::clone(&self.state_store);
+        let seqs = tokio::task::spawn_blocking(move || state_store.append_events(&events))
+            .await
+            .map_err(|error| anyhow!("event append task failed: {error}"))??;
+
+        self.wakeups.notify_waiters();
+        Ok(seqs)
+    }
+
     /// Replay persisted runtime events after `after_cursor`, then tail live updates.
     pub fn replay_and_stream(
         &self,

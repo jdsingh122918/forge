@@ -123,6 +123,49 @@ impl StateStore {
         })
     }
 
+    /// Update multiple run cursors under one connection lock.
+    pub fn update_run_cursors(&self, cursor_updates: &[(String, i64)]) -> Result<()> {
+        if cursor_updates.is_empty() {
+            return Ok(());
+        }
+
+        self.with_connection(|conn| {
+            conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")
+                .context("failed to begin run-cursor update transaction")?;
+
+            let result = (|| -> Result<()> {
+                let mut stmt = conn
+                    .prepare(
+                        "UPDATE runs
+                         SET last_event_cursor = ?2
+                         WHERE id = ?1",
+                    )
+                    .context("failed to prepare batched run-cursor update")?;
+
+                for (id, cursor) in cursor_updates {
+                    let updated = stmt
+                        .execute(params![id, cursor])
+                        .with_context(|| format!("failed to update cursor for run {id}"))?;
+                    ensure!(updated == 1, "run not found: {id}");
+                }
+
+                Ok(())
+            })();
+
+            match result {
+                Ok(()) => {
+                    conn.execute_batch("COMMIT")
+                        .context("failed to commit run-cursor update transaction")?;
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })
+    }
+
     /// List runs with optional project and status filters.
     pub fn list_runs(&self, project: Option<&str>, status: Option<&str>) -> Result<Vec<RunRow>> {
         self.with_connection(|conn| {
