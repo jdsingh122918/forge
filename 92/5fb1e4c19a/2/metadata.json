@@ -1,7 +1,9 @@
 {
   "cli_version": "0.4.9",
   "checkpoint_id": "925fb1e4c19a",
+  "session_id": "ace79c95-046f-40a5-8e81-86b7ac03e883",
   "strategy": "manual-commit",
+  "created_at": "2026-03-15T01:45:25.18033Z",
   "branch": "runtime-daemon-dispatch",
   "checkpoints_count": 6,
   "files_touched": [
@@ -9,7 +11,6 @@
     "crates/forge-common/src/run_graph.rs",
     "crates/forge-common/src/runtime.rs",
     "crates/forge-proto/src/convert/manifest.rs",
-    "crates/forge-proto/src/convert/run_graph.rs",
     "crates/forge-runtime/src/main.rs",
     "crates/forge-runtime/src/recovery.rs",
     "crates/forge-runtime/src/run_orchestrator.rs",
@@ -18,7 +19,6 @@
     "crates/forge-runtime/src/runtime/host.rs",
     "crates/forge-runtime/src/runtime/io.rs",
     "crates/forge-runtime/src/scheduler.rs",
-    "crates/forge-runtime/src/server.rs",
     "crates/forge-runtime/src/shutdown.rs",
     "crates/forge-runtime/src/state/events.rs",
     "crates/forge-runtime/src/state/mod.rs",
@@ -28,34 +28,22 @@
     "crates/forge-runtime/tests/query_rpcs.rs",
     "docs/investigations/2026-03-14-pr21-review-report.md"
   ],
-  "sessions": [
-    {
-      "metadata": "/92/5fb1e4c19a/0/metadata.json",
-      "transcript": "/92/5fb1e4c19a/0/full.jsonl",
-      "context": "",
-      "content_hash": "/92/5fb1e4c19a/0/content_hash.txt",
-      "prompt": ""
-    },
-    {
-      "metadata": "/92/5fb1e4c19a/1/metadata.json",
-      "transcript": "/92/5fb1e4c19a/1/full.jsonl",
-      "context": "/92/5fb1e4c19a/1/context.md",
-      "content_hash": "/92/5fb1e4c19a/1/content_hash.txt",
-      "prompt": "/92/5fb1e4c19a/1/prompt.txt"
-    },
-    {
-      "metadata": "/92/5fb1e4c19a/2/metadata.json",
-      "transcript": "/92/5fb1e4c19a/2/full.jsonl",
-      "context": "/92/5fb1e4c19a/2/context.md",
-      "content_hash": "/92/5fb1e4c19a/2/content_hash.txt",
-      "prompt": "/92/5fb1e4c19a/2/prompt.txt"
-    }
-  ],
+  "agent": "Claude Code",
+  "turn_id": "b180a0ed65d2",
   "token_usage": {
     "input_tokens": 110,
     "cache_creation_tokens": 132309,
     "cache_read_tokens": 1549647,
     "output_tokens": 15727,
     "api_call_count": 31
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-15T01:45:24.910463Z",
+    "agent_lines": 1983,
+    "human_added": 12,
+    "human_modified": 43,
+    "human_removed": 0,
+    "total_committed": 2038,
+    "agent_percentage": 97.30127576054956
   }
 }
