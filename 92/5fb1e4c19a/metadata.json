@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "925fb1e4c19a",
+  "strategy": "manual-commit",
+  "branch": "runtime-daemon-dispatch",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "crates/forge-common/src/manifest.rs",
+    "crates/forge-common/src/run_graph.rs",
+    "crates/forge-common/src/runtime.rs",
+    "crates/forge-proto/src/convert/manifest.rs",
+    "crates/forge-proto/src/convert/run_graph.rs",
+    "crates/forge-runtime/src/main.rs",
+    "crates/forge-runtime/src/recovery.rs",
+    "crates/forge-runtime/src/run_orchestrator.rs",
+    "crates/forge-runtime/src/runtime/bwrap.rs",
+    "crates/forge-runtime/src/runtime/docker.rs",
+    "crates/forge-runtime/src/runtime/host.rs",
+    "crates/forge-runtime/src/runtime/io.rs",
+    "crates/forge-runtime/src/scheduler.rs",
+    "crates/forge-runtime/src/server.rs",
+    "crates/forge-runtime/src/shutdown.rs",
+    "crates/forge-runtime/src/state/events.rs",
+    "crates/forge-runtime/src/state/mod.rs",
+    "crates/forge-runtime/src/task_manager.rs",
+    "crates/forge-runtime/tests/approval_rpcs.rs",
+    "crates/forge-runtime/tests/create_child_task.rs",
+    "crates/forge-runtime/tests/query_rpcs.rs",
+    "docs/investigations/2026-03-14-pr21-review-report.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/92/5fb1e4c19a/0/metadata.json",
+      "transcript": "/92/5fb1e4c19a/0/full.jsonl",
+      "context": "",
+      "content_hash": "/92/5fb1e4c19a/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
