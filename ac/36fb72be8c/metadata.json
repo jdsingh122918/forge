@@ -1,0 +1,22 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "ac36fb72be8c",
+  "strategy": "manual-commit",
+  "branch": "runtime-daemon-dispatch",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "crates/forge-runtime/src/server.rs",
+    "crates/forge-runtime/tests/grpc_health.rs",
+    "crates/forge-runtime/tests/submit_run.rs",
+    "docs/investigations/2026-03-14-pr21-review-report.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ac/36fb72be8c/0/metadata.json",
+      "transcript": "/ac/36fb72be8c/0/full.jsonl",
+      "context": "",
+      "content_hash": "/ac/36fb72be8c/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
