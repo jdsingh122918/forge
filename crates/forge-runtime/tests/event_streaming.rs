@@ -1,21 +1,31 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
 use forge_common::events::{RuntimeEventKind, TaskOutput};
+use forge_common::ids::{AgentId, RunId, TaskNodeId};
+use forge_common::run_graph::{RuntimeBackend, TaskStatus};
+use forge_common::runtime::{AgentLaunchSpec, AgentOutputMode, AgentRuntime, PreparedAgentLaunch};
 use forge_proto::proto;
 use forge_proto::proto::forge_runtime_client::ForgeRuntimeClient;
-use forge_runtime::server::run_server;
+use forge_runtime::event_stream::EventStreamCoordinator;
+use forge_runtime::run_orchestrator::RunOrchestrator;
+use forge_runtime::runtime::{HostRuntime, RuntimeOutputSink};
+use forge_runtime::server::{run_server, run_server_with_components};
+use forge_runtime::shutdown::ShutdownCoordinator;
 use forge_runtime::state::StateStore;
 use forge_runtime::state::events::AppendEvent;
+use forge_runtime::task_manager::TaskManager;
 use hyper_util::rt::TokioIo;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
-use tokio::sync::Notify;
+use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_stream::StreamExt;
+use tokio_util::sync::CancellationToken;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 
@@ -84,6 +94,123 @@ impl TestServer {
 
     fn workspace_path(&self, name: &str) -> String {
         self._tmp.path().join(name).display().to_string()
+    }
+
+    async fn stop(self) {
+        self.shutdown.notify_waiters();
+        self.handle.await.unwrap().unwrap();
+    }
+}
+
+struct ManagedRuntimeServer {
+    _tmp: TempDir,
+    socket_path: PathBuf,
+    shutdown: Arc<Notify>,
+    handle: JoinHandle<anyhow::Result<()>>,
+    orchestrator: Arc<Mutex<RunOrchestrator>>,
+    task_manager: Arc<TaskManager>,
+}
+
+impl ManagedRuntimeServer {
+    async fn start() -> Self {
+        let tmp = TempDir::new_in("/tmp").unwrap();
+        let socket_path = tmp.path().join("forge-runtime.sock");
+        let state_store = Arc::new(StateStore::open(tmp.path()).unwrap());
+        let event_stream = Arc::new(EventStreamCoordinator::new(Arc::clone(&state_store)));
+        let orchestrator = Arc::new(Mutex::new(RunOrchestrator::new(
+            Arc::clone(&state_store),
+            Arc::clone(&event_stream),
+        )));
+        let shutdown = Arc::new(Notify::new());
+        let (output_sink, output_rx) = RuntimeOutputSink::channel();
+        let runtime: Arc<dyn AgentRuntime> = Arc::new(HostRuntime::new(
+            tmp.path().join("agent-sockets"),
+            output_sink,
+        ));
+        let task_manager = Arc::new(TaskManager::new(
+            Arc::clone(&orchestrator),
+            Arc::clone(&state_store),
+            output_rx,
+            runtime,
+            RuntimeBackend::Host,
+            true,
+        ));
+        let shutdown_coordinator = Arc::new(ShutdownCoordinator::new(
+            CancellationToken::new(),
+            Arc::clone(&orchestrator),
+            Arc::clone(&state_store),
+            Arc::clone(&event_stream),
+            task_manager.clone(),
+            Arc::clone(&shutdown),
+            Duration::from_secs(1),
+        ));
+
+        let server_socket = socket_path.clone();
+        let server_state = Arc::clone(&state_store);
+        let server_shutdown = Arc::clone(&shutdown);
+        let server_orchestrator = Arc::clone(&orchestrator);
+        let server_event_stream = Arc::clone(&event_stream);
+        let server_task_manager = Arc::clone(&task_manager);
+        let server_shutdown_coordinator = Arc::clone(&shutdown_coordinator);
+        let handle = tokio::spawn(async move {
+            run_server_with_components(
+                server_socket,
+                server_state,
+                server_shutdown,
+                server_orchestrator,
+                server_event_stream,
+                Some(server_task_manager),
+                server_shutdown_coordinator,
+            )
+            .await
+        });
+
+        for _ in 0..200 {
+            if socket_path.exists() {
+                break;
+            }
+            if handle.is_finished() {
+                handle
+                    .await
+                    .expect("runtime server task panicked")
+                    .expect("runtime server exited before socket became ready");
+                unreachable!("runtime server exited before socket became ready");
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            socket_path.exists(),
+            "runtime socket was not created before client connection"
+        );
+
+        Self {
+            _tmp: tmp,
+            socket_path,
+            shutdown,
+            handle,
+            orchestrator,
+            task_manager,
+        }
+    }
+
+    async fn client(&self) -> ForgeRuntimeClient<Channel> {
+        let socket_path = self.socket_path.clone();
+        let channel = Endpoint::try_from("http://[::]:50051")
+            .unwrap()
+            .connect_with_connector(service_fn(move |_: Uri| {
+                let socket_path = socket_path.clone();
+                async move { UnixStream::connect(socket_path).await.map(TokioIo::new) }
+            }))
+            .await
+            .unwrap();
+
+        ForgeRuntimeClient::new(channel)
+    }
+
+    fn workspace_path(&self, name: &str) -> PathBuf {
+        let path = self._tmp.path().join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        path
     }
 
     async fn stop(self) {
@@ -243,6 +370,23 @@ async fn next_task_output_event(
     }
 }
 
+async fn collect_task_output_events_until_quiet(
+    stream: &mut tonic::Streaming<proto::TaskOutputEvent>,
+    max_events: usize,
+) -> Vec<proto::TaskOutputEvent> {
+    let mut events = Vec::new();
+
+    while events.len() < max_events {
+        match timeout(Duration::from_millis(150), stream.next()).await {
+            Ok(Some(Ok(event))) => events.push(event),
+            Ok(Some(Err(status))) => panic!("task output stream failed: {status}"),
+            Ok(None) | Err(_) => break,
+        }
+    }
+
+    events
+}
+
 fn is_run_status_changed(event: &proto::RuntimeEvent) -> bool {
     matches!(
         event.event.as_ref(),
@@ -262,6 +406,34 @@ fn is_task_output(event: &proto::RuntimeEvent) -> bool {
         event.event.as_ref(),
         Some(proto::runtime_event::Event::TaskOutput(_))
     )
+}
+
+fn task_output_signature(event: &proto::TaskOutputEvent) -> String {
+    match event
+        .event
+        .as_ref()
+        .expect("task output event payload missing")
+    {
+        proto::task_output_event::Event::StdoutLine(line) => {
+            format!("stdout:{}:{}", line.is_stderr, line.line)
+        }
+        proto::task_output_event::Event::Signal(signal) => {
+            format!("signal:{}:{}", signal.signal_type, signal.content)
+        }
+        proto::task_output_event::Event::TokenUsage(usage) => {
+            format!("tokens:{}:{}", usage.tokens, usage.cumulative)
+        }
+        proto::task_output_event::Event::Promise(promise) => {
+            format!("promise:{}", promise.value)
+        }
+    }
+}
+
+fn runtime_task_output(event: proto::RuntimeEvent) -> proto::TaskOutputEvent {
+    match event.event.expect("runtime event payload missing") {
+        proto::runtime_event::Event::TaskOutput(output) => output,
+        other => panic!("expected task output runtime event, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -565,6 +737,175 @@ async fn stream_task_output_reuses_runtime_event_cursor_space() {
 
     drop(runtime_stream);
     drop(output_stream);
+    drop(client);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn real_runtime_task_output_streams_live_and_replays() {
+    let server = ManagedRuntimeServer::start().await;
+    let mut client = server.client().await;
+    let workspace = server.workspace_path("workspace-real-runtime-output");
+    let run = submit_run(
+        &mut client,
+        "project-real-runtime-output",
+        workspace.display().to_string(),
+        make_plan(1),
+    )
+    .await;
+    let run_id = RunId::new(run.id.clone());
+    let task_id = first_task_id(&mut client, &run.id).await;
+    let task_node_id = TaskNodeId::new(task_id.clone());
+    let script_path = server._tmp.path().join("emit-runtime-output.sh");
+    std::fs::write(
+        &script_path,
+        concat!(
+            "printf '%s\\n' \\\n",
+            "'{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hello <progress>50%</progress>\"}]}}' \\\n",
+            "'{\"type\":\"result\",\"result\":\"done <promise>DONE</promise>\",\"usage\":{\"input_tokens\":2,\"output_tokens\":3}}'\n",
+        ),
+    )
+    .unwrap();
+
+    let task = {
+        let mut orchestrator = server.orchestrator.lock().await;
+        let status = orchestrator
+            .get_task_in_run(&run_id, &task_node_id)
+            .expect("task must exist after submit_run")
+            .status
+            .clone();
+        if matches!(status, TaskStatus::Pending) {
+            orchestrator
+                .transition_task(&run_id, &task_node_id, TaskStatus::Enqueued)
+                .await
+                .unwrap();
+        }
+        orchestrator
+            .get_task_in_run(&run_id, &task_node_id)
+            .unwrap()
+            .clone()
+    };
+
+    let mut runtime_stream = client
+        .attach_run(proto::AttachRunRequest {
+            run_id: run.id.clone(),
+            after_cursor: 0,
+            task_id_filter: vec![task_id.clone()],
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let mut live_output_stream = client
+        .stream_task_output(proto::StreamTaskOutputRequest {
+            run_id: run.id.clone(),
+            task_id: task_id.clone(),
+            after_cursor: 0,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let prepared = PreparedAgentLaunch {
+        agent_id: AgentId::generate(),
+        run_id: run_id.clone(),
+        task_id: task_node_id.clone(),
+        profile: task.profile.clone(),
+        task,
+        workspace: workspace.clone(),
+        socket_dir: PathBuf::new(),
+        launch: AgentLaunchSpec {
+            program: PathBuf::from("/bin/sh"),
+            args: vec![script_path.display().to_string()],
+            env: BTreeMap::new(),
+            stdin_payload: Vec::new(),
+            output_mode: AgentOutputMode::StreamJson,
+            session_capture: true,
+        },
+    };
+
+    server.task_manager.spawn_prepared(prepared).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let drained = server.task_manager.drain_runtime_output().await.unwrap();
+    assert!(drained >= 3);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    server.task_manager.poll_active_agents().await.unwrap();
+
+    let live_runtime_outputs = vec![
+        runtime_task_output(next_runtime_event_matching(&mut runtime_stream, is_task_output).await),
+        runtime_task_output(next_runtime_event_matching(&mut runtime_stream, is_task_output).await),
+        runtime_task_output(next_runtime_event_matching(&mut runtime_stream, is_task_output).await),
+    ];
+    let live_output_events = vec![
+        next_task_output_event(&mut live_output_stream).await,
+        next_task_output_event(&mut live_output_stream).await,
+        next_task_output_event(&mut live_output_stream).await,
+    ];
+
+    let expected = vec![
+        "signal:progress:50%".to_string(),
+        "tokens:5:5".to_string(),
+        "promise:DONE".to_string(),
+    ];
+    let live_runtime_signatures = live_runtime_outputs
+        .iter()
+        .map(task_output_signature)
+        .collect::<Vec<_>>();
+    let live_output_signatures = live_output_events
+        .iter()
+        .map(task_output_signature)
+        .collect::<Vec<_>>();
+    assert_eq!(live_runtime_signatures, expected);
+    assert_eq!(live_output_signatures, expected);
+
+    let live_runtime_cursors = live_runtime_outputs
+        .iter()
+        .map(|event| event.cursor)
+        .collect::<Vec<_>>();
+    let live_output_cursors = live_output_events
+        .iter()
+        .map(|event| event.cursor)
+        .collect::<Vec<_>>();
+    assert_eq!(live_runtime_cursors, live_output_cursors);
+    assert!(
+        live_output_events
+            .iter()
+            .all(|event| event.run_id == run.id)
+    );
+    assert!(
+        live_output_events
+            .iter()
+            .all(|event| event.task_id == task_id)
+    );
+
+    let mut replay_output_stream = client
+        .stream_task_output(proto::StreamTaskOutputRequest {
+            run_id: run.id.clone(),
+            task_id: task_id.clone(),
+            after_cursor: 0,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let replay_output_events =
+        collect_task_output_events_until_quiet(&mut replay_output_stream, 8).await;
+    let replay_signatures = replay_output_events
+        .iter()
+        .map(task_output_signature)
+        .collect::<Vec<_>>();
+    let replay_cursors = replay_output_events
+        .iter()
+        .map(|event| event.cursor)
+        .collect::<Vec<_>>();
+
+    assert_eq!(replay_signatures, expected);
+    assert_eq!(replay_cursors, live_output_cursors);
+
+    drop(replay_output_stream);
+    drop(live_output_stream);
+    drop(runtime_stream);
     drop(client);
     server.stop().await;
 }

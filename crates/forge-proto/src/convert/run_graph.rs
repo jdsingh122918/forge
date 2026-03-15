@@ -218,7 +218,7 @@ mod tests {
         assert_eq!(back.version, 1);
         assert_eq!(back.milestones[0].title, "Setup");
         assert_eq!(back.initial_tasks[0].profile_hint, "implementer");
-        assert_eq!(back.global_budget.allocated, 2_000_000);
+        assert_eq!(back.global_budget.allocated(), 2_000_000);
     }
 
     #[test]

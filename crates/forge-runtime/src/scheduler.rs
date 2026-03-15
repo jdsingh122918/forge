@@ -60,8 +60,10 @@ impl Scheduler {
                             tracing::error!(
                                 %error,
                                 run_id = %run_id,
-                                "scheduler skipped run after ready-task computation failed"
+                                "scheduler failing run after ready-task computation failed"
                             );
+                            drop(orchestrator);
+                            self.fail_invalid_run(&run_id).await;
                             continue;
                         }
                     },
@@ -89,6 +91,17 @@ impl Scheduler {
                     );
                 }
             }
+        }
+    }
+
+    async fn fail_invalid_run(&self, run_id: &forge_common::ids::RunId) {
+        let mut orchestrator = self.orchestrator.lock().await;
+        if let Err(error) = orchestrator.fail_run(run_id).await {
+            tracing::error!(
+                %error,
+                run_id = %run_id,
+                "scheduler failed to mark invalid run as failed"
+            );
         }
     }
 }
@@ -148,7 +161,11 @@ mod tests {
         let event_stream = Arc::new(EventStreamCoordinator::new(Arc::clone(&state_store)));
         let mut orchestrator = RunOrchestrator::new(Arc::clone(&state_store), event_stream);
         let run = orchestrator
-            .submit_run("project-a".to_string(), make_test_plan(task_count))
+            .submit_run(
+                "project-a".to_string(),
+                std::env::temp_dir().join("forge-runtime-scheduler-tests"),
+                make_test_plan(task_count),
+            )
             .await
             .unwrap();
         let orchestrator = Arc::new(Mutex::new(orchestrator));
@@ -158,7 +175,7 @@ mod tests {
             CancellationToken::new(),
         );
 
-        (scheduler, orchestrator, state_store, run.id)
+        (scheduler, orchestrator, state_store, run.id().clone())
     }
 
     fn sorted_task_ids(
@@ -168,11 +185,11 @@ mod tests {
         let mut task_ids: Vec<TaskNodeId> = orchestrator
             .get_run(run_id)
             .unwrap()
-            .tasks
+            .tasks()
             .keys()
             .cloned()
             .collect();
-        task_ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        task_ids.sort_by(|a: &TaskNodeId, b: &TaskNodeId| a.as_str().cmp(b.as_str()));
         task_ids
     }
 
@@ -185,7 +202,7 @@ mod tests {
         let orchestrator = orchestrator.lock().await;
         let run = orchestrator.get_run(&run_id).unwrap();
         assert!(
-            run.tasks
+            run.tasks()
                 .values()
                 .all(|task| matches!(task.status, TaskStatus::Enqueued))
         );
@@ -203,11 +220,8 @@ mod tests {
             let mut orchestrator = orchestrator.lock().await;
             let task_ids = sorted_task_ids(&orchestrator, &run_id);
             let run = orchestrator.run_graph.get_run_mut(&run_id).unwrap();
-            run.tasks
-                .get_mut(&task_ids[1])
-                .unwrap()
-                .depends_on
-                .push(task_ids[0].clone());
+            run.set_task_dependencies(&task_ids[1], vec![task_ids[0].clone()])
+                .unwrap();
         }
 
         scheduler.tick().await;
@@ -217,11 +231,11 @@ mod tests {
         let run = orchestrator.get_run(&run_id).unwrap();
 
         assert!(matches!(
-            run.tasks.get(&task_ids[0]).unwrap().status,
+            run.tasks().get(&task_ids[0]).unwrap().status,
             TaskStatus::Enqueued
         ));
         assert!(matches!(
-            run.tasks.get(&task_ids[1]).unwrap().status,
+            run.tasks().get(&task_ids[1]).unwrap().status,
             TaskStatus::Pending
         ));
     }
@@ -232,7 +246,12 @@ mod tests {
 
         {
             let mut orchestrator = orchestrator.lock().await;
-            orchestrator.run_graph.get_run_mut(&run_id).unwrap().status = RunStatus::Paused;
+            orchestrator
+                .run_graph
+                .get_run_mut(&run_id)
+                .unwrap()
+                .update_run_status(RunStatus::Paused)
+                .unwrap();
         }
 
         scheduler.tick().await;
@@ -240,7 +259,7 @@ mod tests {
         let orchestrator = orchestrator.lock().await;
         let run = orchestrator.get_run(&run_id).unwrap();
         assert!(
-            run.tasks
+            run.tasks()
                 .values()
                 .all(|task| matches!(task.status, TaskStatus::Pending))
         );
@@ -251,7 +270,7 @@ mod tests {
         let (scheduler, orchestrator, state_store, run_id) = make_scheduler_with_run(1).await;
         let after_cursor = {
             let orchestrator = orchestrator.lock().await;
-            i64::try_from(orchestrator.get_run(&run_id).unwrap().last_event_cursor).unwrap()
+            i64::try_from(orchestrator.get_run(&run_id).unwrap().last_event_cursor()).unwrap()
         };
 
         scheduler.tick().await;
@@ -266,6 +285,51 @@ mod tests {
 
         let orchestrator = orchestrator.lock().await;
         let run = orchestrator.get_run(&run_id).unwrap();
-        assert_eq!(run.last_event_cursor, events[0].seq as u64);
+        assert_eq!(run.last_event_cursor(), events[0].seq as u64);
+    }
+
+    #[tokio::test]
+    async fn scheduler_fails_run_when_graph_is_invalid() {
+        let (scheduler, orchestrator, state_store, run_id) = make_scheduler_with_run(1).await;
+
+        {
+            let mut orchestrator = orchestrator.lock().await;
+            let run = orchestrator.get_run(&run_id).unwrap().clone();
+            let mut tasks = run.tasks().clone();
+            tasks
+                .values_mut()
+                .next()
+                .unwrap()
+                .depends_on
+                .push(TaskNodeId::new("missing-task"));
+            let corrupted_run = forge_common::run_graph::RunState::rehydrated(
+                run.id().clone(),
+                run.project().to_string(),
+                run.workspace().to_path_buf(),
+                run.plan().clone(),
+                run.milestones().clone(),
+                tasks,
+                run.approvals().clone(),
+                run.status(),
+                run.last_event_cursor(),
+                run.submitted_at(),
+                run.finished_at(),
+                run.total_tokens(),
+                run.estimated_cost_usd(),
+            );
+            let mut graph = forge_common::run_graph::RunGraph::new();
+            graph.insert_run(corrupted_run);
+            orchestrator.run_graph = graph;
+        }
+
+        scheduler.tick().await;
+
+        let orchestrator = orchestrator.lock().await;
+        let run = orchestrator.get_run(&run_id).unwrap();
+        assert_eq!(run.status(), RunStatus::Failed);
+        drop(orchestrator);
+
+        let stored_run = state_store.get_run(run_id.as_str()).unwrap().unwrap();
+        assert_eq!(stored_run.status, "Failed");
     }
 }

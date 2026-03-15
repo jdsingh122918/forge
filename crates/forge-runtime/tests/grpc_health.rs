@@ -2,14 +2,20 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
+use forge_common::ids::AgentId;
+use forge_common::run_graph::TaskStatus;
 use forge_proto::proto::forge_runtime_client::ForgeRuntimeClient;
 use forge_proto::proto::{
     ApprovalMode, BudgetEnvelope, GetRunRequest, HealthRequest, ListMcpServersRequest,
     ListTasksRequest, MilestonePlan, RunPlan, RuntimeBackend, ShutdownRequest, SubmitRunRequest,
     TaskTemplate,
 };
+use forge_runtime::event_stream::EventStreamCoordinator;
+use forge_runtime::run_orchestrator::RunOrchestrator;
 use forge_runtime::server::run_server;
 use forge_runtime::state::StateStore;
+use forge_runtime::state::agent_instances::AgentInstanceRow;
 use hyper_util::rt::TokioIo;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
@@ -93,9 +99,9 @@ async fn health_returns_protocol_version_and_capabilities() {
     assert_eq!(response.agent_count, 0);
     assert_eq!(
         response.runtime_backend,
-        forge_proto::proto::RuntimeBackend::Host as i32
+        forge_proto::proto::RuntimeBackend::Unspecified as i32
     );
-    assert!(response.insecure_host_runtime);
+    assert!(!response.insecure_host_runtime);
     assert!(!response.nix_available);
     assert_eq!(
         response.supported_capabilities,
@@ -321,4 +327,60 @@ async fn restart_preserves_persisted_runs_via_server_bootstrap() {
 
     restarted_shutdown.notify_waiters();
     restarted_handle.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn run_server_rejects_bootstrap_with_active_runtime_state() {
+    let tmp = TempDir::new().unwrap();
+    let socket_path = tmp.path().join("forge-runtime.sock");
+    let state_store = Arc::new(StateStore::open(tmp.path()).unwrap());
+    let event_stream = Arc::new(EventStreamCoordinator::new(Arc::clone(&state_store)));
+    let mut orchestrator = RunOrchestrator::new(Arc::clone(&state_store), event_stream);
+    let run = orchestrator
+        .submit_run(
+            "project-active-runtime".to_string(),
+            tmp.path().join("workspace"),
+            forge_common::run_graph::RunPlan::try_from(&make_plan()).unwrap(),
+        )
+        .await
+        .unwrap();
+    let task_id = run.tasks().keys().next().unwrap().clone();
+    let agent_id = AgentId::new("agent-bootstrap-check");
+    let started_at = Utc::now();
+
+    orchestrator
+        .transition_task(
+            run.id(),
+            &task_id,
+            TaskStatus::Running {
+                agent_id: agent_id.clone(),
+                since: started_at,
+            },
+        )
+        .await
+        .unwrap();
+
+    state_store
+        .insert_agent_instance(&AgentInstanceRow {
+            id: agent_id.to_string(),
+            task_id: task_id.to_string(),
+            runtime_backend: "Host".to_string(),
+            pid: Some(4242),
+            container_id: None,
+            status: "Running".to_string(),
+            started_at,
+            finished_at: None,
+            resource_peak: None,
+        })
+        .unwrap();
+
+    let error = run_server(socket_path, state_store, Arc::new(Notify::new()))
+        .await
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("cannot bootstrap over active runtime state")
+    );
 }

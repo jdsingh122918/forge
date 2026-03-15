@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
+use chrono::Utc;
 use forge_common::ids::{AgentId, RunId, TaskNodeId};
+use forge_common::manifest::SpawnLimits;
 use forge_common::run_graph::{RunPlan, TaskStatus};
 use forge_proto::proto;
 use forge_proto::proto::forge_runtime_server::ForgeRuntime;
@@ -43,41 +45,37 @@ impl Harness {
             orchestrator
                 .submit_run(
                     "project-create-child".to_string(),
+                    temp_dir.path().join("workspace"),
                     RunPlan::try_from(&make_plan()).unwrap(),
                 )
                 .await
                 .unwrap()
         };
-        let parent_id = run.tasks.values().next().unwrap().id.to_string();
+        let parent_id = run.tasks().values().next().unwrap().id.to_string();
 
         {
             let mut orchestrator = orchestrator.lock().await;
-            let run_state = orchestrator.run_graph.get_run_mut(&run.id).unwrap();
-            let parent = run_state
-                .tasks
-                .get_mut(&forge_common::ids::TaskNodeId::new(parent_id.clone()))
+            let run_state = orchestrator.run_graph.get_run_mut(run.id()).unwrap();
+            let parent_task_id = TaskNodeId::new(parent_id.clone());
+            run_state
+                .transition_task(
+                    &parent_task_id,
+                    TaskStatus::Running {
+                        agent_id: AgentId::new("agent-parent"),
+                        since: Utc::now(),
+                    },
+                    Utc::now(),
+                )
                 .unwrap();
-            parent.status = TaskStatus::Running {
-                agent_id: AgentId::new("agent-parent"),
-                since: chrono::Utc::now(),
-            };
-            parent
-                .profile
-                .manifest
-                .permissions
-                .spawn_limits
-                .max_children = max_children;
-            parent
-                .profile
-                .manifest
-                .permissions
-                .spawn_limits
-                .require_approval_after = require_approval_after;
-            parent.requested_capabilities.spawn_limits.max_children = max_children;
-            parent
-                .requested_capabilities
-                .spawn_limits
-                .require_approval_after = require_approval_after;
+            run_state
+                .update_task_spawn_limits(
+                    &parent_task_id,
+                    SpawnLimits {
+                        max_children,
+                        require_approval_after,
+                    },
+                )
+                .unwrap();
         }
 
         (
@@ -87,7 +85,7 @@ impl Harness {
                 state_store,
                 orchestrator,
             },
-            run.id.to_string(),
+            run.id().to_string(),
             parent_id,
         )
     }
@@ -175,8 +173,14 @@ async fn create_child_task_succeeds_for_running_parent() {
 
     let orchestrator = harness.orchestrator.lock().await;
     let run = orchestrator.get_run(&RunId::new(run_id)).unwrap();
-    assert!(run.approvals.is_empty());
-    assert_eq!(run.tasks[&TaskNodeId::new(parent_id)].children.len(), 1);
+    assert_eq!(run.approval_count(), 0);
+    assert_eq!(
+        run.task(&TaskNodeId::new(parent_id))
+            .unwrap()
+            .children
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -247,10 +251,16 @@ async fn create_child_task_returns_approval_metadata_when_soft_cap_exceeded() {
     let orchestrator = harness.orchestrator.lock().await;
     let run = orchestrator.get_run(&RunId::new(run_id)).unwrap();
     assert_eq!(
-        run.last_event_cursor,
+        run.last_event_cursor(),
         u64::try_from(events.last().unwrap().seq).unwrap()
     );
-    assert_eq!(run.tasks[&TaskNodeId::new(parent_id)].children.len(), 2);
+    assert_eq!(
+        run.task(&TaskNodeId::new(parent_id))
+            .unwrap()
+            .children
+            .len(),
+        2
+    );
 }
 
 #[tokio::test]
@@ -278,6 +288,11 @@ async fn create_child_task_returns_not_found_for_missing_parent() {
 
     let orchestrator = harness.orchestrator.lock().await;
     let run = orchestrator.get_run(&RunId::new(run_id)).unwrap();
-    assert_eq!(run.tasks.len(), 1);
-    assert!(run.tasks[&TaskNodeId::new(parent_id)].children.is_empty());
+    assert_eq!(run.task_count(), 1);
+    assert!(
+        run.task(&TaskNodeId::new(parent_id))
+            .unwrap()
+            .children
+            .is_empty()
+    );
 }

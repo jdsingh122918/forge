@@ -13,6 +13,7 @@ pub mod events;
 pub mod facade;
 pub mod ids;
 pub mod manifest;
+pub mod output_parser;
 pub mod policy;
 pub mod run_graph;
 pub mod runtime;
@@ -36,4 +37,7 @@ pub use run_graph::{
     ApprovalResolution, ApprovalState, MilestoneInfo, MilestoneState, MilestoneStatus,
     PendingApproval, ResourceSnapshot, RunGraph, RunPlan, RunState, RunStatus, TaskNode,
     TaskResultSummary, TaskStatus, TaskTemplate, TaskWaitMode,
+};
+pub use runtime::{
+    AgentLaunchSpec, AgentOutputMode, AgentRuntime, AgentStatus, PreparedAgentLaunch,
 };

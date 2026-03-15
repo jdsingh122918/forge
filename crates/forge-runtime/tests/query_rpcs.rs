@@ -222,6 +222,100 @@ async fn list_runs_filters_by_project() {
 }
 
 #[tokio::test]
+async fn list_runs_uses_next_offset_token_for_pagination() {
+    let server = TestServer::start().await;
+    let mut client = server.client().await;
+
+    submit_run(
+        &mut client,
+        "project-page-runs",
+        server.workspace_path("workspace-page-runs-0"),
+        make_plan(
+            vec![make_milestone("m1", "Milestone 1")],
+            vec![make_task("m1", "task-a")],
+        ),
+    )
+    .await;
+    submit_run(
+        &mut client,
+        "project-page-runs",
+        server.workspace_path("workspace-page-runs-1"),
+        make_plan(
+            vec![make_milestone("m2", "Milestone 2")],
+            vec![make_task("m2", "task-b")],
+        ),
+    )
+    .await;
+    submit_run(
+        &mut client,
+        "project-page-runs",
+        server.workspace_path("workspace-page-runs-2"),
+        make_plan(
+            vec![make_milestone("m3", "Milestone 3")],
+            vec![make_task("m3", "task-c")],
+        ),
+    )
+    .await;
+
+    let full = client
+        .list_runs(proto::ListRunsRequest {
+            project: "project-page-runs".to_string(),
+            page_size: 100,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let expected_ids = full
+        .runs
+        .iter()
+        .map(|run| run.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(expected_ids.len(), 3);
+
+    let first_page = client
+        .list_runs(proto::ListRunsRequest {
+            project: "project-page-runs".to_string(),
+            page_size: 2,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        first_page
+            .runs
+            .iter()
+            .map(|run| run.id.clone())
+            .collect::<Vec<_>>(),
+        expected_ids[..2].to_vec()
+    );
+    assert_eq!(first_page.next_page_token, "offset:2");
+
+    let second_page = client
+        .list_runs(proto::ListRunsRequest {
+            project: "project-page-runs".to_string(),
+            page_size: 2,
+            page_token: first_page.next_page_token,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        second_page
+            .runs
+            .iter()
+            .map(|run| run.id.clone())
+            .collect::<Vec<_>>(),
+        expected_ids[2..].to_vec()
+    );
+    assert!(second_page.next_page_token.is_empty());
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn get_task_can_find_task_across_runs() {
     let server = TestServer::start().await;
     let mut client = server.client().await;
@@ -327,6 +421,84 @@ async fn list_tasks_filters_by_run_and_milestone() {
             .iter()
             .all(|task| task.milestone_id == "m1")
     );
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn list_tasks_uses_next_offset_token_for_pagination() {
+    let server = TestServer::start().await;
+    let mut client = server.client().await;
+
+    let run = submit_run(
+        &mut client,
+        "project-page-tasks",
+        server.workspace_path("workspace-page-tasks"),
+        make_plan(
+            vec![make_milestone("m1", "Milestone 1")],
+            vec![
+                make_task("m1", "task-1"),
+                make_task("m1", "task-2"),
+                make_task("m1", "task-3"),
+            ],
+        ),
+    )
+    .await;
+
+    let full = client
+        .list_tasks(proto::ListTasksRequest {
+            run_id: run.id.clone(),
+            page_size: 100,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let expected_ids = full
+        .tasks
+        .iter()
+        .map(|task| task.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(expected_ids.len(), 3);
+
+    let first_page = client
+        .list_tasks(proto::ListTasksRequest {
+            run_id: run.id.clone(),
+            page_size: 2,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        first_page
+            .tasks
+            .iter()
+            .map(|task| task.id.clone())
+            .collect::<Vec<_>>(),
+        expected_ids[..2].to_vec()
+    );
+    assert_eq!(first_page.next_page_token, "offset:2");
+
+    let second_page = client
+        .list_tasks(proto::ListTasksRequest {
+            run_id: run.id.clone(),
+            page_size: 2,
+            page_token: first_page.next_page_token,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        second_page
+            .tasks
+            .iter()
+            .map(|task| task.id.clone())
+            .collect::<Vec<_>>(),
+        expected_ids[2..].to_vec()
+    );
+    assert!(second_page.next_page_token.is_empty());
 
     server.stop().await;
 }

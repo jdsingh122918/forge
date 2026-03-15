@@ -59,6 +59,60 @@ impl StateStore {
         })
     }
 
+    /// Append multiple events to the durable log under one connection lock.
+    pub fn append_events(&self, events: &[AppendEvent]) -> Result<Vec<i64>> {
+        if events.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.with_connection(|conn| {
+            conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")
+                .context("failed to begin event-log append transaction")?;
+
+            let result = (|| -> Result<Vec<i64>> {
+                let mut seqs = Vec::with_capacity(events.len());
+                let mut stmt = conn
+                    .prepare(
+                        "INSERT INTO event_log (run_id, task_id, agent_id, event_type, payload, created_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    )
+                    .context("failed to prepare batched event-log insert")?;
+
+                for event in events {
+                    stmt.execute(params![
+                        event.run_id,
+                        event.task_id,
+                        event.agent_id,
+                        event.event_type,
+                        event.payload,
+                        event.created_at.to_rfc3339(),
+                    ])
+                    .with_context(|| {
+                        format!(
+                            "failed to append event `{}` for run `{}`",
+                            event.event_type, event.run_id
+                        )
+                    })?;
+                    seqs.push(conn.last_insert_rowid());
+                }
+
+                Ok(seqs)
+            })();
+
+            match result {
+                Ok(seqs) => {
+                    conn.execute_batch("COMMIT")
+                        .context("failed to commit event-log append transaction")?;
+                    Ok(seqs)
+                }
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })
+    }
+
     /// Replay raw event rows after a cursor, optionally scoped to a single run.
     pub fn replay_events(
         &self,
@@ -234,7 +288,9 @@ impl EventRow {
             task_id: runtime_event
                 .task_id
                 .ok_or_else(|| anyhow!("task-output row missing task_id at seq {}", self.seq))?,
-            agent_id: runtime_event.agent_id.unwrap_or_else(|| AgentId::new("")),
+            agent_id: runtime_event
+                .agent_id
+                .ok_or_else(|| anyhow!("task-output row missing agent_id at seq {}", self.seq))?,
             cursor: runtime_event.seq,
             output,
             timestamp: runtime_event.timestamp,
@@ -270,12 +326,13 @@ mod tests {
             .with_connection(|conn| {
                 conn.execute(
                     "INSERT INTO runs (
-                        id, project, plan_json, plan_hash, policy_snapshot, status,
+                        id, project, workspace, plan_json, plan_hash, policy_snapshot, status,
                         started_at, finished_at, total_tokens, estimated_cost_usd, last_event_cursor
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, 0, 0.0, 0)",
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, 0, 0.0, 0)",
                     params![
                         run_id,
                         format!("project-{run_id}"),
+                        format!("/tmp/{run_id}"),
                         "{}",
                         "plan-hash",
                         "{}",
@@ -490,5 +547,32 @@ mod tests {
         assert!(events.iter().all(|event| event.run_id == "run-1"));
         assert_eq!(harness.store.count_events_for_run("run-1").unwrap(), 2);
         assert_eq!(harness.store.count_events_for_run("run-2").unwrap(), 1);
+    }
+
+    #[test]
+    fn decode_task_output_event_rejects_missing_agent_id() {
+        let harness = TestStore::new();
+        seed_run(&harness.store, "run-1");
+
+        let seq = harness
+            .store
+            .append_event(&make_event(
+                "run-1",
+                Some("task-1"),
+                "TaskOutput",
+                RuntimeEventKind::TaskOutput {
+                    output: forge_common::events::TaskOutput::Stdout("hello".to_string()),
+                },
+                0,
+            ))
+            .unwrap();
+        let row = harness
+            .store
+            .replay_events(seq - 1, None, 1)
+            .unwrap()
+            .remove(0);
+
+        let error = row.decode_task_output_event().unwrap_err();
+        assert!(error.to_string().contains("missing agent_id"));
     }
 }

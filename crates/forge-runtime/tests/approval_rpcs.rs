@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use forge_common::ids::{AgentId, ApprovalId, RunId, TaskNodeId};
+use forge_common::manifest::SpawnLimits;
 use forge_common::run_graph::{
     ApprovalActorKind, ApprovalReasonKind, PendingApproval, RunPlan, TaskStatus,
 };
@@ -54,41 +55,37 @@ impl Harness {
             orchestrator
                 .submit_run(
                     "project-approval-rpcs".to_string(),
+                    temp_dir.path().join("workspace"),
                     RunPlan::try_from(&make_plan()).unwrap(),
                 )
                 .await
                 .unwrap()
         };
-        let parent_id = run.tasks.values().next().unwrap().id.to_string();
+        let parent_id = run.tasks().values().next().unwrap().id.to_string();
 
         {
             let mut orchestrator = orchestrator.lock().await;
-            let run_state = orchestrator.run_graph.get_run_mut(&run.id).unwrap();
-            let parent = run_state
-                .tasks
-                .get_mut(&TaskNodeId::new(parent_id.clone()))
+            let run_state = orchestrator.run_graph.get_run_mut(run.id()).unwrap();
+            let parent_task_id = TaskNodeId::new(parent_id.clone());
+            run_state
+                .transition_task(
+                    &parent_task_id,
+                    TaskStatus::Running {
+                        agent_id: AgentId::new("agent-parent"),
+                        since: Utc::now(),
+                    },
+                    Utc::now(),
+                )
                 .unwrap();
-            parent.status = TaskStatus::Running {
-                agent_id: AgentId::new("agent-parent"),
-                since: Utc::now(),
-            };
-            parent
-                .profile
-                .manifest
-                .permissions
-                .spawn_limits
-                .max_children = max_children;
-            parent
-                .profile
-                .manifest
-                .permissions
-                .spawn_limits
-                .require_approval_after = require_approval_after;
-            parent.requested_capabilities.spawn_limits.max_children = max_children;
-            parent
-                .requested_capabilities
-                .spawn_limits
-                .require_approval_after = require_approval_after;
+            run_state
+                .update_task_spawn_limits(
+                    &parent_task_id,
+                    SpawnLimits {
+                        max_children,
+                        require_approval_after,
+                    },
+                )
+                .unwrap();
         }
 
         (
@@ -98,7 +95,7 @@ impl Harness {
                 state_store,
                 orchestrator,
             },
-            run.id.to_string(),
+            run.id().to_string(),
             parent_id,
         )
     }
@@ -140,33 +137,28 @@ impl Harness {
             .get_run_mut(&RunId::new(run_id.to_string()))
             .unwrap();
         let approval_id = ApprovalId::new(approval_id.to_string());
-        if run.approvals.contains_key(&approval_id) {
+        if run.contains_approval(&approval_id) {
             return;
         }
 
-        let task = run
-            .tasks
-            .get(&TaskNodeId::new(task_id.to_string()))
-            .unwrap()
-            .clone();
-        run.approvals.insert(
-            approval_id.clone(),
-            PendingApproval {
-                id: approval_id,
-                run_id: RunId::new(run_id.to_string()),
-                task_id: TaskNodeId::new(task_id.to_string()),
-                approver: ApprovalActorKind::Operator,
-                reason_kind: ApprovalReasonKind::SoftCapExceeded,
-                requested_capabilities: task.requested_capabilities.clone(),
-                requested_budget: task.budget.clone(),
-                description: format!(
-                    "child task `{}` requires approval before scheduling",
-                    task.objective
-                ),
-                requested_at: task.created_at,
-                resolution: None,
-            },
-        );
+        let task_id = TaskNodeId::new(task_id.to_string());
+        let task = run.task(&task_id).unwrap().clone();
+        run.insert_approval(PendingApproval {
+            id: approval_id,
+            run_id: RunId::new(run_id.to_string()),
+            task_id,
+            approver: ApprovalActorKind::Operator,
+            reason_kind: ApprovalReasonKind::SoftCapExceeded,
+            requested_capabilities: task.requested_capabilities.clone(),
+            requested_budget: task.budget.clone(),
+            description: format!(
+                "child task `{}` requires approval before scheduling",
+                task.objective
+            ),
+            requested_at: task.created_at,
+            resolution: None,
+        })
+        .unwrap();
     }
 }
 
@@ -308,9 +300,9 @@ async fn resolve_approval_approve_clears_pending_approval_and_enqueues_task() {
 
     let orchestrator = harness.orchestrator.lock().await;
     let run = orchestrator.get_run(&RunId::new(fixture.run_id)).unwrap();
-    assert!(run.approvals.is_empty());
+    assert_eq!(run.approval_count(), 0);
     assert!(!matches!(
-        run.tasks[&TaskNodeId::new(fixture.child_id)].status,
+        run.task(&TaskNodeId::new(fixture.child_id)).unwrap().status,
         TaskStatus::AwaitingApproval
     ));
 }
@@ -352,9 +344,9 @@ async fn resolve_approval_deny_kills_task_and_returns_updated_task() {
 
     let orchestrator = harness.orchestrator.lock().await;
     let run = orchestrator.get_run(&RunId::new(fixture.run_id)).unwrap();
-    assert!(run.approvals.is_empty());
+    assert_eq!(run.approval_count(), 0);
     assert!(matches!(
-        &run.tasks[&TaskNodeId::new(fixture.child_id)].status,
+        &run.task(&TaskNodeId::new(fixture.child_id)).unwrap().status,
         TaskStatus::Killed { reason } if reason.contains(deny_reason)
     ));
 }
@@ -438,9 +430,9 @@ async fn resolve_approval_second_attempt_returns_not_found_and_leaves_first_resu
 
     let orchestrator = harness.orchestrator.lock().await;
     let run = orchestrator.get_run(&RunId::new(fixture.run_id)).unwrap();
-    assert!(run.approvals.is_empty());
+    assert_eq!(run.approval_count(), 0);
     assert!(matches!(
-        &run.tasks[&TaskNodeId::new(fixture.child_id)].status,
+        &run.task(&TaskNodeId::new(fixture.child_id)).unwrap().status,
         TaskStatus::Enqueued
     ));
 }

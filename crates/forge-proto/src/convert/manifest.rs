@@ -48,7 +48,7 @@ impl BudgetPolicyDefaults {
 /// request message and is therefore intentionally not represented here.
 pub fn encode_initial_budget_request(value: &BudgetEnvelope) -> Result<proto::BudgetEnvelope> {
     Ok(proto::BudgetEnvelope {
-        max_tokens: u64_to_i64(value.allocated, "max_tokens")?,
+        max_tokens: u64_to_i64(value.allocated(), "max_tokens")?,
         max_duration: None,
         max_children: 0,
         require_approval_after: 0,
@@ -553,11 +553,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(back.allocated, 25_000);
-        assert_eq!(back.consumed, 0);
-        assert_eq!(back.subtree_consumed, 0);
-        assert_eq!(back.remaining, 25_000);
-        assert_eq!(back.warn_at_percent, 60);
+        assert_eq!(back.allocated(), 25_000);
+        assert_eq!(back.consumed(), 0);
+        assert_eq!(back.subtree_consumed(), 0);
+        assert_eq!(back.remaining(), 25_000);
+        assert_eq!(back.warn_at_percent(), 60);
     }
 
     #[test]

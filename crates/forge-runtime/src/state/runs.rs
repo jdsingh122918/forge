@@ -12,6 +12,7 @@ use crate::state::StateStore;
 pub struct RunRow {
     pub id: String,
     pub project: String,
+    pub workspace: String,
     pub plan_json: String,
     pub plan_hash: String,
     pub policy_snapshot: String,
@@ -29,12 +30,13 @@ impl StateStore {
         self.with_connection(|conn| {
             conn.execute(
                 "INSERT INTO runs (
-                    id, project, plan_json, plan_hash, policy_snapshot, status,
+                    id, project, workspace, plan_json, plan_hash, policy_snapshot, status,
                     started_at, finished_at, total_tokens, estimated_cost_usd, last_event_cursor
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     row.id,
                     row.project,
+                    row.workspace,
                     row.plan_json,
                     row.plan_hash,
                     row.policy_snapshot,
@@ -56,7 +58,7 @@ impl StateStore {
         self.with_connection(|conn| {
             conn.query_row(
                 "SELECT
-                    id, project, plan_json, plan_hash, policy_snapshot, status,
+                    id, project, workspace, plan_json, plan_hash, policy_snapshot, status,
                     started_at, finished_at, total_tokens, estimated_cost_usd, last_event_cursor
                  FROM runs
                  WHERE id = ?1",
@@ -121,13 +123,56 @@ impl StateStore {
         })
     }
 
+    /// Update multiple run cursors under one connection lock.
+    pub fn update_run_cursors(&self, cursor_updates: &[(String, i64)]) -> Result<()> {
+        if cursor_updates.is_empty() {
+            return Ok(());
+        }
+
+        self.with_connection(|conn| {
+            conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")
+                .context("failed to begin run-cursor update transaction")?;
+
+            let result = (|| -> Result<()> {
+                let mut stmt = conn
+                    .prepare(
+                        "UPDATE runs
+                         SET last_event_cursor = ?2
+                         WHERE id = ?1",
+                    )
+                    .context("failed to prepare batched run-cursor update")?;
+
+                for (id, cursor) in cursor_updates {
+                    let updated = stmt
+                        .execute(params![id, cursor])
+                        .with_context(|| format!("failed to update cursor for run {id}"))?;
+                    ensure!(updated == 1, "run not found: {id}");
+                }
+
+                Ok(())
+            })();
+
+            match result {
+                Ok(()) => {
+                    conn.execute_batch("COMMIT")
+                        .context("failed to commit run-cursor update transaction")?;
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })
+    }
+
     /// List runs with optional project and status filters.
     pub fn list_runs(&self, project: Option<&str>, status: Option<&str>) -> Result<Vec<RunRow>> {
         self.with_connection(|conn| {
             let (sql, bind_project, bind_status) = match (project, status) {
                 (Some(project), Some(status)) => (
                     "SELECT
-                        id, project, plan_json, plan_hash, policy_snapshot, status,
+                        id, project, workspace, plan_json, plan_hash, policy_snapshot, status,
                         started_at, finished_at, total_tokens, estimated_cost_usd, last_event_cursor
                      FROM runs
                      WHERE project = ?1 AND status = ?2
@@ -137,7 +182,7 @@ impl StateStore {
                 ),
                 (Some(project), None) => (
                     "SELECT
-                        id, project, plan_json, plan_hash, policy_snapshot, status,
+                        id, project, workspace, plan_json, plan_hash, policy_snapshot, status,
                         started_at, finished_at, total_tokens, estimated_cost_usd, last_event_cursor
                      FROM runs
                      WHERE project = ?1
@@ -147,7 +192,7 @@ impl StateStore {
                 ),
                 (None, Some(status)) => (
                     "SELECT
-                        id, project, plan_json, plan_hash, policy_snapshot, status,
+                        id, project, workspace, plan_json, plan_hash, policy_snapshot, status,
                         started_at, finished_at, total_tokens, estimated_cost_usd, last_event_cursor
                      FROM runs
                      WHERE status = ?1
@@ -157,7 +202,7 @@ impl StateStore {
                 ),
                 (None, None) => (
                     "SELECT
-                        id, project, plan_json, plan_hash, policy_snapshot, status,
+                        id, project, workspace, plan_json, plan_hash, policy_snapshot, status,
                         started_at, finished_at, total_tokens, estimated_cost_usd, last_event_cursor
                      FROM runs
                      ORDER BY started_at ASC, id ASC",
@@ -201,7 +246,7 @@ impl StateStore {
         self.with_connection(|conn| {
             let mut sql = String::from(
                 "SELECT
-                    id, project, plan_json, plan_hash, policy_snapshot, status,
+                    id, project, workspace, plan_json, plan_hash, policy_snapshot, status,
                     started_at, finished_at, total_tokens, estimated_cost_usd, last_event_cursor
                  FROM runs
                  WHERE status IN (",
@@ -238,15 +283,16 @@ fn map_run_row(row: &Row<'_>) -> rusqlite::Result<RunRow> {
     Ok(RunRow {
         id: row.get(0)?,
         project: row.get(1)?,
-        plan_json: row.get(2)?,
-        plan_hash: row.get(3)?,
-        policy_snapshot: row.get(4)?,
-        status: row.get(5)?,
-        started_at: parse_timestamp(row.get(6)?, 6)?,
-        finished_at: parse_optional_timestamp(row.get(7)?, 7)?,
-        total_tokens: row.get(8)?,
-        estimated_cost_usd: row.get(9)?,
-        last_event_cursor: row.get(10)?,
+        workspace: row.get(2)?,
+        plan_json: row.get(3)?,
+        plan_hash: row.get(4)?,
+        policy_snapshot: row.get(5)?,
+        status: row.get(6)?,
+        started_at: parse_timestamp(row.get(7)?, 7)?,
+        finished_at: parse_optional_timestamp(row.get(8)?, 8)?,
+        total_tokens: row.get(9)?,
+        estimated_cost_usd: row.get(10)?,
+        last_event_cursor: row.get(11)?,
     })
 }
 
@@ -286,6 +332,7 @@ mod tests {
         RunRow {
             id: id.to_string(),
             project: project.to_string(),
+            workspace: format!("/tmp/{id}"),
             plan_json: r#"{"milestones":[],"initial_tasks":[]}"#.to_string(),
             plan_hash: format!("hash-{id}"),
             policy_snapshot: r#"{"policy":"default"}"#.to_string(),

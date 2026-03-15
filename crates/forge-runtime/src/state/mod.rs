@@ -1,5 +1,6 @@
 //! SQLite-backed runtime state store.
 
+pub mod agent_instances;
 pub mod events;
 pub mod runs;
 pub mod schema;
@@ -100,6 +101,14 @@ impl StateStore {
         })
         .await
         .map_err(|error| anyhow!("state count task failed: {error}"))?
+    }
+
+    /// Load the latest event sequence without blocking the async runtime.
+    pub async fn latest_event_seq(&self) -> Result<i64> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.latest_seq())
+            .await
+            .map_err(|error| anyhow!("latest event sequence task failed: {error}"))?
     }
 
     /// Run synchronous work against the primary runtime database connection.

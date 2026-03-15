@@ -5,12 +5,15 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 
 pub mod event_stream;
+pub mod profile_compiler;
 pub mod recovery;
 pub mod run_orchestrator;
+pub mod runtime;
 pub mod scheduler;
 pub mod server;
 pub mod shutdown;
 pub mod state;
+pub mod task_manager;
 pub mod version;
 
 /// Resolve the daemon socket path from CLI/config defaults.

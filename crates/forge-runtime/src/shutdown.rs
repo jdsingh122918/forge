@@ -169,7 +169,7 @@ impl ShutdownCoordinator {
                 let task_ids = orchestrator
                     .get_run(run_id)
                     .map(|run| {
-                        run.tasks
+                        run.tasks()
                             .values()
                             .filter(|task| !is_terminal(&task.status))
                             .map(|task| task.id.clone())
@@ -180,7 +180,7 @@ impl ShutdownCoordinator {
                 for task_id in task_ids {
                     let shutdown_reason = orchestrator
                         .get_run(run_id)
-                        .and_then(|run| run.tasks.get(&task_id))
+                        .and_then(|run| run.task(&task_id))
                         .and_then(|task| task.assigned_agent.as_ref())
                         .map(|agent_id| {
                             if forced_agent_ids.contains(agent_id) {
@@ -310,7 +310,7 @@ impl ShutdownCoordinator {
             .run_graph
             .get_run_mut(run_id)
         {
-            run.last_event_cursor = seq_u64;
+            run.set_last_event_cursor(seq_u64);
         }
 
         Ok(seq_u64)
@@ -437,10 +437,14 @@ mod tests {
         let mut orchestrator =
             RunOrchestrator::new(Arc::clone(&state_store), Arc::clone(&event_stream));
         let run = orchestrator
-            .submit_run("project-a".to_string(), make_test_plan())
+            .submit_run(
+                "project-a".to_string(),
+                std::env::temp_dir().join("forge-runtime-shutdown-tests"),
+                make_test_plan(),
+            )
             .await
             .unwrap();
-        let task_id = run.tasks.values().next().unwrap().id.clone();
+        let task_id = run.tasks().values().next().unwrap().id.clone();
         let agent_id = supervisor
             .list_active()
             .await
@@ -450,7 +454,7 @@ mod tests {
             .unwrap_or_else(|| AgentId::new("agent-1"));
         orchestrator
             .transition_task(
-                &run.id,
+                run.id(),
                 &task_id,
                 TaskStatus::Running {
                     agent_id,
@@ -476,7 +480,7 @@ mod tests {
             coordinator,
             orchestrator,
             state_store,
-            run.id,
+            run.id().clone(),
             task_id,
             cancel_token,
         )
@@ -529,9 +533,9 @@ mod tests {
 
         let orchestrator = orchestrator.lock().await;
         let run = orchestrator.get_run(&run_id).unwrap();
-        assert_eq!(run.status, RunStatus::Failed);
+        assert_eq!(run.status(), RunStatus::Failed);
         assert_eq!(
-            run.tasks.get(&task_id).unwrap().status,
+            run.tasks().get(&task_id).unwrap().status,
             TaskStatus::Killed {
                 reason: "daemon_shutdown".to_string(),
             }
@@ -568,9 +572,9 @@ mod tests {
 
         let orchestrator = orchestrator.lock().await;
         let run = orchestrator.get_run(&run_id).unwrap();
-        assert_eq!(run.status, RunStatus::Failed);
+        assert_eq!(run.status(), RunStatus::Failed);
         assert_eq!(
-            run.tasks.get(&task_id).unwrap().status,
+            run.tasks().get(&task_id).unwrap().status,
             TaskStatus::Killed {
                 reason: "daemon_shutdown_force".to_string(),
             }
