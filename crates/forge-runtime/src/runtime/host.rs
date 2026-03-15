@@ -14,7 +14,7 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use forge_common::ids::AgentId;
 use forge_common::manifest::RuntimeEnvPlan;
-use forge_common::run_graph::{AgentHandle, RuntimeBackend};
+use forge_common::run_graph::AgentHandle;
 use forge_common::runtime::{AgentRuntime, AgentStatus, PreparedAgentLaunch};
 use tokio::process::Command;
 use tokio::sync::RwLock;
@@ -135,27 +135,23 @@ impl AgentRuntime for HostRuntime {
             .await
             .insert(prepared.agent_id.clone(), tracked_child);
 
-        Ok(AgentHandle {
-            agent_id: prepared.agent_id,
-            pid: Some(pid),
-            container_id: None,
-            backend: RuntimeBackend::Host,
-            socket_dir,
-        })
+        Ok(AgentHandle::host(prepared.agent_id, pid, socket_dir))
     }
 
     async fn kill(&self, handle: &AgentHandle) -> Result<()> {
-        let pid = handle.pid.context("host runtime handle is missing a pid")?;
+        let pid = handle
+            .pid()
+            .context("host runtime handle is missing a pid")?;
         let kill_reason = "operator requested host runtime termination".to_string();
 
-        if let Some(child) = self.tracked_child(&handle.agent_id).await {
+        if let Some(child) = self.tracked_child(handle.agent_id()).await {
             child.remember_kill_reason(kill_reason);
         }
 
         send_signal(pid, libc::SIGTERM)
             .with_context(|| format!("failed to send SIGTERM to host pid {pid}"))?;
 
-        if let Some(child) = self.tracked_child(&handle.agent_id).await {
+        if let Some(child) = self.tracked_child(handle.agent_id()).await {
             match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
                 Ok(Ok(_)) => {}
                 Ok(Err(error)) => {
@@ -176,10 +172,34 @@ impl AgentRuntime for HostRuntime {
         Ok(())
     }
 
-    async fn status(&self, handle: &AgentHandle) -> Result<AgentStatus> {
-        let pid = handle.pid.context("host runtime handle is missing a pid")?;
+    async fn force_kill(&self, handle: &AgentHandle, reason: &str) -> Result<()> {
+        let pid = handle
+            .pid()
+            .context("host runtime handle is missing a pid")?;
 
-        if let Some(child) = self.tracked_child(&handle.agent_id).await {
+        if let Some(child) = self.tracked_child(handle.agent_id()).await {
+            child.remember_kill_reason(reason.to_string());
+            child
+                .force_kill()
+                .await
+                .with_context(|| format!("failed to send SIGKILL to tracked host pid {pid}"))?;
+            child
+                .wait()
+                .await
+                .with_context(|| format!("failed to reap force-killed host pid {pid}"))?;
+            return Ok(());
+        }
+
+        send_signal(pid, libc::SIGKILL)
+            .with_context(|| format!("failed to send SIGKILL to host pid {pid}"))
+    }
+
+    async fn status(&self, handle: &AgentHandle) -> Result<AgentStatus> {
+        let pid = handle
+            .pid()
+            .context("host runtime handle is missing a pid")?;
+
+        if let Some(child) = self.tracked_child(handle.agent_id()).await {
             return Ok(
                 match child
                     .try_wait()
@@ -201,7 +221,8 @@ impl AgentRuntime for HostRuntime {
 }
 
 fn send_signal(pid: u32, signal: i32) -> Result<()> {
-    let rc = unsafe { libc::kill(pid as i32, signal) };
+    let pid = pid_t_from_u32(pid)?;
+    let rc = unsafe { libc::kill(pid, signal) };
     if rc == 0 {
         return Ok(());
     }
@@ -215,13 +236,22 @@ fn send_signal(pid: u32, signal: i32) -> Result<()> {
 }
 
 fn process_exists(pid: u32) -> bool {
-    let rc = unsafe { libc::kill(pid as i32, 0) };
+    let Ok(pid) = pid_t_from_u32(pid) else {
+        return false;
+    };
+    let rc = unsafe { libc::kill(pid, 0) };
     if rc == 0 {
         return true;
     }
 
     let error = std::io::Error::last_os_error();
     matches!(error.raw_os_error(), Some(libc::EPERM))
+}
+
+fn pid_t_from_u32(pid: u32) -> Result<libc::pid_t> {
+    i32::try_from(pid)
+        .context("pid exceeds libc::pid_t range")
+        .map(|pid| pid as libc::pid_t)
 }
 
 #[cfg(test)]
@@ -236,7 +266,9 @@ mod tests {
         MemoryPolicy, MemoryScope, PermissionSet, RepoAccess, ResourceLimits, RunSharedWriteMode,
         SpawnLimits, WorktreePlan,
     };
-    use forge_common::run_graph::{ApprovalState, TaskNode, TaskStatus, TaskWaitMode};
+    use forge_common::run_graph::{
+        ApprovalState, RuntimeBackend, TaskNode, TaskStatus, TaskWaitMode,
+    };
     use forge_common::runtime::{AgentLaunchSpec, AgentOutputMode};
     use tempfile::TempDir;
 
@@ -379,10 +411,10 @@ mod tests {
         let handle = runtime.spawn(launch).await.unwrap();
         let terminal = wait_for_terminal_status(&runtime, &handle).await;
 
-        assert!(handle.pid.is_some());
-        assert_eq!(handle.backend, RuntimeBackend::Host);
-        assert_eq!(handle.socket_dir, socket_dir);
-        assert!(handle.socket_dir.exists());
+        assert!(handle.pid().is_some());
+        assert_eq!(handle.backend(), RuntimeBackend::Host);
+        assert_eq!(handle.socket_dir(), socket_dir);
+        assert!(handle.socket_dir().exists());
         assert!(matches!(terminal, AgentStatus::Exited { exit_code: 0 }));
         assert_eq!(
             tokio::fs::read_to_string(temp_dir.path().join("payload.txt"))
@@ -457,6 +489,37 @@ mod tests {
         runtime.kill(&handle).await.unwrap();
         let status = wait_for_terminal_status(&runtime, &handle).await;
         assert!(matches!(status, AgentStatus::Killed { .. }));
+    }
+
+    #[tokio::test]
+    async fn host_runtime_force_kill_terminates_process() {
+        let temp_dir = TempDir::new().unwrap();
+        let runtime = HostRuntime::new(
+            temp_dir.path().join("sockets"),
+            crate::runtime::RuntimeOutputSink::disabled(),
+        );
+        let handle = runtime
+            .spawn(make_prepared_launch(
+                temp_dir.path(),
+                &temp_dir.path().join("socket-force-kill"),
+                make_launch("sleep 30", b""),
+            ))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            runtime.status(&handle).await.unwrap(),
+            AgentStatus::Running
+        ));
+
+        runtime.force_kill(&handle, "forced").await.unwrap();
+        let status = wait_for_terminal_status(&runtime, &handle).await;
+        assert!(matches!(status, AgentStatus::Killed { .. }));
+    }
+
+    #[test]
+    fn pid_t_from_u32_rejects_out_of_range_pid() {
+        assert!(pid_t_from_u32((i32::MAX as u32) + 1).is_err());
     }
 
     #[tokio::test]

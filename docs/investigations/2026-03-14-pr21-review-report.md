@@ -34,14 +34,12 @@ The `run_server` / `NoopAgentSupervisor` finding is also no longer accurate as w
 
 This PR introduces the `forge-runtime` crate — a gRPC-based runtime daemon with SQLite-backed state management, DAG-based task scheduling, multi-backend agent execution (host/docker/bubblewrap), approval workflows, and real-time event streaming. It also extends `forge-common` with domain types and `forge-proto` with protobuf definitions.
 
-**Overall assessment:** The architecture is sound, the proto conversion layer is excellent, and the test suite covers the gRPC contract well. However, **4 critical issues** must be addressed before merge — they involve silent data loss, infinite retry loops, a structural defect in the convenience server entry point, and a blocking sync call in async context. Several important issues around error handling resilience and type encapsulation should also be addressed.
+**Overall assessment:** The architecture remains sound, the proto conversion layer is still a clear strength, and the original review was directionally useful. On the current tree, though, the report is no longer an accurate snapshot of merge blockers: the original C1, C2, C4, I1, I2, I5, and I6 findings are already fixed, and the `run_server` / `NoopAgentSupervisor` item has been narrowed by the quiescent-bootstrap guard. The only in-scope code correction that remained worth landing from this report was the bootstrap metadata path, which now reports `RUNTIME_BACKEND_UNSPECIFIED` plus `insecure_host_runtime = false` when no `TaskManager` is attached. What remains here is mostly follow-up testing and cleanup work rather than pre-merge blocker remediation.
 
-| Severity | Count |
-|----------|-------|
-| Critical | 4 |
-| Important | 6 |
-| Medium | 8 |
-| Test gaps | 3 critical paths uncovered |
+| Status | Summary |
+|--------|---------|
+| Original report | 4 critical, 6 important, 8 medium findings |
+| Current tree | Original critical blockers from this report are resolved or narrowed; follow-up work remains in testing, comments, and deeper recovery behavior |
 
 ---
 
@@ -448,29 +446,20 @@ pub enum AgentHandle {
 
 ## Recommended Action Plan
 
-### Before Merge (Critical)
+### Current Merge-Blocker Verdict
 
-1. **C1** — Add warn/debug logging to `RuntimeOutputSink::emit` when channel send fails
-2. **C2** — Transition task to `Failed` in `dispatch_enqueued_tasks` when `spawn_prepared` fails
-3. **C3** — Either remove `run_server` convenience function or construct a real `TaskManager` inside it; add warning log if `NoopAgentSupervisor` is used
-4. **C4** — Wrap `latest_seq()` call in `pending_approvals` with `spawn_blocking`
+1. No additional code changes are still required from the original C1/C2/C4 action items on the current tree; those paths have already been fixed.
+2. The original `run_server` footgun has been narrowed substantially: bootstrap now rejects active runtime state, and bootstrap-only services now report `RUNTIME_BACKEND_UNSPECIFIED` with `insecure_host_runtime = false` when no `TaskManager` is attached.
+3. Treat this report as historical context plus follow-up guidance, not as a current blocking checklist.
 
-### Should Fix (Important)
+### Recommended Follow-Up
 
-5. **I1** — Add consecutive failure counter and backoff to lifecycle loop
-6. **I2** — Surface scheduler errors as runtime events; fail runs after repeated scheduling failures
-7. **I5** — Make `BudgetEnvelope.remaining` a computed method
-8. **I6** — Make `RunState` fields non-pub with validated mutation methods
-
-### Follow-Up (Post-Merge)
-
-9. Add recovery module tests (critical gap — 600 lines untested)
-10. Add task completion lifecycle tests (`check_agent_status` through to terminal states)
-11. Add state machine transition validation tests
-12. Restructure `AgentHandle` as a backend-discriminated enum
-13. Extract shared test harness into `tests/common/mod.rs`
-14. Fix inaccurate comments (5 items listed above)
-15. Clean up stale/forward-looking comments (5 items listed above)
+4. Add recovery module tests, especially around mixed-state restart reconciliation and approval persistence.
+5. Add task completion lifecycle tests that exercise `check_agent_status` through terminal outcomes.
+6. Add explicit state-transition validation tests for terminal task/run states.
+7. Extract the duplicated gRPC test harness into `tests/common/mod.rs`.
+8. Clean up inaccurate and forward-looking comments, especially stale planning references.
+9. Revisit daemon-restart recovery versus backend-specific reattachment expectations as a dedicated follow-up, separate from the original report's resolved blockers.
 
 ---
 

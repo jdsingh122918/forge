@@ -18,6 +18,42 @@ use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
+const LIFECYCLE_TICK_INTERVAL: Duration = Duration::from_millis(250);
+const LIFECYCLE_FAILURE_THRESHOLD: u32 = 8;
+
+#[derive(Debug, Clone, Copy)]
+struct LifecycleCircuitBreaker {
+    consecutive_failures: u32,
+    threshold: u32,
+}
+
+impl LifecycleCircuitBreaker {
+    fn new(threshold: u32) -> Self {
+        Self {
+            consecutive_failures: 0,
+            threshold,
+        }
+    }
+
+    fn record_cycle(&mut self, failed: bool) -> bool {
+        if failed {
+            self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        } else {
+            self.consecutive_failures = 0;
+        }
+
+        self.consecutive_failures >= self.threshold
+    }
+
+    fn next_failure_count(&self) -> u32 {
+        self.consecutive_failures.saturating_add(1)
+    }
+
+    fn consecutive_failures(&self) -> u32 {
+        self.consecutive_failures
+    }
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum CliRuntimeBackend {
     Host,
@@ -133,20 +169,53 @@ async fn main() -> Result<()> {
     ));
 
     let lifecycle_manager = Arc::clone(&task_manager);
-    let lifecycle_token = shutdown_coordinator.cancellation_token();
+    let lifecycle_shutdown = Arc::clone(&shutdown_coordinator);
+    let lifecycle_token = lifecycle_shutdown.cancellation_token();
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_millis(250));
+        let mut ticker = tokio::time::interval(LIFECYCLE_TICK_INTERVAL);
+        let mut circuit_breaker = LifecycleCircuitBreaker::new(LIFECYCLE_FAILURE_THRESHOLD);
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
+                    let mut cycle_failed = false;
                     if let Err(error) = lifecycle_manager.drain_runtime_output().await {
-                        tracing::warn!(%error, "task-manager output drain cycle failed");
+                        cycle_failed = true;
+                        tracing::warn!(
+                            %error,
+                            consecutive_failures = circuit_breaker.next_failure_count(),
+                            "task-manager output drain cycle failed"
+                        );
                     }
                     if let Err(error) = lifecycle_manager.dispatch_enqueued_tasks().await {
-                        tracing::warn!(%error, "task-manager dispatch cycle failed");
+                        cycle_failed = true;
+                        tracing::warn!(
+                            %error,
+                            consecutive_failures = circuit_breaker.next_failure_count(),
+                            "task-manager dispatch cycle failed"
+                        );
                     }
                     if let Err(error) = lifecycle_manager.poll_active_agents().await {
-                        tracing::warn!(%error, "task-manager poll cycle failed");
+                        cycle_failed = true;
+                        tracing::warn!(
+                            %error,
+                            consecutive_failures = circuit_breaker.next_failure_count(),
+                            "task-manager poll cycle failed"
+                        );
+                    }
+
+                    if circuit_breaker.record_cycle(cycle_failed) {
+                        let reason = format!(
+                            "lifecycle circuit breaker tripped after {} consecutive failing daemon cycles",
+                            circuit_breaker.consecutive_failures()
+                        );
+                        tracing::error!(reason = %reason, "shutting down runtime daemon");
+                        if let Err(error) = lifecycle_shutdown.initiate_shutdown(reason, None).await {
+                            tracing::error!(
+                                %error,
+                                "failed to shut down runtime daemon after lifecycle circuit breaker tripped"
+                            );
+                        }
+                        break;
                     }
                 }
                 _ = lifecycle_token.cancelled() => break,
@@ -245,4 +314,32 @@ fn clean_runtime_socket_artifacts(runtime_dir: &std::path::Path) -> Result<usize
     }
 
     Ok(cleaned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lifecycle_circuit_breaker_resets_after_successful_cycle() {
+        let mut breaker = LifecycleCircuitBreaker::new(3);
+
+        assert!(!breaker.record_cycle(true));
+        assert_eq!(breaker.consecutive_failures(), 1);
+        assert!(!breaker.record_cycle(true));
+        assert_eq!(breaker.consecutive_failures(), 2);
+        assert!(!breaker.record_cycle(false));
+        assert_eq!(breaker.consecutive_failures(), 0);
+        assert!(!breaker.record_cycle(true));
+        assert_eq!(breaker.consecutive_failures(), 1);
+    }
+
+    #[test]
+    fn lifecycle_circuit_breaker_trips_at_threshold() {
+        let mut breaker = LifecycleCircuitBreaker::new(2);
+
+        assert!(!breaker.record_cycle(true));
+        assert!(breaker.record_cycle(true));
+        assert_eq!(breaker.consecutive_failures(), 2);
+    }
 }

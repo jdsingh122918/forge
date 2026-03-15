@@ -55,7 +55,7 @@ impl AgentTracker {
         spawned_at: chrono::DateTime<chrono::Utc>,
     ) {
         let instance = AgentInstance {
-            id: handle.agent_id.clone(),
+            id: handle.agent_id().clone(),
             task_id: task_id.clone(),
             handle,
             resource_usage: ResourceSnapshot::default(),
@@ -223,6 +223,17 @@ impl TaskManager {
             match self.spawn_prepared(prepared).await {
                 Ok(_) => launched.push(task_id),
                 Err(error) => {
+                    if let Err(mark_error) = self
+                        .finalize_dispatch_failure(&run_id, &task_id, error.to_string())
+                        .await
+                    {
+                        tracing::error!(
+                            %mark_error,
+                            run_id = %run_id,
+                            task_id = %task_id,
+                            "failed to persist dispatch failure"
+                        );
+                    }
                     tracing::warn!(
                         %error,
                         run_id = %run_id,
@@ -273,7 +284,7 @@ impl TaskManager {
             }
         };
 
-        let agent_id = handle.agent_id.clone();
+        let agent_id = handle.agent_id().clone();
         let running_since = Utc::now();
         let running_status = TaskStatus::Running {
             agent_id: agent_id.clone(),
@@ -295,9 +306,9 @@ impl TaskManager {
         let agent_row = AgentInstanceRow {
             id: agent_id.to_string(),
             task_id: prepared.task_id.to_string(),
-            runtime_backend: runtime_backend_name(handle.backend).to_string(),
-            pid: handle.pid.map(i64::from),
-            container_id: handle.container_id.clone(),
+            runtime_backend: runtime_backend_name(handle.backend()).to_string(),
+            pid: handle.pid().map(i64::from),
+            container_id: handle.container_id().map(ToString::to_string),
             status: "Running".to_string(),
             started_at: running_since,
             finished_at: None,
@@ -424,17 +435,35 @@ impl TaskManager {
 
     /// Kill a tracked agent and transition the task to `Killed`.
     pub async fn kill_agent(&self, task_id: &TaskNodeId, reason: impl Into<String>) -> Result<()> {
-        let reason = reason.into();
+        self.stop_agent(task_id, reason.into(), false).await
+    }
+
+    async fn force_kill_agent(
+        &self,
+        task_id: &TaskNodeId,
+        reason: impl Into<String>,
+    ) -> Result<()> {
+        self.stop_agent(task_id, reason.into(), true).await
+    }
+
+    async fn stop_agent(&self, task_id: &TaskNodeId, reason: String, force: bool) -> Result<()> {
         let instance = self
             .tracker
             .get(task_id)
             .await
             .ok_or_else(|| anyhow!("no tracked agent for task {}", task_id))?;
 
-        self.runtime
-            .kill(&instance.handle)
-            .await
-            .with_context(|| format!("failed to kill agent for task {}", task_id))?;
+        if force {
+            self.runtime
+                .force_kill(&instance.handle, &reason)
+                .await
+                .with_context(|| format!("failed to force kill agent for task {}", task_id))?;
+        } else {
+            self.runtime
+                .kill(&instance.handle)
+                .await
+                .with_context(|| format!("failed to kill agent for task {}", task_id))?;
+        }
 
         let removed = self.tracker.remove(task_id).await;
         let run_id = self.run_id_for_task(task_id).await?;
@@ -494,6 +523,39 @@ impl TaskManager {
         .await
     }
 
+    async fn finalize_dispatch_failure(
+        &self,
+        run_id: &RunId,
+        task_id: &TaskNodeId,
+        error: String,
+    ) -> Result<bool> {
+        let mut orchestrator = self.orchestrator.lock().await;
+        let Some(task) = orchestrator.get_task_in_run(run_id, task_id).cloned() else {
+            return Ok(false);
+        };
+
+        if !matches!(
+            task.status,
+            TaskStatus::Enqueued | TaskStatus::Materializing
+        ) {
+            return Ok(false);
+        }
+
+        orchestrator
+            .transition_task(
+                run_id,
+                task_id,
+                TaskStatus::Failed {
+                    error,
+                    duration: Utc::now() - task.created_at,
+                },
+            )
+            .await
+            .with_context(|| format!("failed to finalize dispatch error for task {}", task_id))?;
+
+        Ok(true)
+    }
+
     async fn append_runtime_output_events(
         &self,
         envelopes: &[RuntimeOutputEnvelope],
@@ -535,7 +597,7 @@ impl TaskManager {
         let orchestrator = self.orchestrator.lock().await;
         orchestrator
             .find_task(task_id)
-            .map(|(run, _)| run.id.clone())
+            .map(|(run, _)| run.id().clone())
             .ok_or_else(|| anyhow!("task {} is not attached to a run", task_id))
     }
 
@@ -608,7 +670,12 @@ impl AgentSupervisor for TaskManager {
     }
 
     async fn force_stop(&self, agent: &ActiveAgent, reason: &str) -> Result<()> {
-        self.graceful_stop(agent, reason).await
+        if self.is_tracking(&agent.task_id).await {
+            self.force_kill_agent(&agent.task_id, reason)
+                .await
+                .with_context(|| format!("failed to force stop agent {}", agent.agent_id))?;
+        }
+        Ok(())
     }
 }
 
@@ -692,18 +759,21 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use forge_common::ids::MilestoneId;
     use forge_common::manifest::{BudgetEnvelope, MemoryScope};
     use forge_common::run_graph::{ApprovalMode, MilestoneInfo, RunPlan, TaskTemplate};
-    use forge_common::runtime::AgentLaunchSpec;
+    use forge_common::runtime::{AgentLaunchSpec, AgentRuntime};
     use tempfile::TempDir;
 
     use crate::event_stream::EventStreamCoordinator;
     use crate::runtime::HostRuntime;
     use crate::state::StateStore;
+    use crate::state::agent_instances::AgentInstanceRow;
 
     static ENV_MUTEX: StdMutex<()> = StdMutex::new(());
 
@@ -754,8 +824,8 @@ mod tests {
             )
             .await
             .unwrap();
-        let run_id = run.id.clone();
-        let task_id = run.tasks.keys().next().unwrap().clone();
+        let run_id = run.id().clone();
+        let task_id = run.tasks().keys().next().unwrap().clone();
         orchestrator
             .transition_task(&run_id, &task_id, TaskStatus::Enqueued)
             .await
@@ -806,6 +876,33 @@ mod tests {
                 output_mode: forge_common::runtime::AgentOutputMode::PlainText,
                 session_capture: false,
             },
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct FakeRuntime {
+        kill_calls: AtomicUsize,
+        force_kill_calls: AtomicUsize,
+    }
+
+    #[tonic::async_trait]
+    impl AgentRuntime for FakeRuntime {
+        async fn spawn(&self, _launch: PreparedAgentLaunch) -> Result<AgentHandle> {
+            unreachable!("spawn is not used in the force-stop test")
+        }
+
+        async fn kill(&self, _handle: &AgentHandle) -> Result<()> {
+            self.kill_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn force_kill(&self, _handle: &AgentHandle, _reason: &str) -> Result<()> {
+            self.force_kill_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn status(&self, _handle: &AgentHandle) -> Result<AgentStatus> {
+            Ok(AgentStatus::Unknown)
         }
     }
 
@@ -909,6 +1006,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn finalize_dispatch_failure_marks_still_enqueued_task_failed() {
+        let (_temp, orchestrator, manager, run_id, task_id) = make_manager_harness().await;
+
+        let changed = manager
+            .finalize_dispatch_failure(&run_id, &task_id, "spawn failed".to_string())
+            .await
+            .unwrap();
+
+        assert!(changed);
+
+        let orchestrator = orchestrator.lock().await;
+        let task = orchestrator.get_task_in_run(&run_id, &task_id).unwrap();
+        assert!(matches!(
+            task.status,
+            TaskStatus::Failed { ref error, .. } if error == "spawn failed"
+        ));
+    }
+
+    #[tokio::test]
     async fn drain_runtime_output_persists_task_output_events() {
         let (temp, orchestrator, manager, run_id, task_id) = make_manager_harness().await;
         let launch = {
@@ -1001,7 +1117,7 @@ mod tests {
 
         let orchestrator = orchestrator.lock().await;
         let run = orchestrator.get_run(&run_id).unwrap();
-        assert_eq!(run.last_event_cursor, events.last().unwrap().seq as u64);
+        assert_eq!(run.last_event_cursor(), events.last().unwrap().seq as u64);
     }
 
     #[tokio::test]
@@ -1150,5 +1266,93 @@ mod tests {
 
         manager.graceful_stop(&active[0], "shutdown").await.unwrap();
         assert!(manager.list_active().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn supervisor_force_stop_uses_runtime_force_kill() {
+        let state_store = Arc::new(StateStore::open_in_memory().unwrap());
+        let event_stream = Arc::new(EventStreamCoordinator::new(Arc::clone(&state_store)));
+        let mut orchestrator =
+            RunOrchestrator::new(Arc::clone(&state_store), Arc::clone(&event_stream));
+        let run = orchestrator
+            .submit_run(
+                "project-force-stop".to_string(),
+                std::env::temp_dir().join("forge-runtime-force-stop"),
+                make_test_plan(),
+            )
+            .await
+            .unwrap();
+        let run_id = run.id().clone();
+        let task_id = run.tasks().keys().next().unwrap().clone();
+        let agent_id = AgentId::new("agent-force-stop");
+        let started_at = Utc::now();
+
+        orchestrator
+            .transition_task(
+                &run_id,
+                &task_id,
+                TaskStatus::Running {
+                    agent_id: agent_id.clone(),
+                    since: started_at,
+                },
+            )
+            .await
+            .unwrap();
+
+        state_store
+            .insert_agent_instance(&AgentInstanceRow {
+                id: agent_id.to_string(),
+                task_id: task_id.to_string(),
+                runtime_backend: "Host".to_string(),
+                pid: Some(4242),
+                container_id: None,
+                status: "Running".to_string(),
+                started_at,
+                finished_at: None,
+                resource_peak: None,
+            })
+            .unwrap();
+
+        let orchestrator = Arc::new(Mutex::new(orchestrator));
+        let (_output_sink, output_rx) = crate::runtime::RuntimeOutputSink::channel();
+        let runtime = Arc::new(FakeRuntime::default());
+        let manager = TaskManager::new(
+            Arc::clone(&orchestrator),
+            Arc::clone(&state_store),
+            output_rx,
+            runtime.clone(),
+            RuntimeBackend::Host,
+            true,
+        );
+        manager
+            .tracker
+            .register(
+                task_id.clone(),
+                AgentHandle::host(agent_id.clone(), 4242, PathBuf::new()),
+                started_at,
+            )
+            .await;
+
+        manager
+            .force_stop(
+                &ActiveAgent {
+                    agent_id: agent_id.clone(),
+                    task_id: task_id.clone(),
+                },
+                "shutdown_force",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(runtime.kill_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(runtime.force_kill_calls.load(Ordering::SeqCst), 1);
+        assert!(manager.list_active().await.unwrap().is_empty());
+
+        let orchestrator = orchestrator.lock().await;
+        let task = orchestrator.get_task_in_run(&run_id, &task_id).unwrap();
+        assert!(matches!(
+            task.status,
+            TaskStatus::Killed { ref reason } if reason == "shutdown_force"
+        ));
     }
 }

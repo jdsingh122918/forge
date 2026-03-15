@@ -1,4 +1,4 @@
-//! Minimal SubmitRun orchestration over the durable state store.
+//! Durable run orchestration and state transitions over the runtime store.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -134,7 +134,7 @@ impl RunOrchestrator {
             ));
         }
 
-        if plan.global_budget.allocated == 0 {
+        if plan.global_budget.allocated() == 0 {
             return Err(Status::invalid_argument(
                 "run plan global budget must allocate at least one token",
             ));
@@ -218,28 +218,22 @@ impl RunOrchestrator {
         }
 
         let plan_json = serialize_json(&plan).map_err(internal_status)?;
-        let mut run_state = RunState {
-            id: run_id.clone(),
-            project: project.clone(),
-            workspace: workspace.clone(),
-            plan: plan.clone(),
+        let mut run_state = RunState::new_submitted(
+            run_id.clone(),
+            project.clone(),
+            workspace.clone(),
+            plan.clone(),
             milestones,
             tasks,
-            approvals: HashMap::new(),
-            status: RunStatus::Submitted,
-            last_event_cursor: 0,
             submitted_at,
-            finished_at: None,
-            total_tokens: 0,
-            estimated_cost_usd: 0.0,
-        };
+        );
 
         let run_row = RunRow {
             id: run_id.to_string(),
             project: project.clone(),
             workspace: workspace.display().to_string(),
             plan_json,
-            plan_hash: plan_hash(&run_state.plan).map_err(internal_status)?,
+            plan_hash: plan_hash(run_state.plan()).map_err(internal_status)?,
             policy_snapshot: "{}".to_string(),
             status: run_status_label(RunStatus::Submitted).to_string(),
             started_at: submitted_at,
@@ -272,7 +266,7 @@ impl RunOrchestrator {
             None,
             RuntimeEventKind::RunSubmitted {
                 project: project.clone(),
-                milestone_count: run_state.plan.milestones.len(),
+                milestone_count: run_state.plan().milestones.len(),
             },
             submitted_at,
         )
@@ -312,9 +306,13 @@ impl RunOrchestrator {
             .map_err(internal_status)?;
         }
 
-        run_state.status = RunStatus::Running;
-        run_state.last_event_cursor = u64::try_from(last_cursor)
-            .map_err(|error| Status::internal(format!("invalid event cursor: {error}")))?;
+        run_state
+            .update_run_status(RunStatus::Running)
+            .map_err(|error| Status::internal(error.to_string()))?;
+        run_state.set_last_event_cursor(
+            u64::try_from(last_cursor)
+                .map_err(|error| Status::internal(format!("invalid event cursor: {error}")))?,
+        );
         self.run_graph.insert_run(run_state.clone());
 
         Ok(run_state)
@@ -324,10 +322,9 @@ impl RunOrchestrator {
     pub fn active_run_ids(&self) -> Vec<RunId> {
         let mut run_ids: Vec<(RunId, DateTime<Utc>)> = self
             .run_graph
-            .runs
-            .values()
-            .filter(|run| run.status == RunStatus::Running)
-            .map(|run| (run.id.clone(), run.submitted_at))
+            .iter_runs()
+            .filter(|run| run.status() == RunStatus::Running)
+            .map(|run| (run.id().clone(), run.submitted_at()))
             .collect();
         run_ids.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.as_str().cmp(b.0.as_str())));
         run_ids.into_iter().map(|(run_id, _)| run_id).collect()
@@ -335,11 +332,11 @@ impl RunOrchestrator {
 
     /// Return all runs sorted newest-first for read-only query RPCs.
     pub fn runs_by_submission_desc(&self) -> Vec<&RunState> {
-        let mut runs: Vec<&RunState> = self.run_graph.runs.values().collect();
+        let mut runs: Vec<&RunState> = self.run_graph.iter_runs().collect();
         runs.sort_by(|a, b| {
-            b.submitted_at
-                .cmp(&a.submitted_at)
-                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+            b.submitted_at()
+                .cmp(&a.submitted_at())
+                .then_with(|| a.id().as_str().cmp(b.id().as_str()))
         });
         runs
     }
@@ -353,20 +350,19 @@ impl RunOrchestrator {
     pub fn get_task_in_run(&self, run_id: &RunId, task_id: &TaskNodeId) -> Option<&TaskNode> {
         self.run_graph
             .get_run(run_id)
-            .and_then(|run| run.tasks.get(task_id))
+            .and_then(|run| run.task(task_id))
     }
 
     /// Snapshot all tasks currently waiting for runtime materialization.
     pub fn enqueued_tasks(&self) -> Vec<(RunId, TaskNode)> {
         let mut tasks = self
             .run_graph
-            .runs
-            .values()
-            .filter(|run| run.status == RunStatus::Running)
+            .iter_runs()
+            .filter(|run| run.status() == RunStatus::Running)
             .flat_map(|run| {
-                run.tasks.values().filter_map(|task| {
+                run.iter_tasks().filter_map(|task| {
                     matches!(task.status, TaskStatus::Enqueued)
-                        .then(|| (run.id.clone(), task.clone()))
+                        .then(|| (run.id().clone(), task.clone()))
                 })
             })
             .collect::<Vec<_>>();
@@ -382,9 +378,8 @@ impl RunOrchestrator {
     /// Find a task across all runs.
     pub fn find_task(&self, task_id: &TaskNodeId) -> Option<(&RunState, &TaskNode)> {
         self.run_graph
-            .runs
-            .values()
-            .find_map(|run| run.tasks.get(task_id).map(|task| (run, task)))
+            .iter_runs()
+            .find_map(|run| run.task(task_id).map(|task| (run, task)))
     }
 
     /// Return pending approval requests, optionally scoped to a single run.
@@ -394,16 +389,15 @@ impl RunOrchestrator {
     ) -> Vec<PendingApprovalView> {
         let mut approvals = self
             .run_graph
-            .runs
-            .values()
-            .filter(|run| run_id_filter.is_none_or(|run_id| run.id == *run_id))
+            .iter_runs()
+            .filter(|run| run_id_filter.is_none_or(|run_id| run.id() == run_id))
             .flat_map(|run| {
-                run.approvals.values().filter_map(|approval| {
-                    let task = run.tasks.get(&approval.task_id)?.clone();
+                run.iter_approvals().filter_map(|approval| {
+                    let task = run.task(&approval.task_id)?.clone();
                     let parent_task_id = task.parent_task.clone();
                     let current_child_count = parent_task_id
                         .as_ref()
-                        .and_then(|parent_id| run.tasks.get(parent_id))
+                        .and_then(|parent_id| run.task(parent_id))
                         .map(|parent| u32::try_from(parent.children.len()).unwrap_or(u32::MAX))
                         .unwrap_or(0);
                     Some(PendingApprovalView {
@@ -437,26 +431,25 @@ impl RunOrchestrator {
                 .run_graph
                 .get_run(run_id)
                 .ok_or_else(|| Status::not_found("run not found"))?;
-            if run.status != RunStatus::Running {
+            if run.status() != RunStatus::Running {
                 return Err(Status::failed_precondition("run is not running"));
             }
 
             let parent = run
-                .tasks
-                .get(parent_task_id)
+                .task(parent_task_id)
                 .ok_or_else(|| Status::not_found("parent task not found"))?;
             if !matches!(parent.status, TaskStatus::Running { .. }) {
                 return Err(Status::failed_precondition("parent task is not running"));
             }
 
-            if !run.milestones.contains_key(&request.milestone_id) {
+            if !run.contains_milestone(&request.milestone_id) {
                 return Err(Status::invalid_argument(
                     "child task references unknown milestone",
                 ));
             }
 
             for dependency_id in &request.depends_on {
-                if !run.tasks.contains_key(dependency_id) {
+                if !run.contains_task(dependency_id) {
                     return Err(Status::invalid_argument(format!(
                         "child task depends on missing task {}",
                         dependency_id
@@ -530,38 +523,23 @@ impl RunOrchestrator {
                 .run_graph
                 .get_run_mut(run_id)
                 .ok_or_else(|| Status::not_found("run not found"))?;
-            let milestone_state =
-                run.milestones
-                    .get_mut(&request.milestone_id)
-                    .ok_or_else(|| {
-                        Status::invalid_argument("child task references unknown milestone")
-                    })?;
-            milestone_state.task_ids.push(child.id.clone());
-            if milestone_state.status == MilestoneStatus::Pending {
-                milestone_state.status = MilestoneStatus::Running;
-            }
-            run.add_child_task(parent_task_id, child.clone())
+            let approval = approval_id.as_ref().map(|approval_id| PendingApproval {
+                id: approval_id.clone(),
+                run_id: run_id.clone(),
+                task_id: child.id.clone(),
+                approver: ApprovalActorKind::Operator,
+                reason_kind: ApprovalReasonKind::SoftCapExceeded,
+                requested_capabilities: child.requested_capabilities.clone(),
+                requested_budget: child.budget.clone(),
+                description: format!(
+                    "child task `{}` requires approval before scheduling",
+                    child.objective
+                ),
+                requested_at: created_at,
+                resolution: None,
+            });
+            run.attach_child_task(parent_task_id, child.clone(), approval)
                 .map_err(|error| Status::internal(error.to_string()))?;
-            if let Some(approval_id) = approval_id.as_ref() {
-                run.approvals.insert(
-                    approval_id.clone(),
-                    PendingApproval {
-                        id: approval_id.clone(),
-                        run_id: run_id.clone(),
-                        task_id: child.id.clone(),
-                        approver: ApprovalActorKind::Operator,
-                        reason_kind: ApprovalReasonKind::SoftCapExceeded,
-                        requested_capabilities: child.requested_capabilities.clone(),
-                        requested_budget: child.budget.clone(),
-                        description: format!(
-                            "child task `{}` requires approval before scheduling",
-                            child.objective
-                        ),
-                        requested_at: created_at,
-                        resolution: None,
-                    },
-                );
-            }
         }
 
         let task_created_cursor = self
@@ -581,7 +559,7 @@ impl RunOrchestrator {
             let approval = self
                 .run_graph
                 .get_run(run_id)
-                .and_then(|run| run.approvals.get(approval_id))
+                .and_then(|run| run.approval(approval_id))
                 .cloned()
                 .ok_or_else(|| Status::internal("approval missing after child creation"))?;
             self.append_runtime_event(
@@ -614,8 +592,10 @@ impl RunOrchestrator {
             .run_graph
             .get_run_mut(run_id)
             .ok_or_else(|| Status::not_found("run not found"))?;
-        run.last_event_cursor = u64::try_from(last_cursor)
-            .map_err(|error| Status::internal(format!("invalid event cursor: {error}")))?;
+        run.set_last_event_cursor(
+            u64::try_from(last_cursor)
+                .map_err(|error| Status::internal(format!("invalid event cursor: {error}")))?,
+        );
 
         Ok((child, requires_approval, approval_id))
     }
@@ -632,28 +612,25 @@ impl RunOrchestrator {
         let timestamp = Utc::now();
         let run_id = self
             .run_graph
-            .runs
-            .values()
-            .find(|run| run.approvals.contains_key(approval_id))
-            .map(|run| run.id.clone())
+            .iter_runs()
+            .find(|run| run.contains_approval(approval_id))
+            .map(|run| run.id().clone())
             .ok_or_else(|| Status::not_found("approval not found"))?;
         let denial_reason = reason
             .clone()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "approval denied".to_string());
 
-        let (task_id, old_status, new_status, approval_state_json, finished_at, updated_task) = {
+        let (task_id, old_status, new_status, approval_state, approval_state_json, finished_at) = {
             let run = self
                 .run_graph
                 .get_run(&run_id)
                 .ok_or_else(|| Status::not_found("run not found"))?;
             let approval = run
-                .approvals
-                .get(approval_id)
+                .approval(approval_id)
                 .ok_or_else(|| Status::not_found("approval not found"))?;
             let task = run
-                .tasks
-                .get(&approval.task_id)
+                .task(&approval.task_id)
                 .ok_or_else(|| Status::not_found("task not found for approval"))?;
             match &task.approval_state {
                 ApprovalState::Pending {
@@ -666,9 +643,8 @@ impl RunOrchestrator {
                 }
             }
 
-            let mut updated_task = task.clone();
-            let old_status = updated_task.status.clone();
-            updated_task.approval_state = if approved {
+            let old_status = task.status.clone();
+            let approval_state = if approved {
                 ApprovalState::Approved { actor_kind }
             } else {
                 ApprovalState::Denied {
@@ -676,23 +652,28 @@ impl RunOrchestrator {
                     reason: denial_reason.clone(),
                 }
             };
-            updated_task.status = if approved {
+            let new_status = if approved {
                 TaskStatus::Enqueued
             } else {
                 TaskStatus::Killed {
                     reason: denial_reason.clone(),
                 }
             };
-            updated_task.assigned_agent = None;
-            updated_task.finished_at = finished_at_for_status(&updated_task.status, timestamp);
+            if !old_status.can_transition_to(&new_status) {
+                return Err(Status::failed_precondition(format!(
+                    "invalid task status transition from {} to {} while resolving approval",
+                    task_status_label(&old_status),
+                    task_status_label(&new_status)
+                )));
+            }
 
             (
                 approval.task_id.clone(),
                 old_status,
-                updated_task.status.clone(),
-                serialize_json(&updated_task.approval_state).map_err(internal_status)?,
-                updated_task.finished_at,
-                updated_task,
+                new_status.clone(),
+                approval_state.clone(),
+                serialize_json(&approval_state).map_err(internal_status)?,
+                finished_at_for_status(&new_status, timestamp),
             )
         };
 
@@ -722,14 +703,12 @@ impl RunOrchestrator {
                 .run_graph
                 .get_run_mut(&run_id)
                 .ok_or_else(|| Status::not_found("run not found"))?;
-            let task = run
-                .tasks
-                .get_mut(&task_id)
-                .ok_or_else(|| Status::not_found("task not found for approval"))?;
-            *task = updated_task.clone();
-            run.approvals
-                .remove(approval_id)
-                .ok_or_else(|| Status::not_found("approval not found"))?;
+            run.set_task_approval_state(&task_id, approval_state)
+                .map_err(|error| Status::internal(error.to_string()))?;
+            run.transition_task(&task_id, new_status.clone(), timestamp)
+                .map_err(|error| Status::internal(error.to_string()))?;
+            run.take_approval(approval_id)
+                .map_err(|error| Status::internal(error.to_string()))?;
         }
 
         let _approval_cursor = self
@@ -776,8 +755,15 @@ impl RunOrchestrator {
             .run_graph
             .get_run_mut(&run_id)
             .ok_or_else(|| Status::not_found("run not found after approval resolution"))?;
-        run.last_event_cursor = u64::try_from(last_cursor)
-            .map_err(|error| Status::internal(format!("invalid event cursor: {error}")))?;
+        run.set_last_event_cursor(
+            u64::try_from(last_cursor)
+                .map_err(|error| Status::internal(format!("invalid event cursor: {error}")))?,
+        );
+
+        let updated_task = run
+            .task(&task_id)
+            .cloned()
+            .ok_or_else(|| Status::not_found("task missing after approval resolution"))?;
 
         Ok((run_id, updated_task))
     }
@@ -791,7 +777,7 @@ impl RunOrchestrator {
             .run_graph
             .get_run(run_id)
             .ok_or_else(|| Status::not_found("run not found"))?;
-        if !run.tasks.contains_key(task_id) {
+        if !run.contains_task(task_id) {
             return Err(Status::not_found("task not found"));
         }
 
@@ -809,7 +795,7 @@ impl RunOrchestrator {
     ) -> Result<(RunId, TaskNode), Status> {
         let (run_id, existing_task) = self
             .find_task(task_id)
-            .map(|(run, task)| (run.id.clone(), task.clone()))
+            .map(|(run, task)| (run.id().clone(), task.clone()))
             .ok_or_else(|| Status::not_found("task not found"))?;
         if is_terminal(&existing_task.status) {
             return Ok((run_id, existing_task));
@@ -849,16 +835,25 @@ impl RunOrchestrator {
             .get_run(run_id)
             .ok_or_else(|| Status::not_found("run not found"))?;
         if matches!(
-            existing_run.status,
+            existing_run.status(),
             RunStatus::Completed | RunStatus::Failed | RunStatus::Cancelled
         ) {
             return Ok(existing_run.clone());
         }
+        if !existing_run
+            .status()
+            .can_transition_to(RunStatus::Cancelled)
+        {
+            return Err(Status::failed_precondition(format!(
+                "invalid run status transition from {} to {}",
+                run_status_label(existing_run.status()),
+                run_status_label(RunStatus::Cancelled)
+            )));
+        }
 
         let active_task_ids = {
             existing_run
-                .tasks
-                .values()
+                .iter_tasks()
                 .filter(|task| !is_terminal(&task.status))
                 .map(|task| task.id.clone())
                 .collect::<Vec<_>>()
@@ -880,7 +875,7 @@ impl RunOrchestrator {
             .run_graph
             .get_run(run_id)
             .ok_or_else(|| Status::not_found("run not found"))?
-            .status;
+            .status();
         let finished_at = Utc::now();
         let cursor = self
             .append_runtime_event(
@@ -915,21 +910,34 @@ impl RunOrchestrator {
             .run_graph
             .get_run_mut(run_id)
             .ok_or_else(|| Status::not_found("run not found after stop"))?;
-        run.status = RunStatus::Cancelled;
-        run.finished_at = Some(finished_at);
-        run.last_event_cursor = u64::try_from(cursor)
-            .map_err(|error| Status::internal(format!("invalid event cursor: {error}")))?;
+        run.update_run_status(RunStatus::Cancelled)
+            .map_err(|error| Status::internal(error.to_string()))?;
+        run.set_finished_at(Some(finished_at));
+        run.set_last_event_cursor(
+            u64::try_from(cursor)
+                .map_err(|error| Status::internal(format!("invalid event cursor: {error}")))?,
+        );
 
         Ok(run.clone())
     }
 
     /// Fail a run after coordinated shutdown or recovery leaves active work irrecoverable.
     pub async fn fail_run(&mut self, run_id: &RunId) -> Result<RunState, anyhow::Error> {
-        let previous_status = self
+        let existing_run = self
             .run_graph
             .get_run(run_id)
-            .ok_or_else(|| anyhow::anyhow!("run not found: {}", run_id))?
-            .status;
+            .ok_or_else(|| anyhow::anyhow!("run not found: {}", run_id))?;
+        if existing_run.status() == RunStatus::Failed {
+            return Ok(existing_run.clone());
+        }
+        if !existing_run.status().can_transition_to(RunStatus::Failed) {
+            return Err(anyhow::anyhow!(
+                "invalid run status transition from {} to {}",
+                run_status_label(existing_run.status()),
+                run_status_label(RunStatus::Failed)
+            ));
+        }
+        let previous_status = existing_run.status();
         let finished_at = Utc::now();
         let cursor = self
             .append_runtime_event(
@@ -964,10 +972,12 @@ impl RunOrchestrator {
             .run_graph
             .get_run_mut(run_id)
             .ok_or_else(|| anyhow::anyhow!("run not found after fail: {}", run_id))?;
-        run.status = RunStatus::Failed;
-        run.finished_at = Some(finished_at);
-        run.last_event_cursor = u64::try_from(cursor)
-            .map_err(|error| anyhow::anyhow!("invalid event cursor: {error}"))?;
+        run.update_run_status(RunStatus::Failed)?;
+        run.set_finished_at(Some(finished_at));
+        run.set_last_event_cursor(
+            u64::try_from(cursor)
+                .map_err(|error| anyhow::anyhow!("invalid event cursor: {error}"))?,
+        );
 
         Ok(run.clone())
     }
@@ -986,26 +996,19 @@ impl RunOrchestrator {
                 .get_run_mut(run_id)
                 .ok_or_else(|| anyhow::anyhow!("run not found: {}", run_id))?;
             let task = run
-                .tasks
-                .get_mut(task_id)
+                .task(task_id)
                 .ok_or_else(|| anyhow::anyhow!("task not found: {}", task_id))?;
-
             let old_status = task.status.clone();
-            if is_terminal(&old_status) {
-                if old_status == new_status {
-                    return Ok(());
-                }
+            if !old_status.can_transition_to(&new_status) {
                 return Err(anyhow::anyhow!(
-                    "invalid transition from terminal task status {} to {}",
+                    "invalid task status transition from {} to {}",
                     task_status_label(&old_status),
                     task_status_label(&new_status)
                 ));
             }
             let finished_at = finished_at_for_status(&new_status, timestamp);
             let assigned_agent = assigned_agent_for_status(&new_status);
-            task.status = new_status.clone();
-            task.finished_at = finished_at;
-            task.assigned_agent = assigned_agent.clone();
+            run.transition_task(task_id, new_status.clone(), timestamp)?;
 
             (
                 old_status,
@@ -1055,8 +1058,11 @@ impl RunOrchestrator {
             .run_graph
             .get_run_mut(run_id)
             .ok_or_else(|| anyhow::anyhow!("run not found after transition: {}", run_id))?;
-        run.last_event_cursor = u64::try_from(cursor)
-            .map_err(|error| anyhow::anyhow!("invalid event cursor after transition: {error}"))?;
+        run.set_last_event_cursor(
+            u64::try_from(cursor).map_err(|error| {
+                anyhow::anyhow!("invalid event cursor after transition: {error}")
+            })?,
+        );
 
         Ok(())
     }
@@ -1085,11 +1091,7 @@ impl RunOrchestrator {
             .run_graph
             .get_run_mut(run_id)
             .ok_or_else(|| anyhow::anyhow!("run not found: {}", run_id))?;
-        let task = run
-            .tasks
-            .get_mut(task_id)
-            .ok_or_else(|| anyhow::anyhow!("task not found: {}", task_id))?;
-        task.result_summary = Some(summary);
+        run.set_task_result_summary(task_id, summary)?;
 
         Ok(())
     }
@@ -1162,8 +1164,10 @@ impl RunOrchestrator {
             .run_graph
             .get_run_mut(run_id)
             .ok_or_else(|| Status::not_found("run not found"))?;
-        run.last_event_cursor = u64::try_from(cursor)
-            .map_err(|error| Status::internal(format!("invalid event cursor: {error}")))?;
+        run.set_last_event_cursor(
+            u64::try_from(cursor)
+                .map_err(|error| Status::internal(format!("invalid event cursor: {error}")))?,
+        );
 
         Ok(cursor)
     }
@@ -1230,8 +1234,10 @@ impl RunOrchestrator {
                 .run_graph
                 .get_run_mut(&run_id)
                 .ok_or_else(|| Status::not_found(format!("run not found: {run_id}")))?;
-            run.last_event_cursor = u64::try_from(cursor)
-                .map_err(|error| Status::internal(format!("invalid event cursor: {error}")))?;
+            run.set_last_event_cursor(
+                u64::try_from(cursor)
+                    .map_err(|error| Status::internal(format!("invalid event cursor: {error}")))?,
+            );
         }
 
         Ok(seqs)
@@ -1322,7 +1328,7 @@ fn compile_root_task_profile(
             ))
         })?;
 
-    Ok(apply_budget_to_profile(compiled, budget.allocated))
+    Ok(apply_budget_to_profile(compiled, budget.allocated()))
 }
 
 fn compile_child_task_profile(
@@ -1367,7 +1373,7 @@ fn constrain_profile_to_capabilities(
         .manifest
         .resources
         .token_budget
-        .min(budget.allocated);
+        .min(budget.allocated());
 
     Ok(constrained)
 }
@@ -1678,8 +1684,7 @@ fn collect_subtree_inner(
     }
 
     let task = run
-        .tasks
-        .get(task_id)
+        .task(task_id)
         .ok_or_else(|| Status::internal(format!("task missing from subtree: {task_id}")))?;
 
     for child_id in &task.children {
@@ -1794,6 +1799,7 @@ mod tests {
     use chrono::TimeZone;
     use forge_common::manifest::BudgetEnvelope;
     use forge_common::manifest::SpawnLimits;
+    use forge_common::run_graph::AgentResult;
     use forge_common::run_graph::ApprovalMode;
     use tempfile::TempDir;
 
@@ -1838,8 +1844,8 @@ mod tests {
     }
 
     fn sorted_task_ids(run: &RunState) -> Vec<TaskNodeId> {
-        let mut task_ids: Vec<TaskNodeId> = run.tasks.keys().cloned().collect();
-        task_ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        let mut task_ids: Vec<TaskNodeId> = run.tasks().keys().cloned().collect();
+        task_ids.sort_by(|a: &TaskNodeId, b: &TaskNodeId| a.as_str().cmp(b.as_str()));
         task_ids
     }
 
@@ -1869,22 +1875,28 @@ mod tests {
             .await
             .unwrap();
         let parent_id = sorted_task_ids(&run).into_iter().next().unwrap();
-        let run_state = orchestrator.run_graph.get_run_mut(&run.id).unwrap();
-        let parent = run_state.tasks.get_mut(&parent_id).unwrap();
-        parent.status = TaskStatus::Running {
-            agent_id: forge_common::ids::AgentId::new("agent-parent"),
-            since: Utc::now(),
-        };
-        parent.profile.manifest.permissions.spawn_limits = SpawnLimits {
-            max_children,
-            require_approval_after,
-        };
-        parent.requested_capabilities.spawn_limits = SpawnLimits {
-            max_children,
-            require_approval_after,
-        };
+        let run_state = orchestrator.run_graph.get_run_mut(run.id()).unwrap();
+        run_state
+            .transition_task(
+                &parent_id,
+                TaskStatus::Running {
+                    agent_id: forge_common::ids::AgentId::new("agent-parent"),
+                    since: Utc::now(),
+                },
+                Utc::now(),
+            )
+            .unwrap();
+        run_state
+            .update_task_spawn_limits(
+                &parent_id,
+                SpawnLimits {
+                    max_children,
+                    require_approval_after,
+                },
+            )
+            .unwrap();
 
-        (run.id, parent_id)
+        (run.id().clone(), parent_id)
     }
 
     fn make_child_params(label: &str) -> CreateChildTaskParams {
@@ -1914,26 +1926,27 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(run.status, RunStatus::Running);
-        assert_eq!(run.workspace, workspace);
-        assert_eq!(run.tasks.len(), 2);
+        assert_eq!(run.status(), RunStatus::Running);
+        assert_eq!(run.workspace(), workspace.as_path());
+        assert_eq!(run.task_count(), 2);
         assert!(
-            run.tasks
+            run.tasks()
                 .values()
                 .all(|task| matches!(task.status, TaskStatus::Pending))
         );
-        assert!(run.tasks.values().all(|task| matches!(
+        assert!(run.tasks().values().all(|task| matches!(
             &task.worktree,
-            WorktreePlan::Shared { workspace_path } if workspace_path == &workspace
+            WorktreePlan::Shared { workspace_path }
+                if workspace_path.as_path() == workspace.as_path()
         )));
-        assert!(orchestrator.run_graph.get_run(&run.id).is_some());
+        assert!(orchestrator.run_graph.get_run(run.id()).is_some());
 
-        let persisted = state_store.get_run(run.id.as_str()).unwrap().unwrap();
+        let persisted = state_store.get_run(run.id().as_str()).unwrap().unwrap();
         assert_eq!(persisted.status, "Running");
         assert_eq!(persisted.workspace, workspace.display().to_string());
         assert_eq!(
             state_store
-                .list_tasks_for_run(run.id.as_str())
+                .list_tasks_for_run(run.id().as_str())
                 .unwrap()
                 .len(),
             2
@@ -2015,7 +2028,7 @@ mod tests {
             .unwrap();
 
         let events = state_store
-            .replay_events(0, Some(run.id.as_str()), 32)
+            .replay_events(0, Some(run.id().as_str()), 32)
             .unwrap();
 
         assert_eq!(events.len(), 4);
@@ -2024,9 +2037,9 @@ mod tests {
         assert_eq!(events[2].event_type, "TaskCreated");
         assert_eq!(events[3].event_type, "RunStatusChanged");
         assert!(events.windows(2).all(|pair| pair[0].seq < pair[1].seq));
-        assert_eq!(run.last_event_cursor, events.last().unwrap().seq as u64);
+        assert_eq!(run.last_event_cursor(), events.last().unwrap().seq as u64);
 
-        let persisted_run = state_store.get_run(run.id.as_str()).unwrap().unwrap();
+        let persisted_run = state_store.get_run(run.id().as_str()).unwrap().unwrap();
         assert_eq!(persisted_run.last_event_cursor, events.last().unwrap().seq);
     }
 
@@ -2059,7 +2072,7 @@ max_children = 4
             )
             .await
             .unwrap();
-        let task = run.tasks.values().next().unwrap();
+        let task = run.tasks().values().next().unwrap();
 
         assert_eq!(task.profile.base_profile, "implementer");
         assert!(task.profile.overlay_hash.is_some());
@@ -2133,13 +2146,13 @@ enable = ["not-allowed"]
             .submit_run("project-b".to_string(), test_workspace(), make_test_plan(1))
             .await
             .unwrap();
-        let task_id = run_b.tasks.values().next().unwrap().id.clone();
+        let task_id = run_b.tasks().values().next().unwrap().id.clone();
 
         let (run, task) = orchestrator.find_task(&task_id).unwrap();
 
-        assert_eq!(run.id, run_b.id);
+        assert_eq!(run.id(), run_b.id());
         assert_eq!(task.id, task_id);
-        assert_ne!(run.id, run_a.id);
+        assert_ne!(run.id(), run_a.id());
     }
 
     #[tokio::test]
@@ -2152,18 +2165,18 @@ enable = ["not-allowed"]
         let task_ids = sorted_task_ids(&run);
 
         orchestrator
-            .transition_task(&run.id, &task_ids[1], TaskStatus::Enqueued)
+            .transition_task(run.id(), &task_ids[1], TaskStatus::Enqueued)
             .await
             .unwrap();
         orchestrator
-            .transition_task(&run.id, &task_ids[0], TaskStatus::Enqueued)
+            .transition_task(run.id(), &task_ids[0], TaskStatus::Enqueued)
             .await
             .unwrap();
 
         let queued = orchestrator.enqueued_tasks();
 
         assert_eq!(queued.len(), 2);
-        assert_eq!(queued[0].0, run.id);
+        assert_eq!(queued[0].0, run.id().clone());
         assert_eq!(queued[0].1.id, task_ids[0]);
         assert_eq!(queued[1].1.id, task_ids[1]);
     }
@@ -2183,7 +2196,7 @@ enable = ["not-allowed"]
         };
 
         orchestrator
-            .update_task_result_summary(&run.id, &task_id, summary.clone())
+            .update_task_result_summary(run.id(), &task_id, summary.clone())
             .await
             .unwrap();
 
@@ -2194,7 +2207,7 @@ enable = ["not-allowed"]
         assert_eq!(decoded, summary);
         assert_eq!(
             orchestrator
-                .get_task_in_run(&run.id, &task_id)
+                .get_task_in_run(run.id(), &task_id)
                 .unwrap()
                 .result_summary
                 .clone()
@@ -2213,15 +2226,13 @@ enable = ["not-allowed"]
         let task_ids = sorted_task_ids(&run);
 
         {
-            let run = orchestrator.run_graph.get_run_mut(&run.id).unwrap();
-            run.tasks.get_mut(&task_ids[1]).unwrap().parent_task = Some(task_ids[0].clone());
-            run.tasks.get_mut(&task_ids[2]).unwrap().parent_task = Some(task_ids[1].clone());
-            run.tasks.get_mut(&task_ids[0]).unwrap().children = vec![task_ids[1].clone()];
-            run.tasks.get_mut(&task_ids[1]).unwrap().children = vec![task_ids[2].clone()];
+            let run = orchestrator.run_graph.get_run_mut(run.id()).unwrap();
+            run.link_child_task(&task_ids[0], &task_ids[1]).unwrap();
+            run.link_child_task(&task_ids[1], &task_ids[2]).unwrap();
         }
 
         let after_cursor =
-            i64::try_from(orchestrator.get_run(&run.id).unwrap().last_event_cursor).unwrap();
+            i64::try_from(orchestrator.get_run(run.id()).unwrap().last_event_cursor()).unwrap();
         let reason = "operator subtree kill".to_string();
 
         let (run_id, task) = orchestrator
@@ -2229,7 +2240,7 @@ enable = ["not-allowed"]
             .await
             .unwrap();
 
-        assert_eq!(run_id, run.id);
+        assert_eq!(run_id, run.id().clone());
         assert_eq!(task.id, task_ids[0]);
         assert_eq!(
             task.status,
@@ -2238,10 +2249,10 @@ enable = ["not-allowed"]
             }
         );
 
-        let run = orchestrator.get_run(&run.id).unwrap();
+        let run = orchestrator.get_run(run.id()).unwrap();
         for task_id in &task_ids {
             assert_eq!(
-                run.tasks.get(task_id).unwrap().status,
+                run.task(task_id).unwrap().status,
                 TaskStatus::Killed {
                     reason: reason.clone()
                 }
@@ -2257,7 +2268,7 @@ enable = ["not-allowed"]
         }
 
         let events = state_store
-            .replay_events(after_cursor, Some(run.id.as_str()), 16)
+            .replay_events(after_cursor, Some(run.id().as_str()), 16)
             .unwrap();
         assert_eq!(events.len(), 3);
         assert!(
@@ -2281,7 +2292,7 @@ enable = ["not-allowed"]
 
         orchestrator
             .transition_task(
-                &run.id,
+                run.id(),
                 &task_ids[0],
                 TaskStatus::Killed {
                     reason: "already terminal".to_string(),
@@ -2291,37 +2302,37 @@ enable = ["not-allowed"]
             .unwrap();
 
         let after_cursor =
-            i64::try_from(orchestrator.get_run(&run.id).unwrap().last_event_cursor).unwrap();
+            i64::try_from(orchestrator.get_run(run.id()).unwrap().last_event_cursor()).unwrap();
         let final_run = orchestrator
-            .stop_run(&run.id, "operator requested stop".to_string())
+            .stop_run(run.id(), "operator requested stop".to_string())
             .await
             .unwrap();
 
-        assert_eq!(final_run.status, RunStatus::Cancelled);
-        assert!(final_run.finished_at.is_some());
+        assert_eq!(final_run.status(), RunStatus::Cancelled);
+        assert!(final_run.finished_at().is_some());
         assert_eq!(
-            final_run.tasks.get(&task_ids[0]).unwrap().status,
+            final_run.task(&task_ids[0]).unwrap().status,
             TaskStatus::Killed {
                 reason: "already terminal".to_string()
             }
         );
         assert_eq!(
-            final_run.tasks.get(&task_ids[1]).unwrap().status,
+            final_run.task(&task_ids[1]).unwrap().status,
             TaskStatus::Killed {
                 reason: "operator requested stop".to_string()
             }
         );
 
-        let persisted_run = state_store.get_run(run.id.as_str()).unwrap().unwrap();
+        let persisted_run = state_store.get_run(run.id().as_str()).unwrap().unwrap();
         assert_eq!(persisted_run.status, "Cancelled");
         assert!(persisted_run.finished_at.is_some());
         assert_eq!(
             persisted_run.last_event_cursor,
-            final_run.last_event_cursor as i64
+            final_run.last_event_cursor() as i64
         );
 
         let events = state_store
-            .replay_events(after_cursor, Some(run.id.as_str()), 16)
+            .replay_events(after_cursor, Some(run.id().as_str()), 16)
             .unwrap();
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type, "TaskStatusChanged");
@@ -2329,13 +2340,85 @@ enable = ["not-allowed"]
         assert!(events[0].payload.contains("operator requested stop"));
         assert_eq!(events[1].event_type, "RunStatusChanged");
         assert!(events[1].payload.contains("Cancelled"));
-        assert_eq!(events[1].seq as u64, final_run.last_event_cursor);
+        assert_eq!(events[1].seq as u64, final_run.last_event_cursor());
 
-        let run_after_stop = orchestrator.get_run(&run.id).unwrap();
-        assert_eq!(run_after_stop.status, RunStatus::Cancelled);
+        let run_after_stop = orchestrator.get_run(run.id()).unwrap();
+        assert_eq!(run_after_stop.status(), RunStatus::Cancelled);
         assert_eq!(
-            run_after_stop.last_event_cursor,
-            final_run.last_event_cursor
+            run_after_stop.last_event_cursor(),
+            final_run.last_event_cursor()
+        );
+    }
+
+    #[tokio::test]
+    async fn transition_task_rejects_invalid_lifecycle_jump() {
+        let (mut orchestrator, state_store) = make_test_orchestrator();
+        let run = orchestrator
+            .submit_run("project-a".to_string(), test_workspace(), make_test_plan(1))
+            .await
+            .unwrap();
+        let task_id = sorted_task_ids(&run).into_iter().next().unwrap();
+
+        let error = orchestrator
+            .transition_task(
+                run.id(),
+                &task_id,
+                TaskStatus::Completed {
+                    result: AgentResult {
+                        summary: "done".to_string(),
+                        artifacts: Vec::new(),
+                        tokens_consumed: 0,
+                        commit_sha: None,
+                    },
+                    duration: chrono::Duration::zero(),
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("invalid task status transition"));
+        assert!(matches!(
+            orchestrator
+                .get_run(run.id())
+                .unwrap()
+                .task(&task_id)
+                .unwrap()
+                .status,
+            TaskStatus::Pending
+        ));
+        assert_eq!(
+            state_store
+                .get_task(task_id.as_str())
+                .unwrap()
+                .unwrap()
+                .status,
+            "Pending"
+        );
+    }
+
+    #[tokio::test]
+    async fn fail_run_rejects_terminal_escape_from_cancelled() {
+        let (mut orchestrator, _state_store) = make_test_orchestrator();
+        let run = orchestrator
+            .submit_run("project-a".to_string(), test_workspace(), make_test_plan(1))
+            .await
+            .unwrap();
+
+        orchestrator
+            .stop_run(run.id(), "operator requested stop".to_string())
+            .await
+            .unwrap();
+
+        let error = orchestrator.fail_run(run.id()).await.unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("invalid run status transition from Cancelled to Failed")
+        );
+        assert_eq!(
+            orchestrator.get_run(run.id()).unwrap().status(),
+            RunStatus::Cancelled
         );
     }
 
@@ -2387,7 +2470,7 @@ enable = ["not-allowed"]
         let (mut orchestrator, state_store) = make_test_orchestrator();
         let (run_id, parent_id) = seed_running_parent(&mut orchestrator, 5, 5).await;
         let after_cursor =
-            i64::try_from(orchestrator.get_run(&run_id).unwrap().last_event_cursor).unwrap();
+            i64::try_from(orchestrator.get_run(&run_id).unwrap().last_event_cursor()).unwrap();
 
         let (child, requires_approval, approval_id) = orchestrator
             .create_child_task(&run_id, &parent_id, make_child_params("first"))
@@ -2402,13 +2485,14 @@ enable = ["not-allowed"]
         assert_eq!(child.wait_mode, TaskWaitMode::Async);
 
         let run = orchestrator.get_run(&run_id).unwrap();
-        assert!(run.tasks.contains_key(&child.id));
+        assert!(run.contains_task(&child.id));
         assert_eq!(
-            run.tasks.get(&parent_id).unwrap().children,
+            run.task(&parent_id).unwrap().children,
             vec![child.id.clone()]
         );
         assert!(
-            run.milestones[&MilestoneId::new("m1")]
+            run.milestone(&MilestoneId::new("m1"))
+                .unwrap()
                 .task_ids
                 .contains(&child.id)
         );
@@ -2501,10 +2585,10 @@ enable = ["not-allowed"]
         assert_eq!(error.code(), tonic::Code::ResourceExhausted);
 
         let run = orchestrator.get_run(&run_id).unwrap();
-        assert_eq!(run.tasks.len(), 3);
-        assert_eq!(run.tasks.get(&parent_id).unwrap().children.len(), 2);
-        assert!(run.tasks.contains_key(&first_child.id));
-        assert!(run.tasks.contains_key(&second_child.id));
+        assert_eq!(run.task_count(), 3);
+        assert_eq!(run.task(&parent_id).unwrap().children.len(), 2);
+        assert!(run.contains_task(&first_child.id));
+        assert!(run.contains_task(&second_child.id));
         assert_eq!(
             state_store.list_children(parent_id.as_str()).unwrap().len(),
             2
@@ -2524,7 +2608,7 @@ enable = ["not-allowed"]
         assert!(approval_id.is_none());
 
         let after_cursor =
-            i64::try_from(orchestrator.get_run(&run_id).unwrap().last_event_cursor).unwrap();
+            i64::try_from(orchestrator.get_run(&run_id).unwrap().last_event_cursor()).unwrap();
         let (second_child, requires_approval, approval_id) = orchestrator
             .create_child_task(&run_id, &parent_id, make_child_params("second"))
             .await
@@ -2568,7 +2652,7 @@ enable = ["not-allowed"]
 
         let error = orchestrator
             .create_child_task(
-                &run.id,
+                run.id(),
                 &TaskNodeId::new("missing-parent"),
                 make_child_params("missing-parent"),
             )
@@ -2576,7 +2660,7 @@ enable = ["not-allowed"]
             .unwrap_err();
 
         assert_eq!(error.code(), tonic::Code::NotFound);
-        assert_eq!(orchestrator.get_run(&run.id).unwrap().tasks.len(), 1);
+        assert_eq!(orchestrator.get_run(run.id()).unwrap().task_count(), 1);
     }
 
     #[tokio::test]
@@ -2589,14 +2673,18 @@ enable = ["not-allowed"]
         let parent_id = sorted_task_ids(&run).into_iter().next().unwrap();
 
         let error = orchestrator
-            .create_child_task(&run.id, &parent_id, make_child_params("pending-parent"))
+            .create_child_task(run.id(), &parent_id, make_child_params("pending-parent"))
             .await
             .unwrap_err();
 
         assert_eq!(error.code(), tonic::Code::FailedPrecondition);
-        assert_eq!(orchestrator.get_run(&run.id).unwrap().tasks.len(), 1);
+        assert_eq!(orchestrator.get_run(run.id()).unwrap().task_count(), 1);
         assert!(
-            orchestrator.get_run(&run.id).unwrap().tasks[&parent_id]
+            orchestrator
+                .get_run(run.id())
+                .unwrap()
+                .task(&parent_id)
+                .unwrap()
                 .children
                 .is_empty()
         );

@@ -86,7 +86,7 @@ pub enum AgentStatus {
     /// The agent process/container is running.
     Running,
 
-    /// The agent exited successfully (exit code 0).
+    /// The agent exited and reported a process/container exit code.
     Exited {
         /// Process exit code.
         exit_code: i32,
@@ -152,6 +152,12 @@ pub trait AgentRuntime: Send + Sync {
     /// Returns an error if the kill signal cannot be delivered (e.g., process
     /// already exited, container not found).
     async fn kill(&self, handle: &AgentHandle) -> anyhow::Result<()>;
+
+    /// Force-kill an agent process/container immediately.
+    ///
+    /// This is the escalation path for shutdown and recovery when a graceful
+    /// stop has already been attempted or is not appropriate.
+    async fn force_kill(&self, handle: &AgentHandle, reason: &str) -> anyhow::Result<()>;
 
     /// Query the current status of an agent.
     ///

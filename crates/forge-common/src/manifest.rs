@@ -250,20 +250,16 @@ pub struct CapabilityEnvelope {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BudgetEnvelope {
     /// Total tokens allocated to this task.
-    pub allocated: u64,
+    allocated: u64,
 
     /// Tokens consumed directly by this task's agent.
-    pub consumed: u64,
+    consumed: u64,
 
     /// Tokens consumed by this task's entire subtree (self + all descendants).
-    pub subtree_consumed: u64,
-
-    /// Remaining tokens available to this task (allocated - consumed).
-    /// This is a computed convenience field; the daemon is authoritative.
-    pub remaining: u64,
+    subtree_consumed: u64,
 
     /// Percentage threshold at which the daemon alerts the parent task.
-    pub warn_at_percent: u8,
+    warn_at_percent: u8,
 }
 
 impl BudgetEnvelope {
@@ -273,17 +269,35 @@ impl BudgetEnvelope {
             allocated,
             consumed: 0,
             subtree_consumed: 0,
-            remaining: allocated,
             warn_at_percent,
         }
     }
 
-    /// Record token consumption and update remaining count.
+    /// Total tokens allocated to this task.
+    pub fn allocated(&self) -> u64 {
+        self.allocated
+    }
+
+    /// Tokens consumed directly by this task's agent.
+    pub fn consumed(&self) -> u64 {
+        self.consumed
+    }
+
+    /// Tokens consumed by this task's entire subtree.
+    pub fn subtree_consumed(&self) -> u64 {
+        self.subtree_consumed
+    }
+
+    /// Percentage threshold at which warnings should be emitted.
+    pub fn warn_at_percent(&self) -> u8 {
+        self.warn_at_percent
+    }
+
+    /// Record token consumption.
     /// Returns `true` if the budget is now exhausted.
     pub fn consume(&mut self, tokens: u64) -> bool {
         self.consumed = self.consumed.saturating_add(tokens);
         self.subtree_consumed = self.subtree_consumed.saturating_add(tokens);
-        self.remaining = self.allocated.saturating_sub(self.consumed);
         self.consumed >= self.allocated
     }
 
@@ -291,6 +305,11 @@ impl BudgetEnvelope {
     /// this task's direct `consumed` count, only the subtree total).
     pub fn consume_subtree(&mut self, tokens: u64) {
         self.subtree_consumed = self.subtree_consumed.saturating_add(tokens);
+    }
+
+    /// Remaining tokens available to this task (allocated - consumed).
+    pub fn remaining(&self) -> u64 {
+        self.allocated.saturating_sub(self.consumed)
     }
 
     /// Check whether the warning threshold has been reached.
@@ -352,12 +371,12 @@ mod tests {
         budget.consume(800);
         assert!(budget.is_warning_threshold_reached());
         assert!(!budget.is_exhausted());
-        assert_eq!(budget.remaining, 200);
+        assert_eq!(budget.remaining(), 200);
 
         let exhausted = budget.consume(200);
         assert!(exhausted);
         assert!(budget.is_exhausted());
-        assert_eq!(budget.remaining, 0);
+        assert_eq!(budget.remaining(), 0);
     }
 
     #[test]
@@ -365,9 +384,9 @@ mod tests {
         let mut budget = BudgetEnvelope::new(10000, 80);
         budget.consume(2000);
         budget.consume_subtree(5000); // child subtree usage
-        assert_eq!(budget.consumed, 2000);
-        assert_eq!(budget.subtree_consumed, 7000); // 2000 (own) + 5000 (child)
-        assert_eq!(budget.remaining, 8000);
+        assert_eq!(budget.consumed(), 2000);
+        assert_eq!(budget.subtree_consumed(), 7000); // 2000 (own) + 5000 (child)
+        assert_eq!(budget.remaining(), 8000);
     }
 
     #[test]

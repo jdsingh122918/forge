@@ -279,23 +279,22 @@ fn reconstruct_run_state(run_row: RunRow, task_rows: Vec<TaskNodeRow>) -> Result
     let milestones = rebuild_milestones(&plan, &tasks)?;
     let approvals = derive_pending_approvals(&run_id, &tasks);
 
-    Ok(RunState {
-        id: run_id,
-        project: run_row.project,
-        workspace: PathBuf::from(run_row.workspace),
+    Ok(RunState::rehydrated(
+        run_id,
+        run_row.project,
+        PathBuf::from(run_row.workspace),
         plan,
         milestones,
         tasks,
         approvals,
-        status: parse_run_status_label(&run_row.status)?,
-        last_event_cursor: u64::try_from(run_row.last_event_cursor)
+        parse_run_status_label(&run_row.status)?,
+        u64::try_from(run_row.last_event_cursor)
             .context("run last_event_cursor must be non-negative")?,
-        submitted_at: run_row.started_at,
-        finished_at: run_row.finished_at,
-        total_tokens: u64::try_from(run_row.total_tokens)
-            .context("run total_tokens must be non-negative")?,
-        estimated_cost_usd: run_row.estimated_cost_usd,
-    })
+        run_row.started_at,
+        run_row.finished_at,
+        u64::try_from(run_row.total_tokens).context("run total_tokens must be non-negative")?,
+        run_row.estimated_cost_usd,
+    ))
 }
 
 fn rebuild_milestones(
@@ -434,7 +433,7 @@ fn reconstruct_task_node(row: &TaskNodeRow) -> Result<TaskNode> {
             &row.memory_scope,
             "task_nodes.memory_scope",
         )?,
-        approval_state: decode_approval_state(&row.approval_state)?,
+        approval_state: decode_approval_state(&row.id, &row.approval_state)?,
         requested_capabilities: decode_json::<CapabilityEnvelope>(
             &row.requested_capabilities,
             "task_nodes.requested_capabilities",
@@ -479,7 +478,7 @@ fn reconstruct_task_status(
                 artifacts: result_summary
                     .map(|summary| summary.artifacts.clone())
                     .unwrap_or_default(),
-                tokens_consumed: budget.consumed,
+                tokens_consumed: budget.consumed(),
                 commit_sha: result_summary.and_then(|summary| summary.commit_sha.clone()),
             },
             duration: task_duration(row),
@@ -570,7 +569,7 @@ where
         .with_context(|| format!("failed to decode {field} after JSON decode error: {json_error}"))
 }
 
-fn decode_approval_state(value: &str) -> Result<ApprovalState> {
+fn decode_approval_state(task_id: &str, value: &str) -> Result<ApprovalState> {
     let strict_error = match serde_json::from_str::<ApprovalState>(value) {
         Ok(parsed) => return Ok(parsed),
         Err(error) => error,
@@ -592,7 +591,9 @@ fn decode_approval_state(value: &str) -> Result<ApprovalState> {
                 legacy
                     .get("approval_id")
                     .and_then(serde_json::Value::as_str)
-                    .unwrap_or("recovered-approval"),
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| format!("recovered-approval-{task_id}")),
             ),
         }),
         "approved" => Ok(ApprovalState::Approved {
@@ -888,9 +889,9 @@ mod tests {
 
         let graph = rebuild_run_graph(harness.state_store.as_ref()).unwrap();
         let run = graph.get_run(&RunId::new("run-1")).unwrap();
-        let task = run.tasks.get(&TaskNodeId::new("task-root")).unwrap();
+        let task = run.task(&TaskNodeId::new("task-root")).unwrap();
 
-        assert_eq!(run.workspace, PathBuf::from("/tmp/project-a"));
+        assert_eq!(run.workspace(), PathBuf::from("/tmp/project-a").as_path());
         assert!(matches!(
             &task.worktree,
             WorktreePlan::Shared { workspace_path } if *workspace_path == PathBuf::from("/tmp/project-a")
@@ -1118,15 +1119,15 @@ mod tests {
         let graph = rebuild_run_graph(harness.state_store.as_ref()).unwrap();
         let run = graph.get_run(&RunId::new("run-1")).unwrap();
 
-        assert_eq!(run.status, RunStatus::Running);
-        assert_eq!(run.tasks.len(), 2);
-        assert_eq!(run.approvals.len(), 1);
+        assert_eq!(run.status(), RunStatus::Running);
+        assert_eq!(run.task_count(), 2);
+        assert_eq!(run.approval_count(), 1);
         assert_eq!(
-            run.tasks.get(&TaskNodeId::new("parent")).unwrap().children,
+            run.task(&TaskNodeId::new("parent")).unwrap().children,
             vec![TaskNodeId::new("child")]
         );
         assert_eq!(
-            run.tasks.get(&TaskNodeId::new("child")).unwrap().depends_on,
+            run.task(&TaskNodeId::new("child")).unwrap().depends_on,
             vec![TaskNodeId::new("parent")]
         );
         assert_eq!(
@@ -1159,5 +1160,33 @@ mod tests {
                 .contains("stored as Running without assigned_agent_id"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn rebuild_run_graph_assigns_task_scoped_ids_to_legacy_pending_approvals() {
+        let harness = TestHarness::new();
+        insert_run(harness.state_store.as_ref(), "run-1", "Running");
+        let mut child = sample_task_row(
+            "child",
+            "run-1",
+            None,
+            "AwaitingApproval",
+            ApprovalState::NotRequired,
+            None,
+            0,
+        );
+        child.approval_state = serde_json::json!({ "state": "pending" }).to_string();
+        harness.state_store.insert_task(&child).unwrap();
+
+        let graph = rebuild_run_graph(harness.state_store.as_ref()).unwrap();
+        let run = graph.get_run(&RunId::new("run-1")).unwrap();
+        let approval_id = ApprovalId::new("recovered-approval-child");
+
+        assert!(run.contains_approval(&approval_id));
+        assert!(matches!(
+            run.task(&TaskNodeId::new("child")).unwrap().approval_state,
+            ApprovalState::Pending { approval_id: ref task_approval_id }
+                if task_approval_id == &approval_id
+        ));
     }
 }

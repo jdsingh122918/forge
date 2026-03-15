@@ -24,7 +24,7 @@ use bollard::query_parameters::{
 };
 use forge_common::ids::AgentId;
 use forge_common::manifest::{DockerMount, RuntimeEnvPlan};
-use forge_common::run_graph::{AgentHandle, RuntimeBackend};
+use forge_common::run_graph::AgentHandle;
 use forge_common::runtime::{AgentRuntime, AgentStatus, PreparedAgentLaunch};
 use tokio::sync::RwLock;
 use tokio_stream::StreamExt;
@@ -180,10 +180,10 @@ impl DockerRuntime {
             )
             .await
         {
-            tracing::debug!(
+            tracing::warn!(
                 container_id = %container_id,
                 error = %error,
-                "best-effort Docker container cleanup failed"
+                "best-effort Docker container cleanup failed; container may leak"
             );
         }
     }
@@ -329,19 +329,16 @@ impl AgentRuntime for DockerRuntime {
             emitter,
         );
 
-        Ok(AgentHandle {
-            agent_id: prepared.agent_id,
-            pid: None,
-            container_id: Some(container_id),
-            backend: RuntimeBackend::Docker,
+        Ok(AgentHandle::docker(
+            prepared.agent_id,
+            container_id,
             socket_dir,
-        })
+        ))
     }
 
     async fn kill(&self, handle: &AgentHandle) -> Result<()> {
         let container_id = handle
-            .container_id
-            .as_deref()
+            .container_id()
             .context("docker runtime handle is missing a container_id")?;
         let kill_reason = "operator requested Docker runtime termination".to_string();
 
@@ -386,10 +383,36 @@ impl AgentRuntime for DockerRuntime {
         }
     }
 
+    async fn force_kill(&self, handle: &AgentHandle, reason: &str) -> Result<()> {
+        let container_id = handle
+            .container_id()
+            .context("docker runtime handle is missing a container_id")?;
+
+        self.remember_kill_reason(container_id, reason.to_string())
+            .await;
+        self.client
+            .kill_container(
+                container_id,
+                Some(
+                    KillContainerOptionsBuilder::default()
+                        .signal("SIGKILL")
+                        .build(),
+                ),
+            )
+            .await
+            .or_else(|error| {
+                if is_terminal_container_error(&error) {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            })
+            .with_context(|| format!("failed to force kill Docker container {container_id}"))
+    }
+
     async fn status(&self, handle: &AgentHandle) -> Result<AgentStatus> {
         let container_id = handle
-            .container_id
-            .as_deref()
+            .container_id()
             .context("docker runtime handle is missing a container_id")?;
 
         let inspect = match self
@@ -553,7 +576,9 @@ mod tests {
         MemoryScope, PermissionSet, RepoAccess, ResourceLimits, RunSharedWriteMode, SpawnLimits,
         WorktreePlan,
     };
-    use forge_common::run_graph::{ApprovalState, TaskNode, TaskStatus, TaskWaitMode};
+    use forge_common::run_graph::{
+        ApprovalState, RuntimeBackend, TaskNode, TaskStatus, TaskWaitMode,
+    };
     use forge_common::runtime::{AgentLaunchSpec, AgentOutputMode};
     use tempfile::TempDir;
 
@@ -732,7 +757,7 @@ mod tests {
     }
 
     async fn cleanup_container(runtime: &DockerRuntime, handle: &AgentHandle) {
-        if let Some(container_id) = handle.container_id.as_deref() {
+        if let Some(container_id) = handle.container_id() {
             let _ = runtime
                 .client
                 .remove_container(
@@ -778,11 +803,11 @@ printf "mounted" > "$FORGE_SOCKET_DIR/container-marker.txt""#,
         let terminal = wait_for_terminal_status(&runtime, &handle).await;
 
         assert!(matches!(terminal, AgentStatus::Exited { exit_code: 0 }));
-        assert_eq!(handle.backend, RuntimeBackend::Docker);
-        assert!(handle.pid.is_none());
-        assert!(handle.container_id.is_some());
-        assert_eq!(handle.socket_dir, socket_base_dir.join("prepared-socket"));
-        assert!(handle.socket_dir.exists());
+        assert_eq!(handle.backend(), RuntimeBackend::Docker);
+        assert!(handle.pid().is_none());
+        assert!(handle.container_id().is_some());
+        assert_eq!(handle.socket_dir(), socket_base_dir.join("prepared-socket"));
+        assert!(handle.socket_dir().exists());
 
         assert_eq!(
             tokio::fs::read_to_string(temp_dir.path().join("agent-id.txt"))
@@ -818,10 +843,10 @@ printf "mounted" > "$FORGE_SOCKET_DIR/container-marker.txt""#,
             tokio::fs::read_to_string(temp_dir.path().join("socket-dir.txt"))
                 .await
                 .unwrap(),
-            handle.socket_dir.display().to_string()
+            handle.socket_dir().display().to_string()
         );
         assert_eq!(
-            tokio::fs::read_to_string(handle.socket_dir.join("container-marker.txt"))
+            tokio::fs::read_to_string(handle.socket_dir().join("container-marker.txt"))
                 .await
                 .unwrap(),
             "mounted"
@@ -856,6 +881,38 @@ printf "mounted" > "$FORGE_SOCKET_DIR/container-marker.txt""#,
         ));
 
         runtime.kill(&handle).await.unwrap();
+        let terminal = wait_for_terminal_status(&runtime, &handle).await;
+        assert!(matches!(terminal, AgentStatus::Killed { .. }));
+
+        cleanup_container(&runtime, &handle).await;
+    }
+
+    #[tokio::test]
+    async fn docker_runtime_force_kill_marks_container_as_killed() {
+        let temp_dir = temp_dir();
+        let Some(runtime) = require_docker_runtime(temp_dir.path().join("runtime-sockets")).await
+        else {
+            return;
+        };
+        if !require_test_image(&runtime).await {
+            return;
+        };
+
+        let handle = runtime
+            .spawn(make_prepared_launch(
+                temp_dir.path(),
+                PathBuf::from("socket-force-kill"),
+                make_launch("sleep 30", b""),
+            ))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            wait_for_running_status(&runtime, &handle).await,
+            AgentStatus::Running
+        ));
+
+        runtime.force_kill(&handle, "shutdown_force").await.unwrap();
         let terminal = wait_for_terminal_status(&runtime, &handle).await;
         assert!(matches!(terminal, AgentStatus::Killed { .. }));
 

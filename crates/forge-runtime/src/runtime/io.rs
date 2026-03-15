@@ -2,7 +2,9 @@
 
 use std::fmt;
 use std::process::ExitStatus;
+use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use bollard::container::LogOutput;
@@ -28,9 +30,19 @@ pub struct RuntimeOutputEnvelope {
     pub timestamp: DateTime<Utc>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct RuntimeOutputSink {
     tx: Option<mpsc::UnboundedSender<RuntimeOutputEnvelope>>,
+    receiver_dropped: Arc<AtomicBool>,
+}
+
+impl Default for RuntimeOutputSink {
+    fn default() -> Self {
+        Self {
+            tx: None,
+            receiver_dropped: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 impl RuntimeOutputSink {
@@ -40,12 +52,28 @@ impl RuntimeOutputSink {
 
     pub fn channel() -> (Self, mpsc::UnboundedReceiver<RuntimeOutputEnvelope>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        (Self { tx: Some(tx) }, rx)
+        (
+            Self {
+                tx: Some(tx),
+                receiver_dropped: Arc::new(AtomicBool::new(false)),
+            },
+            rx,
+        )
     }
 
     fn emit(&self, envelope: RuntimeOutputEnvelope) {
         if let Some(tx) = &self.tx {
-            let _ = tx.send(envelope);
+            if let Err(error) = tx.send(envelope)
+                && !self.receiver_dropped.swap(true, Ordering::Relaxed)
+            {
+                let envelope = error.0;
+                tracing::error!(
+                    run_id = %envelope.run_id,
+                    task_id = %envelope.task_id,
+                    agent_id = %envelope.agent_id,
+                    "runtime output receiver dropped; live agent output will be lost until the daemon is restarted"
+                );
+            }
         }
     }
 }
@@ -343,5 +371,41 @@ fn emit_chunk_lines(buffer: &mut String, chunk: &[u8], mut emit: impl FnMut(Stri
 fn flush_partial_line(buffer: &mut String, mut emit: impl FnMut(String)) {
     if !buffer.is_empty() {
         emit(std::mem::take(buffer));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge_common::events::TaskOutput;
+
+    #[test]
+    fn runtime_output_sink_marks_receiver_drop_once() {
+        let (sink, rx) = RuntimeOutputSink::channel();
+        drop(rx);
+
+        sink.emit(RuntimeOutputEnvelope {
+            run_id: RunId::new("run-1"),
+            task_id: TaskNodeId::new("task-1"),
+            agent_id: AgentId::new("agent-1"),
+            event: RuntimeEventKind::TaskOutput {
+                output: TaskOutput::Stdout("hello".to_string()),
+            },
+            timestamp: Utc::now(),
+        });
+
+        assert!(sink.receiver_dropped.load(Ordering::Relaxed));
+
+        sink.emit(RuntimeOutputEnvelope {
+            run_id: RunId::new("run-1"),
+            task_id: TaskNodeId::new("task-1"),
+            agent_id: AgentId::new("agent-1"),
+            event: RuntimeEventKind::TaskOutput {
+                output: TaskOutput::Stdout("goodbye".to_string()),
+            },
+            timestamp: Utc::now(),
+        });
+
+        assert!(sink.receiver_dropped.load(Ordering::Relaxed));
     }
 }

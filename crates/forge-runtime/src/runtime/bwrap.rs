@@ -16,7 +16,7 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use forge_common::ids::AgentId;
 use forge_common::manifest::RuntimeEnvPlan;
-use forge_common::run_graph::{AgentHandle, RuntimeBackend};
+use forge_common::run_graph::AgentHandle;
 use forge_common::runtime::{AgentRuntime, AgentStatus, PreparedAgentLaunch};
 use tokio::process::Command;
 use tokio::sync::RwLock;
@@ -261,29 +261,23 @@ impl AgentRuntime for BwrapRuntime {
             .await
             .insert(prepared.agent_id.clone(), tracked_child);
 
-        Ok(AgentHandle {
-            agent_id: prepared.agent_id,
-            pid: Some(pid),
-            container_id: None,
-            backend: RuntimeBackend::Bwrap,
-            socket_dir,
-        })
+        Ok(AgentHandle::bwrap(prepared.agent_id, pid, socket_dir))
     }
 
     async fn kill(&self, handle: &AgentHandle) -> Result<()> {
         let pid = handle
-            .pid
+            .pid()
             .context("bwrap runtime handle is missing a pid")?;
         let kill_reason = "operator requested bwrap runtime termination".to_string();
 
-        if let Some(child) = self.tracked_child(&handle.agent_id).await {
+        if let Some(child) = self.tracked_child(handle.agent_id()).await {
             child.remember_kill_reason(kill_reason);
         }
 
         send_signal(pid, libc::SIGTERM)
             .with_context(|| format!("failed to send SIGTERM to bwrap pid {pid}"))?;
 
-        if let Some(child) = self.tracked_child(&handle.agent_id).await {
+        if let Some(child) = self.tracked_child(handle.agent_id()).await {
             match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
                 Ok(Ok(_)) => {}
                 Ok(Err(error)) => {
@@ -304,12 +298,34 @@ impl AgentRuntime for BwrapRuntime {
         Ok(())
     }
 
-    async fn status(&self, handle: &AgentHandle) -> Result<AgentStatus> {
+    async fn force_kill(&self, handle: &AgentHandle, reason: &str) -> Result<()> {
         let pid = handle
-            .pid
+            .pid()
             .context("bwrap runtime handle is missing a pid")?;
 
-        if let Some(child) = self.tracked_child(&handle.agent_id).await {
+        if let Some(child) = self.tracked_child(handle.agent_id()).await {
+            child.remember_kill_reason(reason.to_string());
+            child
+                .force_kill()
+                .await
+                .with_context(|| format!("failed to send SIGKILL to tracked bwrap pid {pid}"))?;
+            child
+                .wait()
+                .await
+                .with_context(|| format!("failed to reap force-killed bwrap pid {pid}"))?;
+            return Ok(());
+        }
+
+        send_signal(pid, libc::SIGKILL)
+            .with_context(|| format!("failed to send SIGKILL to bwrap pid {pid}"))
+    }
+
+    async fn status(&self, handle: &AgentHandle) -> Result<AgentStatus> {
+        let pid = handle
+            .pid()
+            .context("bwrap runtime handle is missing a pid")?;
+
+        if let Some(child) = self.tracked_child(handle.agent_id()).await {
             return Ok(
                 match child
                     .try_wait()
@@ -364,7 +380,8 @@ fn push_arg(args: &mut Vec<OsString>, value: impl Into<OsString>) {
 }
 
 fn send_signal(pid: u32, signal: i32) -> Result<()> {
-    let rc = unsafe { libc::kill(pid as i32, signal) };
+    let pid = pid_t_from_u32(pid)?;
+    let rc = unsafe { libc::kill(pid, signal) };
     if rc == 0 {
         return Ok(());
     }
@@ -378,13 +395,22 @@ fn send_signal(pid: u32, signal: i32) -> Result<()> {
 }
 
 fn process_exists(pid: u32) -> bool {
-    let rc = unsafe { libc::kill(pid as i32, 0) };
+    let Ok(pid) = pid_t_from_u32(pid) else {
+        return false;
+    };
+    let rc = unsafe { libc::kill(pid, 0) };
     if rc == 0 {
         return true;
     }
 
     let error = std::io::Error::last_os_error();
     matches!(error.raw_os_error(), Some(libc::EPERM))
+}
+
+fn pid_t_from_u32(pid: u32) -> Result<libc::pid_t> {
+    i32::try_from(pid)
+        .context("pid exceeds libc::pid_t range")
+        .map(|pid| pid as libc::pid_t)
 }
 
 #[cfg(test)]
@@ -398,7 +424,9 @@ mod tests {
         AgentManifest, BudgetEnvelope, CapabilityEnvelope, MemoryPolicy, MemoryScope,
         PermissionSet, RepoAccess, ResourceLimits, RunSharedWriteMode, SpawnLimits, WorktreePlan,
     };
-    use forge_common::run_graph::{ApprovalState, TaskNode, TaskStatus, TaskWaitMode};
+    use forge_common::run_graph::{
+        ApprovalState, RuntimeBackend, TaskNode, TaskStatus, TaskWaitMode,
+    };
     use forge_common::runtime::{AgentLaunchSpec, AgentOutputMode};
     use tempfile::TempDir;
 
@@ -637,13 +665,13 @@ mod tests {
         let handle = runtime.spawn(launch).await.unwrap();
         let terminal = wait_for_terminal_status(&runtime, &handle).await;
 
-        assert!(handle.pid.is_some());
-        assert_eq!(handle.backend, RuntimeBackend::Bwrap);
+        assert!(handle.pid().is_some());
+        assert_eq!(handle.backend(), RuntimeBackend::Bwrap);
         assert_eq!(
-            handle.socket_dir,
+            handle.socket_dir(),
             temp_dir.path().join("sockets").join("prepared-socket")
         );
-        assert!(handle.socket_dir.exists());
+        assert!(handle.socket_dir().exists());
         assert!(matches!(terminal, AgentStatus::Exited { exit_code: 0 }));
         assert_eq!(
             tokio::fs::read_to_string(temp_dir.path().join("payload.txt"))
@@ -661,7 +689,7 @@ mod tests {
             tokio::fs::read_to_string(temp_dir.path().join("socket-dir.txt"))
                 .await
                 .unwrap(),
-            handle.socket_dir.display().to_string()
+            handle.socket_dir().display().to_string()
         );
         assert!(
             runtime
