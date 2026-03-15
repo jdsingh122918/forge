@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use forge_common::events::{
     RuntimeEvent as DomainRuntimeEvent, RuntimeEventKind, TaskOutput as DomainTaskOutput,
     TaskOutputEvent as DomainTaskOutputEvent,
@@ -108,7 +108,7 @@ impl RuntimeService {
             .ok_or_else(|| Status::not_found("run not found"))?;
 
         for task_id in task_ids {
-            if !run.tasks.contains_key(task_id) {
+            if !run.contains_task(task_id) {
                 return Err(Status::not_found(format!(
                     "task `{}` not found in run `{}`",
                     task_id, run_id
@@ -120,19 +120,17 @@ impl RuntimeService {
     }
 
     fn runtime_backend_proto(&self) -> i32 {
-        let backend = self
-            .task_manager
+        self.task_manager
             .as_ref()
-            .map(|manager| manager.runtime_backend())
-            .unwrap_or(forge_common::run_graph::RuntimeBackend::Host);
-        runtime_backend_to_proto(backend) as i32
+            .map(|manager| runtime_backend_to_proto(manager.runtime_backend()) as i32)
+            .unwrap_or(proto::RuntimeBackend::Unspecified as i32)
     }
 
     fn insecure_host_runtime(&self) -> bool {
         self.task_manager
             .as_ref()
             .map(|manager| manager.insecure_host_runtime())
-            .unwrap_or(true)
+            .unwrap_or(false)
     }
 }
 
@@ -141,11 +139,16 @@ fn unimplemented() -> Status {
 }
 
 /// Start the tonic gRPC server on a Unix domain socket.
+///
+/// This lightweight bootstrap is only safe for quiescent state. Callers that
+/// need runtime-backed task supervision or recovery for live agents must use
+/// `run_server_with_components` (or the `forge-runtime` binary) instead.
 pub async fn run_server(
     socket_path: PathBuf,
     state_store: Arc<StateStore>,
     shutdown_signal: Arc<Notify>,
 ) -> Result<()> {
+    ensure_quiescent_runtime_state(Arc::clone(&state_store)).await?;
     let event_stream = Arc::new(EventStreamCoordinator::new(Arc::clone(&state_store)));
     let agent_supervisor = Arc::new(NoopAgentSupervisor);
     recover_orphans(
@@ -182,6 +185,25 @@ pub async fn run_server(
         shutdown_coordinator,
     )
     .await
+}
+
+async fn ensure_quiescent_runtime_state(state_store: Arc<StateStore>) -> Result<()> {
+    let (active_tasks, active_agents) =
+        tokio::task::spawn_blocking(move || -> Result<(usize, usize)> {
+            let active_tasks = state_store.query_tasks_by_status(&["Materializing", "Running"])?;
+            let active_agents = state_store.query_active_agent_instances()?;
+            Ok((active_tasks.len(), active_agents.len()))
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("runtime state bootstrap check task failed: {error}"))??;
+
+    if active_tasks > 0 || active_agents > 0 {
+        bail!(
+            "run_server cannot bootstrap over active runtime state ({active_tasks} active tasks, {active_agents} active agent instances); use run_server_with_components or the forge-runtime binary"
+        );
+    }
+
+    Ok(())
 }
 
 /// Start the tonic gRPC server with externally constructed runtime components.
@@ -349,7 +371,7 @@ impl ForgeRuntime for RuntimeService {
                 let orchestrator = self.orchestrator.lock().await;
                 orchestrator
                     .get_run(&run_id)
-                    .map(|run| run.tasks.keys().cloned().collect::<Vec<_>>())
+                    .map(|run| run.tasks().keys().cloned().collect::<Vec<_>>())
                     .unwrap_or_default()
             };
 
@@ -404,21 +426,19 @@ impl ForgeRuntime for RuntimeService {
         let mut runs: Vec<&RunState> = orchestrator
             .runs_by_submission_desc()
             .into_iter()
-            .filter(|run| request.project.is_empty() || run.project == request.project)
+            .filter(|run| request.project.is_empty() || run.project() == request.project)
             .filter(|run| {
                 request.status_filter.is_empty()
                     || request
                         .status_filter
-                        .contains(&(run.status.into_proto() as i32))
+                        .contains(&(run.status().into_proto() as i32))
             })
             .collect();
 
         let start_index = page_start_index_for_runs(&runs, &request.page_token)?;
         let end_index = start_index.saturating_add(page_size).min(runs.len());
         let next_page_token = if end_index < runs.len() {
-            runs.get(end_index - 1)
-                .map(|run| run.id.to_string())
-                .unwrap_or_default()
+            encode_offset_page_token(end_index)
         } else {
             String::new()
         };
@@ -450,7 +470,7 @@ impl ForgeRuntime for RuntimeService {
             .find_task(&task_id)
             .ok_or_else(|| Status::not_found("task not found"))?;
         Ok(Response::new(task_node_to_proto(
-            run.id.as_str(),
+            run.id().as_str(),
             task,
             self.runtime_backend_proto(),
             self.insecure_host_runtime(),
@@ -469,7 +489,7 @@ impl ForgeRuntime for RuntimeService {
             .get_run(&run_id)
             .ok_or_else(|| Status::not_found("run not found"))?;
         let mut tasks: Vec<&TaskNode> = run
-            .tasks
+            .tasks()
             .values()
             .filter(|task| {
                 request.parent_task_id.is_empty()
@@ -495,10 +515,7 @@ impl ForgeRuntime for RuntimeService {
         let start_index = page_start_index_for_tasks(&tasks, &request.page_token)?;
         let end_index = start_index.saturating_add(page_size).min(tasks.len());
         let next_page_token = if end_index < tasks.len() {
-            tasks
-                .get(end_index - 1)
-                .map(|task| task.id.to_string())
-                .unwrap_or_default()
+            encode_offset_page_token(end_index)
         } else {
             String::new()
         };
@@ -509,7 +526,7 @@ impl ForgeRuntime for RuntimeService {
                 .into_iter()
                 .map(|task| {
                     task_node_to_proto(
-                        run.id.as_str(),
+                        run.id().as_str(),
                         task,
                         self.runtime_backend_proto(),
                         self.insecure_host_runtime(),
@@ -620,7 +637,7 @@ impl ForgeRuntime for RuntimeService {
                 let orchestrator = self.orchestrator.lock().await;
                 orchestrator
                     .find_task(&task_id)
-                    .map(|(run, task)| (run.id.clone(), task.clone()))
+                    .map(|(run, task)| (run.id().clone(), task.clone()))
                     .ok_or_else(|| Status::not_found("task not found after runtime kill"))?
             } else {
                 let mut orchestrator = self.orchestrator.lock().await;
@@ -652,10 +669,10 @@ impl ForgeRuntime for RuntimeService {
             self.ensure_run_scope(&run_id, &[]).await?;
             Some(run_id)
         };
-        let fence = self
-            .state_store
-            .latest_seq()
-            .map_err(|error| Status::internal(format!("failed to load approval fence: {error}")))?;
+        let fence =
+            self.state_store.latest_event_seq().await.map_err(|error| {
+                Status::internal(format!("failed to load approval fence: {error}"))
+            })?;
         let snapshot = {
             let orchestrator = self.orchestrator.lock().await;
             orchestrator.pending_approvals_snapshot(run_id_filter.as_ref())
@@ -816,7 +833,7 @@ impl ForgeRuntime for RuntimeService {
     ) -> Result<Response<proto::HealthResponse>, Status> {
         let run_count = {
             let orchestrator = self.orchestrator.lock().await;
-            i32::try_from(orchestrator.run_graph.runs.len()).unwrap_or(i32::MAX)
+            i32::try_from(orchestrator.run_graph.len()).unwrap_or(i32::MAX)
         };
         let counts =
             self.state_store.counts().await.map_err(|error| {
@@ -874,16 +891,16 @@ fn run_state_to_proto(
     insecure_host_runtime: bool,
 ) -> proto::RunInfo {
     proto::RunInfo {
-        id: run_state.id.to_string(),
-        project: run_state.project.clone(),
-        status: run_state.status.into_proto() as i32,
+        id: run_state.id().to_string(),
+        project: run_state.project().to_string(),
+        status: run_state.status().into_proto() as i32,
         milestones: run_state
-            .plan
+            .plan()
             .milestones
             .iter()
             .enumerate()
             .map(|(order, milestone)| {
-                let state = run_state.milestones.get(&milestone.id);
+                let state = run_state.milestone(&milestone.id);
                 proto::Milestone {
                     id: milestone.id.to_string(),
                     title: milestone.title.clone(),
@@ -904,22 +921,22 @@ fn run_state_to_proto(
                 }
             })
             .collect(),
-        task_count: i32::try_from(run_state.tasks.len()).unwrap_or(i32::MAX),
+        task_count: i32::try_from(run_state.task_count()).unwrap_or(i32::MAX),
         token_usage: Some(proto::TokenUsage {
             input_tokens: 0,
             output_tokens: 0,
             cache_read_tokens: 0,
             cache_write_tokens: 0,
-            total_tokens: i64::try_from(run_state.total_tokens).unwrap_or(i64::MAX),
+            total_tokens: i64::try_from(run_state.total_tokens()).unwrap_or(i64::MAX),
         }),
-        estimated_cost_usd: run_state.estimated_cost_usd,
+        estimated_cost_usd: run_state.estimated_cost_usd(),
         runtime_backend,
         insecure_host_runtime,
-        submitted_at: Some(datetime_to_timestamp(run_state.submitted_at)),
+        submitted_at: Some(datetime_to_timestamp(run_state.submitted_at())),
         started_at: run_started_at(run_state).map(datetime_to_timestamp),
-        finished_at: run_state.finished_at.map(datetime_to_timestamp),
+        finished_at: run_state.finished_at().map(datetime_to_timestamp),
         failure_reason: String::new(),
-        submitted_plan: Some(run_state.plan.into_proto()),
+        submitted_plan: Some(run_state.plan().into_proto()),
     }
 }
 
@@ -1046,9 +1063,9 @@ fn task_started_at(task: &TaskNode) -> Option<chrono::DateTime<chrono::Utc>> {
 }
 
 fn run_started_at(run_state: &RunState) -> Option<chrono::DateTime<chrono::Utc>> {
-    match run_state.status {
+    match run_state.status() {
         RunStatus::Submitted => None,
-        _ => Some(run_state.submitted_at),
+        _ => Some(run_state.submitted_at()),
     }
 }
 
@@ -1556,13 +1573,42 @@ fn normalize_page_size(requested: i32) -> usize {
     }
 }
 
+fn encode_offset_page_token(offset: usize) -> String {
+    format!("offset:{offset}")
+}
+
+fn parse_offset_page_token(
+    page_token: &str,
+    max_len: usize,
+    invalid_message: &'static str,
+) -> Option<Result<usize, Status>> {
+    let offset = page_token.strip_prefix("offset:")?;
+    Some(
+        offset
+            .parse::<usize>()
+            .map_err(|_| Status::invalid_argument(invalid_message))
+            .and_then(|offset| {
+                if offset <= max_len {
+                    Ok(offset)
+                } else {
+                    Err(Status::invalid_argument(invalid_message))
+                }
+            }),
+    )
+}
+
 fn page_start_index_for_runs(runs: &[&RunState], page_token: &str) -> Result<usize, Status> {
     if page_token.is_empty() {
         return Ok(0);
     }
 
+    if let Some(offset) = parse_offset_page_token(page_token, runs.len(), "invalid run page token")
+    {
+        return offset;
+    }
+
     runs.iter()
-        .position(|run| run.id.as_str() == page_token)
+        .position(|run| run.id().as_str() == page_token)
         .map(|index| index + 1)
         .ok_or_else(|| Status::invalid_argument("invalid run page token"))
 }
@@ -1570,6 +1616,12 @@ fn page_start_index_for_runs(runs: &[&RunState], page_token: &str) -> Result<usi
 fn page_start_index_for_tasks(tasks: &[&TaskNode], page_token: &str) -> Result<usize, Status> {
     if page_token.is_empty() {
         return Ok(0);
+    }
+
+    if let Some(offset) =
+        parse_offset_page_token(page_token, tasks.len(), "invalid task page token")
+    {
+        return offset;
     }
 
     tasks

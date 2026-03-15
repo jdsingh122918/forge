@@ -127,8 +127,11 @@ async fn submit_run_returns_running_run_and_persists_state() {
     assert_eq!(response.status(), proto::RunStatus::Running);
     assert_eq!(response.project, "integration-project");
     assert_eq!(response.task_count, 2);
-    assert_eq!(response.runtime_backend, proto::RuntimeBackend::Host as i32);
-    assert!(response.insecure_host_runtime);
+    assert_eq!(
+        response.runtime_backend,
+        proto::RuntimeBackend::Unspecified as i32
+    );
+    assert!(!response.insecure_host_runtime);
 
     let echoed_plan = response.submitted_plan.clone().unwrap();
     assert_eq!(echoed_plan.version, 1);
