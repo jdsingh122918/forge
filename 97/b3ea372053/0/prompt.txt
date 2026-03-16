@@ -1,0 +1,1091 @@
+<system_instruction>
+You are working inside Conductor, a Mac app that lets the user run many coding agents in parallel.
+Your work should take place in the /Users/jdsingh/conductor/workspaces/forge/codebase-walkthrough directory (unless otherwise directed), which has been set up for you to work in.
+Each workspace has a .context directory (gitignored) where you can save files to collaborate with other agents.
+The target branch for this workspace is dev. Use this for actions like creating new PRs, bisecting, etc., unless you're told otherwise.
+
+If the user asks you to work on several unrelated tasks in parallel, you can suggest they start new workspaces.
+If the user asks for help with Conductor, ask them to email [humans@conductor.build](mailto:humans@conductor.build) or
+click on the comment icon in the bottom left to send feedback.
+</system_instruction>
+
+
+<system_instruction>
+The user has attached these files. Read them before proceeding.
+- /Users/jdsingh/conductor/workspaces/forge/sofia/.context/attachments/plan.md (4.7 KB)
+</system_instruction>
+
+
+
+continue
+
+---
+
+<task-notification>
+<task-id>a475b561e17586d1e</task-id>
+<tool-use-id>toolu_012nmCL8VdwGoipTaLD4yypp</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a475b561e17586d1e.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 11-15 (Bootstrap+Parallel+Quality)" completed</summary>
+<result>Prompt is too long</result>
+<usage><total_tokens>178</total_tokens><tool_uses>50</tool_uses><duration_ms>335628</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a475b561e17586d1e.output
+
+---
+
+<task-notification>
+<task-id>aa94cdd27e35d8083</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/aa94cdd27e35d8083.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 20-23 (Factory subsystem)" completed</summary>
+<result>Prompt is too long</result>
+<usage><total_tokens>98</total_tokens><tool_uses>32</tool_uses><duration_ms>330874</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/aa94cdd27e35d8083.output
+
+---
+
+<task-notification>
+<task-id>adf51bd4bf5b9fe67</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/adf51bd4bf5b9fe67.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 24-26 (Runtime+Crates+Appendix)" completed</summary>
+<result>Prompt is too long</result>
+<usage><total_tokens>172</total_tokens><tool_uses>46</tool_uses><duration_ms>329042</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/adf51bd4bf5b9fe67.output
+
+---
+
+<task-notification>
+<task-id>a496f1ae62ae937a9</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a496f1ae62ae937a9.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 16-19 (Adaptive+Extensibility+UI)" completed</summary>
+<result>Prompt is too long</result>
+<usage><total_tokens>68</total_tokens><tool_uses>50</tool_uses><duration_ms>553348</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a496f1ae62ae937a9.output
+
+---
+
+<task-notification>
+<task-id>a0fd618da10163df5</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a0fd618da10163df5.output</output-file>
+<status>completed</status>
+<summary>Agent "Write section 24 (Runtime Daemon)" completed</summary>
+<result>I need permission to write to the file `/Users/jdsingh/conductor/workspaces/forge/codebase-walkthrough/.context/sections_24.md`. Both the `Write` tool and `Bash` (with `cat >`) have been denied.
+
+The file does not yet exist -- it needs to be created as a new file in the `.context/` directory. Could you grant permission so I can write the completed Section 24 content? The section is fully drafted (~220 lines) covering:
+
+- What the runtime daemon does and how it differs from CLI execution
+- The daemon bootstrap sequence in `main.rs`
+- Fail-closed runtime backend selection (bwrap/docker/host)
+- Core types: `RunOrchestrator`, `TaskManager`, `StateStore`, `EventStreamCoordinator`, `Scheduler`
+- The 250ms lifecycle loop with circuit breaker
+- The full gRPC API surface (15 RPCs)
+- Crash recovery and graceful shutdown
+- An ASCII data flow diagram</result>
+<usage><total_tokens>47440</total_tokens><tool_uses>24</tool_uses><duration_ms>190083</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a0fd618da10163df5.output
+
+---
+
+<task-notification>
+<task-id>a115488dd8cb8cc6a</task-id>
+<tool-use-id>toolu_01DMrQwGrSufLw6ZRatMPaVj</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a115488dd8cb8cc6a.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 14-15 (Reviews+Council)" completed</summary>
+<result>I need permission to write to the output file. Both the `Write` tool and the `Bash` tool (via `cat >`) have been denied. 
+
+To complete your request, I need permission to create the file at `/Users/jdsingh/conductor/workspaces/forge/codebase-walkthrough/.context/sections_14_15.md`. The content is fully drafted -- I just need one of these approaches to work:
+
+1. The **Write** tool to create the file directly
+2. The **Bash** tool to write the file via shell redirection
+
+Could you grant permission for one of these so I can write the output file? The content covers both sections (~350 lines total) with the structure you requested: purpose, key types/functions, and connections to prior sections.</result>
+<usage><total_tokens>112587</total_tokens><tool_uses>23</tool_uses><duration_ms>278696</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a115488dd8cb8cc6a.output
+
+---
+
+<task-notification>
+<task-id>a0fd618da10163df5</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a0fd618da10163df5.output</output-file>
+<status>completed</status>
+<summary>Agent "Resume Agent F1 to write output" completed</summary>
+<result>I am unable to write to the filesystem -- both the `Write` tool and `Bash` (via `cat >`) are being denied permission. This appears to be a sandbox restriction on creating/writing files in the codebase-walkthrough directory.
+
+To complete your request, I need permission to either:
+
+1. **Use the Write tool** to create `/Users/jdsingh/conductor/workspaces/forge/codebase-walkthrough/.context/sections_24.md`, or
+2. **Use Bash** to run a shell command that writes the file (e.g., `cat > file << 'EOF'`)
+
+The content is fully drafted at ~220 lines. Could you approve the file write permission so I can persist it?</result>
+<usage><total_tokens>54316</total_tokens><tool_uses>2</tool_uses><duration_ms>57955</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a0fd618da10163df5.output
+
+---
+
+<task-notification>
+<task-id>a322893f39242e109</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a322893f39242e109.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 20-21 (Factory data+pipeline)" completed</summary>
+<result>I need permission to write the output file. Both the `Write` tool and `Bash` (with `cat >`) were denied. Let me try the Write tool again -- sometimes permissions are granted on retry for the specific file being created.
+
+I need to write the file `/Users/jdsingh/conductor/workspaces/forge/codebase-walkthrough/.context/sections_20_21.md` but both the Write tool and Bash were denied permission. This file is the required output for the task. Could you grant permission so I can create it? The content is ready -- it covers:
+
+- **Section 20 (Factory Data Model)**: ~170 lines covering the `define_id_type!` macro, core entities (Project, Issue, PipelineRun, PipelinePhase), agent-team models (AgentTeam, AgentTask, AgentEvent), API view types (BoardView, IssueDetail, etc.), the enum serialization convention, `DbHandle` with its three connection modes, and the CRUD pattern exemplified by `issues.rs`.
+
+- **Section 21 (Factory Pipeline)**: ~200 lines covering `PipelineRunner`, the `start_run` entry point flow, agent team execution with wave-by-wave orchestration, the `Planner` and `PlanResponse` types, forge fallback execution, streaming output/progress parsing, `GitLockMap` and branch management, auto-promote policy, and cancellation/shutdown.
+
+Please allow the write so I can complete the task.</result>
+<usage><total_tokens>78990</total_tokens><tool_uses>13</tool_uses><duration_ms>293774</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a322893f39242e109.output
+
+---
+
+<task-notification>
+<task-id>ac6a98abaa1ff9531</task-id>
+<tool-use-id>toolu_01Mh5imXGYjGHdDkazaauN8j</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/ac6a98abaa1ff9531.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 25-26 (Crates+Autoresearch)" completed</summary>
+<result>I need write permission to create the output file at `/Users/jdsingh/conductor/workspaces/forge/codebase-walkthrough/.context/sections_25_26.md`. Both the Write tool and Bash (for `cat >`) were denied. Could you grant permission for one of these so I can save the document? The content is fully drafted and ready to write -- I just need filesystem write access to the target path.</result>
+<usage><total_tokens>102614</total_tokens><tool_uses>35</tool_uses><duration_ms>278693</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/ac6a98abaa1ff9531.output
+
+---
+
+<task-notification>
+<task-id>a90b09f4c70f0e749</task-id>
+<tool-use-id>toolu_01ASqMVpbnWVdftABGePbqkW</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a90b09f4c70f0e749.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 11-13 (Bootstrap+DAG+Swarm)" completed</summary>
+<result>I need the Write tool permission to create the output file at `/Users/jdsingh/conductor/workspaces/forge/codebase-walkthrough/.context/sections_11_13.md`. Both the Write tool and the Bash `cat >` alternative were denied.
+
+Could you grant permission for either the **Write** tool or the **Bash** tool so I can create the file? The content is fully composed and ready -- I just need filesystem write access to the target path.</result>
+<usage><total_tokens>105836</total_tokens><tool_uses>20</tool_uses><duration_ms>339251</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a90b09f4c70f0e749.output
+
+---
+
+<task-notification>
+<task-id>a4c2d72c8506857cc</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a4c2d72c8506857cc.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 22-23 (Factory API+React UI)" completed</summary>
+<result>I need file write permission to complete this task. I have the full content of Sections 22 and 23 ready, but both the `Write` tool and `Bash` file creation were denied.
+
+**What I need to do:** Write the walkthrough document to `/Users/jdsingh/conductor/workspaces/forge/codebase-walkthrough/.context/sections_22_23.md`. This is a new file in the existing `.context/` directory.
+
+**What I have ready:** The complete two-section document (~430 lines) covering:
+
+- **Section 22: Factory API & Server** -- `AppState`, server bootstrap sequence (`start_server`), SPA static file fallback, complete REST route table (projects, issues, pipeline runs, GitHub integration, metrics), handler pattern, `ApiError` mapping, the `WsMessage` enum with 30+ variants grouped by category, WebSocket connection handling with ping/pong keepalive, and the `broadcast_message` helper.
+
+- **Section 23: React UI** -- Application bootstrap (`main.tsx` / `App.tsx`), `WebSocketProvider` with exponential-backoff reconnection and ref-based subscriber pattern, the `api` client, the `useMissionControl` central state hook (initial loading, WS message dispatch, derived data via `useMemo`, exposed actions), the `MissionControl` layout (StatusBar / ProjectSidebar / AgentRunCard grid / EventLog / FloatingActionButton), view modes, key components, the TypeScript type system mirroring Rust models, and the state management philosophy.
+
+Could you grant write permission so I can save this file?</result>
+<usage><total_tokens>83260</total_tokens><tool_uses>20</tool_uses><duration_ms>391435</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a4c2d72c8506857cc.output
+
+---
+
+<task-notification>
+<task-id>ac4097287face9812</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/ac4097287face9812.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 18-19 (UI+Metrics)" completed</summary>
+<result>I need write permission to create the output file at `/Users/jdsingh/conductor/workspaces/forge/codebase-walkthrough/.context/sections_18_19.md`. Both the `Write` tool and `Bash` (with shell redirection) have been denied. 
+
+Could you grant permission for one of these so I can write the file? The content is fully drafted and ready -- I just need filesystem write access to the `.context/` directory in the codebase-walkthrough workspace.</result>
+<usage><total_tokens>54676</total_tokens><tool_uses>10</tool_uses><duration_ms>203831</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/ac4097287face9812.output
+
+---
+
+<task-notification>
+<task-id>a115488dd8cb8cc6a</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a115488dd8cb8cc6a.output</output-file>
+<status>completed</status>
+<summary>Agent "Resume Agent C2 to write output" completed</summary>
+<result>I am unable to write the file because both the Write tool and the Bash tool are being denied permission. The content is fully prepared -- I need you to grant permission for either tool so I can create the file at `/Users/jdsingh/conductor/workspaces/forge/codebase-walkthrough/.context/sections_14_15.md`.
+
+Could you approve one of these tool calls when prompted?</result>
+<usage><total_tokens>124798</total_tokens><tool_uses>2</tool_uses><duration_ms>197518</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a115488dd8cb8cc6a.output
+
+---
+
+<task-notification>
+<task-id>aa501fa581e60b65b</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/aa501fa581e60b65b.output</output-file>
+<status>completed</status>
+<summary>Agent "Write section 24 Runtime Daemon" completed</summary>
+<result>I need Write permission to create a new file at `/Users/jdsingh/conductor/workspaces/forge/sofia/.context/sections_24.md`. This is required to fulfill the task — the output file path was explicitly specified in the instructions.
+
+Could you grant Write permission so I can create that file? The content is ready — it's the Section 24 walkthrough document covering the Runtime Daemon architecture.</result>
+<usage><total_tokens>28067</total_tokens><tool_uses>9</tool_uses><duration_ms>82156</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/aa501fa581e60b65b.output
+
+---
+
+<task-notification>
+<task-id>ad59827cae543a78e</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/ad59827cae543a78e.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 18-19 UI+Metrics" completed</summary>
+<result>The file does not exist yet and I need Write permission to create it. I need to stop and explain the situation.
+
+The output file `/Users/jdsingh/conductor/workspaces/forge/sofia/.context/sections_18_19.md` does not exist yet, and I was denied permission to create it using the Write tool.
+
+To complete this task, I need permission to create a new file at that path. Could you grant Write permission, or create the file first (e.g., `touch /Users/jdsingh/conductor/workspaces/forge/sofia/.context/sections_18_19.md`) so I can use the Edit tool to populate it?
+
+For reference, here is the content I prepared based on reading both `mod.rs` files:
+
+---
+
+## Section 18: Terminal UI
+
+### Location
+
+`src/ui/mod.rs` — re-exports from three submodules: `dag_progress`, `icons`, and `progress`.
+
+### Public Surface
+
+The module exposes two primary types:
+
+- `DagUI` and `UiMode` from `dag_progress` — for rendering DAG execution state in the terminal
+- `OrchestratorUI` from `progress` — for rendering sequential orchestrator progress
+
+The `icons` submodule provides terminal glyphs and symbols used by the other two renderers.
+
+### Design Intent
+
+The UI layer is split by execution model. Sequential runs (the standard `forge run` path) use `OrchestratorUI`, which tracks the current phase and iteration and renders a line-oriented progress display suitable for streaming to a TTY. DAG/swarm runs use `DagUI`, which must represent multiple concurrently executing nodes — requiring a more structured layout that can show per-node state simultaneously.
+
+`UiMode` controls how `DagUI` renders: the same type can emit a full interactive terminal view or a simpler log-friendly mode when not connected to a TTY.
+
+### OrchestratorUI
+
+`OrchestratorUI` is the progress renderer for sequential phase execution. It receives events as the orchestrator runner advances through phases and iterations. Its responsibilities include:
+
+- Displaying the current phase name and iteration count against the iteration budget
+- Rendering signals parsed from Claude output (`<progress>`, `<blocker>`, `<pivot>`) in a visually distinct way
+- Showing timing information per iteration and per phase
+- Indicating phase outcomes (completed via `<promise>DONE</promise>`, budget exhausted, or failed)
+
+### DagUI
+
+`DagUI` is the renderer for swarm/DAG execution, where multiple phases run in parallel. Key behaviors:
+
+- Maintains per-node status keyed by phase name
+- Renders a grid or list of nodes, each showing: phase name, current iteration, budget, and status (pending, running, completed, failed, blocked)
+- Uses `UiMode` to decide between a full terminal-rewrite loop (interactive TTY) and a line-append mode (CI logs or non-TTY environments)
+
+### Icons Submodule
+
+`icons` centralizes Unicode/ASCII glyphs used across both renderers — checkmarks, spinners, warning symbols, and phase-state indicators — ensuring visual consistency and easy fallback to ASCII-only for environments that cannot render Unicode.
+
+### Relationship to Other Subsystems
+
+The UI layer is purely presentational. The orchestrator runner (`src/orchestrator/runner.rs`) and DAG executor (`src/dag/executor.rs`) are the event sources; the UI modules render their streams. The Factory UI (React, `ui/src/`) is separate and communicates over WebSocket — the terminal UI modules are only used by CLI invocations.
+
+---
+
+## Section 19: Metrics
+
+### Location
+
+`src/metrics/mod.rs` — defines `MetricsCollector` and re-exports the `queries` submodule.
+
+### Storage Model
+
+Metrics are persisted to SQLite via `DbHandle` (the same libsql-backed handle used by the Factory database). Every `record_*` call issues a SQL write immediately and asynchronously — there is no in-memory accumulator. This makes metrics durable across restarts and directly queryable by the Factory API.
+
+Five tables are written to:
+
+| Table | Granularity | Key columns |
+|---|---|---|
+| `metrics_runs` | One row per pipeline run | `run_id`, `issue_id`, `success`, `duration_secs`, `phases_total`, `phases_passed`, `started_at`, `completed_at` |
+| `metrics_phases` | One row per phase per run | `run_id`, `phase_number`, `phase_name`, `budget`, `outcome`, `iterations_used`, `duration_secs`, diff stats |
+| `metrics_iterations` | One row per iteration per phase | token counts, signal counts (`blocker_count`, `pivot_count`, `progress_percent`), `promise_found` |
+| `metrics_reviews` | One row per specialist review | `specialist_type`, `verdict`, `findings_count`, `critical_count` |
+| `metrics_compactions` | One row per context compaction | `iterations_compacted`, char counts, `compression_ratio` |
+
+### Write API
+
+`MetricsCollector` exposes a lifecycle-paired write API:
+
+- `record_run_started` / `record_run_completed` — INSERT then UPDATE; completion returns an error if no matching run exists, enforcing call ordering.
+- `record_phase_started` / `record_phase_completed` — same pattern; completion carries outcome string, iteration count, duration, and git diff statistics (files added/modified/deleted, lines added/removed).
+- `record_iteration` — single INSERT per iteration; captures character counts, token counts (both `Option<i32>`), and parsed signal summary.
+- `record_review` — INSERT per specialist verdict.
+- `record_compaction` — INSERT per context compaction event with compression ratio.
+
+### Read API (Queries)
+
+Five read methods aggregate over a caller-specified trailing window in days:
+
+- **`summary_stats(days)`** — `SummaryStats`: total/successful runs, success rate, avg duration, total phases, avg iterations per phase.
+- **`phase_stats_by_name(days)`** — `Vec<PhaseNameStats>`: per phase name, run count, avg iterations, avg duration, budget utilization (`iterations_used / budget`, guarded against zero-budget phases), success rate. Ordered by run count descending.
+- **`review_stats(days)`** — `Vec<ReviewStats>`: per specialist type, total reviews, pass rate, avg findings, avg critical findings.
+- **`recent_runs(limit)`** — `Vec<RunSummary>` ordered newest first; used by Factory UI dashboard.
+- **`token_usage(days)`** — `Vec<TokenDailyUsage>` grouped by calendar day with summed input/output tokens; enables a token consumption chart.
+
+### Error Handling
+
+The UPDATE-based completion methods check `rows_affected == 0` and bail with an informative message, catching lifecycle ordering bugs at the point of the bad call. All methods use `.context()` on every database call.
+
+### Testing
+
+11 unit tests, all using an in-memory `DbHandle`. Coverage includes full run/phase/iteration lifecycles, review and compaction inserts, all five aggregate queries (including empty-database and zero-budget-phase edge cases), and the error path for completing a nonexistent run.
+
+### Relationship to Other Subsystems
+
+`MetricsCollector` is instantiated by the pipeline execution layer (`src/factory/pipeline/`), which calls the write methods at lifecycle points. The Factory API server (`src/factory/api.rs`) calls the read methods to serve dashboard data to the React UI over HTTP. The `queries` submodule defines the result structs that are serialized to JSON for API responses.</result>
+<usage><total_tokens>23455</total_tokens><tool_uses>5</tool_uses><duration_ms>95355</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/ad59827cae543a78e.output
+
+---
+
+<task-notification>
+<task-id>abd7cf83c9d36cbab</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/abd7cf83c9d36cbab.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 25-26 Crates+Autoresearch" completed</summary>
+<result>I need the Write tool permission to create the output file. I was attempting to write a new file to `/Users/jdsingh/conductor/workspaces/forge/sofia/.context/sections_25_26.md` — this is the output file specified in the user's instructions for the walkthrough sections.
+
+Could you grant permission for the Write tool so I can create this file? The content is ready and the file does not currently exist.</result>
+<usage><total_tokens>28293</total_tokens><tool_uses>11</tool_uses><duration_ms>86185</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/abd7cf83c9d36cbab.output
+
+---
+
+<task-notification>
+<task-id>afb4318ff593c1f72</task-id>
+<tool-use-id>toolu_01VPekd611zpcSvFkRp4G3E4</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/afb4318ff593c1f72.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 14-15 Reviews+Council" completed</summary>
+<result>The Write tool was denied. I need Write permission to create the output file at `/Users/jdsingh/conductor/workspaces/forge/sofia/.context/sections_14_15.md`. The file does not yet exist in that directory — the `.context/` folder contains only `attachments`, `notes.md`, `plans`, and `todos.md`.
+
+Please grant permission to write new files, and I will create the sections file. Here is a summary of what was researched and what the file will contain:
+
+**Section 14: Review System** covers:
+- The five submodules (`specialists`, `findings`, `arbiter`, `dispatcher`, `prompt_loader`)
+- The four built-in `SpecialistType` variants with their default gating behaviour (Security and Architecture gate; Performance and Simplicity are advisory)
+- The `ReviewSpecialist` config wrapper with custom focus area overrides
+- The findings data model (`FindingSeverity`, `ReviewVerdict`, `ReviewFinding`, `ReviewReport`, `ReviewAggregation`)
+- The arbiter's three verdicts (`Proceed`, `Fix`, `FailPhase`) and its rule-based vs LLM resolution paths
+- The `ReviewDispatcher` integration layer
+
+**Section 15: Council (Peer Review)** covers:
+- The eight submodules and how they fit together
+- The `Worker` trait and `ClaudeWorker`/`MockWorker` implementations
+- The `PeerReviewEngine` cross-review step and blinded candidate labelling
+- The `Chairman` synthesis loop with retry-on-conflict and retry feedback injection
+- The `select_winner` fallback with its three-tier ranking (verdict rank → overall score → alphabetical tie-break) and the `CRITICAL_SCORE_THRESHOLD = 0.25` escalation guard
+- `ChairmanDecision` variants and `MergeOutcome`
+- `CouncilConfig` knobs and how `CouncilEngine` integrates with the orchestrator</result>
+<usage><total_tokens>46499</total_tokens><tool_uses>9</tool_uses><duration_ms>109135</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/afb4318ff593c1f72.output
+
+---
+
+<task-notification>
+<task-id>a72eeb3bfbb9790e9</task-id>
+<tool-use-id>toolu_018vpGM6doZLvW6cu9VWgGQd</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a72eeb3bfbb9790e9.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 11-13 Bootstrap+DAG+Swarm" completed</summary>
+<result>I need Write access to create the output file at `/Users/jdsingh/conductor/workspaces/forge/sofia/.context/sections_11_13.md`. The `.context` directory exists but the file does not yet — Write permission is required to create it. Please grant Write permission so I can produce the output file.</result>
+<usage><total_tokens>57593</total_tokens><tool_uses>10</tool_uses><duration_ms>124735</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a72eeb3bfbb9790e9.output
+
+---
+
+<task-notification>
+<task-id>a72032ff3c6230898</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a72032ff3c6230898.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 16-17 Adaptive+Hooks" completed</summary>
+<result>The file doesn't exist and Write permission has been denied. I need Write permission to create this new file. Here is what I was trying to do:
+
+I read all six required `mod.rs` files and drafted the complete content for `/Users/jdsingh/conductor/workspaces/forge/sofia/.context/sections_16_17.md`. The Write tool was denied permission to create this new file.
+
+To proceed, you can either:
+1. **Grant Write permission** so I can create the file, or
+2. **Create the file manually** first (e.g., `touch /Users/jdsingh/conductor/workspaces/forge/sofia/.context/sections_16_17.md`), and then I can use the Edit tool to populate it.
+
+Here is a summary of what the file would contain, so nothing is lost:
+
+**Section 16: Adaptive Execution** covers:
+- `decomposition` — `DecompositionDetector` checks three trigger conditions (blocker signal, budget exhaustion with low progress, explicit `<request-decomposition/>`) and fires `DecompositionExecutor` to split the phase into `DecompositionTask` items converted to sub-phases.
+- `subphase` — responds to `SubPhaseSpawnSignal` from Claude output; `validate_spawn()` enforces budget carving, promise uniqueness, and a cap of 10 sub-phases per parent; `spawn_from_signal()` generates hierarchical numbering (`05.1`, `05.2`, …).
+- `compaction` — `ContextTracker` accumulates chars per iteration; `CompactionManager` generates a summary when usage reaches `limit − 10%`; constants are 800 K chars window, 50 K min preserved, 10-point safety margin.
+
+**Section 17: Hooks, Skills & Patterns** covers:
+- `hooks` — six lifecycle events (`PrePhase`, `PostPhase`, `PreIteration`, `PostIteration`, `OnFailure`, `OnApproval`); command hooks receive JSON context on stdin; exit codes `0–4` map to Continue/Block/Skip/Approve/Reject; `match` glob field scopes hooks to specific phase names.
+- `skills` — markdown files in `.forge/skills/<name>/SKILL.md`; `SkillsLoader` caches on first read; `generate_skills_section()` wraps loaded skills in a `## SKILLS AND CONVENTIONS` block injected between spec and task sections.
+- `patterns` — `learn_pattern()` reads `phases.json` + state file + `spec.md` and saves a JSON record to `~/.forge/patterns/`; `suggest_budgets()` uses `avg_actual * 1.2` with tag-based pattern matching; `recommend_skills_for_phase()` combines phase-type defaults with file-pattern heuristics from history.</result>
+<usage><total_tokens>39669</total_tokens><tool_uses>9</tool_uses><duration_ms>126428</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a72032ff3c6230898.output
+
+---
+
+<task-notification>
+<task-id>aaf3f24d9455f12cb</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/aaf3f24d9455f12cb.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 16-17 (Adaptive+Hooks)" completed</summary>
+<result>I am unable to write the file because both the `Write` tool and `Bash` tool (which I would use with `cat >`) have been denied permission. The task requires creating a new file at `/Users/jdsingh/conductor/workspaces/forge/codebase-walkthrough/.context/sections_16_17.md`.
+
+I have the complete content ready -- approximately 340 lines covering both sections. To proceed, I need permission to either:
+
+1. Use the **Write** tool to create the new file, or
+2. Use **Bash** to write the file via a shell command.
+
+Please grant one of these permissions so I can complete the task. The content is fully drafted and ready to write.</result>
+<usage><total_tokens>65793</total_tokens><tool_uses>12</tool_uses><duration_ms>324514</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/aaf3f24d9455f12cb.output
+
+---
+
+<task-notification>
+<task-id>afab0531a66db4c75</task-id>
+<tool-use-id>toolu_01RQtkTHtarhcbQqwFoE3EJ2</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/afab0531a66db4c75.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 1-5 Foundation" completed</summary>
+<result>I need Write permission to create the output file at `/Users/jdsingh/conductor/workspaces/forge/sofia/.context/sections_01_05.md`. This is a new file (it doesn't exist yet), so I cannot use Edit. The Write tool is the only way to create it.
+
+Could you grant permission to use the Write tool so I can create the output file? The content is fully prepared — it's the five walkthrough sections covering Overview, CLI Entry Point, Error Hierarchy, Configuration, and Telemetry/Utilities, each with 100–250 lines of explanatory prose, type tables, and code references.</result>
+<usage><total_tokens>51947</total_tokens><tool_uses>18</tool_uses><duration_ms>173583</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/afab0531a66db4c75.output
+
+---
+
+<task-notification>
+<task-id>ac87fba9fcc20f306</task-id>
+<tool-use-id>toolu_018Zy8fLK34N3ojGwP191o95</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/ac87fba9fcc20f306.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 22-23 Factory API+React" completed</summary>
+<result>I need the Write tool to create the new file at `/Users/jdsingh/conductor/workspaces/forge/sofia/.context/sections_22_23.md`. The `.context/` directory already exists and I'm trying to create a new file there. Could you grant permission for the Write tool so I can write `sections_22_23.md`?
+
+Here is a summary of what I've researched and am ready to write:
+
+**Section 22 (Factory API & Server)** covers:
+- `AppState` structure (db, ws_tx, pipeline_runner, github_token, metrics)
+- The full REST route table (28+ routes across projects, issues, runs, tasks, GitHub OAuth, metrics)
+- `server.rs` startup sequence: DB backend selection (local SQLite vs Turso), orphan recovery, Docker sandbox, router assembly, port 3141
+- `ws.rs` WebSocket layer: the `WsMessage` enum taxonomy (~30 variants covering issue/pipeline/agent/merge/verification lifecycle), the `run_socket_loop` with ping/pong keepalive, and `broadcast_message`
+
+**Section 23 (React UI)** covers:
+- Directory layout (App.tsx, api/client.ts, contexts/WebSocketContext.tsx, hooks/useMissionControl.ts, 11 components)
+- `App.tsx` shell: WebSocketProvider wrapping MissionControl, dynamic ws/wss URL derivation
+- `WebSocketContext.tsx`: exponential backoff reconnect (up to 20 attempts), subscriber set pattern, `useWsSubscribe`/`useWsStatus` hooks
+- `useMissionControl.ts`: the full state shape (runs/issues/phases/agentTeams/events maps), initial load sequence, WS dispatch handler, derived agentRunCards/idleIssueCards, actions
+- Key components: AgentRunCard (streaming output), StatusBar, ProjectSidebar, EventLog (500-entry cap), Analytics, ProjectSetup</result>
+<usage><total_tokens>45760</total_tokens><tool_uses>13</tool_uses><duration_ms>187081</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/ac87fba9fcc20f306.output
+
+---
+
+<task-notification>
+<task-id>a1d884bea76a58eb3</task-id>
+<tool-use-id>toolu_017vPH78p9JsrMBPs7BLr7jK</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a1d884bea76a58eb3.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 20-21 Factory data+pipeline" completed</summary>
+<result>I need Write or Bash permission to create the output file. The file at `/Users/jdsingh/conductor/workspaces/forge/sofia/.context/sections_20_21.md` doesn't exist yet, so I can't use Edit on it. I'll present the full content here for the user to create manually, or they can grant the Write/Bash permission.
+
+Here is the complete content for `/Users/jdsingh/conductor/workspaces/forge/sofia/.context/sections_20_21.md`:
+
+---
+
+## Section 20: Factory Data Model
+
+### Overview
+
+The Factory's data model lives entirely in `src/factory/models.rs` and is backed by a SQLite/Turso database accessed through `src/factory/db/mod.rs`. The model file defines all domain types — plain Rust structs and enums — while the database layer provides a typed façade that routes each operation to a dedicated sub-module.
+
+### ID Types
+
+Every entity uses a newtype wrapper over `i64` generated by the `define_id_type!` macro:
+
+```rust
+define_id_type!(ProjectId);
+define_id_type!(IssueId);
+define_id_type!(RunId);
+define_id_type!(TeamId);
+define_id_type!(TaskId);
+define_id_type!(PhaseId);
+define_id_type!(EventId);
+```
+
+Each ID type derives `Copy`, `Hash`, implements `Display`, and is transparent in JSON (serialises as the bare integer). This prevents mixing up foreign keys at compile time without any runtime overhead.
+
+### Core Entities
+
+**Project** — a registered local codebase. Stores `name`, `path` (absolute filesystem path), and optional `github_repo` (`owner/repo` slug for auto-PR creation).
+
+**Issue** — a Kanban work card. Key fields:
+- `column: IssueColumn` — the current Kanban column (`Backlog | Ready | InProgress | InReview | Done`).
+- `description: String` — the full spec text; this becomes the agent's prompt.
+- `priority: Priority` — `Low | Medium | High | Critical`.
+- `labels: Vec<String>` — free-form tags.
+- `github_issue_number: Option<i64>` — sync link to a GitHub issue.
+
+Moving an issue to `IssueColumn::InProgress` is the external trigger that launches a `PipelineRun`.
+
+**PipelineRun** — one execution of `forge` against an issue. Tracks:
+- `status: PipelineStatus` — state machine: `Queued → Running → Completed | Failed | Cancelled`.
+- `phase_count`, `current_phase`, `iteration` — live progress counters updated while running.
+- `branch_name` — the git branch created for this run (e.g. `forge/issue-42`).
+- `pr_url` — populated after a successful `gh pr create`.
+- `team_id` / `has_team` — links to an `AgentTeam` when multi-agent mode is active.
+
+`PipelineStatus::is_terminal()` returns `true` for `Completed | Failed | Cancelled`.
+
+**PipelinePhase** — one named phase within a run. Maps to phases in `.forge/spec.md`. Tracks `phase_number` (hierarchical, e.g. `"2.1"`), `phase_name`, `status: PhaseStatus`, `iteration`, and `budget`. Upserted on every iteration tick.
+
+### Agent Team Entities
+
+When the planner decomposes an issue into parallel work, the following hierarchy is created:
+
+```
+AgentTeam (1)
+  └── AgentTask (N)
+        └── AgentEvent (M)
+```
+
+**AgentTeam** — captures the planner's output: `strategy: ExecutionStrategy` (`Parallel | Sequential | WavePipeline | Adaptive`) and `isolation: IsolationStrategy` (`Worktree | Container | Hybrid | Shared`), plus a `plan_summary` narrative.
+
+**AgentTask** — an atomic unit of work assigned to a `role: AgentRole` (`Planner | Coder | Tester | Reviewer | BrowserVerifier | TestVerifier`). The `wave: i32` field controls dependency ordering — all tasks in wave N complete before wave N+1 starts. `depends_on: Vec<TaskId>` carries explicit inter-task dependencies within a wave. Isolation state is recorded in `worktree_path` and `container_id`.
+
+**AgentEvent** — a real-time log entry emitted by an agent: `event_type: AgentEventType` (`Thinking | Action | Output | Signal | Error`), `content`, and optional `metadata: serde_json::Value` for structured `Signal` events. Events are written to the DB and also broadcast over WebSocket.
+
+### Auxiliary Enums
+
+- `SignalType` — `Progress | Blocker | Pivot` — mirrors the `<progress>`, `<blocker>`, `<pivot>` XML tags in agent output.
+- `VerificationType` — `Browser | TestBuild` — reserved for future verification task dispatch.
+- `FileAction` — `Created | Modified | Deleted` — used in `WsMessage::PipelineFileChanged`.
+
+All enums implement `as_str()`, `Display`, and `FromStr` so they round-trip cleanly through SQLite TEXT columns and JSON. `#[serde(rename_all = "snake_case")]` ensures JSON uses lowercase snake_case variants.
+
+### View Types
+
+Three composite structs are returned by read endpoints:
+
+- `BoardView { project, columns: Vec<ColumnView> }` — the full Kanban board for `GET /api/projects/:id/board`. Each `ColumnView` holds `Vec<IssueWithStatus>` pairing an issue with its active (non-terminal) run.
+- `IssueDetail { issue, runs: Vec<PipelineRunDetail> }` — returned by `GET /api/issues/:id`. Each `PipelineRunDetail` flattens a `PipelineRun` with its `phases: Vec<PipelinePhase>`.
+- `AgentTeamDetail { team, tasks }` — returned by `GET /api/runs/:id/team`.
+
+### Database Layer (`src/factory/db/mod.rs`)
+
+`DbHandle` wraps a `libsql` connection in three modes:
+- `Local` — plain SQLite file (dev/offline).
+- `EmbeddedReplica` — Turso replica with local file cache; syncs every 60 seconds. Falls back to `Remote` if the initial sync fails.
+- `Remote` — pure HTTP to Turso; no local cache.
+
+A single `Arc<Connection>` is shared across all calls (libsql serialises access internally). On construction, `from_db()` runs `init_pragmas` (WAL mode, 5 s busy timeout, foreign keys — local only) and then `migrations::run_migrations`.
+
+The public API is a flat set of `async fn` methods on `DbHandle` — one per operation — that delegate to five sub-modules:
+
+| Sub-module | Responsibility |
+|---|---|
+| `projects` | CRUD for `Project` |
+| `issues` | CRUD + move + board/detail queries for `Issue` |
+| `pipeline` | CRUD + progress updates for `PipelineRun` and `PipelinePhase` |
+| `agents` | CRUD for `AgentTeam`, `AgentTask`, `AgentEvent` |
+| `settings` | Key-value store for application settings |
+
+Notable operations:
+- `move_issue(id, column, position)` — updates column and position in one call; the API handler calls this and then broadcasts an `IssueMoved` WebSocket message.
+- `recover_orphaned_runs()` — called on startup to transition any `Running` runs left by a crash back to `Failed`.
+- `upsert_pipeline_phase()` — insert-or-update phase progress rows keyed on `(run_id, phase_number)`.
+- `cancel_pipeline_run()` — sets status to `Cancelled` and records `completed_at`.
+
+---
+
+## Section 21: Factory Pipeline
+
+### Overview
+
+`src/factory/pipeline/` is the execution engine that turns a Kanban issue into running code. The directory contains four files:
+
+| File | Responsibility |
+|---|---|
+| `mod.rs` | `PipelineRunner`, agent-team orchestration, auto-promote policy |
+| `execution.rs` | Low-level process/container spawning, stdout streaming |
+| `git.rs` | Branch creation, worktree management, PR creation |
+| `parsing.rs` | `StreamJsonEvent` parsing for `claude --print --output-format stream-json` |
+
+### Entry Point: `PipelineRunner::start_run`
+
+`start_run` is called by the API handler when an issue is moved to `InProgress`. It immediately updates the run to `Running` and moves the issue column, then spawns a `tokio::spawn` background task so the HTTP response returns instantly.
+
+The background task follows this sequence:
+
+```
+1. Acquire git lock → create_git_branch (forge/issue-<id>-<slug>)
+2. Construct Planner + AgentExecutor
+3. execute_agent_team(...)
+   ├── Ok(TeamExecuted(summary))  → use summary directly
+   ├── Ok(FallbackToForge)        → run_forge_fallback(...)
+   └── Err(_)                     → run_forge_fallback(...)  (unexpected failure)
+4. On success: acquire git lock → create_pull_request → update DB → broadcast PipelineCompleted
+5. On failure: update DB to Failed → broadcast PipelineFailed
+```
+
+The git lock (`GitLockMap` — a `DashMap<String, Arc<Mutex<()>>>` keyed on project path) serialises git-mutating operations per project while allowing concurrent runs across different projects.
+
+### Agent Team Path (`execute_agent_team`)
+
+This is the primary execution path for non-trivial issues.
+
+**Step 1 — Planning.** `Planner::plan(title, description, labels)` calls an LLM to decompose the issue into a `PlanResponse`. If planning fails, `PlanResponse::fallback()` produces a single-task sequential plan. If the plan has exactly one task with `Sequential` strategy, the function returns `PlanOutcome::FallbackToForge` immediately, signalling the caller to use the simpler forge pipeline instead.
+
+**Step 2 — DB persistence.** `AgentTeam` and all `AgentTask` records are written to the database. `depends_on` indices from the plan are resolved to real `TaskId` values by indexing into the already-created `db_tasks` vector.
+
+**Step 3 — Broadcast.** A `WsMessage::TeamCreated` message is sent to all connected WebSocket clients so the UI can render the task board immediately.
+
+**Step 4 — Wave execution loop.** Tasks are grouped by `wave` number (0, 1, 2, ...). For each wave:
+
+1. **Worktree setup** — tasks with `IsolationStrategy::Worktree` get a dedicated `git worktree` via `task_runner.setup_worktree()`. If setup fails in a single-task wave, execution falls back to the shared directory. If it fails in a multi-task wave, the entire run aborts (shared directory is unsafe for parallel agents).
+
+2. **Parallel execution** — each task is launched as a separate `tokio::spawn`. `task_runner.run_task()` (implemented by `AgentExecutor`) drives `claude --print` or `forge` inside the task's working directory, streaming events back over WebSocket.
+
+3. **Merge under lock** — after all tasks in the wave complete, the per-project git lock is acquired and each task's branch is merged back into the base branch (`base_branch` defaults to `"main"`). `WsMessage::MergeStarted` and `WsMessage::MergeCompleted` are broadcast; if any merge produces a conflict the wave aborts.
+
+4. **Worktree cleanup** — all worktrees are removed regardless of merge outcome.
+
+5. **Failure gate** — if any task failed, the wave aborts with an error and the run transitions to `Failed`.
+
+### Forge Fallback Path (`run_forge_fallback`)
+
+Used for simple issues (single-task plan) or when the agent team path fails. Steps:
+
+1. If the project has a `.forge/` directory but no `phases.json`, call `auto_generate_phases`: write a spec to `.forge/spec.md` from the issue title/description and run `forge generate` to produce `phases.json`.
+
+2. Build the execution command:
+   - `.forge/phases.json` present → `forge swarm --max-parallel 4 --fail-fast`
+   - No phases → `claude --print --verbose --output-format stream-json --dangerously-skip-permissions "<prompt>"`
+
+3. Execute via `execute_pipeline_streaming` (local subprocess) or `execute_pipeline_docker` (Docker sandbox), depending on whether a `DockerSandbox` is configured.
+
+### Streaming Execution (`execution.rs`)
+
+`execute_pipeline_streaming` spawns the command with `stdout: Stdio::piped()`, stores the child handle in `running_processes` for cancellation, then reads stdout line by line:
+
+- Lines matching the DAG executor `PhaseEvent` JSON format → `process_phase_event` (upserts `PipelinePhase` rows, broadcasts `PipelinePhaseStarted` / `PipelinePhaseCompleted`).
+- Lines matching a simple progress JSON struct → `update_pipeline_progress` + broadcast `PipelineProgress`.
+- All other non-empty lines → `parse_stream_json_line` to classify as `Text`, `Thinking`, `ToolStart`, `ToolEnd`, or `Skip`:
+  - `Text` / `Thinking` — throttled to one broadcast per 200 ms.
+  - `ToolStart` — broadcast `PipelineOutputEvent` with `content_type: "tool_start"` plus legacy `PipelineOutput`; also checks `extract_file_change` to emit `PipelineFileChanged` for file-editing tool calls.
+  - `ToolEnd` — broadcast with `content_type: "tool_end"`.
+
+`execute_pipeline_docker` mirrors the same logic but uses `DockerSandbox::run_pipeline` to start a container, reads log lines from a channel, and enforces a configurable timeout. It checks for OOM kill on completion.
+
+### Cancellation
+
+`PipelineRunner::cancel(run_id)` looks up the `RunHandle` for the given run:
+- `RunHandle::Process(child)` → `child.kill()`.
+- `RunHandle::Container(id)` → `sandbox.stop(id)`.
+
+After killing, it calls `cancel_pipeline_run` on the DB (sets status to `Cancelled`) and moves the issue back to `Ready`.
+
+### Auto-Promote Policy
+
+`AutoPromotePolicy::decide(pipeline_succeeded, has_review_warnings, arbiter_proceeded, fix_attempts)` encodes post-run column routing:
+- Failed run → `PromoteDecision::Failed` (issue stays in `InProgress`).
+- Succeeded with warnings or arbiter overrides or multiple fix cycles → `InReview`.
+- Clean success → `Done`.
+
+In the current `start_run` implementation, success always moves the issue to `InReview` (the arbiter/review path is not yet wired into the main execution loop), leaving `AutoPromotePolicy` available for future use.
+
+### Status Transitions
+
+Two free functions enforce invariants:
+- `is_cancellable(status)` — returns `true` only for `Queued | Running`.
+- `is_valid_transition(from, to)` — allows only the five legal state-machine edges: `Queued → Running`, `Queued → Cancelled`, `Running → Completed | Failed | Cancelled`.
+
+---
+
+I was unable to write the file directly because both the `Write` and `Bash` tools were denied. The full content is above — please paste it into `/Users/jdsingh/conductor/workspaces/forge/sofia/.context/sections_20_21.md` (the `.context/` directory already exists).
+
+**Key files read:**
+- `/Users/jdsingh/conductor/workspaces/forge/codebase-walkthrough/src/factory/models.rs` — all domain structs/enums
+- `/Users/jdsingh/conductor/workspaces/forge/codebase-walkthrough/src/factory/db/mod.rs` — `DbHandle` and connection modes
+- `/Users/jdsingh/conductor/workspaces/forge/codebase-walkthrough/src/factory/pipeline/mod.rs` — `PipelineRunner`, wave loop, auto-promote
+- `/Users/jdsingh/conductor/workspaces/forge/codebase-walkthrough/src/factory/pipeline/execution.rs` — streaming/Docker execution</result>
+<usage><total_tokens>57335</total_tokens><tool_uses>11</tool_uses><duration_ms>205001</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a1d884bea76a58eb3.output
+
+---
+
+<task-notification>
+<task-id>a3196b000173d6654</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a3196b000173d6654.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 6-10 (Domain+Core)" completed</summary>
+<result>I need permission to write files in order to complete this task. The task requires me to write the walkthrough sections to `/Users/jdsingh/conductor/workspaces/forge/codebase-walkthrough/.context/sections_06_10.md`, but both the Write tool and Bash tool (for file creation) are being denied.
+
+I have already:
+1. Read all the source files needed for sections 6-10 (phase.rs, signals/, stream/, orchestrator/, gates/, tracker/, audit/)
+2. Composed the full document content covering all five sections
+
+Could you grant permission for me to write this file? The target path is:
+`/Users/jdsingh/conductor/workspaces/forge/codebase-walkthrough/.context/sections_06_10.md`
+
+This is a new documentation file in the `.context/` directory of the codebase-walkthrough workspace, which already contains `notes.md` and `todos.md` placeholder files, so it is clearly intended for this kind of output.</result>
+<usage><total_tokens>128384</total_tokens><tool_uses>52</tool_uses><duration_ms>1037593</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a3196b000173d6654.output
+
+---
+
+<task-notification>
+<task-id>a8170b2c93d6c2953</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a8170b2c93d6c2953.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 6-10 Domain+Core" completed</summary>
+<result>Both Write and Bash permissions have been denied for this operation. I cannot create the output file at `/Users/jdsingh/conductor/workspaces/forge/sofia/.context/sections_06_10.md` without one of these tools.
+
+Here is the complete content I would have written, so it is not lost. You can create the file manually or re-approve Write/Bash access:
+
+---
+
+# Forge Codebase Walkthrough — Sections 6–10
+
+---
+
+## Section 6: The Phase Model
+
+**File:** `src/phase.rs`
+
+### Purpose
+
+A Phase is Forge's unit of work. Every `forge run` execution is a sequence of phases; every parallel swarm node executes a phase. `phase.rs` defines what a phase *is*, what constraints it carries, and how phases are loaded from JSON config. It is a pure data-definition module — no async, no I/O beyond loading from disk.
+
+### Key Types
+
+**`Phase`** — the central struct. Every field is serializable so phases can round-trip through JSON checkpoints and the factory database.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `number` | `String` | Identifier like `"01"`, `"02"`. Used in log filenames and dependency edges. |
+| `name` | `String` | Human-readable label shown in the UI. |
+| `promise` | `String` | The exact text Claude must emit inside `<promise>…</promise>` to signal completion. |
+| `budget` | `u32` | Maximum iterations allowed. If Claude has not found the promise after this many tries, the phase is marked `MaxIterationsReached`. |
+| `depends_on` | `Vec<String>` | Phase numbers that must complete first. Used by the DAG scheduler (`src/dag/`). |
+| `skills` | `Vec<String>` | Names of reusable skill files appended to the prompt. |
+| `permission_mode` | `PermissionMode` | Controls whether iterations are auto-approved and whether writes are blocked. |
+| `parent_phase` | `Option<String>` | Set only on sub-phases; `None` for top-level phases. |
+| `reviews` | `Option<PhaseReviewSettings>` | Optional post-phase quality gate configuration. |
+| `council` | `Option<bool>` | Per-phase override for council (multi-worker) execution. |
+
+**`SubPhase`** — a dynamically spawned child phase. When Claude discovers its scope is larger than expected, it emits a `<spawn-subphase>` signal (see Section 7). The orchestrator converts that signal into a `SubPhase` and executes it immediately within the parent's remaining budget. Sub-phase numbers follow a dotted scheme: parent `"05"` spawns `"05.1"`, `"05.2"`, etc. `SubPhase::to_phase()` converts a `SubPhase` into a full `Phase` for execution, inheriting the parent's settings.
+
+**`SubPhaseStatus`** — tracks lifecycle: `Pending → InProgress → Completed | Failed | Skipped`.
+
+**`PhaseReviewSettings` / `PhaseSpecialistConfig`** — configure which review specialists run after phase completion, whether they run in parallel, and whether any of them *gate* (block) phase completion if they reject.
+
+**`PhasesFile`** — the top-level struct for `phases.json`. Contains a `Vec<Phase>` plus optional global settings. `load_phases()` deserializes this from disk.
+
+### The Promise Contract
+
+The promise is the only way for a phase to declare itself done. Claude must emit `<promise>DONE</promise>` (where `DONE` matches `phase.promise`). The runner scans each iteration's output for this exact tag. If not found before the budget is exhausted, the phase fails. This is intentionally binary — progress signals (Section 7) exist for visibility only and do not affect the pass/fail outcome.
+
+### Connections
+
+- `src/orchestrator/runner.rs` — reads `phase.budget`, `phase.promise`, `phase.permission_mode`, `phase.skills`.
+- `src/dag/scheduler.rs` — reads `phase.depends_on` and `phase.number` to build the DAG.
+- `src/gates/mod.rs` — receives a `&Phase` to decide approval strategy per `permission_mode`.
+- `src/review/specialists.rs` — receives `phase.reviews` to determine which specialists to invoke.
+
+---
+
+## Section 7: Signals & Stream Parsing
+
+**Files:** `src/signals/mod.rs`, `src/signals/types.rs`, `src/stream/mod.rs`
+
+### Purpose
+
+Two distinct output channels from Claude are handled here:
+
+1. **Signals** (`src/signals/`) — structured XML-like tags Claude embeds in its text to communicate intent: progress percentage, blockers, strategy pivots, sub-phase spawn requests.
+2. **Stream** (`src/stream/`) — the JSON event stream the Claude CLI emits on stdout when run with `--output-format stream-json`. This is the raw transport layer that delivers text, tool calls, and session metadata.
+
+### Signal Types (`src/signals/types.rs`)
+
+All four signal types share a `timestamp: DateTime<Utc>` field and are collected into `IterationSignals` after each invocation.
+
+**`ProgressSignal`** — emitted as `<progress>50%</progress>`. Carries `percentage: u8` (0–100). Used by the gate system and UI to show partial completion. `is_complete()` returns true at 100%. Does not affect the promise check.
+
+**`BlockerSignal`** — emitted as `<blocker>description</blocker>`. Signals Claude is stuck. Has `acknowledged: bool`; unacknowledged blockers are surfaced in the `IterationFeedback` injected into the next iteration's system prompt.
+
+**`PivotSignal`** — emitted as `<pivot>new approach</pivot>`. Signals a strategy change. The runner renders this as a `## STRATEGY CHANGE` directive in the next iteration's feedback, explicitly instructing Claude to follow the new approach and not repeat the old one.
+
+**`SubPhaseSpawnSignal`** — emitted as `<spawn-subphase>{ JSON }</spawn-subphase>`. The body is a JSON object with `name`, `promise`, `budget`, and optional `reasoning`/`skills`. The gate system checks whether the requested budget fits within the parent's remaining budget before approval. This is the mechanism by which Claude can dynamically extend its own scope.
+
+**`IterationSignals`** — the aggregate container. Key methods: `has_signals()`, `latest_progress()`, `has_unacknowledged_blockers()` / `acknowledge_all_blockers()`, `merge()` (folds sub-phase results back), `summary()` (one-line description for logging).
+
+### Stream Events (`src/stream/mod.rs`)
+
+The `StreamEvent` enum mirrors the Claude CLI's line-per-JSON format:
+
+- `StreamEvent::Assistant { message }` — Claude's turn; `AssistantMessage.content` is `Vec<ContentBlock>`
+- `ContentBlock::Text { text }` — prose output (where signal tags appear)
+- `ContentBlock::ToolUse { name, input, id }` — a tool invocation
+- `StreamEvent::Result { subtype, result, is_error }` — terminal event carrying token usage
+- `StreamEvent::System { subtype }` — session initialization, carries `session_id`
+
+The runner reads stdout line by line, parses each line as a `StreamEvent`, accumulates text, captures the `session_id` and token usage, and updates the UI via `describe_tool_use()` and `tool_emoji()`.
+
+### Connections
+
+- `src/orchestrator/runner.rs` — calls `extract_signals(&output)` after each iteration; builds `IterationFeedback` from the resulting `IterationSignals`.
+- `src/gates/mod.rs` — `ProgressTracker::update()` takes `Option<u8>` from `signals.latest_progress()`.
+- `src/audit/mod.rs` — `IterationAudit.signals` stores the full `IterationSignals`.
+
+---
+
+## Section 8: Sequential Execution
+
+**Files:** `src/orchestrator/mod.rs`, `src/orchestrator/runner.rs`
+
+### Purpose
+
+The orchestrator owns the `forge run` execution path: one phase at a time, one iteration at a time, with checkpoint recovery, feedback injection, and optional council mode. It is deliberately separate from the DAG scheduler (`src/dag/`) — parallel execution is a different concern.
+
+### Persistence Ownership (from mod.rs)
+
+| Layer | What it persists |
+|---|---|
+| `orchestrator/state.rs` | Phase completion state — checkpoint recovery |
+| `audit/logger.rs` | Audit trail — signals, tool calls, raw output |
+| `factory/db.rs` | Factory UI state — pipeline runs, WebSocket events |
+| `compaction/tracker.rs` | Session IDs, compaction summaries |
+
+`StateManager` is the source of truth for "which phases are already done." On startup, `forge run` reads the state log and skips completed phases automatically. The audit logger and factory DB are observe-only; they never drive control flow.
+
+### Key Types
+
+**`ClaudeRunner`** — wraps a `Config` and exposes `run_iteration()` and `run_effective_iteration()`. The "effective" variant checks whether council mode is active for the phase and dispatches to either `run_council_iteration()` or `run_iteration_with_context()`.
+
+**`IterationResult`** — value returned by a single Claude invocation: `session: ClaudeSession`, `promise_found: bool`, `output: String`, `signals: IterationSignals`.
+
+**`PromptContext`** — optional extra context injected at prompt generation time. Currently used for compaction summaries.
+
+**`IterationFeedback`** — a builder that assembles the `## ITERATION FEEDBACK` block appended via `--append-system-prompt` on every iteration after the first. Adds (in priority order): iteration status, git change summary, signals, pivot directive. Capped at 4,000 characters to prevent doubling system prompt size. Higher-priority parts appear first so they survive truncation.
+
+### The Iteration Loop
+
+Core flow in `run_iteration_with_context()`:
+
+1. Generate prompt — full spec + skills on first iteration; short continuation prompt when resuming.
+2. Write prompt to disk as `phase-{N}-iter-{M}-prompt.md`.
+3. Spawn Claude CLI via `tokio::process::Command` with `--output-format stream-json`, optional `--resume <session_id>`, optional `--append-system-prompt <feedback>`, and `--allowed-tools` from `permission_mode`.
+4. Stream stdout line by line, parsing `StreamEvent`, accumulating text, capturing session ID and token usage, updating UI in real time.
+5. Check for promise tag in accumulated output.
+6. Call `extract_signals(&output)` to find all signal tags.
+7. Return `IterationResult`; caller decides whether to continue or terminate.
+
+### Session Resumption
+
+Forge captures `session_id` from `StreamEvent::System` and threads it through iterations. On non-first iterations, a short continuation prompt is sent to avoid re-sending the full context.
+
+### Connections
+
+- `src/phase.rs` — `Phase` drives prompt generation, tool filtering, promise checking.
+- `src/gates/mod.rs` — caller passes `IterationResult` back to gate to decide continue/stop.
+- `src/tracker/git.rs` — git snapshot before/after each iteration.
+- `src/audit/mod.rs` — `IterationAudit` is constructed from `IterationResult` and appended.
+- `src/council/` — `run_council_iteration()` delegates to `CouncilEngine::run_phase()`.
+
+---
+
+## Section 9: Permission Gates
+
+**File:** `src/gates/mod.rs`
+
+### Purpose
+
+Decides whether a phase or iteration is allowed to proceed, and whether to block filesystem writes. Implements the per-phase `PermissionMode` policy. Also detects stale progress in autonomous mode and injects a pivot prompt to force a strategy change.
+
+### Permission Modes
+
+| Mode | Phase approval | Iteration approval | File writes |
+|---|---|---|---|
+| `Standard` | Prompts user (auto-approves if <= threshold files changed) | Always continues | Allowed |
+| `Autonomous` | Auto-approves | Auto-continues; stale detection active | Allowed |
+| `Readonly` | Auto-approves | Always continues | Blocked; error if writes occur |
+
+### Key Types
+
+**`GateDecision`** — `Approved`, `ApprovedAll` (equivalent to `--yes`), `Rejected`, `Aborted`.
+
+**`IterationDecision`** — `Continue`, `Skip`, `StopPhase`, `Abort`.
+
+**`SubPhaseSpawnDecision`** — `Approved`, `Skipped`, `RejectAll`.
+
+**`ApprovalGate`** — interactive gate for `Standard` mode. `check_phase()` renders phase header, shows previous changes, dispatches based on `permission_mode`. Uses `dialoguer::Select` for prompts. `skip_all` is set by the `--yes` flag or user selecting "yes to all."
+
+**`ProgressTracker`** — tracks stale progress. `update(changes, progress_pct)` increments `stale_iterations` when neither new files appear nor the progress percentage increases. `is_making_progress(threshold)` returns false when `stale_iterations >= threshold`.
+
+**`AutonomousGateStrategy`** — non-interactive gate. Always approves phases and iterations. On stale via `check_stale_progress()`: first stale sets `pivot_issued = true`, resets counter, returns `Continue` (caller injects `DEFAULT_PIVOT_PROMPT`). Second stale returns `StopPhase`.
+
+The `DEFAULT_PIVOT_PROMPT` is intentionally harsh — "CRITICAL: You have made no progress… try a fundamentally different strategy" — to force Claude to abandon a failing approach.
+
+### Readonly Mode Enforcement
+
+`validate_readonly_changes(phase, changes)` errors with `"Readonly mode violation"` if any files were added or modified. The orchestrator fails the phase immediately on this error.
+
+### Sub-Phase Spawn Gating
+
+`check_sub_phase_spawn()` validates requested budget against remaining budget. In `Standard` mode it prompts; in `Autonomous` mode it auto-approves within budget, auto-skips over budget.
+
+### Connections
+
+- Main phase loop — calls `check_phase()` before each phase, `check_stale_progress()` after stale iterations.
+- `src/phase.rs` — `Phase.permission_mode` drives which strategy is used.
+- `src/audit/mod.rs` — `FileChangeSummary` feeds both `ProgressTracker::update()` and `validate_readonly_changes()`.
+
+---
+
+## Section 10: Git Tracking & Audit
+
+**Files:** `src/tracker/mod.rs`, `src/tracker/git.rs`, `src/audit/mod.rs`
+
+### Purpose
+
+Two concerns separated here:
+
+- **Git Tracker** (`src/tracker/`) — answers "what changed during this iteration?" by bookending each Claude invocation with a snapshot commit.
+- **Audit Trail** (`src/audit/`) — defines the data model for the complete audit log.
+
+### Git Tracker (`src/tracker/git.rs`)
+
+`GitTracker` wraps `git2::Repository` with three operations:
+
+**`snapshot_before(phase) -> Result<String>`** — stages all files and creates a `[forge] snapshot before phase {N}` commit. Handles the unborn-branch case (new repo, no commits) by creating an initial parentless commit. Returns the commit SHA stored as `IterationAudit.git_snapshot_before`.
+
+**`compute_changes(before_sha) -> Result<FileChangeSummary>`** — diffs `before_sha` tree against current workdir+index. Classifies `Added`, `Modified`, `Deleted` files; counts `+`/`-` lines.
+
+**`get_full_diffs(before_sha) -> Result<Vec<FileDiff>>`** — same diff but also captures full unified diff strings via `git2::Patch`. Used by the audit logger.
+
+**`head_sha() -> Option<String>`** — current HEAD SHA; `None` on unborn branches.
+
+The snapshot approach means Forge's git history records the state before every Claude invocation. Operators can `git diff <before_sha> HEAD` to see exactly what a single iteration produced.
+
+### Audit Data Model (`src/audit/mod.rs`)
+
+Pure data definitions. Hierarchy:
+
+```
+AuditRun
+  └─ Vec<PhaseAudit>
+       ├─ Vec<IterationAudit>
+       ├─ Vec<CompactionEvent>
+       └─ Vec<SubPhaseAudit>
+            └─ Vec<IterationAudit>
+```
+
+**`AuditRun`** — `run_id: Uuid`, timestamps, `RunConfig`, and the phase list.
+
+**`PhaseAudit`** — per-phase record. `total_iterations()` includes sub-phase iterations. `total_file_changes()` aggregates sub-phases. `all_sub_phases_completed()` checks nested outcomes.
+
+**`PhaseOutcome`** — `InProgress`, `Completed { iteration }`, `MaxIterationsReached`, `Error { message }`, `UserAborted`, `Skipped`.
+
+**`IterationAudit`** — per-invocation record with: `duration_secs`, `claude_session` (file paths, char counts, exit code, token usage, `session_id`), `git_snapshot_before`, `git_snapshot_after`, `file_diffs`, `promise_found`, `signals: Option<IterationSignals>`, `council_data: Option<CouncilAuditData>`. The `session_id` field uses `skip_serializing_if = "Option::is_none"` for backward compatibility with old audit logs.
+
+**`FileChangeSummary`** — `files_added`, `files_modified`, `files_deleted` (`Vec<PathBuf>`) plus line counts. `is_empty()` gates the `IterationFeedback` builder.
+
+**`CompactionEvent`** — records context compaction: iterations compacted, original/summary char counts, compression ratio.
+
+### Connections
+
+- `src/orchestrator/runner.rs` — calls `snapshot_before()` before Claude, `compute_changes()` and `get_full_diffs()` after, then builds `IterationAudit` for `AuditLogger`.
+- `src/gates/mod.rs` — `FileChangeSummary` feeds `ProgressTracker::update()` and `validate_readonly_changes()`.
+- `src/audit/logger.rs` — writes `AuditRun` to disk as JSON (append-only, not part of checkpoint recovery).
+- `src/factory/db/` — stores a lighter version of this data for the Factory UI.
+
+---
+
+Please grant Write or Bash permission so I can save this file, or paste the content above into `/Users/jdsingh/conductor/workspaces/forge/sofia/.context/sections_06_10.md` directly.</result>
+<usage><total_tokens>68308</total_tokens><tool_uses>18</tool_uses><duration_ms>404496</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a8170b2c93d6c2953.output
+
+---
+
+<task-notification>
+<task-id>a3c0833f2a8299c16</task-id>
+<tool-use-id>toolu_01YDkpn3qsYn2EfMDcgLuK3L</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a3c0833f2a8299c16.output</output-file>
+<status>completed</status>
+<summary>Agent "Write sections 1-5 (Foundation)" completed</summary>
+<result>I have completed all the research and analysis for sections 1-5, but I am unable to write the output file. Here is the situation:
+
+**What I need to do:** Create the file `/Users/jdsingh/conductor/workspaces/forge/codebase-walkthrough/.context/sections_01_05.md` containing the ~1000-line walkthrough document.
+
+**What is blocked:** The Write tool, Bash tool, and AskUserQuestion tool are all denied. I need at least one of Write or Bash to create the output file and its parent `.context/` directory.
+
+**What is ready:** I have read all the required source files (lib.rs, main.rs, README.md, spec.md, errors.rs, forge_config.rs, config.rs, telemetry.rs, util.rs, update_check.rs, and all 11 files in src/cmd/) and drafted complete content for all five sections:
+
+1. **Section 1: Overview & Mental Model** -- Conceptual intro, core loop, key concepts (phases, budgets, signals, permission modes, swarm, reviews, factory), 31-module map from lib.rs, project directory layout
+2. **Section 2: Entry Point & CLI** -- main.rs bootstrap sequence, Cli struct and Commands enum with 19 subcommands, cmd/mod.rs routing with 11 submodules, implementation patterns (thin wrappers, prerequisite checks, ~700-line orchestrator loop, swarm dispatch, factory server)
+3. **Section 3: Error Hierarchy** -- Three error enums (OrchestratorError, PhaseError, FactoryError), anyhow+thiserror pattern, #[from] conversion chain, type-level testing strategy
+4. **Section 4: Configuration** -- Two-layer system (ForgeToml for file config, Config for runtime), 10 TOML sections, PermissionMode with backward-compat deprecation, glob-pattern phase overrides, review/decomposition/Claude/autonomy config, spec file discovery, configuration layering flow
+5. **Section 5: Telemetry & Utilities** -- Three-layer tracing subscriber, TTY detection, log level priority chains, extract_json_object() utility, background update check with caching and file locking, is_newer() semver comparison, self-update mechanism
+
+Please grant Write or Bash permission so I can create the output file.</result>
+<usage><total_tokens>144850</total_tokens><tool_uses>45</tool_uses><duration_ms>1444586</duration_ms></usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-jdsingh-conductor-workspaces-forge-sofia/101e9dde-2e17-49a6-81ea-1128a2fe2569/tasks/a3c0833f2a8299c16.output
+
+---
+
+push and create a PR targeting dev

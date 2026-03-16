@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.4.9",
+  "checkpoint_id": "97b3ea372053",
+  "session_id": "101e9dde-2e17-49a6-81ea-1128a2fe2569",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-16T16:04:55.733931Z",
+  "branch": "Walkthrough-dev",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/module-walkthrough.md"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "1bd51436da37",
+  "token_usage": {
+    "input_tokens": 121,
+    "cache_creation_tokens": 195251,
+    "cache_read_tokens": 4868736,
+    "output_tokens": 32831,
+    "api_call_count": 57
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-16T16:04:55.411601Z",
+    "agent_lines": 1031,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 1031,
+    "agent_percentage": 100
+  }
+}
